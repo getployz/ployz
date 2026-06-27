@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
-use crate::ids::{NodeId, OperationId, RevisionId, ServiceId};
+use crate::ids::{MachineId, OperationId, RevisionId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
@@ -18,8 +18,8 @@ pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 /// (ADR-0001: their recovery evidence is `authorized-users.conf`).
 pub const NATS_AUTHORIZED_USER_PREFIX: &str = "nats_authorized_user";
 pub const ACTIVE_ROUTE_STATE_PREFIX: &str = "routes";
-pub const NODE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
-pub const NODE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "nodes";
+pub const MACHINE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
+pub const MACHINE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "machines";
 pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ pub struct ActiveRouteState {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveMachineState {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub activated_by: OperationId,
 }
@@ -52,8 +52,8 @@ pub struct ActiveMachineState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct NodePublicIpObservation {
-    pub node_id: NodeId,
+pub struct MachinePublicIpObservation {
+    pub machine_id: MachineId,
     pub public_ip: IpAddr,
 }
 
@@ -61,7 +61,7 @@ pub struct NodePublicIpObservation {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct GatewayStatusObservation {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub listen_addr: SocketAddr,
     pub serving: GatewayServingStatus,
     pub route_count: usize,
@@ -127,10 +127,10 @@ pub struct ActiveMachineStateKey(String);
 
 impl ActiveMachineStateKey {
     #[must_use]
-    pub fn from_node_id(node_id: &NodeId) -> Self {
+    pub fn from_machine_id(machine_id: &MachineId) -> Self {
         Self(format!(
             "{ACTIVE_MACHINE_STATE_PREFIX}.{}",
-            node_id.as_str()
+            machine_id.as_str()
         ))
     }
 
@@ -233,14 +233,14 @@ pub enum ActiveRouteCommit {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct NodeContainerObservationKey(String);
+pub struct MachineContainerObservationKey(String);
 
-impl NodeContainerObservationKey {
+impl MachineContainerObservationKey {
     #[must_use]
-    pub fn from_node_id(node_id: &NodeId) -> Self {
+    pub fn from_machine_id(machine_id: &MachineId) -> Self {
         Self(format!(
-            "{NODE_CONTAINER_OBSERVATION_PREFIX}.{}",
-            node_id.as_str()
+            "{MACHINE_CONTAINER_OBSERVATION_PREFIX}.{}",
+            machine_id.as_str()
         ))
     }
 
@@ -252,14 +252,14 @@ impl NodeContainerObservationKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct NodePublicIpObservationKey(String);
+pub struct MachinePublicIpObservationKey(String);
 
-impl NodePublicIpObservationKey {
+impl MachinePublicIpObservationKey {
     #[must_use]
-    pub fn from_node_id(node_id: &NodeId) -> Self {
+    pub fn from_machine_id(machine_id: &MachineId) -> Self {
         Self(format!(
-            "{NODE_PUBLIC_IP_OBSERVATION_PREFIX}.{}.public_ip",
-            node_id.as_str()
+            "{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}.{}.public_ip",
+            machine_id.as_str()
         ))
     }
 
@@ -270,7 +270,7 @@ impl NodePublicIpObservationKey {
 
     #[must_use]
     pub fn matches(value: &str) -> bool {
-        value.starts_with(&format!("{NODE_PUBLIC_IP_OBSERVATION_PREFIX}."))
+        value.starts_with(&format!("{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}."))
             && value.ends_with(".public_ip")
     }
 }
@@ -281,10 +281,10 @@ pub struct GatewayStatusObservationKey(String);
 
 impl GatewayStatusObservationKey {
     #[must_use]
-    pub fn from_node_id(node_id: &NodeId) -> Self {
+    pub fn from_machine_id(machine_id: &MachineId) -> Self {
         Self(format!(
             "{GATEWAY_STATUS_OBSERVATION_PREFIX}.{}.status",
-            node_id.as_str()
+            machine_id.as_str()
         ))
     }
 

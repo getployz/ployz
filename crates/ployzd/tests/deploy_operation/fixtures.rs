@@ -1,16 +1,16 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport,
+    WireGuardEbpfMachineReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport,
     WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardPeerEndpoint, WireGuardPublicKey,
     WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
@@ -21,18 +21,19 @@ use ployz_core::state::{
     ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveRoute, ExpectedActiveService,
 };
 pub(crate) use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, service_id,
+    container_id, machine_id, operation_id, revision_id, service_id,
 };
 use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
     DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
-    DeployOperationRecordError, DeployOperationRecorder, NodeContainerRuntime,
-    NodeContainerRuntimeError, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    DeployOperationRecordError, DeployOperationRecorder, MachineContainerRuntime,
+    MachineContainerRuntimeError, MachineRuntimeUnavailableReason, WireGuardEbpfPreparer,
     prepare_deploy_execution_command,
 };
-use ployzd::node::protocol::{
-    NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerStopRpcRequest,
-    NodeEnsureEndpointNetworkRpcRequest, NodeRunContainerOutcome,
+use ployzd::machine_runtime::protocol::{
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineRunContainerOutcome,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -72,11 +73,11 @@ pub(super) enum RecordedOperation {
         replica_count: usize,
     },
     WireGuardEbpfPrepared {
-        node_count: usize,
+        machine_count: usize,
     },
     HealthCheckStarted,
     ContainerStarted {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
     },
     CleanupFinished {
@@ -119,15 +120,15 @@ impl DeployOperationRecorder for RecordingOperations {
             }
             DeployEvidence::WireGuardEbpfPrepared { report } => {
                 self.records.push(RecordedOperation::WireGuardEbpfPrepared {
-                    node_count: report.nodes.len(),
+                    machine_count: report.machines.len(),
                 });
             }
             DeployEvidence::ContainerStarted {
-                node_id,
+                machine_id,
                 container_id,
             } => {
                 self.records.push(RecordedOperation::ContainerStarted {
-                    node_id,
+                    machine_id,
                     container_id,
                 });
             }
@@ -150,10 +151,10 @@ impl DeployOperationRecorder for RecordingOperations {
 }
 
 pub(super) struct RecordingRuntime {
-    pub(super) endpoint_networks: Vec<(NodeId, NodeEnsureEndpointNetworkRpcRequest)>,
-    pub(super) requests: Vec<(NodeId, NodeContainerRunRpcRequest)>,
-    pub(super) stops: Vec<(NodeId, NodeContainerStopRpcRequest)>,
-    pub(super) removals: Vec<(NodeId, NodeContainerRemoveRpcRequest)>,
+    pub(super) endpoint_networks: Vec<(MachineId, MachineEnsureEndpointNetworkRpcRequest)>,
+    pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
+    pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
+    pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     containers: Vec<ContainerId>,
     fail_after_first: bool,
     fail_endpoint_network: bool,
@@ -174,11 +175,11 @@ impl RecordingWireGuardEbpf {
         Self::default()
     }
 
-    pub(super) fn wireguard_failed(node_id: &str) -> Self {
+    pub(super) fn wireguard_failed(machine_id: &str) -> Self {
         Self {
             requests: Vec::new(),
             failure: Some(WireGuardEbpfPrepareError::Unavailable {
-                node_id: self::node_id(node_id),
+                machine_id: self::machine_id(machine_id),
                 component: WireGuardEbpfComponent::WireGuard,
                 message: ployz_core::ops::FailureMessage::try_new("wireguard interface failed")
                     .expect("valid failure message"),
@@ -192,28 +193,28 @@ impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
         &mut self,
         request: WireGuardEbpfPrepareRequest,
     ) -> Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError> {
-        let ready_nodes = request
-            .nodes
+        let ready_machines = request
+            .machines
             .iter()
             .cloned()
-            .map(ready_node)
+            .map(ready_machine)
             .collect::<Vec<_>>();
         self.requests.push(request);
         match &self.failure {
             Some(error) => Err(error.clone()),
             None => Ok(WireGuardEbpfPrepareReport::for_request(
                 self.requests.last().expect("request was just pushed"),
-                ready_nodes,
+                ready_machines,
             )
-            .expect("recording report matches request nodes")),
+            .expect("recording report matches request machines")),
         }
     }
 }
 
-fn ready_node(node_id: NodeId) -> WireGuardEbpfNodeReady {
-    let public_key = wireguard_public_key(format!("public-{}", node_id.as_str()));
-    WireGuardEbpfNodeReady {
-        node_id,
+fn ready_machine(machine_id: MachineId) -> WireGuardEbpfMachineReady {
+    let public_key = wireguard_public_key(format!("public-{}", machine_id.as_str()));
+    WireGuardEbpfMachineReady {
+        machine_id,
         ready: WireGuardEbpfReady {
             wireguard: WireGuardReady {
                 public_key,
@@ -342,11 +343,11 @@ impl RecordingHealth {
         Self::default()
     }
 
-    pub(super) fn unhealthy(node_id: &str, container_id: &str) -> Self {
+    pub(super) fn unhealthy(machine_id: &str, container_id: &str) -> Self {
         Self {
             checked: Vec::new(),
             failure: Some(DeployHealthCheckError::Unhealthy {
-                node_id: self::node_id(node_id),
+                machine_id: self::machine_id(machine_id),
                 container_id: self::container_id(container_id),
                 message: ployz_core::ops::FailureMessage::try_new("probe failed")
                     .expect("valid failure message"),
@@ -369,7 +370,7 @@ impl DeployHealthChecker for RecordingHealth {
                 .iter()
                 .map(|container| {
                     DeployContainerForAssert::from_container(
-                        container.node_id.clone(),
+                        container.machine_id.clone(),
                         container.container_id.clone(),
                         container.required_endpoint_port,
                     )
@@ -398,35 +399,35 @@ impl DeployHealthChecker for HangingHealth {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployContainerForAssert {
-    node_id: NodeId,
+    machine_id: MachineId,
     container_id: ContainerId,
     required_endpoint_port: Option<RoutePort>,
 }
 
 impl DeployContainerForAssert {
-    pub(super) fn new(node_id: &str, container_id: &str) -> Self {
+    pub(super) fn new(machine_id: &str, container_id: &str) -> Self {
         Self::from_container(
-            self::node_id(node_id),
+            self::machine_id(machine_id),
             self::container_id(container_id),
             None,
         )
     }
 
-    pub(super) fn routed(node_id: &str, container_id: &str) -> Self {
+    pub(super) fn routed(machine_id: &str, container_id: &str) -> Self {
         Self::from_container(
-            self::node_id(node_id),
+            self::machine_id(machine_id),
             self::container_id(container_id),
             Some(route_port(8080)),
         )
     }
 
     const fn from_container(
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         required_endpoint_port: Option<RoutePort>,
     ) -> Self {
         Self {
-            node_id,
+            machine_id,
             container_id,
             required_endpoint_port,
         }
@@ -514,17 +515,17 @@ impl RecordingRuntime {
     }
 }
 
-impl NodeContainerRuntime for RecordingRuntime {
+impl MachineContainerRuntime for RecordingRuntime {
     async fn ensure_endpoint_network(
         &mut self,
-        node_id: &NodeId,
-        request: NodeEnsureEndpointNetworkRpcRequest,
-    ) -> Result<(), NodeContainerRuntimeError> {
-        self.endpoint_networks.push((node_id.clone(), request));
+        machine_id: &MachineId,
+        request: MachineEnsureEndpointNetworkRpcRequest,
+    ) -> Result<(), MachineContainerRuntimeError> {
+        self.endpoint_networks.push((machine_id.clone(), request));
         if self.fail_endpoint_network {
-            return Err(NodeContainerRuntimeError::Unavailable {
-                node_id: node_id.clone(),
-                reason: NodeRuntimeUnavailableReason::RequestFailed {
+            return Err(MachineContainerRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason: MachineRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic endpoint network failure".to_owned(),
                 },
             });
@@ -534,31 +535,31 @@ impl NodeContainerRuntime for RecordingRuntime {
 
     async fn run_container(
         &mut self,
-        node_id: &NodeId,
-        request: NodeContainerRunRpcRequest,
-    ) -> Result<NodeRunContainerOutcome, NodeContainerRuntimeError> {
-        self.requests.push((node_id.clone(), request));
+        machine_id: &MachineId,
+        request: MachineContainerRunRpcRequest,
+    ) -> Result<MachineRunContainerOutcome, MachineContainerRuntimeError> {
+        self.requests.push((machine_id.clone(), request));
         if self.fail_after_first && self.requests.len() > 1 {
-            return Err(NodeContainerRuntimeError::Unavailable {
-                node_id: node_id.clone(),
-                reason: NodeRuntimeUnavailableReason::RequestFailed {
+            return Err(MachineContainerRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason: MachineRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic runtime failure".to_owned(),
                 },
             });
         }
 
         let Some(container_id) = self.containers.pop() else {
-            return Err(NodeContainerRuntimeError::Unavailable {
-                node_id: node_id.clone(),
-                reason: NodeRuntimeUnavailableReason::RequestFailed {
+            return Err(MachineContainerRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason: MachineRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic missing container id".to_owned(),
                 },
             });
         };
 
         if self.fail_start {
-            return Err(NodeContainerRuntimeError::CreatedContainerStartFailed {
-                node_id: node_id.clone(),
+            return Err(MachineContainerRuntimeError::CreatedContainerStartFailed {
+                machine_id: machine_id.clone(),
                 container_id,
                 message: runtime_failure_message("container start failed: exec format error"),
                 inspect_hint: inspect_hint("ctr_created"),
@@ -566,22 +567,22 @@ impl NodeContainerRuntime for RecordingRuntime {
         }
 
         if self.reuse_existing {
-            Ok(NodeRunContainerOutcome::ReusedRunning { container_id })
+            Ok(MachineRunContainerOutcome::ReusedRunning { container_id })
         } else {
-            Ok(NodeRunContainerOutcome::Created { container_id })
+            Ok(MachineRunContainerOutcome::Created { container_id })
         }
     }
 
     async fn remove_container(
         &mut self,
-        node_id: &NodeId,
-        request: NodeContainerRemoveRpcRequest,
-    ) -> Result<(), NodeContainerRuntimeError> {
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> Result<(), MachineContainerRuntimeError> {
         let container_id = request.container_id.clone();
-        self.removals.push((node_id.clone(), request));
+        self.removals.push((machine_id.clone(), request));
         if self.fail_remove {
-            return Err(NodeContainerRuntimeError::RemoveContainerFailed {
-                node_id: node_id.clone(),
+            return Err(MachineContainerRuntimeError::RemoveContainerFailed {
+                machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
                 message: runtime_failure_message("container remove failed: busy"),
                 inspect_hint: OperatorHint::try_new(format!(
@@ -597,14 +598,14 @@ impl NodeContainerRuntime for RecordingRuntime {
 
     async fn stop_container(
         &mut self,
-        node_id: &NodeId,
-        request: NodeContainerStopRpcRequest,
-    ) -> Result<(), NodeContainerRuntimeError> {
+        machine_id: &MachineId,
+        request: MachineContainerStopRpcRequest,
+    ) -> Result<(), MachineContainerRuntimeError> {
         let container_id = request.container_id.clone();
-        self.stops.push((node_id.clone(), request));
+        self.stops.push((machine_id.clone(), request));
         if self.fail_stop {
-            return Err(NodeContainerRuntimeError::StopContainerFailed {
-                node_id: node_id.clone(),
+            return Err(MachineContainerRuntimeError::StopContainerFailed {
+                machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
                 message: runtime_failure_message("container stop failed: permission denied"),
                 inspect_hint: OperatorHint::try_new(format!(
@@ -621,7 +622,7 @@ impl NodeContainerRuntime for RecordingRuntime {
 pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
     prepared_deploy_command(
         replicas,
-        vec![node_id("node_a"), node_id("node_b")],
+        vec![machine_id("machine_a"), machine_id("machine_b")],
         Vec::new(),
     )
 }
@@ -642,12 +643,12 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
         DeployExecutionFacts {
             active_service: None,
             active_route: None,
-            eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
-            dataplane_nodes: Vec::new(),
-            observed_nodes: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            dataplane_machines: Vec::new(),
+            observed_machines: Vec::new(),
             wireguard_peer_endpoints: wireguard_peer_endpoints(&[
-                node_id("node_a"),
-                node_id("node_b"),
+                machine_id("machine_a"),
+                machine_id("machine_b"),
             ]),
             step_timeout: Duration::from_secs(5),
         },
@@ -655,48 +656,56 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
     .expect("routed deploy command preparation succeeds")
 }
 
-pub(super) fn deploy_command_without_eligible_nodes(replicas: u16) -> DeployExecutionCommand {
+pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployExecutionCommand {
     prepared_deploy_command(replicas, Vec::new(), Vec::new())
 }
 
 pub(super) fn deploy_command_with_existing_container(
     replicas: u16,
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
 ) -> DeployExecutionCommand {
-    let snapshot = NodeContainerObservationSnapshot::try_new(
-        self::node_id(node_id),
-        [observed_service_container(node_id, container_id, "rev_2")],
+    let snapshot = MachineContainerObservationSnapshot::try_new(
+        self::machine_id(machine_id),
+        [observed_service_container(
+            machine_id,
+            container_id,
+            "rev_2",
+        )],
     )
-    .expect("valid node observation snapshot");
+    .expect("valid machine observation snapshot");
     prepared_deploy_command(
         replicas,
-        vec![self::node_id("node_a"), self::node_id("node_b")],
+        vec![self::machine_id("machine_a"), self::machine_id("machine_b")],
         vec![snapshot],
     )
 }
 
 pub(super) fn deploy_command_replacing_old_container(
     replicas: u16,
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
 ) -> DeployExecutionCommand {
-    let snapshot = NodeContainerObservationSnapshot::try_new(
-        self::node_id(node_id),
-        [observed_service_container(node_id, container_id, "rev_old")],
+    let snapshot = MachineContainerObservationSnapshot::try_new(
+        self::machine_id(machine_id),
+        [observed_service_container(
+            machine_id,
+            container_id,
+            "rev_old",
+        )],
     )
-    .expect("valid node observation snapshot");
+    .expect("valid machine observation snapshot");
     prepared_deploy_command(
         replicas,
-        vec![self::node_id("node_a"), self::node_id("node_b")],
+        vec![self::machine_id("machine_a"), self::machine_id("machine_b")],
         vec![snapshot],
     )
 }
 
 fn prepared_deploy_command(
     replicas: u16,
-    eligible_nodes: Vec<NodeId>,
-    observed_nodes: Vec<NodeContainerObservationSnapshot>,
+    eligible_machines: Vec<MachineId>,
+    observed_machines: Vec<MachineContainerObservationSnapshot>,
 ) -> DeployExecutionCommand {
     prepare_deploy_execution_command(
         operation_id("op_123"),
@@ -710,23 +719,23 @@ fn prepared_deploy_command(
         DeployExecutionFacts {
             active_service: None,
             active_route: None,
-            wireguard_peer_endpoints: wireguard_peer_endpoints(&eligible_nodes),
-            dataplane_nodes: Vec::new(),
-            eligible_nodes,
-            observed_nodes,
+            wireguard_peer_endpoints: wireguard_peer_endpoints(&eligible_machines),
+            dataplane_machines: Vec::new(),
+            eligible_machines,
+            observed_machines,
             step_timeout: Duration::from_secs(5),
         },
     )
     .expect("deploy command preparation succeeds")
 }
 
-fn wireguard_peer_endpoints(nodes: &[NodeId]) -> Vec<WireGuardPeerEndpoint> {
-    nodes
+fn wireguard_peer_endpoints(machines: &[MachineId]) -> Vec<WireGuardPeerEndpoint> {
+    machines
         .iter()
         .enumerate()
-        .map(|(index, node_id)| {
+        .map(|(index, machine_id)| {
             WireGuardPeerEndpoint::new(
-                node_id.clone(),
+                machine_id.clone(),
                 SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::new(203, 0, 113, (index + 1) as u8)),
                     ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
@@ -741,12 +750,12 @@ fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
 }
 
 fn observed_service_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
@@ -776,9 +785,9 @@ pub(super) fn route_port(port: u16) -> RoutePort {
     RoutePort::try_new(port).expect("valid route port")
 }
 
-pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedArtifact {
+pub(super) fn retained_container(machine_id: &str, container_id: &str) -> RetainedArtifact {
     RetainedArtifact::StartedContainer {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         log_hint: OperatorHint::try_new(format!("ployz logs {container_id}"))
             .expect("valid log hint"),
@@ -786,12 +795,12 @@ pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedA
 }
 
 pub(super) fn cleanup_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
 ) -> DeployCleanupContainer {
     DeployCleanupContainer {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
@@ -802,20 +811,20 @@ pub(super) fn cleanup_container(
     }
 }
 
-pub(super) fn retained_created_container(node_id: &str, container_id: &str) -> RetainedArtifact {
+pub(super) fn retained_created_container(machine_id: &str, container_id: &str) -> RetainedArtifact {
     RetainedArtifact::CreatedContainer {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         inspect_hint: inspect_hint(container_id),
     }
 }
 
 pub(super) fn retained_stop_failed_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
 ) -> RetainedArtifact {
     RetainedArtifact::ContainerStopFailed {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         message: runtime_failure_message("container stop failed: permission denied"),
         inspect_hint: inspect_hint(container_id),

@@ -1,10 +1,10 @@
-//! Node-facing domain models.
+//! Machine-facing domain models.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::IpAddr;
 
-use crate::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use crate::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
 use crate::ops::RoutePort;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ pub struct ContainerEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerObservation {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
@@ -121,40 +121,40 @@ impl ManagedContainerObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
-    try_from = "NodeContainerObservationSnapshotWire",
-    into = "NodeContainerObservationSnapshotWire"
+    try_from = "MachineContainerObservationSnapshotWire",
+    into = "MachineContainerObservationSnapshotWire"
 )]
-pub struct NodeContainerObservationSnapshot {
-    node_id: NodeId,
+pub struct MachineContainerObservationSnapshot {
+    machine_id: MachineId,
     containers: Vec<ManagedContainerObservation>,
 }
 
-impl NodeContainerObservationSnapshot {
+impl MachineContainerObservationSnapshot {
     pub fn try_new(
-        node_id: NodeId,
+        machine_id: MachineId,
         containers: impl IntoIterator<Item = ManagedContainerObservation>,
-    ) -> Result<Self, NodeContainerObservationSnapshotError> {
+    ) -> Result<Self, MachineContainerObservationSnapshotError> {
         let containers: Vec<_> = containers.into_iter().collect();
         if let Some(container) = containers
             .iter()
-            .find(|container| container.node_id != node_id)
+            .find(|container| container.machine_id != machine_id)
         {
-            return Err(NodeContainerObservationSnapshotError::NodeMismatch {
-                expected: node_id,
-                actual: container.node_id.clone(),
+            return Err(MachineContainerObservationSnapshotError::MachineMismatch {
+                expected: machine_id,
+                actual: container.machine_id.clone(),
                 container_id: container.container_id.clone(),
             });
         }
 
         Ok(Self {
-            node_id,
+            machine_id,
             containers,
         })
     }
 
     #[must_use]
-    pub fn node_id(&self) -> &NodeId {
-        &self.node_id
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
     }
 
     #[must_use]
@@ -165,11 +165,11 @@ impl NodeContainerObservationSnapshot {
     pub fn with_container_replaced(
         &self,
         observation: ManagedContainerObservation,
-    ) -> Result<Self, NodeContainerObservationSnapshotError> {
-        if observation.node_id != self.node_id {
-            return Err(NodeContainerObservationSnapshotError::NodeMismatch {
-                expected: self.node_id.clone(),
-                actual: observation.node_id,
+    ) -> Result<Self, MachineContainerObservationSnapshotError> {
+        if observation.machine_id != self.machine_id {
+            return Err(MachineContainerObservationSnapshotError::MachineMismatch {
+                expected: self.machine_id.clone(),
+                actual: observation.machine_id,
                 container_id: observation.container_id,
             });
         }
@@ -178,7 +178,7 @@ impl NodeContainerObservationSnapshot {
         containers.retain(|container| container.container_id != observation.container_id);
         containers.push(observation);
 
-        Self::try_new(self.node_id.clone(), containers)
+        Self::try_new(self.machine_id.clone(), containers)
     }
 
     #[must_use]
@@ -190,24 +190,24 @@ impl NodeContainerObservationSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeContainerObservationSnapshotError {
-    NodeMismatch {
-        expected: NodeId,
-        actual: NodeId,
+pub enum MachineContainerObservationSnapshotError {
+    MachineMismatch {
+        expected: MachineId,
+        actual: MachineId,
         container_id: ContainerId,
     },
 }
 
-impl fmt::Display for NodeContainerObservationSnapshotError {
+impl fmt::Display for MachineContainerObservationSnapshotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NodeMismatch {
+            Self::MachineMismatch {
                 expected,
                 actual,
                 container_id,
             } => write!(
                 formatter,
-                "container {} belongs to node {}, not snapshot node {}",
+                "container {} belongs to machine {}, not snapshot machine {}",
                 container_id.as_str(),
                 actual.as_str(),
                 expected.as_str()
@@ -218,23 +218,23 @@ impl fmt::Display for NodeContainerObservationSnapshotError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NodeContainerObservationSnapshotWire {
-    node_id: NodeId,
+struct MachineContainerObservationSnapshotWire {
+    machine_id: MachineId,
     containers: Vec<ManagedContainerObservation>,
 }
 
-impl TryFrom<NodeContainerObservationSnapshotWire> for NodeContainerObservationSnapshot {
-    type Error = NodeContainerObservationSnapshotError;
+impl TryFrom<MachineContainerObservationSnapshotWire> for MachineContainerObservationSnapshot {
+    type Error = MachineContainerObservationSnapshotError;
 
-    fn try_from(value: NodeContainerObservationSnapshotWire) -> Result<Self, Self::Error> {
-        Self::try_new(value.node_id, value.containers)
+    fn try_from(value: MachineContainerObservationSnapshotWire) -> Result<Self, Self::Error> {
+        Self::try_new(value.machine_id, value.containers)
     }
 }
 
-impl From<NodeContainerObservationSnapshot> for NodeContainerObservationSnapshotWire {
-    fn from(value: NodeContainerObservationSnapshot) -> Self {
+impl From<MachineContainerObservationSnapshot> for MachineContainerObservationSnapshotWire {
+    fn from(value: MachineContainerObservationSnapshot) -> Self {
         Self {
-            node_id: value.node_id,
+            machine_id: value.machine_id,
             containers: value.containers,
         }
     }

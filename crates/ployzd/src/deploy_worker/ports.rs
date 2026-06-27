@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport, WireGuardEbpfPrepareRequest,
 };
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{DeployEvidence, DeployTransition};
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveServiceCommit, ActiveServiceCommitRequest,
@@ -9,14 +9,15 @@ use ployz_core::state::{
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use std::future::Future;
 
-use crate::node::protocol::{
-    NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerStopRpcRequest,
-    NodeEnsureEndpointNetworkRpcRequest, NodeRunContainerOutcome,
+use crate::machine_runtime::protocol::{
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineRunContainerOutcome,
 };
 
 use super::{
     ActiveServiceCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    NodeContainerRuntimeError,
+    MachineContainerRuntimeError,
 };
 
 pub trait DeployOperationRecorder {
@@ -33,30 +34,30 @@ pub trait DeployOperationRecorder {
     ) -> impl Future<Output = Result<(), DeployOperationRecordError>> + Send;
 }
 
-pub trait NodeContainerRuntime {
+pub trait MachineContainerRuntime {
     fn ensure_endpoint_network(
         &mut self,
-        node_id: &NodeId,
-        request: NodeEnsureEndpointNetworkRpcRequest,
-    ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
+        machine_id: &MachineId,
+        request: MachineEnsureEndpointNetworkRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
 
     fn run_container(
         &mut self,
-        node_id: &NodeId,
-        request: NodeContainerRunRpcRequest,
-    ) -> impl Future<Output = Result<NodeRunContainerOutcome, NodeContainerRuntimeError>> + Send;
+        machine_id: &MachineId,
+        request: MachineContainerRunRpcRequest,
+    ) -> impl Future<Output = Result<MachineRunContainerOutcome, MachineContainerRuntimeError>> + Send;
 
     fn remove_container(
         &mut self,
-        node_id: &NodeId,
-        request: NodeContainerRemoveRpcRequest,
-    ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
 
     fn stop_container(
         &mut self,
-        node_id: &NodeId,
-        request: NodeContainerStopRpcRequest,
-    ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
+        machine_id: &MachineId,
+        request: MachineContainerStopRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
 }
 
 pub trait WireGuardEbpfPreparer {

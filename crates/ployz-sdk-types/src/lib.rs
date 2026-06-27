@@ -27,7 +27,7 @@ pub use ployz_core::cert::{
 };
 pub use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
+    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
     WireGuardReady, WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
@@ -35,13 +35,13 @@ pub use ployz_core::deploy::{
     ImageReferenceError, ReplicaCount, ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
-    CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
+    CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
 };
 pub use ployz_core::install::{
-    AbsoluteInstallPath, FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSource,
-    InstallArtifactSpec, InstallArtifactVersion, InstallContractError, InstallSha256Digest,
-    MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
+    InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallContractError,
+    InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinTrustedNats, NatsServerInstallSpec,
 };
 pub use ployz_core::machine::{
@@ -50,8 +50,8 @@ pub use ployz_core::machine::{
     MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
     MachineReadinessEvidence,
 };
+pub use ployz_core::machine_runtime::ManagedContainerKind;
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
-pub use ployz_core::node::ManagedContainerKind;
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,
     BackupOperationState, BackupRunningStage, CancellationReason, EventSequence,
@@ -69,7 +69,7 @@ pub use ployz_core::ops::{
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
-    GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+    GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -95,28 +95,28 @@ pub type BackupCreateResponse = OperationApiResponse<AcceptedOperation, BackupCr
 pub struct MachineAddRequest {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
 }
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
-pub type InitFirstNodeActivateResponse =
-    OperationApiResponse<InitFirstNodeActivated, InitFirstNodeActivateError>;
+pub type InitFirstMachineActivateResponse =
+    OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct InitFirstNodeActivateRequest {
-    pub node_id: NodeId,
+pub struct InitFirstMachineActivateRequest {
+    pub machine_id: MachineId,
     pub roles: InstallRolePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct InitFirstNodeActivated {
+pub struct InitFirstMachineActivated {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
 }
 
 pub type MachineListResponse = OperationApiResponse<MachineListResult, MachineListError>;
@@ -139,7 +139,7 @@ pub type MachineJoinReportResponse =
 #[serde(deny_unknown_fields)]
 pub struct MachineAddAccepted {
     pub accepted: AcceptedOperation,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_bundle: MachineJoinBundle,
     pub join_token: MachineJoinToken,
@@ -152,7 +152,7 @@ pub struct MachineListRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MachineInspectRequest {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -176,7 +176,7 @@ pub struct ServiceInspectRequest {
 pub struct LogsTailRequest {
     pub container_id: ContainerId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<NodeId>,
+    pub machine_id: Option<MachineId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_lines: Option<LogsTailLines>,
 }
@@ -184,7 +184,7 @@ pub struct LogsTailRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct LogsTailResult {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub text: String,
     pub truncated: bool,
@@ -256,7 +256,7 @@ pub struct ServiceSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub active: ActiveMachineState,
-    pub public_ip: Option<NodePublicIpObservation>,
+    pub public_ip: Option<MachinePublicIpObservation>,
     pub gateway: Option<GatewayStatusObservation>,
     pub observed_container_count: usize,
 }
@@ -273,7 +273,7 @@ pub enum MachineListError {
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineInspectError {
     NoSuchMachine {
-        node_id: NodeId,
+        machine_id: MachineId,
     },
     Unavailable {
         source: MachineQueryUnavailableSource,
@@ -307,17 +307,17 @@ pub enum LogsTailError {
     },
     AmbiguousContainer {
         container_id: ContainerId,
-        node_ids: Vec<NodeId>,
+        machine_ids: Vec<MachineId>,
     },
     ReadFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
     },
     Unavailable {
         source: LogsTailUnavailableSource,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        node_id: Option<NodeId>,
+        machine_id: Option<MachineId>,
     },
 }
 
@@ -325,7 +325,7 @@ pub enum LogsTailError {
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LogsTailUnavailableSource {
     Observations,
-    NodeRpc,
+    MachineRpc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -371,7 +371,7 @@ pub enum MachineJoinReportFailure {
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinReported {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub last_event_sequence: EventSequence,
     pub outcome: MachineJoinReportOutcome,
 }
@@ -380,7 +380,7 @@ pub struct MachineJoinReported {
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinRedeemed {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
@@ -423,7 +423,7 @@ pub enum MachineJoinRedeemError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum InitFirstNodeActivateError {
+pub enum InitFirstMachineActivateError {
     InvalidPlan,
     Unavailable {
         source: MachineQueryUnavailableSource,
@@ -437,9 +437,9 @@ pub enum InitFirstNodeActivateError {
     JoinReport {
         failure: MachineJoinReportError,
     },
-    /// Control could not write the first node's `node.seed` after the
+    /// Control could not write the first machine's `machine.seed` after the
     /// minted material was redeemed.
-    NodeSeedWrite {
+    MachineSeedWrite {
         message: FailureMessage,
     },
 }
@@ -758,9 +758,15 @@ pub struct CloudBootstrapTokenRedeemRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudBootstrapDecision {
-    Pending { retry_after_seconds: u16 },
-    Ready { envelope: CloudBootstrapEnvelope },
-    Rejected { rejection: CloudBootstrapRejection },
+    Pending {
+        retry_after_seconds: u16,
+    },
+    Ready {
+        envelope: Box<CloudBootstrapEnvelope>,
+    },
+    Rejected {
+        rejection: CloudBootstrapRejection,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -798,15 +804,15 @@ pub struct CloudBootstrapReleaseSelection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "intent", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudBootstrapIntent {
-    Founder { founder: CloudFounderBootstrap },
-    Joiner { joiner: CloudJoinerBootstrap },
+    Founder { founder: Box<CloudFounderBootstrap> },
+    Joiner { joiner: Box<CloudJoinerBootstrap> },
     WaitForFounder { retry_after_seconds: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudFounderBootstrap {
-    pub install: FirstNodeInstallSpec,
+    pub install: FirstMachineInstallSpec,
     pub cloud_nats_user_public_key: NatsUserPublicKey,
 }
 
@@ -837,7 +843,7 @@ pub enum CloudBootstrapOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudFounderBootstrapResult {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub trusted_nats: MachineJoinTrustedNats,
 }
@@ -846,7 +852,7 @@ pub struct CloudFounderBootstrapResult {
 #[serde(deny_unknown_fields)]
 pub struct CloudJoinerBootstrapResult {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub last_event_sequence: EventSequence,
     pub result: MachineJoinRedeemResult,

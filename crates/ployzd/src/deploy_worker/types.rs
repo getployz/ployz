@@ -2,7 +2,7 @@ use ployz_core::dataplane::{WireGuardEbpfPrepareRequest, WireGuardPeerEndpoint};
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, ExistingServiceReplica,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, StepId};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, StepId};
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RoutePort,
 };
@@ -19,10 +19,10 @@ pub struct DeployExecutionCommand {
     pub(super) request: DeployRequest,
     pub(super) expected_active: ExpectedActiveService,
     pub(super) route_commit: Option<ActiveRouteCommitRequest>,
-    pub(super) eligible_nodes: Vec<NodeId>,
+    pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
-    pub(super) dataplane_nodes: Vec<NodeId>,
+    pub(super) dataplane_machines: Vec<MachineId>,
     pub(super) wireguard_peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub(super) step_timeout: Duration,
 }
@@ -54,13 +54,13 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn eligible_nodes(&self) -> &[NodeId] {
-        &self.eligible_nodes
+    pub fn eligible_machines(&self) -> &[MachineId] {
+        &self.eligible_machines
     }
 
     #[must_use]
-    pub fn dataplane_nodes(&self) -> &[NodeId] {
-        &self.dataplane_nodes
+    pub fn dataplane_machines(&self) -> &[MachineId] {
+        &self.dataplane_machines
     }
 
     #[must_use]
@@ -97,7 +97,7 @@ impl DeployExecutionCommand {
         WireGuardEbpfPrepareRequest::for_deploy_plan(
             self.operation_id.clone(),
             plan,
-            &self.dataplane_nodes,
+            &self.dataplane_machines,
             &self.wireguard_peer_endpoints,
         )
     }
@@ -155,7 +155,7 @@ pub enum DeployTerminalEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployContainer {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub step_id: StepId,
     pub required_endpoint_port: Option<RoutePort>,
@@ -164,7 +164,7 @@ pub struct DeployContainer {
 impl DeployContainer {
     pub(super) fn retained_artifact(&self) -> RetainedArtifact {
         RetainedArtifact::StartedContainer {
-            node_id: self.node_id.clone(),
+            machine_id: self.machine_id.clone(),
             container_id: self.container_id.clone(),
             log_hint: OperatorHint::try_new(format!("ployz logs {}", self.container_id.as_str()))
                 .expect("generated log hint is non-empty"),
@@ -175,7 +175,7 @@ impl DeployContainer {
 pub struct DeployExecutionPorts<'a, R, D, N, H, C, A> {
     pub recorder: &'a mut R,
     pub wireguard_ebpf: &'a mut D,
-    pub node_runtime: &'a mut N,
+    pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
     pub route_state: &'a mut C,
     pub active_state: &'a mut A,

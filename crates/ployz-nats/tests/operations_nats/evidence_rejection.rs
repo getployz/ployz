@@ -17,7 +17,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         .record_deploy_evidence(
             &operation_id("op_missing"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -36,7 +36,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -91,7 +91,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -123,7 +123,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -474,10 +474,10 @@ async fn assert_fresh_terminal_evidence_rejected(
 fn fresh_terminal_evidence() -> Vec<DeployEvidence> {
     vec![
         DeployEvidence::PlanCreated {
-            plan: deploy_plan_on("node_terminal"),
+            plan: deploy_plan_on("machine_terminal"),
         },
         DeployEvidence::ContainerStarted {
-            node_id: node_id("node_terminal"),
+            machine_id: machine_id("machine_terminal"),
             container_id: container_id("ctr_terminal"),
         },
         DeployEvidence::HealthCheckStarted,
@@ -500,7 +500,7 @@ async fn assert_durable_terminal_evidence_rejected(
     event_log
         .append(OperationEventAppend::deploy_container_started(
             &operation_id(operation),
-            &node_id("node_terminal"),
+            &machine_id("machine_terminal"),
             &container_id("ctr_terminal"),
         ))
         .await
@@ -510,7 +510,7 @@ async fn assert_durable_terminal_evidence_rejected(
         .record_deploy_evidence(
             &operation_id(operation),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_terminal"),
+                machine_id: machine_id("machine_terminal"),
                 container_id: container_id("ctr_terminal"),
             },
         )

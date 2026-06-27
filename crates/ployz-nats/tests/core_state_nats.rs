@@ -10,7 +10,7 @@ use ployz_core::state::{
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_test_support::ids::{
-    machine_name, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, machine_name, operation_id, revision_id, route_hostname, route_port, service_id,
 };
 
 #[tokio::test]
@@ -50,7 +50,7 @@ async fn active_machine_state_round_trips_through_kv_core() {
     let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let machine = active_machine_state("node_7", "edge_7", "op_machine");
+    let machine = active_machine_state("machine_7", "edge_7", "op_machine");
 
     store
         .replace_active_machine(&machine)
@@ -59,7 +59,7 @@ async fn active_machine_state_round_trips_through_kv_core() {
 
     assert_eq!(
         store
-            .active_machine(&node_id("node_7"))
+            .active_machine(&machine_id("machine_7"))
             .await
             .expect("active machine loads"),
         Some(machine)
@@ -67,26 +67,26 @@ async fn active_machine_state_round_trips_through_kv_core() {
 }
 
 #[tokio::test]
-async fn active_machines_list_sorted_by_node_id() {
+async fn active_machines_list_sorted_by_machine_id() {
     let nats = test_nats().await;
     let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let node_8 = active_machine_state("node_8", "edge_8", "op_8");
-    let node_7 = active_machine_state("node_7", "edge_7", "op_7");
+    let machine_8 = active_machine_state("machine_8", "edge_8", "op_8");
+    let machine_7 = active_machine_state("machine_7", "edge_7", "op_7");
 
     store
-        .replace_active_machine(&node_8)
+        .replace_active_machine(&machine_8)
         .await
-        .expect("node 8 stores");
+        .expect("machine 8 stores");
     store
-        .replace_active_machine(&node_7)
+        .replace_active_machine(&machine_7)
         .await
-        .expect("node 7 stores");
+        .expect("machine 7 stores");
 
     assert_eq!(
         store.active_machines().await.expect("machines list"),
-        vec![node_7, node_8]
+        vec![machine_7, machine_8]
     );
 }
 
@@ -716,8 +716,8 @@ fn active_route_state_key_matches_kv_core_path() {
 #[test]
 fn active_machine_state_key_matches_kv_core_path() {
     assert_eq!(
-        ActiveMachineStateKey::from_node_id(&node_id("node_7")).as_str(),
-        "machines.node_7"
+        ActiveMachineStateKey::from_machine_id(&machine_id("machine_7")).as_str(),
+        "machines.machine_7"
     );
 }
 
@@ -752,9 +752,9 @@ fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> Ac
     }
 }
 
-fn active_machine_state(node: &str, name: &str, operation: &str) -> ActiveMachineState {
+fn active_machine_state(machine: &str, name: &str, operation: &str) -> ActiveMachineState {
     ActiveMachineState {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         name: machine_name(name),
         activated_by: operation_id(operation),
     }

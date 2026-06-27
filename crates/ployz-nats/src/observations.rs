@@ -5,12 +5,14 @@ use crate::kv::{
     with_io_timeout,
 };
 use async_nats::jetstream;
-use ployz_core::ids::{ContainerId, NodeId};
-use ployz_core::node::{ManagedContainerObservation, NodeContainerObservationSnapshot};
+use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::machine_runtime::{
+    MachineContainerObservationSnapshot, ManagedContainerObservation,
+};
 use ployz_core::state::{
     GATEWAY_STATUS_OBSERVATION_PREFIX, GatewayStatusObservation, GatewayStatusObservationKey,
-    NODE_CONTAINER_OBSERVATION_PREFIX, NODE_PUBLIC_IP_OBSERVATION_PREFIX,
-    NodeContainerObservationKey, NodePublicIpObservation, NodePublicIpObservationKey,
+    MACHINE_CONTAINER_OBSERVATION_PREFIX, MACHINE_PUBLIC_IP_OBSERVATION_PREFIX,
+    MachineContainerObservationKey, MachinePublicIpObservation, MachinePublicIpObservationKey,
 };
 use std::fmt;
 
@@ -43,14 +45,14 @@ impl AsyncNatsObservationStore {
         Self { bucket }
     }
 
-    pub async fn replace_node_containers(
+    pub async fn replace_machine_containers(
         &self,
-        snapshot: &NodeContainerObservationSnapshot,
+        snapshot: &MachineContainerObservationSnapshot,
     ) -> Result<(), ObservationStoreError> {
-        let key = NodeContainerObservationKey::from_node_id(snapshot.node_id());
+        let key = MachineContainerObservationKey::from_machine_id(snapshot.machine_id());
         let payload = serde_json::to_vec(snapshot).map_err(ObservationStoreError::Encode)?;
         with_io_timeout(
-            "node observation snapshot put",
+            "machine observation snapshot put",
             self.bucket.put(key.as_str(), payload.into()),
         )
         .await?
@@ -62,24 +64,24 @@ impl AsyncNatsObservationStore {
         Ok(())
     }
 
-    pub async fn replace_node_public_ip(
+    pub async fn replace_machine_public_ip(
         &self,
-        observation: &NodePublicIpObservation,
+        observation: &MachinePublicIpObservation,
     ) -> Result<(), ObservationStoreError> {
-        let key = NodePublicIpObservationKey::from_node_id(&observation.node_id);
+        let key = MachinePublicIpObservationKey::from_machine_id(&observation.machine_id);
         put_observation(&self.bucket, key.as_str(), observation).await
     }
 
-    pub async fn clear_node_public_ip(
+    pub async fn clear_machine_public_ip(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
     ) -> Result<(), ObservationStoreError> {
-        if self.node_public_ip(node_id).await?.is_none() {
+        if self.machine_public_ip(machine_id).await?.is_none() {
             return Ok(());
         }
 
-        let key = NodePublicIpObservationKey::from_node_id(node_id);
-        with_io_timeout("node public ip delete", self.bucket.delete(key.as_str()))
+        let key = MachinePublicIpObservationKey::from_machine_id(machine_id);
+        with_io_timeout("machine public ip delete", self.bucket.delete(key.as_str()))
             .await?
             .map_err(|error| ObservationStoreError::Delete {
                 key: key.as_str().to_owned(),
@@ -89,35 +91,35 @@ impl AsyncNatsObservationStore {
         Ok(())
     }
 
-    pub async fn node_public_ip(
+    pub async fn machine_public_ip(
         &self,
-        node_id: &NodeId,
-    ) -> Result<Option<NodePublicIpObservation>, ObservationStoreError> {
-        let key = NodePublicIpObservationKey::from_node_id(node_id);
+        machine_id: &MachineId,
+    ) -> Result<Option<MachinePublicIpObservation>, ObservationStoreError> {
+        let key = MachinePublicIpObservationKey::from_machine_id(machine_id);
         let Some(observation) =
-            get_observation::<NodePublicIpObservation>(&self.bucket, key.as_str()).await?
+            get_observation::<MachinePublicIpObservation>(&self.bucket, key.as_str()).await?
         else {
             return Ok(None);
         };
         verify_observation_key(
             key.as_str(),
-            NodePublicIpObservationKey::from_node_id(&observation.node_id).as_str(),
+            MachinePublicIpObservationKey::from_machine_id(&observation.machine_id).as_str(),
         )?;
         Ok(Some(observation))
     }
 
-    pub async fn node_public_ips(
+    pub async fn machine_public_ips(
         &self,
-    ) -> Result<Vec<NodePublicIpObservation>, ObservationStoreError> {
+    ) -> Result<Vec<MachinePublicIpObservation>, ObservationStoreError> {
         list_current(
             &self.bucket,
-            &format!("{NODE_PUBLIC_IP_OBSERVATION_PREFIX}."),
-            |observation: &NodePublicIpObservation| {
-                NodePublicIpObservationKey::from_node_id(&observation.node_id)
+            &format!("{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}."),
+            |observation: &MachinePublicIpObservation| {
+                MachinePublicIpObservationKey::from_machine_id(&observation.machine_id)
                     .as_str()
                     .to_owned()
             },
-            |observation| observation.node_id.clone(),
+            |observation| observation.machine_id.clone(),
         )
         .await
         .map_err(ObservationStoreError::from)
@@ -127,15 +129,15 @@ impl AsyncNatsObservationStore {
         &self,
         observation: &GatewayStatusObservation,
     ) -> Result<(), ObservationStoreError> {
-        let key = GatewayStatusObservationKey::from_node_id(&observation.node_id);
+        let key = GatewayStatusObservationKey::from_machine_id(&observation.machine_id);
         put_observation(&self.bucket, key.as_str(), observation).await
     }
 
     pub async fn gateway_status(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
     ) -> Result<Option<GatewayStatusObservation>, ObservationStoreError> {
-        let key = GatewayStatusObservationKey::from_node_id(node_id);
+        let key = GatewayStatusObservationKey::from_machine_id(machine_id);
         let Some(observation) =
             get_observation::<GatewayStatusObservation>(&self.bucket, key.as_str()).await?
         else {
@@ -143,7 +145,7 @@ impl AsyncNatsObservationStore {
         };
         verify_observation_key(
             key.as_str(),
-            GatewayStatusObservationKey::from_node_id(&observation.node_id).as_str(),
+            GatewayStatusObservationKey::from_machine_id(&observation.machine_id).as_str(),
         )?;
         Ok(Some(observation))
     }
@@ -155,11 +157,11 @@ impl AsyncNatsObservationStore {
             &self.bucket,
             &format!("{GATEWAY_STATUS_OBSERVATION_PREFIX}."),
             |observation: &GatewayStatusObservation| {
-                GatewayStatusObservationKey::from_node_id(&observation.node_id)
+                GatewayStatusObservationKey::from_machine_id(&observation.machine_id)
                     .as_str()
                     .to_owned()
             },
-            |observation| observation.node_id.clone(),
+            |observation| observation.machine_id.clone(),
         )
         .await
         .map_err(ObservationStoreError::from)
@@ -167,23 +169,23 @@ impl AsyncNatsObservationStore {
 
     pub async fn container(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<Option<ManagedContainerObservation>, ObservationStoreError> {
-        let Some(snapshot) = self.node_snapshot(node_id).await? else {
+        let Some(snapshot) = self.machine_snapshot(machine_id).await? else {
             return Ok(None);
         };
 
         Ok(snapshot.container(container_id).cloned())
     }
 
-    pub async fn node_snapshot(
+    pub async fn machine_snapshot(
         &self,
-        node_id: &NodeId,
-    ) -> Result<Option<NodeContainerObservationSnapshot>, ObservationStoreError> {
-        let key = NodeContainerObservationKey::from_node_id(node_id);
+        machine_id: &MachineId,
+    ) -> Result<Option<MachineContainerObservationSnapshot>, ObservationStoreError> {
+        let key = MachineContainerObservationKey::from_machine_id(machine_id);
         let Some(payload) = with_io_timeout(
-            "node observation snapshot get",
+            "machine observation snapshot get",
             self.bucket.get(key.as_str()),
         )
         .await?
@@ -200,23 +202,23 @@ impl AsyncNatsObservationStore {
             .map_err(ObservationStoreError::Decode)
     }
 
-    pub async fn node_snapshots(
+    pub async fn machine_snapshots(
         &self,
-    ) -> Result<Vec<NodeContainerObservationSnapshot>, ObservationStoreError> {
+    ) -> Result<Vec<MachineContainerObservationSnapshot>, ObservationStoreError> {
         Ok(self
-            .node_snapshot_records()
+            .machine_snapshot_records()
             .await?
             .into_iter()
             .map(|record| record.snapshot)
             .collect())
     }
 
-    pub async fn node_snapshot_records(
+    pub async fn machine_snapshot_records(
         &self,
-    ) -> Result<Vec<NodeContainerObservationRecord>, ObservationStoreError> {
+    ) -> Result<Vec<MachineContainerObservationRecord>, ObservationStoreError> {
         let entries = bounded_bucket_key_scan_entries_with_prefix(
             &self.bucket,
-            &format!("{NODE_CONTAINER_OBSERVATION_PREFIX}."),
+            &format!("{MACHINE_CONTAINER_OBSERVATION_PREFIX}."),
         )
         .await
         .map_err(|error| ObservationStoreError::ListKeys {
@@ -225,16 +227,16 @@ impl AsyncNatsObservationStore {
         let mut records = Vec::new();
 
         for entry in entries {
-            let snapshot: NodeContainerObservationSnapshot =
+            let snapshot: MachineContainerObservationSnapshot =
                 serde_json::from_slice(&entry.value).map_err(ObservationStoreError::Decode)?;
-            let actual_key = NodeContainerObservationKey::from_node_id(snapshot.node_id());
+            let actual_key = MachineContainerObservationKey::from_machine_id(snapshot.machine_id());
             if entry.key != actual_key.as_str() {
                 return Err(ObservationStoreError::CorruptKey {
                     key: entry.key,
                     actual_key: actual_key.as_str().to_owned(),
                 });
             }
-            records.push(NodeContainerObservationRecord {
+            records.push(MachineContainerObservationRecord {
                 snapshot,
                 observed_at_unix_nanos: entry.created.unix_timestamp_nanos(),
                 revision: entry.revision,
@@ -243,20 +245,20 @@ impl AsyncNatsObservationStore {
 
         records.sort_by(|left, right| {
             left.snapshot
-                .node_id()
-                .cmp(right.snapshot.node_id())
+                .machine_id()
+                .cmp(right.snapshot.machine_id())
                 .then_with(|| left.revision.cmp(&right.revision))
         });
         Ok(records)
     }
 
-    pub async fn watch_node_container_snapshot_changes(
+    pub async fn watch_machine_container_snapshot_changes(
         &self,
     ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
         with_io_timeout(
-            "node observation snapshot watch",
+            "machine observation snapshot watch",
             self.bucket
-                .watch_with_history(format!("{NODE_CONTAINER_OBSERVATION_PREFIX}.>")),
+                .watch_with_history(format!("{MACHINE_CONTAINER_OBSERVATION_PREFIX}.>")),
         )
         .await?
         .map_err(|error| ObservationStoreError::Watch {
@@ -264,13 +266,14 @@ impl AsyncNatsObservationStore {
         })
     }
 
-    pub async fn watch_node_public_ip_changes(
+    pub async fn watch_machine_public_ip_changes(
         &self,
     ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
         with_io_timeout(
-            "node public ip watch",
-            self.bucket
-                .watch_with_history(format!("{NODE_PUBLIC_IP_OBSERVATION_PREFIX}.*.public_ip")),
+            "machine public ip watch",
+            self.bucket.watch_with_history(format!(
+                "{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}.*.public_ip"
+            )),
         )
         .await?
         .map_err(|error| ObservationStoreError::Watch {
@@ -294,8 +297,8 @@ impl AsyncNatsObservationStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeContainerObservationRecord {
-    pub snapshot: NodeContainerObservationSnapshot,
+pub struct MachineContainerObservationRecord {
+    pub snapshot: MachineContainerObservationSnapshot,
     pub observed_at_unix_nanos: i128,
     pub revision: u64,
 }
@@ -344,9 +347,11 @@ impl fmt::Display for ObservationStoreError {
             Self::Encode(error) => write!(formatter, "encode observation snapshot: {error}"),
             Self::Decode(error) => write!(formatter, "decode observation snapshot: {error}"),
             Self::ListKeys { message } => {
-                write!(formatter, "list node observation keys: {message}")
+                write!(formatter, "list machine observation keys: {message}")
             }
-            Self::Watch { message } => write!(formatter, "watch node observation keys: {message}"),
+            Self::Watch { message } => {
+                write!(formatter, "watch machine observation keys: {message}")
+            }
             Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
             Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),

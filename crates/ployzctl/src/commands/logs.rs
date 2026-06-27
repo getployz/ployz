@@ -1,7 +1,7 @@
 //! Log evidence commands.
 
 use clap::Args;
-use ployz_core::ids::{ContainerId, NodeId};
+use ployz_core::ids::{ContainerId, MachineId};
 use ployz_sdk_types::{LogsTailLines, LogsTailRequest, LogsTailResult};
 
 use crate::commands::{PloyzctlCliError, invalid_value};
@@ -9,7 +9,7 @@ use crate::commands::{PloyzctlCliError, invalid_value};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogsTailCommand {
     container_id: ContainerId,
-    node_id: Option<NodeId>,
+    machine_id: Option<MachineId>,
     tail_lines: Option<LogsTailLines>,
 }
 
@@ -18,7 +18,7 @@ impl LogsTailCommand {
     pub fn into_request(self) -> LogsTailRequest {
         LogsTailRequest {
             container_id: self.container_id,
-            node_id: self.node_id,
+            machine_id: self.machine_id,
             tail_lines: self.tail_lines,
         }
     }
@@ -45,11 +45,11 @@ pub(crate) fn logs_tail_command(parsed: LogsTailCli) -> Result<LogsTailCommand, 
     Ok(LogsTailCommand {
         container_id: ContainerId::try_new(parsed.container_id)
             .map_err(|error| invalid_value("<container_id>", error))?,
-        node_id: parsed
-            .node
-            .map(NodeId::try_new)
+        machine_id: parsed
+            .machine
+            .map(MachineId::try_new)
             .transpose()
-            .map_err(|error| invalid_value("--node", error))?,
+            .map_err(|error| invalid_value("--machine", error))?,
         tail_lines: parsed
             .tail
             .map(|value| {
@@ -66,7 +66,7 @@ pub(crate) fn logs_tail_command(parsed: LogsTailCli) -> Result<LogsTailCommand, 
 pub(crate) struct LogsTailCli {
     container_id: String,
     #[arg(long)]
-    node: Option<String>,
+    machine: Option<String>,
     #[arg(long)]
     tail: Option<String>,
 }

@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::PloyzctlCommand;
 use crate::commands::init::{
-    FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeInitMode,
+    FirstMachineActivateCommand, FirstMachineActivationOutput, FirstMachineInitMode,
 };
 use crate::config::{ClusterContext, ClusterContextError, load_cluster_context};
-use crate::keeper_install::{LocalKeeperInstallError, run_keeper_first_node_install};
+use crate::keeper_install::{LocalKeeperInstallError, run_keeper_first_machine_install};
 use crate::remote_machine_runtime::{
     RemoteMachineExecutionError, execute_machine_add_remote, execute_machine_init,
 };
@@ -25,7 +25,7 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::{InitFirstNodeActivateError, OpsStatusRequest};
+use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -178,7 +178,7 @@ impl PloyzctlRuntimeConfig {
             .unwrap_or(DEFAULT_SSH_INSTALL_TIMEOUT)
     }
 
-    /// Retry budget for `init activate-first-node`.
+    /// Retry budget for `init activate-first-machine`.
     ///
     /// Activation waits server-side for the first machine-add mint, whose
     /// `nats-server` authorization reload drops the server's in-flight
@@ -189,7 +189,7 @@ impl PloyzctlRuntimeConfig {
     /// API request timeout (regression: it was the connect timeout, which
     /// expired before the first retry could run).
     #[must_use]
-    pub fn first_node_activate_retry_budget(&self) -> Duration {
+    pub fn first_machine_activate_retry_budget(&self) -> Duration {
         self.ops_watch_timeout()
     }
 
@@ -227,27 +227,27 @@ pub async fn execute_command(
             crate::commands::backup::BackupRestorePlanOutput::single_core().render(),
         )),
         PloyzctlCommand::Init(command) => match &command.mode {
-            FirstNodeInitMode::RunKeeperInstall {
+            FirstMachineInitMode::RunKeeperInstall {
                 keeper_install,
                 keeper_binary,
             } => {
-                let output = run_keeper_first_node_install(
+                let output = run_keeper_first_machine_install(
                     keeper_binary,
                     keeper_install,
                     config.keeper_install_timeout(),
                 )
-                .map_err(|source| PloyzctlExecutionError::KeeperFirstNodeInstall { source })?;
+                .map_err(|source| PloyzctlExecutionError::KeeperFirstMachineInstall { source })?;
                 Ok(PloyzctlExecutionOutput {
                     stdout: output.stdout,
                     stderr: output.stderr,
                 })
             }
-            FirstNodeInitMode::Summary { .. } | FirstNodeInitMode::EmitKeeperInstall(_) => {
+            FirstMachineInitMode::Summary { .. } | FirstMachineInitMode::EmitKeeperInstall(_) => {
                 Ok(PloyzctlExecutionOutput::stdout(command.render()))
             }
         },
-        PloyzctlCommand::InitFirstNodeActivate(command) => {
-            let activation = activate_first_node_machine(&command, config).await?;
+        PloyzctlCommand::InitFirstMachineActivate(command) => {
+            let activation = activate_first_machine(&command, config).await?;
             Ok(PloyzctlExecutionOutput::stdout(activation.render()))
         }
         PloyzctlCommand::InitJoinTemplate(command) => {
@@ -443,16 +443,16 @@ impl PloyzctlExecutionOutput {
     }
 }
 
-pub(crate) async fn activate_first_node_machine(
-    command: &FirstNodeActivateCommand,
+pub(crate) async fn activate_first_machine(
+    command: &FirstMachineActivateCommand,
     config: &PloyzctlRuntimeConfig,
-) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
-    let deadline = Instant::now() + config.first_node_activate_retry_budget();
+) -> Result<FirstMachineActivationOutput, PloyzctlExecutionError> {
+    let deadline = Instant::now() + config.first_machine_activate_retry_budget();
     loop {
-        match activate_first_node_machine_once(command, config).await {
+        match activate_first_machine_once(command, config).await {
             Ok(activation) => return Ok(activation),
             Err(error)
-                if error.is_first_node_activation_retryable() && Instant::now() < deadline =>
+                if error.is_first_machine_activation_retryable() && Instant::now() < deadline =>
             {
                 async_sleep(config.ops_watch_poll_interval()).await;
             }
@@ -461,19 +461,19 @@ pub(crate) async fn activate_first_node_machine(
     }
 }
 
-async fn activate_first_node_machine_once(
-    command: &FirstNodeActivateCommand,
+async fn activate_first_machine_once(
+    command: &FirstMachineActivateCommand,
     config: &PloyzctlRuntimeConfig,
-) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
+) -> Result<FirstMachineActivationOutput, PloyzctlExecutionError> {
     let api = operation_api_client(config).await?;
     let activated = api
-        .init_first_node_activate(&command.clone().into_request())
+        .init_first_machine_activate(&command.clone().into_request())
         .await
-        .map_err(|source| PloyzctlExecutionError::FirstNodeActivateApi { source })?;
+        .map_err(|source| PloyzctlExecutionError::FirstMachineActivateApi { source })?;
 
-    Ok(FirstNodeActivationOutput {
+    Ok(FirstMachineActivationOutput {
         operation_id: activated.operation_id,
-        node_id: activated.node_id,
+        machine_id: activated.machine_id,
     })
 }
 
@@ -567,7 +567,7 @@ pub enum PloyzctlExecutionError {
         path: PathBuf,
     },
     NatsConnect(NatsConnectError),
-    KeeperFirstNodeInstall {
+    KeeperFirstMachineInstall {
         source: Box<LocalKeeperInstallError>,
     },
     ClusterContext {
@@ -579,8 +579,8 @@ pub enum PloyzctlExecutionError {
     OperationApi {
         message: String,
     },
-    FirstNodeActivateApi {
-        source: OperationApiClientError<InitFirstNodeActivateError>,
+    FirstMachineActivateApi {
+        source: OperationApiClientError<InitFirstMachineActivateError>,
     },
     OpsWatchTimedOut {
         operation_id: OperationId,
@@ -589,10 +589,10 @@ pub enum PloyzctlExecutionError {
 }
 
 impl PloyzctlExecutionError {
-    /// Only a first-node activation reply dropped by the mint's
+    /// Only a first-machine activation reply dropped by the mint's
     /// authorization reload is retryable; every other failure is final.
-    fn is_first_node_activation_retryable(&self) -> bool {
-        let Self::FirstNodeActivateApi { source } = self else {
+    fn is_first_machine_activation_retryable(&self) -> bool {
+        let Self::FirstMachineActivateApi { source } = self else {
             return false;
         };
         matches!(
@@ -650,12 +650,12 @@ impl fmt::Display for PloyzctlExecutionError {
                 path.display()
             ),
             Self::NatsConnect(error) => write!(formatter, "{error}"),
-            Self::KeeperFirstNodeInstall { source } => write!(formatter, "{source}"),
+            Self::KeeperFirstMachineInstall { source } => write!(formatter, "{source}"),
             Self::ClusterContext { source } => write!(formatter, "{source}"),
             Self::RemoteMachine { source } => write!(formatter, "{source}"),
             Self::OperationApi { message } => formatter.write_str(message),
-            Self::FirstNodeActivateApi { source } => {
-                write!(formatter, "first node activation failed: {source}")
+            Self::FirstMachineActivateApi { source } => {
+                write!(formatter, "first machine activation failed: {source}")
             }
             Self::OpsWatchTimedOut {
                 operation_id,
@@ -754,20 +754,20 @@ mod tests {
         );
     }
 
-    /// Regression: the activate-first-node retry budget was the NATS
+    /// Regression: the activate-first-machine retry budget was the NATS
     /// connect timeout, which a single timed-out request (its reply dropped
     /// by the mint's authorization reload) consumed entirely — the
     /// documented retry never ran. The budget is the operation-wait budget
     /// and must leave room for a retry after a full request timeout.
     #[test]
-    fn first_node_activation_can_retry_after_a_dropped_reply() {
+    fn first_machine_activation_can_retry_after_a_dropped_reply() {
         let config = PloyzctlRuntimeConfig::default();
         assert_eq!(
-            config.first_node_activate_retry_budget(),
+            config.first_machine_activate_retry_budget(),
             config.ops_watch_timeout()
         );
         assert!(
-            config.first_node_activate_retry_budget()
+            config.first_machine_activate_retry_budget()
                 > ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT
                     + config.ops_watch_poll_interval(),
             "budget must allow at least one retry after a timed-out request"

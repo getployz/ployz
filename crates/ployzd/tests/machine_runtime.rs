@@ -2,74 +2,79 @@ use async_nats::jetstream;
 use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
+use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{node_id, operation_id, revision_id, service_id, step_id};
-use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
+use ployz_test_support::ids::{machine_id, operation_id, revision_id, service_id, step_id};
+use ployzd::deploy_worker::{MachineContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node::protocol::{
-    NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerRunSpec,
-    NodeRunContainerOutcome,
+use ployzd::machine_runtime::client::{
+    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
 };
-use ployzd::node::service::start_node_runtime_service;
+use ployzd::machine_runtime::protocol::{
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineContainerRunSpec,
+    MachineRunContainerOutcome,
+};
+use ployzd::machine_runtime::service::start_machine_runtime_service;
 
 mod support;
 
-use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 #[tokio::test]
-async fn node_runtime_serves_container_run_and_observes_created_container() {
+async fn machine_runtime_serves_container_run_and_observes_created_container() {
     let nats = TestNats::start_bootstrapped().await;
-    let runtime = start_node_runtime_service(
-        nats.node_client.clone(),
-        node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+    let runtime = start_machine_runtime_service(
+        nats.machine_client.clone(),
+        machine_id("machine_a"),
+        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
     )
     .await
-    .expect("node runtime starts");
-    let mut container_runtime = NatsNodeContainerRuntime::new(nats.client.clone());
+    .expect("machine runtime starts");
+    let mut container_runtime = NatsMachineContainerRuntime::new(nats.client.clone());
 
     let first = container_runtime
-        .run_container(&node_id("node_a"), run_request("run_1"))
+        .run_container(&machine_id("machine_a"), run_request("run_1"))
         .await
         .expect("container run succeeds");
     let first_container_id = first.container_id().clone();
-    assert!(matches!(first, NodeRunContainerOutcome::Created { .. }));
+    assert!(matches!(first, MachineRunContainerOutcome::Created { .. }));
     assert_observed_running(&nats.observations, &first_container_id).await;
 
     let second = container_runtime
-        .run_container(&node_id("node_a"), run_request("run_1"))
+        .run_container(&machine_id("machine_a"), run_request("run_1"))
         .await
         .expect("duplicate operation step reuses container");
     assert_eq!(
         second,
-        NodeRunContainerOutcome::ReusedRunning {
+        MachineRunContainerOutcome::ReusedRunning {
             container_id: first_container_id
         }
     );
 
-    runtime.shutdown().await.expect("node runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
 }
 
 #[tokio::test]
-async fn node_runtime_serves_container_remove_and_updates_observations() {
+async fn machine_runtime_serves_container_remove_and_updates_observations() {
     let nats = TestNats::start_bootstrapped().await;
-    let runtime = start_node_runtime_service(
-        nats.node_client.clone(),
-        node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+    let runtime = start_machine_runtime_service(
+        nats.machine_client.clone(),
+        machine_id("machine_a"),
+        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
     )
     .await
-    .expect("node runtime starts");
-    let mut container_runtime = NatsNodeContainerRuntime::new(nats.client.clone());
+    .expect("machine runtime starts");
+    let mut container_runtime = NatsMachineContainerRuntime::new(nats.client.clone());
 
     let created = container_runtime
-        .run_container(&node_id("node_a"), run_request("run_1"))
+        .run_container(&machine_id("machine_a"), run_request("run_1"))
         .await
         .expect("container run succeeds");
     let container_id = created.container_id().clone();
@@ -77,8 +82,8 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
 
     container_runtime
         .remove_container(
-            &node_id("node_a"),
-            NodeContainerRemoveRpcRequest {
+            &machine_id("machine_a"),
+            MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id.clone(),
                 expected_identity: managed_labels("run_1").identity(),
@@ -89,37 +94,40 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
 
     assert!(
         nats.observations
-            .container(&node_id("node_a"), &container_id)
+            .container(&machine_id("machine_a"), &container_id)
             .await
             .expect("observation reads")
             .is_none()
     );
 
-    runtime.shutdown().await.expect("node runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
 }
 
 #[tokio::test]
-async fn node_runtime_serves_wireguard_ebpf_prepare() {
+async fn machine_runtime_serves_wireguard_ebpf_prepare() {
     let nats = TestNats::start_bootstrapped().await;
-    let runtime = start_node_runtime_service(
-        nats.node_client.clone(),
-        node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+    let runtime = start_machine_runtime_service(
+        nats.machine_client.clone(),
+        machine_id("machine_a"),
+        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
     )
     .await
-    .expect("node runtime starts");
-    let mut preparer = NatsNodeWireGuardEbpfPreparer::new(nats.client.clone());
+    .expect("machine runtime starts");
+    let mut preparer = NatsMachineWireGuardEbpfPreparer::new(nats.client.clone());
 
     preparer
         .prepare_wireguard_ebpf(WireGuardEbpfPrepareRequest {
             operation_id: operation_id("op_123"),
-            nodes: vec![node_id("node_a")],
+            machines: vec![machine_id("machine_a")],
             endpoint_routes: vec![
-                ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id(
-                    "node_a",
-                )),
+                ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(
+                    &machine_id("machine_a"),
+                ),
             ],
             peer_endpoints: Vec::new(),
             peers: Vec::new(),
@@ -127,33 +135,38 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
         .await
         .expect("wireguard ebpf prepare succeeds");
 
-    runtime.shutdown().await.expect("node runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
 }
 
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
-    /// Node principal: the node-runtime service side and its observations.
-    node_client: async_nats::Client,
+    /// Machine principal: the machine-runtime service side and its observations.
+    machine_client: async_nats::Client,
     observations: AsyncNatsObservationStore,
 }
 
 impl TestNats {
     async fn start_bootstrapped() -> Self {
-        let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_a")]).await;
+        let nats =
+            ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")])
+                .await;
         nats.bootstrap_resources().await;
         let client = nats.controller.clone();
-        let node_client = nats.node_client(&node_id("node_a")).await;
-        let node_jetstream = jetstream::new(node_client.clone());
-        let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+        let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+        let machine_jetstream = jetstream::new(machine_client.clone());
+        let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
             .await
             .expect("open observations");
 
         Self {
             _nats: nats,
             client,
-            node_client,
+            machine_client,
             observations,
         }
     }
@@ -164,7 +177,7 @@ async fn assert_observed_running(
     container_id: &ContainerId,
 ) {
     let observation = observations
-        .container(&node_id("node_a"), container_id)
+        .container(&machine_id("machine_a"), container_id)
         .await
         .expect("observation reads")
         .expect("created container is observed");
@@ -180,11 +193,11 @@ async fn assert_observed_running(
     );
 }
 
-fn run_request(step: &str) -> NodeContainerRunRpcRequest {
-    NodeContainerRunRpcRequest {
+fn run_request(step: &str) -> MachineContainerRunRpcRequest {
+    MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:rev-2"),
         endpoint: None,
-        container: NodeContainerRunSpec {
+        container: MachineContainerRunSpec {
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
             operation_id: operation_id("op_123"),

@@ -18,14 +18,14 @@ async fn operation_repository_records_machine_add_joined_transition() {
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
         .expect("machine add accepted");
 
     repository
-        .record_machine_add_joined(&accepted.operation_id, &accepted.node_id, joined_at(50))
+        .record_machine_add_joined(&accepted.operation_id, &accepted.machine_id, joined_at(50))
         .await
         .expect("joined transition records");
 
@@ -37,7 +37,7 @@ async fn operation_repository_records_machine_add_joined_transition() {
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             state: ployz_core::machine::MachineAddOperationState::Joining {
@@ -61,7 +61,7 @@ async fn operation_repository_records_machine_add_joined_transition() {
         page.events.last().map(|event| &event.event),
         Some(&OperationEvent::MachineAddJoined {
             operation_id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             joined_at: joined_at(50),
         })
     );
@@ -74,7 +74,7 @@ async fn operation_repository_redeems_machine_join_token_once() {
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -90,7 +90,7 @@ async fn operation_repository_redeems_machine_join_token_once() {
         panic!("expected first redemption to join");
     };
     assert_eq!(joined.operation_id, accepted.operation_id);
-    assert_eq!(joined.node_id, accepted.node_id);
+    assert_eq!(joined.machine_id, accepted.machine_id);
     assert_eq!(joined.name, accepted.name);
     assert_eq!(joined.roles, accepted.roles);
     assert_eq!(joined.joined_at, joined_at(50));
@@ -103,7 +103,7 @@ async fn operation_repository_redeems_machine_join_token_once() {
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: accepted.operation_id.clone(),
-            node_id: accepted.node_id.clone(),
+            machine_id: accepted.machine_id.clone(),
             name: accepted.name.clone(),
             roles: accepted.roles,
             state: MachineAddOperationState::Joining {
@@ -121,7 +121,7 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -133,7 +133,7 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
         .await
         .expect("join token redeems");
     repository
-        .record_machine_add_completed(&accepted.operation_id, &accepted.node_id)
+        .record_machine_add_completed(&accepted.operation_id, &accepted.machine_id)
         .await
         .expect("machine add completes");
 
@@ -145,7 +145,7 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: accepted.operation_id,
-            node_id: accepted.node_id,
+            machine_id: accepted.machine_id,
             name: accepted.name,
             roles: accepted.roles,
             state: MachineAddOperationState::Completed,
@@ -161,7 +161,7 @@ async fn operation_repository_repeated_machine_join_token_returns_joined_facts()
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -181,7 +181,7 @@ async fn operation_repository_repeated_machine_join_token_returns_joined_facts()
         second,
         MachineJoinRedemption::AlreadyJoined(RedeemedMachineJoin {
             operation_id: accepted.operation_id,
-            node_id: accepted.node_id,
+            machine_id: accepted.machine_id,
             name: accepted.name,
             roles: accepted.roles,
             join_bundle: accepted.join_bundle,
@@ -203,7 +203,7 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -212,7 +212,7 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
     event_log
         .append(OperationEventAppend::machine_add_joined(
             &accepted.operation_id,
-            &accepted.node_id,
+            &accepted.machine_id,
             joined_at(50),
         ))
         .await
@@ -227,7 +227,7 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
         redemption,
         MachineJoinRedemption::Joined(RedeemedMachineJoin {
             operation_id: accepted.operation_id,
-            node_id: accepted.node_id,
+            machine_id: accepted.machine_id,
             name: accepted.name,
             roles: accepted.roles,
             join_bundle: accepted.join_bundle,
@@ -245,7 +245,7 @@ async fn operation_repository_completed_machine_join_redeem_does_not_need_secret
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -289,7 +289,7 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
     let accepted = repository
         .submit_machine_add(MachineAddOperationSubmission {
             operation_id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             join_bundle: machine_join_bundle(),
@@ -317,7 +317,7 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: accepted.operation_id,
-            node_id: accepted.node_id,
+            machine_id: accepted.machine_id,
             name: accepted.name,
             roles: accepted.roles,
             state: MachineAddOperationState::Failed {
@@ -337,7 +337,7 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -352,7 +352,7 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
         repository
             .record_machine_add_failed(
                 &accepted.operation_id,
-                &accepted.node_id,
+                &accepted.machine_id,
                 MachineAddFailure::JoinTokenExpired {
                     expired_at: expires_at(40),
                 },
@@ -368,7 +368,7 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: accepted.operation_id,
-            node_id: accepted.node_id,
+            machine_id: accepted.machine_id,
             name: accepted.name,
             roles: accepted.roles,
             state: MachineAddOperationState::Joining {

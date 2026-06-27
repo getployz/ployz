@@ -5,7 +5,8 @@ use super::classification::{
 use super::{
     BackupOperationState, BackupTransition, CertId, CertOperationState, CertRunningStage,
     CertTransition, DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition,
-    EventSequence, NodeId, OperationEvent, OperationId, OperationKind, OperationStatus, ServiceId,
+    EventSequence, MachineId, OperationEvent, OperationId, OperationKind, OperationStatus,
+    ServiceId,
 };
 use crate::machine::{MachineAddOperationState, MachineName};
 use crate::roles::InstallRolePolicy;
@@ -289,7 +290,7 @@ pub fn project_operation_event(
         ClassifiedOperationEvent::MachineAdd { subject, event, .. } => {
             let OperationStatus::MachineAdd {
                 id,
-                node_id,
+                machine_id,
                 name,
                 roles,
                 state,
@@ -300,7 +301,7 @@ pub fn project_operation_event(
             };
             let fields = MachineAddFields {
                 id,
-                node_id,
+                machine_id,
                 name,
                 roles: *roles,
                 state,
@@ -340,7 +341,7 @@ pub fn project_operation_event(
             ),
             OperationStatus::MachineAdd {
                 id,
-                node_id,
+                machine_id,
                 name,
                 roles,
                 state,
@@ -348,7 +349,7 @@ pub fn project_operation_event(
             } => project_machine_add_state(
                 MachineAddFields {
                     id,
-                    node_id,
+                    machine_id,
                     name,
                     roles: *roles,
                     state,
@@ -381,7 +382,7 @@ pub(super) fn kind_mismatch(
 #[derive(Clone, Copy)]
 struct MachineAddFields<'status> {
     id: &'status OperationId,
-    node_id: &'status NodeId,
+    machine_id: &'status MachineId,
     name: &'status MachineName,
     roles: InstallRolePolicy,
     state: &'status MachineAddOperationState,
@@ -395,7 +396,7 @@ impl MachineAddFields<'_> {
     ) -> OperationStatus {
         OperationStatus::MachineAdd {
             id: self.id.clone(),
-            node_id: self.node_id.clone(),
+            machine_id: self.machine_id.clone(),
             name: self.name.clone(),
             roles: self.roles,
             state,
@@ -587,10 +588,10 @@ fn project_machine_add_event(
     event: MachineAddEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if event_subject != OperationSubjectRef::MachineAdd(fields.node_id.clone()) {
+    if event_subject != OperationSubjectRef::MachineAdd(fields.machine_id.clone()) {
         return Err(StatusProjectionError::OperationSubjectMismatch {
             operation_id: fields.id.clone(),
-            expected: OperationSubjectRef::MachineAdd(fields.node_id.clone()),
+            expected: OperationSubjectRef::MachineAdd(fields.machine_id.clone()),
             actual: event_subject,
         });
     }

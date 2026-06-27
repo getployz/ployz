@@ -1,4 +1,4 @@
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState,
@@ -48,7 +48,7 @@ impl AsyncNatsOperationRepository {
 
         let OperationStatus::MachineAdd {
             id,
-            node_id,
+            machine_id,
             name,
             roles,
             state,
@@ -65,7 +65,7 @@ impl AsyncNatsOperationRepository {
                 self.redeem_pending_machine_join(
                     RedeemPendingMachineJoin {
                         operation_id: id,
-                        node_id,
+                        machine_id,
                         join_bundle: submission.join_bundle,
                         idempotency_key: submission.idempotency_key,
                         join_token,
@@ -81,7 +81,7 @@ impl AsyncNatsOperationRepository {
                     .await?;
                 Ok(MachineJoinRedemption::AlreadyJoined(RedeemedMachineJoin {
                     operation_id: id,
-                    node_id,
+                    machine_id,
                     name,
                     roles,
                     join_bundle: submission.join_bundle,
@@ -136,7 +136,7 @@ impl AsyncNatsOperationRepository {
     ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
         let target = self.machine_join_report_target(token).await?;
         let status_write = self
-            .record_machine_add_completed(&target.operation_id, &target.node_id)
+            .record_machine_add_completed(&target.operation_id, &target.machine_id)
             .await
             .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
         self.status_store
@@ -145,7 +145,7 @@ impl AsyncNatsOperationRepository {
             .map_err(RecordMachineJoinReportError::StoreStatus)?;
         Ok(RecordedMachineJoinReport {
             operation_id: target.operation_id,
-            node_id: target.node_id,
+            machine_id: target.machine_id,
             status_write,
         })
     }
@@ -157,7 +157,7 @@ impl AsyncNatsOperationRepository {
     ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
         let target = self.machine_join_report_target(token).await?;
         let status_write = self
-            .record_machine_add_failed(&target.operation_id, &target.node_id, failure)
+            .record_machine_add_failed(&target.operation_id, &target.machine_id, failure)
             .await
             .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
         self.status_store
@@ -166,7 +166,7 @@ impl AsyncNatsOperationRepository {
             .map_err(RecordMachineJoinReportError::StoreStatus)?;
         Ok(RecordedMachineJoinReport {
             operation_id: target.operation_id,
-            node_id: target.node_id,
+            machine_id: target.machine_id,
             status_write,
         })
     }
@@ -196,7 +196,7 @@ impl AsyncNatsOperationRepository {
         Ok(MachineJoinReportTarget {
             operation_id: submission.operation_id,
             idempotency_key: submission.idempotency_key,
-            node_id: submission.node_id,
+            machine_id: submission.machine_id,
         })
     }
 
@@ -220,9 +220,13 @@ impl AsyncNatsOperationRepository {
                         &pending.operation_id,
                     )
                     .await?;
-                self.record_machine_add_joined(&pending.operation_id, &pending.node_id, joined_at)
-                    .await
-                    .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
+                self.record_machine_add_joined(
+                    &pending.operation_id,
+                    &pending.machine_id,
+                    joined_at,
+                )
+                .await
+                .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
                 let joined = self
                     .redeemed_machine_join(
                         &pending.operation_id,
@@ -238,7 +242,7 @@ impl AsyncNatsOperationRepository {
             Err(failure) => {
                 self.record_machine_add_failed(
                     &pending.operation_id,
-                    &pending.node_id,
+                    &pending.machine_id,
                     failure.clone(),
                 )
                 .await
@@ -267,7 +271,7 @@ impl AsyncNatsOperationRepository {
         };
         let OperationStatus::MachineAdd {
             id,
-            node_id,
+            machine_id,
             name,
             roles,
             state,
@@ -287,7 +291,7 @@ impl AsyncNatsOperationRepository {
 
         Ok(Some(RedeemedMachineJoin {
             operation_id: id,
-            node_id,
+            machine_id,
             name,
             roles,
             join_bundle,
@@ -300,7 +304,7 @@ impl AsyncNatsOperationRepository {
 
 struct RedeemPendingMachineJoin {
     operation_id: OperationId,
-    node_id: NodeId,
+    machine_id: MachineId,
     join_token: IssuedJoinToken,
     join_bundle: MachineJoinBundle,
     idempotency_key: ployz_core::ops::OperationIdempotencyKey,
@@ -315,7 +319,7 @@ pub enum MachineJoinRedemption {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedeemedMachineJoin {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
@@ -327,14 +331,14 @@ pub struct RedeemedMachineJoin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedMachineJoinReport {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub status_write: OperationStatusWrite,
 }
 
 struct MachineJoinReportTarget {
     operation_id: OperationId,
     idempotency_key: ployz_core::ops::OperationIdempotencyKey,
-    node_id: NodeId,
+    machine_id: MachineId,
 }
 
 #[derive(Debug)]

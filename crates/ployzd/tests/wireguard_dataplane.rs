@@ -3,16 +3,18 @@ use ployz_core::dataplane::{
     WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest, WireGuardPeer, WireGuardPublicKey,
     WireGuardReadyEvidence,
 };
-use ployz_test_support::ids::{node_id, operation_id};
+use ployz_test_support::ids::{machine_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::dataplane_runtime::{HostDataplaneConfig, HostWireGuardEbpfPreparer};
-use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
+use ployzd::deploy_worker::{MachineContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::runner::DockerManagedContainerRunner;
-use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node::protocol::NodeEnsureEndpointNetworkRpcRequest;
-use ployzd::node::runner::NodeContainerRunner;
-use ployzd::node::service::NodeWireGuardEbpfPreparer;
-use ployzd::node::service::start_node_runtime_service;
+use ployzd::machine_runtime::client::{
+    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
+};
+use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
+use ployzd::machine_runtime::runner::MachineContainerRunner;
+use ployzd::machine_runtime::service::MachineWireGuardEbpfPreparer;
+use ployzd::machine_runtime::service::start_machine_runtime_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -57,7 +59,7 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
 
     let peer_key = generated_wireguard_public_key();
     let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        node_id("core_1"),
+        machine_id("core_1"),
         ebpf_bytecode.clone(),
         ebpf_ctl.clone(),
         DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
@@ -83,7 +85,7 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
 }
 
 #[tokio::test]
-async fn local_privileged_node_service_prepares_real_docker_dataplane() {
+async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
     if !local_proof_enabled() {
         return;
     }
@@ -96,62 +98,62 @@ async fn local_privileged_node_service_prepares_real_docker_dataplane() {
     let ebpf_bytecode = required_path_env(EBPF_BYTECODE_ENV);
     let peer_key = generated_wireguard_public_key();
     let nats = test_nats().await;
-    let node_id = node_id("core_1");
+    let machine_id = machine_id("core_1");
     let runner = DockerManagedContainerRunner::local_defaults(
         ENDPOINT_NETWORK_SUBNET,
         DEFAULT_DATAPLANE_BRIDGE_IFNAME,
     )
     .expect("connect to local Docker daemon");
     let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        node_id.clone(),
+        machine_id.clone(),
         ebpf_bytecode,
         ebpf_ctl.clone(),
         DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
         DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
     ))
     .with_command_timeout(Duration::from_secs(20));
-    let _service = start_node_runtime_service(
-        nats.node_client.clone(),
-        node_id.clone(),
+    let _service = start_machine_runtime_service(
+        nats.machine_client.clone(),
+        machine_id.clone(),
         runner.clone(),
         preparer,
         runner,
     )
     .await
-    .expect("node runtime service starts");
+    .expect("machine runtime service starts");
 
-    let mut runtime = NatsNodeContainerRuntime::new(nats.client.clone())
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_secs(30));
     runtime
         .ensure_endpoint_network(
-            &node_id,
-            NodeEnsureEndpointNetworkRpcRequest {
+            &machine_id,
+            MachineEnsureEndpointNetworkRpcRequest {
                 operation_id: operation_id("op_123"),
             },
         )
         .await
-        .expect("endpoint network is created through node service");
+        .expect("endpoint network is created through machine service");
     command_ok(
         "ip",
         &["link", "show", "dev", DEFAULT_DATAPLANE_BRIDGE_IFNAME],
     );
 
-    let mut dataplane = NatsNodeWireGuardEbpfPreparer::new(nats.client)
+    let mut dataplane = NatsMachineWireGuardEbpfPreparer::new(nats.client)
         .with_request_timeout(Duration::from_secs(30));
     let report = dataplane
         .prepare_wireguard_ebpf(WireGuardEbpfPrepareRequest {
             operation_id: operation_id("op_123"),
-            nodes: vec![node_id.clone()],
+            machines: vec![machine_id.clone()],
             endpoint_routes: endpoint_routes(),
             peer_endpoints: Vec::new(),
             peers: vec![edge_peer_with_public_key(peer_key)],
         })
         .await
-        .expect("real dataplane prepares through node-scoped NATS service");
-    let [ready] = report.nodes.as_slice() else {
-        panic!("expected one node readiness report");
+        .expect("real dataplane prepares through machine-scoped NATS service");
+    let [ready] = report.machines.as_slice() else {
+        panic!("expected one machine readiness report");
     };
-    assert_eq!(ready.node_id, node_id);
+    assert_eq!(ready.machine_id, machine_id);
     assert_wireguard_peer_evidence(&ready.ready.wireguard.evidence);
     assert_ebpf_attached_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
     assert_edge_route_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
@@ -170,7 +172,7 @@ async fn local_privileged_dataplane_reports_missing_bridge_as_domain_failure() {
     let ebpf_ctl = required_path_env(EBPF_CTL_ENV);
     let ebpf_bytecode = required_path_env(EBPF_BYTECODE_ENV);
     let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        node_id("core_1"),
+        machine_id("core_1"),
         ebpf_bytecode,
         ebpf_ctl,
         "missing-ployz".to_owned(),
@@ -186,10 +188,10 @@ async fn local_privileged_dataplane_reports_missing_bridge_as_domain_failure() {
     assert!(matches!(
         error,
         WireGuardEbpfPrepareError::Unavailable {
-            node_id,
+            machine_id,
             component: WireGuardEbpfComponent::EbpfForwarding,
             ..
-        } if node_id == self::node_id("core_1")
+        } if machine_id == self::machine_id("core_1")
     ));
 }
 
@@ -225,14 +227,14 @@ fn required_path_env(name: &str) -> PathBuf {
 
 fn endpoint_routes() -> Vec<WireGuardEbpfEndpointRoute> {
     vec![
-        WireGuardEbpfEndpointRoute::default_for_node(&node_id("core_1")),
-        WireGuardEbpfEndpointRoute::default_for_node(&node_id("edge_2")),
+        WireGuardEbpfEndpointRoute::default_for_machine(&machine_id("core_1")),
+        WireGuardEbpfEndpointRoute::default_for_machine(&machine_id("edge_2")),
     ]
 }
 
 fn edge_peer_with_public_key(public_key: WireGuardPublicKey) -> WireGuardPeer {
     WireGuardPeer {
-        node_id: node_id("edge_2"),
+        machine_id: machine_id("edge_2"),
         endpoint_subnet: "10.42.2.0/24".to_owned(),
         public_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
         public_key,
@@ -326,19 +328,20 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
-    /// Node principal: the node-runtime service side.
-    node_client: async_nats::Client,
+    /// Machine principal: the machine-runtime service side.
+    machine_client: async_nats::Client,
 }
 
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("core_1")]).await;
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("core_1")]).await;
     let client = nats.controller.clone();
-    let node_client = nats.node_client(&node_id("core_1")).await;
+    let machine_client = nats.machine_client(&machine_id("core_1")).await;
 
     TestNats {
         _nats: nats,
         client,
-        node_client,
+        machine_client,
     }
 }
 

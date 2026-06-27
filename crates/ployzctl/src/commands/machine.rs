@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Args;
-use ployz_core::ids::{NodeId, OperationId, SubjectTokenError};
+use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
 use ployz_core::install::{MachineJoinBundle, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::OperationIdempotencyKey;
@@ -27,12 +27,12 @@ use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::ssh::SshTarget;
 
-/// Quick-start machine identity: the node ID and machine name are the same
+/// Quick-start machine identity: the machine ID and machine name are the same
 /// value (R5), derived from the remote hostname unless `--name` overrides
 /// it (R6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineIdentity {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
 }
 
@@ -55,9 +55,9 @@ impl MachineIdentity {
     }
 
     fn try_new(value: &str) -> Result<Self, SubjectTokenError> {
-        let node_id = NodeId::try_new(value)?;
+        let machine_id = MachineId::try_new(value)?;
         let name = MachineName::try_new(value)?;
-        Ok(Self { node_id, name })
+        Ok(Self { machine_id, name })
     }
 }
 
@@ -102,7 +102,7 @@ impl fmt::Display for MachineIdentityError {
 
 impl std::error::Error for MachineIdentityError {}
 
-/// `ployzctl machine init USER@HOST`: form a first-node cluster on the
+/// `ployzctl machine init USER@HOST`: form a first-machine cluster on the
 /// remote machine through SSH and record local client context (R4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineInitCommand {
@@ -144,7 +144,7 @@ impl MachineInitCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineInitOutput {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub context_path: PathBuf,
 }
 
@@ -152,9 +152,9 @@ impl MachineInitOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nfirst-node {} active\ncontext {}\nnext: ployzctl deploy --image IMAGE --route HOSTNAME:PORT\n",
+            "operation {}\nfirst-machine {} active\ncontext {}\nnext: ployzctl deploy --image IMAGE --route HOSTNAME:PORT\n",
             self.operation_id.as_str(),
-            self.node_id.as_str(),
+            self.machine_id.as_str(),
             self.context_path.display(),
         )
     }
@@ -200,16 +200,16 @@ pub enum MachineAddInstaller {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddRemoteOutput {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
 }
 
 impl MachineAddRemoteOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nnode {}\nmachine-add completed\n",
+            "operation {}\nmachine {}\nmachine-add completed\n",
             self.operation_id.as_str(),
-            self.node_id.as_str(),
+            self.machine_id.as_str(),
         )
     }
 }
@@ -218,7 +218,7 @@ impl MachineAddRemoteOutput {
 pub struct MachineAddCommand {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
 }
@@ -229,7 +229,7 @@ impl MachineAddCommand {
         MachineAddRequest {
             operation_id: self.operation_id,
             idempotency_key: self.idempotency_key,
-            node_id: self.node_id,
+            machine_id: self.machine_id,
             name: self.name,
             roles: self.roles,
         }
@@ -238,7 +238,7 @@ impl MachineAddCommand {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct MachineAddOutput {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub accepted: AcceptedOperation,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_bundle: MachineJoinBundle,
@@ -252,7 +252,7 @@ impl MachineAddOutput {
     #[must_use]
     pub fn from_accepted(accepted: MachineAddAccepted, join_seed: NatsUserSeed) -> Self {
         Self {
-            node_id: accepted.node_id,
+            machine_id: accepted.machine_id,
             accepted: accepted.accepted,
             bootstrap_url: accepted.bootstrap_url,
             join_bundle: accepted.join_bundle,
@@ -264,9 +264,9 @@ impl MachineAddOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nnode {}\njoin-token {}\ninstall {}\n",
+            "operation {}\nmachine {}\njoin-token {}\ninstall {}\n",
             self.accepted.operation_id.as_str(),
-            self.node_id.as_str(),
+            self.machine_id.as_str(),
             self.join_token.as_str(),
             self.install_command(&MachineAddInstaller::FromAcceptedBootstrapUrl, None),
         )
@@ -279,9 +279,9 @@ impl MachineAddOutput {
     pub fn install_command(
         &self,
         installer: &MachineAddInstaller,
-        node_public_ip: Option<IpAddr>,
+        machine_public_ip: Option<IpAddr>,
     ) -> String {
-        self.join_bootstrap_command(installer, node_public_ip)
+        self.join_bootstrap_command(installer, machine_public_ip)
             .render()
     }
 
@@ -289,7 +289,7 @@ impl MachineAddOutput {
     pub fn join_bootstrap_command(
         &self,
         installer: &MachineAddInstaller,
-        node_public_ip: Option<IpAddr>,
+        machine_public_ip: Option<IpAddr>,
     ) -> JoinBootstrapCommand {
         JoinBootstrapCommand {
             installer: match installer {
@@ -305,7 +305,7 @@ impl MachineAddOutput {
             trusted_ca_b64: self.trusted_ca_b64(),
             join_seed: self.join_seed.clone(),
             join_token: self.join_token.clone(),
-            node_public_ip,
+            machine_public_ip,
         }
     }
 
@@ -327,7 +327,7 @@ impl fmt::Debug for MachineAddOutput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("MachineAddOutput")
-            .field("node_id", &self.node_id)
+            .field("machine_id", &self.machine_id)
             .field("accepted", &self.accepted)
             .field("bootstrap_url", &self.bootstrap_url)
             .field("join_bundle", &self.join_bundle)
@@ -373,7 +373,7 @@ pub(crate) fn machine_add_command(
         MachineAddCliMode::Explicit {
             operation,
             idempotency_key,
-            node,
+            machine,
             name,
             roles,
         } => Ok(ParsedMachineAdd::Explicit(MachineAddCommand {
@@ -381,7 +381,8 @@ pub(crate) fn machine_add_command(
                 .map_err(|error| invalid_value("--operation", error))?,
             idempotency_key: OperationIdempotencyKey::try_new(idempotency_key)
                 .map_err(|error| invalid_value("--idempotency-key", error))?,
-            node_id: NodeId::try_new(node).map_err(|error| invalid_value("--node", error))?,
+            machine_id: MachineId::try_new(machine)
+                .map_err(|error| invalid_value("--machine", error))?,
             name: MachineName::try_new(name).map_err(|error| invalid_value("--name", error))?,
             roles,
         })),
@@ -399,7 +400,7 @@ enum MachineAddCliMode {
     Explicit {
         operation: String,
         idempotency_key: String,
-        node: String,
+        machine: String,
         name: String,
         roles: InstallRolePolicy,
     },
@@ -412,7 +413,7 @@ pub(crate) struct MachineAddCli {
     #[arg(long)]
     name: Option<String>,
     #[arg(long, conflicts_with = "target")]
-    node: Option<String>,
+    machine: Option<String>,
     #[arg(long, conflicts_with = "target")]
     operation: Option<String>,
     #[arg(long, conflicts_with = "target")]
@@ -428,7 +429,7 @@ impl MachineAddCli {
         let Self {
             target,
             name,
-            node,
+            machine,
             operation,
             idempotency_key,
             roles,
@@ -451,7 +452,7 @@ impl MachineAddCli {
                 idempotency_key,
                 "--idempotency-key",
             )?,
-            node: require_explicit_machine_add_value(node, "--node")?,
+            machine: require_explicit_machine_add_value(machine, "--machine")?,
             name: require_explicit_machine_add_value(name, "--name")?,
             roles,
         })
@@ -549,7 +550,7 @@ fn validate_installer_script(
 
 #[derive(Debug, Args)]
 pub(crate) struct MachineInitCli {
-    /// Remote machine to form the first node on (`user@host`).
+    /// Remote machine to form the first machine on (`user@host`).
     target: String,
     /// Machine identity override (defaults to the remote hostname).
     #[arg(long)]
@@ -586,14 +587,14 @@ pub(crate) fn machine_list_command(_: EmptyCli) -> MachineListCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineInspectCommand {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
 }
 
 impl MachineInspectCommand {
     #[must_use]
     pub fn into_request(self) -> MachineInspectRequest {
         MachineInspectRequest {
-            node_id: self.node_id,
+            machine_id: self.machine_id,
         }
     }
 }
@@ -601,15 +602,15 @@ impl MachineInspectCommand {
 pub(crate) fn machine_inspect_command(
     parsed: MachineInspectCli,
 ) -> Result<MachineInspectCommand, PloyzctlCliError> {
-    let node_id =
-        NodeId::try_new(parsed.node_id).map_err(|error| invalid_value("<node_id>", error))?;
+    let machine_id = MachineId::try_new(parsed.machine_id)
+        .map_err(|error| invalid_value("<machine_id>", error))?;
 
-    Ok(MachineInspectCommand { node_id })
+    Ok(MachineInspectCommand { machine_id })
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct MachineInspectCli {
-    node_id: String,
+    machine_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -659,8 +660,8 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "node {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
-            self.machine.active.node_id.as_str(),
+            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
+            self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
             render_public_ip(&self.machine),
@@ -673,7 +674,7 @@ impl MachineInspectOutput {
 fn render_machine_summary(machine: &MachineSnapshot) -> String {
     format!(
         "{} {} public-ip {} gateway {} containers {}",
-        machine.active.node_id.as_str(),
+        machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
         render_public_ip(machine),
         render_gateway(machine),

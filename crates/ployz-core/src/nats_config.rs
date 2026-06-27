@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::ids::NodeId;
+use crate::ids::MachineId;
 use crate::permissions::{NatsPermissionProfile, ResponsePermission};
 use crate::security::NatsPrincipal;
 use serde::{Deserialize, Serialize};
@@ -30,15 +30,15 @@ pub struct NatsServerTlsFiles {
 pub struct NatsServerConfig {
     listener: NatsListener,
     port: u16,
-    server_name: NodeId,
+    server_name: MachineId,
     jetstream_store_dir: PathBuf,
     tls: NatsServerTlsFiles,
     authorized_users_include: PathBuf,
 }
 
 impl NatsServerConfig {
-    pub fn single_node(
-        node_id: NodeId,
+    pub fn single_machine(
+        machine_id: MachineId,
         jetstream_store_dir: PathBuf,
         listener: NatsListener,
         tls: NatsServerTlsFiles,
@@ -47,7 +47,7 @@ impl NatsServerConfig {
         let config = Self {
             listener,
             port: 4222,
-            server_name: node_id,
+            server_name: machine_id,
             jetstream_store_dir,
             tls,
             authorized_users_include,

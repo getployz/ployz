@@ -19,7 +19,7 @@ use ployz_sdk_types::{
     MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
     operation_api::{MachineAddApi, OperationApiContract},
 };
-use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployz_test_support::shell::shell_quote;
 use ployzctl::runtime::{
@@ -47,7 +47,7 @@ async fn binary_machine_add_calls_nats_service() {
                 request.idempotency_key,
                 OperationIdempotencyKey::try_new("idem_machine").expect("valid idempotency key")
             );
-            assert_eq!(request.node_id, node_id("node_2"));
+            assert_eq!(request.machine_id, machine_id("machine_2"));
             assert_eq!(
                 request.name,
                 MachineName::try_new("edge_2").expect("valid machine name")
@@ -57,7 +57,7 @@ async fn binary_machine_add_calls_nats_service() {
             let response: MachineAddResponse = OperationApiResponse::Ok {
                 value: MachineAddAccepted {
                     accepted: accepted_operation("op_machine"),
-                    node_id: node_id("node_2"),
+                    machine_id: machine_id("machine_2"),
                     bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                         .expect("valid bootstrap url"),
                     join_bundle: machine_join_bundle(),
@@ -74,14 +74,16 @@ async fn binary_machine_add_calls_nats_service() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
         .arg(server.server.client_url().as_str())
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .env(PLOYZ_JOIN_NKEY_SEED_FILE_ENV, env.join_seed_path())
         .args([
             "machine",
             "add",
-            "--node",
-            "node_2",
+            "--machine",
+            "machine_2",
             "--name",
             "edge_2",
             "--operation",
@@ -102,7 +104,7 @@ async fn binary_machine_add_calls_nats_service() {
     assert_eq!(
         stdout(&output),
         format!(
-            "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh -s -- --join-token 'join_once_123'\n",
+            "operation op_machine\nmachine machine_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh -s -- --join-token 'join_once_123'\n",
             shell_quote(&test_ca_b64()),
             shell_quote(server.server.join_seed().secret())
         )

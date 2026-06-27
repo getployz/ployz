@@ -7,16 +7,16 @@ use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::API_OPS_STATUS;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 use ployzd::app::{ControlWork, DnsWork, GatewayWork, RoleProcessPlan, plan_configured_process};
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, NodeDataplaneConfig, NodeProcessArtifacts, NodeProcessConfig,
+    GatewayProcessConfig, MachineDataplaneConfig, MachineProcessArtifacts, MachineProcessConfig,
     PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
-    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_NODES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
+    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_MACHINES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
     PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
-    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
-    PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV, PLOYZ_NODE_PUBLIC_IP_ENV, RoleNatsConnect,
+    PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_MACHINE_PUBLIC_IP_ENV,
+    PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, RoleNatsConnect,
     load_daemon_process_config,
 };
 use ployzd::nats_process::NatsServerRuntime;
@@ -41,7 +41,7 @@ fn role_connect(url: NatsClientUrl, principal: NatsPrincipal) -> RoleNatsConnect
     RoleNatsConnect {
         url,
         ca_file: "/tmp/ployz-test-ca.pem".into(),
-        seed_file: "/tmp/ployz-test-node.seed".into(),
+        seed_file: "/tmp/ployz-test-machine.seed".into(),
         principal,
     }
 }
@@ -60,7 +60,7 @@ fn control_process_owns_api_and_nats_assurance() {
     let url = NatsClientUrl::loopback(4222);
     let config = DaemonProcessConfig::Control(ControlProcessConfig::new(
         NatsServerRuntime::External(url.clone()),
-        node_id("core_1"),
+        machine_id("core_1"),
         test_connect_config(url.clone()),
     ));
     let RoleProcessPlan::Control(plan) = plan_configured_process(&config) else {
@@ -71,7 +71,7 @@ fn control_process_owns_api_and_nats_assurance() {
     let DaemonProcessConfig::Control(config) = &config else {
         panic!("control config stays typed");
     };
-    assert_eq!(config.deploy_nodes, vec![node_id("core_1")]);
+    assert_eq!(config.deploy_machines, vec![machine_id("core_1")]);
     assert_eq!(plan.nats, NatsServerRuntime::External(url.clone()));
     assert_eq!(plan.nats_url(), url);
     assert_eq!(
@@ -86,14 +86,14 @@ fn control_process_owns_api_and_nats_assurance() {
 }
 
 #[test]
-fn control_role_loads_configured_deploy_nodes() {
+fn control_role_loads_configured_deploy_machines() {
     let seed_file = temp_seed_file("controller.seed");
     let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-        PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
+        PLOYZ_MACHINE_ID_ENV => Some("core_1".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
         PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
         PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some(seed_file.clone()),
-        PLOYZ_DEPLOY_NODES_ENV => Some("core_1,edge_2".to_owned()),
+        PLOYZ_DEPLOY_MACHINES_ENV => Some("core_1,edge_2".to_owned()),
         _ => None,
     })
     .expect("control role config loads");
@@ -102,65 +102,68 @@ fn control_role_loads_configured_deploy_nodes() {
         panic!("control role should produce control config");
     };
     assert_eq!(
-        config.deploy_nodes,
-        vec![node_id("core_1"), node_id("edge_2")]
+        config.deploy_machines,
+        vec![machine_id("core_1"), machine_id("edge_2")]
     );
 }
 
 #[test]
-fn control_role_rejects_invalid_deploy_node() {
+fn control_role_rejects_invalid_deploy_machine() {
     let seed_file = temp_seed_file("controller.seed");
     let error = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-        PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
+        PLOYZ_MACHINE_ID_ENV => Some("core_1".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
         PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
         PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some(seed_file.clone()),
-        PLOYZ_DEPLOY_NODES_ENV => Some("core_1,not a node".to_owned()),
+        PLOYZ_DEPLOY_MACHINES_ENV => Some("core_1,not a machine".to_owned()),
         _ => None,
     })
-    .expect_err("invalid deploy node is rejected");
+    .expect_err("invalid deploy machine is rejected");
 
     assert!(matches!(
         error,
-        DaemonProcessConfigError::InvalidDeployNode { value } if value == "not a node"
+        DaemonProcessConfigError::InvalidDeployMachine { value } if value == "not a machine"
     ));
 }
 
 #[test]
-fn node_process_owns_node_rpc_and_observations_only() {
-    let node_id = node_id("node_7");
+fn machine_process_owns_machine_rpc_and_observations_only() {
+    let machine_id = machine_id("machine_7");
     let url = NatsClientUrl::loopback(7422);
-    let config = DaemonProcessConfig::Node(NodeProcessConfig::new(
-        node_id.clone(),
+    let config = DaemonProcessConfig::Machine(MachineProcessConfig::new(
+        machine_id.clone(),
         role_connect(
             url.clone(),
-            NatsPrincipal::Node {
-                node_id: node_id.clone(),
+            NatsPrincipal::Machine {
+                machine_id: machine_id.clone(),
             },
         ),
-        NodeProcessArtifacts::new("/tmp/ployz-ebpf".into(), "/tmp/ployz-ebpf-ctl".into()),
-        NodeDataplaneConfig::new(
+        MachineProcessArtifacts::new("/tmp/ployz-ebpf".into(), "/tmp/ployz-ebpf-ctl".into()),
+        MachineDataplaneConfig::new(
             "br-ployz".to_owned(),
             "ployz-wg0".to_owned(),
             "10.42.7.0/24".to_owned(),
         ),
         None,
     ));
-    let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
-        panic!("node role should produce a node process plan");
+    let RoleProcessPlan::Machine(plan) = plan_configured_process(&config) else {
+        panic!("machine role should produce a machine process plan");
     };
 
-    assert_eq!(config.role(), DaemonProcessRole::Node(node_id.clone()));
-    assert_eq!(plan.node_id, node_id);
+    assert_eq!(
+        config.role(),
+        DaemonProcessRole::Machine(machine_id.clone())
+    );
+    assert_eq!(plan.machine_id, machine_id);
     assert_eq!(plan.nats_url, url);
     assert_eq!(
         plan.work,
         &[
-            ployzd::app::NodeWork::ServeNodeRpc,
-            ployzd::app::NodeWork::PublishDockerObservations
+            ployzd::app::MachineWork::ServeMachineRpc,
+            ployzd::app::MachineWork::PublishDockerObservations
         ]
     );
-    assert_eq!(service_names(&plan.service_catalog), vec!["plz-node"]);
+    assert_eq!(service_names(&plan.service_catalog), vec!["plz-machine"]);
     assert!(!plan.service_catalog.has_endpoint_subject(API_OPS_STATUS));
 }
 
@@ -168,21 +171,21 @@ fn node_process_owns_node_rpc_and_observations_only() {
 fn gateway_and_dns_are_watchers_not_command_surfaces() {
     let url = NatsClientUrl::loopback(7422);
     let gateway_config = DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
-        node_id("node_7"),
+        machine_id("machine_7"),
         role_connect(
             url.clone(),
-            NatsPrincipal::Node {
-                node_id: node_id("node_7"),
+            NatsPrincipal::Machine {
+                machine_id: machine_id("machine_7"),
             },
         ),
         socket(8080),
     ));
     let dns_config = DaemonProcessConfig::Dns(DnsProcessConfig::new(
-        node_id("node_7"),
+        machine_id("machine_7"),
         role_connect(
             url.clone(),
-            NatsPrincipal::Node {
-                node_id: node_id("node_7"),
+            NatsPrincipal::Machine {
+                machine_id: machine_id("machine_7"),
             },
         ),
     ));
@@ -196,10 +199,10 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
 
     assert_eq!(gateway_config.role(), DaemonProcessRole::Gateway);
     assert_eq!(dns_config.role(), DaemonProcessRole::Dns);
-    assert_eq!(gateway.node_id, node_id("node_7"));
+    assert_eq!(gateway.machine_id, machine_id("machine_7"));
     assert_eq!(gateway.nats_url, url);
     assert_eq!(gateway.listen_addr, socket(8080));
-    assert_eq!(dns.node_id, node_id("node_7"));
+    assert_eq!(dns.machine_id, machine_id("machine_7"));
     assert_eq!(dns.nats_url, url);
     assert_eq!(
         gateway.work,
@@ -213,7 +216,7 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
         dns.work,
         &[
             DnsWork::WatchServices,
-            DnsWork::WatchNodeAddresses,
+            DnsWork::WatchMachineAddresses,
             DnsWork::ServeLastKnownGoodAnswers
         ]
     );
@@ -223,7 +226,7 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
 fn role_parser_accepts_the_supervisor_process_commands() {
     for role in [
         DaemonProcessRole::Control,
-        DaemonProcessRole::Node(node_id("node_7")),
+        DaemonProcessRole::Machine(machine_id("machine_7")),
         DaemonProcessRole::Gateway,
         DaemonProcessRole::Dns,
     ] {
@@ -236,28 +239,27 @@ fn role_parser_accepts_the_supervisor_process_commands() {
 
 #[test]
 fn nats_client_roles_load_the_keeper_written_nats_url() {
-    let config =
-        load_daemon_process_config(
-            DaemonProcessRole::Node(node_id("node_7")),
-            |name| match name {
-                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
-                PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-                PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/node.seed".to_owned()),
-                PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
-                PLOYZ_EBPF_CTL_ENV => Some("/tmp/ployz-ebpf-ctl".to_owned()),
-                PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV => Some("br-ployz".to_owned()),
-                PLOYZ_DATAPLANE_WG_IFNAME_ENV => Some("wg-ployz".to_owned()),
-                PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("10.77.2.0/24".to_owned()),
-                PLOYZ_NODE_PUBLIC_IP_ENV => Some("203.0.113.7".to_owned()),
-                _ => None,
-            },
-        )
-        .expect("node role config loads");
+    let config = load_daemon_process_config(
+        DaemonProcessRole::Machine(machine_id("machine_7")),
+        |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+            PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
+            PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/machine.seed".to_owned()),
+            PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
+            PLOYZ_EBPF_CTL_ENV => Some("/tmp/ployz-ebpf-ctl".to_owned()),
+            PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV => Some("br-ployz".to_owned()),
+            PLOYZ_DATAPLANE_WG_IFNAME_ENV => Some("wg-ployz".to_owned()),
+            PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("10.77.2.0/24".to_owned()),
+            PLOYZ_MACHINE_PUBLIC_IP_ENV => Some("203.0.113.7".to_owned()),
+            _ => None,
+        },
+    )
+    .expect("machine role config loads");
 
-    let DaemonProcessConfig::Node(config) = config else {
-        panic!("node role should produce node config");
+    let DaemonProcessConfig::Machine(config) = config else {
+        panic!("machine role should produce machine config");
     };
-    assert_eq!(config.node_id, node_id("node_7"));
+    assert_eq!(config.machine_id, machine_id("machine_7"));
     assert_eq!(config.nats.url, NatsClientUrl::loopback(7422));
     assert_eq!(
         config.nats.ca_file,
@@ -265,12 +267,12 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
     );
     assert_eq!(
         config.nats.seed_file,
-        std::path::PathBuf::from("/var/lib/ployz/nats/node.seed")
+        std::path::PathBuf::from("/var/lib/ployz/nats/machine.seed")
     );
     assert_eq!(
         config.nats.principal,
-        NatsPrincipal::Node {
-            node_id: node_id("node_7")
+        NatsPrincipal::Machine {
+            machine_id: machine_id("machine_7")
         }
     );
     assert_eq!(
@@ -291,39 +293,41 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
 }
 
 #[test]
-fn node_role_derives_endpoint_subnet_from_node_id() {
+fn machine_role_derives_endpoint_subnet_from_machine_id() {
     let config =
-        load_daemon_process_config(
-            DaemonProcessRole::Node(node_id("edge_2")),
-            |name| match name {
+        load_daemon_process_config(DaemonProcessRole::Machine(machine_id("edge_2")), |name| {
+            match name {
                 PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
                 PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-                PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/node.seed".to_owned()),
+                PLOYZ_NATS_NKEY_SEED_FILE_ENV => {
+                    Some("/var/lib/ployz/nats/machine.seed".to_owned())
+                }
                 _ => None,
-            },
-        )
-        .expect("node role config loads");
+            }
+        })
+        .expect("machine role config loads");
 
-    let DaemonProcessConfig::Node(config) = config else {
-        panic!("node role should produce node config");
+    let DaemonProcessConfig::Machine(config) = config else {
+        panic!("machine role should produce machine config");
     };
     assert_eq!(config.dataplane.endpoint_subnet, "10.42.2.0/24");
 }
 
 #[test]
-fn node_role_rejects_invalid_public_ip() {
+fn machine_role_rejects_invalid_public_ip() {
     assert!(matches!(
         load_daemon_process_config(
-            DaemonProcessRole::Node(node_id("node_7")),
+            DaemonProcessRole::Machine(machine_id("machine_7")),
             |name| match name {
                 PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
                 PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-                PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/node.seed".to_owned()),
-                PLOYZ_NODE_PUBLIC_IP_ENV => Some("not-an-ip".to_owned()),
+                PLOYZ_NATS_NKEY_SEED_FILE_ENV =>
+                    Some("/var/lib/ployz/nats/machine.seed".to_owned()),
+                PLOYZ_MACHINE_PUBLIC_IP_ENV => Some("not-an-ip".to_owned()),
                 _ => None,
             }
         ),
-        Err(DaemonProcessConfigError::InvalidNodePublicIp { .. })
+        Err(DaemonProcessConfigError::InvalidMachinePublicIp { .. })
     ));
 }
 
@@ -331,7 +335,7 @@ fn node_role_rejects_invalid_public_ip() {
 fn control_role_loads_optional_machine_bootstrap_url() {
     let seed_file = temp_seed_file("controller.seed");
     let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-        PLOYZ_NODE_ID_ENV => Some("core_a".to_owned()),
+        PLOYZ_MACHINE_ID_ENV => Some("core_a".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
         PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
         PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some(seed_file.clone()),
@@ -343,7 +347,7 @@ fn control_role_loads_optional_machine_bootstrap_url() {
     let DaemonProcessConfig::Control(config) = config else {
         panic!("control role should produce control config");
     };
-    assert_eq!(config.deploy_nodes, vec![node_id("core_a")]);
+    assert_eq!(config.deploy_machines, vec![machine_id("core_a")]);
     assert_eq!(
         config.machine_bootstrap.bootstrap_url.as_str(),
         "https://example.test/ployz.sh"
@@ -355,7 +359,7 @@ fn control_role_loads_optional_machine_join_template() {
     let template_path = temp_join_template_file();
     let seed_file = temp_seed_file("controller.seed");
     let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-        PLOYZ_NODE_ID_ENV => Some("core_a".to_owned()),
+        PLOYZ_MACHINE_ID_ENV => Some("core_a".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
         PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
         PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some(seed_file.clone()),
@@ -376,10 +380,10 @@ fn control_role_loads_optional_machine_join_template() {
 #[test]
 fn gateway_role_loads_optional_listen_addr() {
     let config = load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
-        PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
+        PLOYZ_MACHINE_ID_ENV => Some("machine_7".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
         PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-        PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/node.seed".to_owned()),
+        PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/machine.seed".to_owned()),
         PLOYZ_GATEWAY_LISTEN_ADDR_ENV => Some("127.0.0.1:18080".to_owned()),
         _ => None,
     })
@@ -388,12 +392,12 @@ fn gateway_role_loads_optional_listen_addr() {
     let DaemonProcessConfig::Gateway(config) = config else {
         panic!("gateway role should produce gateway config");
     };
-    assert_eq!(config.node_id, node_id("node_7"));
+    assert_eq!(config.machine_id, machine_id("machine_7"));
     assert_eq!(config.nats.url, NatsClientUrl::loopback(4222));
     assert_eq!(
         config.nats.principal,
-        NatsPrincipal::Node {
-            node_id: node_id("node_7")
+        NatsPrincipal::Machine {
+            machine_id: machine_id("machine_7")
         }
     );
     assert_eq!(config.listen_addr, socket(18080));
@@ -403,10 +407,10 @@ fn gateway_role_loads_optional_listen_addr() {
 fn gateway_role_rejects_invalid_listen_addr() {
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
-            PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
+            PLOYZ_MACHINE_ID_ENV => Some("machine_7".to_owned()),
             PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
             PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-            PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/node.seed".to_owned()),
+            PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/machine.seed".to_owned()),
             PLOYZ_GATEWAY_LISTEN_ADDR_ENV => Some("127.0.0.1".to_owned()),
             _ => None,
         }),
@@ -419,7 +423,7 @@ fn control_role_rejects_invalid_machine_bootstrap_url() {
     let seed_file = temp_seed_file("controller.seed");
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-            PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
+            PLOYZ_MACHINE_ID_ENV => Some("core_1".to_owned()),
             PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
             PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
             PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some(seed_file.clone()),
@@ -431,10 +435,10 @@ fn control_role_rejects_invalid_machine_bootstrap_url() {
 }
 
 #[test]
-fn binary_node_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
-    let seed_file = temp_seed_file("binary-node.seed");
+fn binary_machine_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
+    let seed_file = temp_seed_file("binary-machine.seed");
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args(["node", "--id", "node_7"])
+        .args(["machine", "--id", "machine_7"])
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
         .env(PLOYZ_NATS_CA_FILE_ENV, "/tmp/ployz-test-ca.pem")
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, &seed_file)
@@ -454,7 +458,7 @@ fn binary_gateway_role_enters_real_runtime_and_fails_when_nats_is_unreachable() 
     let seed_file = temp_seed_file("binary-gateway.seed");
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["gateway"])
-        .env(PLOYZ_NODE_ID_ENV, "node_7")
+        .env(PLOYZ_MACHINE_ID_ENV, "machine_7")
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
         .env(PLOYZ_NATS_CA_FILE_ENV, "/tmp/ployz-test-ca.pem")
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, &seed_file)
@@ -474,7 +478,7 @@ fn binary_dns_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
     let seed_file = temp_seed_file("binary-dns.seed");
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["dns"])
-        .env(PLOYZ_NODE_ID_ENV, "node_7")
+        .env(PLOYZ_MACHINE_ID_ENV, "machine_7")
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
         .env(PLOYZ_NATS_CA_FILE_ENV, "/tmp/ployz-test-ca.pem")
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, &seed_file)
@@ -493,14 +497,14 @@ fn binary_dns_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
 fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
     assert_eq!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |_| None),
-        Err(DaemonProcessConfigError::MissingNodeId {
+        Err(DaemonProcessConfigError::MissingMachineId {
             role: DaemonProcessRole::Gateway,
         })
     );
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Dns, |name| {
             match name {
-                PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
+                PLOYZ_MACHINE_ID_ENV => Some("machine_7".to_owned()),
                 PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222\nnext".to_owned()),
                 _ => None,
             }
@@ -515,34 +519,40 @@ fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
 #[test]
 fn nats_client_roles_require_ca_and_seed_file_envs() {
     assert!(matches!(
-        load_daemon_process_config(DaemonProcessRole::Node(node_id("node_7")), |name| {
-            match name {
-                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
-                _ => None,
+        load_daemon_process_config(
+            DaemonProcessRole::Machine(machine_id("machine_7")),
+            |name| {
+                match name {
+                    PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+                    _ => None,
+                }
             }
-        }),
+        ),
         Err(DaemonProcessConfigError::MissingNatsCaFile { .. })
     ));
     assert!(matches!(
-        load_daemon_process_config(DaemonProcessRole::Node(node_id("node_7")), |name| {
-            match name {
-                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
-                PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-                _ => None,
+        load_daemon_process_config(
+            DaemonProcessRole::Machine(machine_id("machine_7")),
+            |name| {
+                match name {
+                    PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+                    PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
+                    _ => None,
+                }
             }
-        }),
+        ),
         Err(DaemonProcessConfigError::MissingNatsSeedFile { .. })
     ));
 }
 
 /// A configured-but-missing seed file is a config error only for control:
-/// keeper wrote `controller.seed` at install. Node and gateway carry the
+/// keeper wrote `controller.seed` at install. Machine and gateway carry the
 /// path into the typed `AwaitingSeedFile` startup state instead.
 #[test]
 fn control_role_requires_a_readable_controller_seed_file() {
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-            PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
+            PLOYZ_MACHINE_ID_ENV => Some("core_1".to_owned()),
             PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
             PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
             PLOYZ_NATS_NKEY_SEED_FILE_ENV =>
@@ -554,32 +564,31 @@ fn control_role_requires_a_readable_controller_seed_file() {
             ..
         })
     ));
-    let node =
-        load_daemon_process_config(
-            DaemonProcessRole::Node(node_id("node_7")),
-            |name| match name {
-                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
-                PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-                PLOYZ_NATS_NKEY_SEED_FILE_ENV => {
-                    Some("/tmp/ployz-test-missing-node.seed".to_owned())
-                }
-                _ => None,
-            },
-        )
-        .expect("node role config loads with a missing seed file");
-    let DaemonProcessConfig::Node(node) = node else {
-        panic!("node role should produce node config");
+    let machine = load_daemon_process_config(
+        DaemonProcessRole::Machine(machine_id("machine_7")),
+        |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+            PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
+            PLOYZ_NATS_NKEY_SEED_FILE_ENV => {
+                Some("/tmp/ployz-test-missing-machine.seed".to_owned())
+            }
+            _ => None,
+        },
+    )
+    .expect("machine role config loads with a missing seed file");
+    let DaemonProcessConfig::Machine(machine) = machine else {
+        panic!("machine role should produce machine config");
     };
     assert!(matches!(
-        ployzd::node_credentials::observe_role_credentials(&node.nats, 1),
-        ployzd::node_credentials::NodeCredentialState::AwaitingSeedFile { attempts: 1, .. }
+        ployzd::machine_credentials::observe_role_credentials(&machine.nats, 1),
+        ployzd::machine_credentials::MachineCredentialState::AwaitingSeedFile { attempts: 1, .. }
     ));
 }
 
 #[test]
-fn binary_node_role_requires_nats_url() {
+fn binary_machine_role_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args(["node", "--id", "node_7"])
+        .args(["machine", "--id", "machine_7"])
         .env_remove(PLOYZ_NATS_URL_ENV)
         .output()
         .expect("ployzd binary runs");
@@ -587,7 +596,7 @@ fn binary_node_role_requires_nats_url() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "PLOYZ_NATS_URL is required for ployzd node\n"
+        "PLOYZ_NATS_URL is required for ployzd machine\n"
     );
 }
 

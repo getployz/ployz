@@ -2,9 +2,9 @@
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
 use crate::controllers::OperationControllers;
-use crate::node::client::{NatsNodeLogsTailer, NodeLogsTailRuntimeError};
-use crate::node::protocol::NodeLogsTailRpcRequest;
-use ployz_core::ids::{ContainerId, NodeId, OperationId};
+use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
+use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
+use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
@@ -35,14 +35,14 @@ pub struct ServiceQueryRuntime {
 #[derive(Clone)]
 pub struct LogsQueryRuntime {
     observations: AsyncNatsObservationStore,
-    tailer: NatsNodeLogsTailer,
+    tailer: NatsMachineLogsTailer,
 }
 
 impl LogsQueryRuntime {
     #[must_use]
     pub(crate) const fn new(
         observations: AsyncNatsObservationStore,
-        tailer: NatsNodeLogsTailer,
+        tailer: NatsMachineLogsTailer,
     ) -> Self {
         Self {
             observations,
@@ -54,14 +54,14 @@ impl LogsQueryRuntime {
         &self,
         request: LogsTailRequest,
     ) -> Result<LogsTailResult, LogsTailError> {
-        let node_id = match request.node_id.clone() {
-            Some(node_id) => {
-                self.verify_observed_container_on_node(&node_id, &request.container_id)
+        let machine_id = match request.machine_id.clone() {
+            Some(machine_id) => {
+                self.verify_observed_container_on_machine(&machine_id, &request.container_id)
                     .await?;
-                node_id
+                machine_id
             }
             None => self
-                .find_container_node(&request.container_id)
+                .find_container_machine(&request.container_id)
                 .await?
                 .ok_or_else(|| LogsTailError::NoSuchContainer {
                     container_id: request.container_id.clone(),
@@ -70,40 +70,40 @@ impl LogsQueryRuntime {
 
         self.tailer
             .tail_logs(
-                &node_id,
-                NodeLogsTailRpcRequest {
+                &machine_id,
+                MachineLogsTailRpcRequest {
                     container_id: request.container_id,
                     tail_lines: request.tail_lines.map(|lines| lines.get()),
                 },
             )
             .await
             .map(|value| LogsTailResult {
-                node_id: value.node_id,
+                machine_id: value.machine_id,
                 container_id: value.container_id,
                 text: value.text,
                 truncated: value.truncated,
             })
-            .map_err(logs_tail_node_error)
+            .map_err(logs_tail_machine_error)
     }
 
-    async fn find_container_node(
+    async fn find_container_machine(
         &self,
         container_id: &ContainerId,
-    ) -> Result<Option<NodeId>, LogsTailError> {
+    ) -> Result<Option<MachineId>, LogsTailError> {
         let mut matches = self
             .observations
-            .node_snapshot_records()
+            .machine_snapshot_records()
             .await
             .map_err(|_| LogsTailError::Unavailable {
                 source: LogsTailUnavailableSource::Observations,
-                node_id: None,
+                machine_id: None,
             })?
             .into_iter()
             .filter_map(|record| {
                 record
                     .snapshot
                     .container(container_id)
-                    .map(|_| record.snapshot.node_id().clone())
+                    .map(|_| record.snapshot.machine_id().clone())
             })
             .collect::<Vec<_>>();
         matches.sort();
@@ -111,26 +111,26 @@ impl LogsQueryRuntime {
 
         match matches.as_slice() {
             [] => Ok(None),
-            [node_id] => Ok(Some(node_id.clone())),
-            node_ids => Err(LogsTailError::AmbiguousContainer {
+            [machine_id] => Ok(Some(machine_id.clone())),
+            machine_ids => Err(LogsTailError::AmbiguousContainer {
                 container_id: container_id.clone(),
-                node_ids: node_ids.to_vec(),
+                machine_ids: machine_ids.to_vec(),
             }),
         }
     }
 
-    async fn verify_observed_container_on_node(
+    async fn verify_observed_container_on_machine(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), LogsTailError> {
         let Some(snapshot) = self
             .observations
-            .node_snapshot(node_id)
+            .machine_snapshot(machine_id)
             .await
             .map_err(|_| LogsTailError::Unavailable {
                 source: LogsTailUnavailableSource::Observations,
-                node_id: Some(node_id.clone()),
+                machine_id: Some(machine_id.clone()),
             })?
         else {
             return Err(LogsTailError::NoSuchContainer {
@@ -207,13 +207,13 @@ impl MachineQueryRuntime {
             .map_err(machine_list_core_error)?;
         let public_ips = self
             .observations
-            .node_public_ips()
+            .machine_public_ips()
             .await
             .map_err(|_| MachineListError::Unavailable {
                 source: MachineQueryUnavailableSource::Observations,
             })?
             .into_iter()
-            .map(|observation| (observation.node_id.clone(), observation))
+            .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
         let gateway_statuses = self
             .observations
@@ -223,11 +223,11 @@ impl MachineQueryRuntime {
                 source: MachineQueryUnavailableSource::Observations,
             })?
             .into_iter()
-            .map(|observation| (observation.node_id.clone(), observation))
+            .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
         let container_counts = self
             .observations
-            .node_snapshot_records()
+            .machine_snapshot_records()
             .await
             .map_err(|_| MachineListError::Unavailable {
                 source: MachineQueryUnavailableSource::Observations,
@@ -235,7 +235,7 @@ impl MachineQueryRuntime {
             .into_iter()
             .map(|record| {
                 (
-                    record.snapshot.node_id().clone(),
+                    record.snapshot.machine_id().clone(),
                     record.snapshot.containers().len(),
                 )
             })
@@ -243,10 +243,10 @@ impl MachineQueryRuntime {
         let mut snapshots = Vec::with_capacity(machines.len());
         for machine in machines {
             snapshots.push(MachineSnapshot {
-                public_ip: public_ips.get(&machine.node_id).cloned(),
-                gateway: gateway_statuses.get(&machine.node_id).cloned(),
+                public_ip: public_ips.get(&machine.machine_id).cloned(),
+                gateway: gateway_statuses.get(&machine.machine_id).cloned(),
                 observed_container_count: container_counts
-                    .get(&machine.node_id)
+                    .get(&machine.machine_id)
                     .copied()
                     .unwrap_or_default(),
                 active: machine,
@@ -259,16 +259,16 @@ impl MachineQueryRuntime {
 
     pub(crate) async fn inspect(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
     ) -> Result<MachineSnapshot, MachineInspectError> {
         let Some(machine) = self
             .core_state
-            .active_machine(node_id)
+            .active_machine(machine_id)
             .await
             .map_err(machine_inspect_core_error)?
         else {
             return Err(MachineInspectError::NoSuchMachine {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
             });
         };
 
@@ -281,17 +281,17 @@ impl MachineQueryRuntime {
     ) -> Result<MachineSnapshot, MachineSnapshotError> {
         let public_ip = self
             .observations
-            .node_public_ip(&active.node_id)
+            .machine_public_ip(&active.machine_id)
             .await
             .map_err(|_| MachineSnapshotError::Observations)?;
         let gateway = self
             .observations
-            .gateway_status(&active.node_id)
+            .gateway_status(&active.machine_id)
             .await
             .map_err(|_| MachineSnapshotError::Observations)?;
         let observed_container_count = self
             .observations
-            .node_snapshot(&active.node_id)
+            .machine_snapshot(&active.machine_id)
             .await
             .map_err(|_| MachineSnapshotError::Observations)?
             .map(|snapshot| snapshot.containers().len())
@@ -310,23 +310,23 @@ enum MachineSnapshotError {
     Observations,
 }
 
-fn logs_tail_node_error(error: NodeLogsTailRuntimeError) -> LogsTailError {
+fn logs_tail_machine_error(error: MachineLogsTailRuntimeError) -> LogsTailError {
     match error {
-        NodeLogsTailRuntimeError::NotFound { container_id, .. } => {
+        MachineLogsTailRuntimeError::NotFound { container_id, .. } => {
             LogsTailError::NoSuchContainer { container_id }
         }
-        NodeLogsTailRuntimeError::ReadFailed {
-            node_id,
+        MachineLogsTailRuntimeError::ReadFailed {
+            machine_id,
             container_id,
             message,
         } => LogsTailError::ReadFailed {
-            node_id,
+            machine_id,
             container_id,
             message,
         },
-        NodeLogsTailRuntimeError::Unavailable { node_id, .. } => LogsTailError::Unavailable {
-            source: LogsTailUnavailableSource::NodeRpc,
-            node_id: Some(node_id),
+        MachineLogsTailRuntimeError::Unavailable { machine_id, .. } => LogsTailError::Unavailable {
+            source: LogsTailUnavailableSource::MachineRpc,
+            machine_id: Some(machine_id),
         },
     }
 }

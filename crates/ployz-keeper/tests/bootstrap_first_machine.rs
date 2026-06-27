@@ -4,18 +4,18 @@ use ployz_core::nats_config::NatsUserPublicKey;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::ArtifactKind;
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, KeeperStep, PloyzdRoleEnvironmentStep, first_node_install_plan,
+    FirstMachineInstallTarget, KeeperStep, PloyzdRoleEnvironmentStep, first_machine_install_plan,
 };
 use ployz_keeper::systemd::SupervisorUnitTarget;
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 use ployz_test_support::keeper::{nats_server_artifact, ployzd_artifact};
 use support::bootstrap::*;
 
 #[test]
-fn first_node_install_starts_nats_and_core_roles_without_join_token() {
-    let node_id = node_id("node_1");
-    let target = FirstNodeInstallTarget::new(
-        node_id.clone(),
+fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
+    let machine_id = machine_id("machine_1");
+    let target = FirstMachineInstallTarget::new(
+        machine_id.clone(),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -25,7 +25,7 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
         test_identity().clone(),
     );
     let role_environment = target.role_environment.clone();
-    let plan = first_node_install_plan(target);
+    let plan = first_machine_install_plan(target);
 
     assert!(installs_artifact_kind(&plan, ArtifactKind::Ployzd));
     assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfBytecode));
@@ -33,12 +33,9 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     assert!(installs_artifact_kind(&plan, ArtifactKind::NatsServer));
     assert!(writes_nats_server_unit(&plan));
     assert!(writes_ployzd_role_units(&plan));
-    assert!(
-        plan.steps()
-            .contains(&KeeperStep::WriteNatsServerConfig(first_node_nats_target(
-                node_id.clone()
-            )))
-    );
+    assert!(plan.steps().contains(&KeeperStep::WriteNatsServerConfig(
+        first_machine_nats_target(machine_id.clone())
+    )));
     assert!(
         plan.steps()
             .iter()
@@ -59,7 +56,10 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
         SupervisorUnitTarget::NatsServer
     )));
 
-    for role in [DaemonProcessRole::Control, DaemonProcessRole::Node(node_id)] {
+    for role in [
+        DaemonProcessRole::Control,
+        DaemonProcessRole::Machine(machine_id),
+    ] {
         assert!(
             plan.steps()
                 .contains(&KeeperStep::WritePloyzdRoleEnvironment(
@@ -90,10 +90,10 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
 }
 
 #[test]
-fn first_node_can_authorize_cloud_user_public_key() {
+fn first_machine_can_authorize_cloud_user_public_key() {
     let cloud_public_key = user_public_key('C');
-    let target = FirstNodeInstallTarget::new(
-        node_id("node_1"),
+    let target = FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -103,7 +103,7 @@ fn first_node_can_authorize_cloud_user_public_key() {
         test_identity().clone(),
     )
     .with_additional_user_public_key(cloud_public_key.clone());
-    let plan = first_node_install_plan(target);
+    let plan = first_machine_install_plan(target);
 
     let rendered = plan
         .steps()
@@ -124,7 +124,7 @@ fn first_node_can_authorize_cloud_user_public_key() {
             | KeeperStep::RestartSupervisorUnit(_)
             | KeeperStep::StoreJoinMaterial(_) => None,
         })
-        .expect("first-node plan writes authorized users");
+        .expect("first-machine plan writes authorized users");
 
     assert!(rendered.contains(test_identity().controller.public.as_str()));
     assert!(rendered.contains(test_identity().operator.public.as_str()));
@@ -134,9 +134,9 @@ fn first_node_can_authorize_cloud_user_public_key() {
 }
 
 #[test]
-fn first_node_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
-    let target = FirstNodeInstallTarget::new(
-        node_id("node_1"),
+fn first_machine_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
+    let target = FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -153,16 +153,16 @@ fn first_node_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
         control_env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/controller.seed\n")
     );
 
-    // Node and gateway point at the fixed node.seed path, which does not
+    // Machine and gateway point at the fixed machine.seed path, which does not
     // exist at install time — there is no controller-seed fallback.
     for role in [
-        DaemonProcessRole::Node(node_id("node_1")),
+        DaemonProcessRole::Machine(machine_id("machine_1")),
         DaemonProcessRole::Gateway,
     ] {
         let env = target.role_environment.render_for_role(&role);
         assert!(env.starts_with("PLOYZ_NATS_URL=tls://127.0.0.1:4222\n"));
         assert!(env.contains("PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem\n"));
-        assert!(env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/node.seed\n"));
+        assert!(env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/machine.seed\n"));
         assert!(!env.contains("controller.seed"));
         if matches!(role, DaemonProcessRole::Gateway) {
             assert!(env.contains("PLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"));
@@ -186,9 +186,9 @@ fn user_public_key(fill: char) -> NatsUserPublicKey {
 }
 
 #[test]
-fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
-    let target = FirstNodeInstallTarget::new(
-        node_id("node_1"),
+fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
+    let target = FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -197,8 +197,8 @@ fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
             .without_dns(),
         test_identity().clone(),
     )
-    .with_node_public_ip("203.0.113.10".parse().expect("valid IP"));
-    let plan = first_node_install_plan(target);
+    .with_machine_public_ip("203.0.113.10".parse().expect("valid IP"));
+    let plan = first_machine_install_plan(target);
 
     let rendered = plan
         .steps()
@@ -219,7 +219,7 @@ fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
             | KeeperStep::RestartSupervisorUnit(_)
             | KeeperStep::StoreJoinMaterial(_) => None,
         })
-        .expect("first-node plan writes the nats config");
+        .expect("first-machine plan writes the nats config");
 
     // TLS + authorization land in the same rendered config that opens the
     // listener — a plaintext external listener is unrepresentable.
@@ -230,9 +230,9 @@ fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
 }
 
 #[test]
-fn first_node_default_install_includes_gateway_and_dns_roles() {
-    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
-        node_id("node_1"),
+fn first_machine_default_install_includes_gateway_and_dns_roles() {
+    let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -251,9 +251,9 @@ fn first_node_default_install_includes_gateway_and_dns_roles() {
 }
 
 #[test]
-fn first_node_dns_opt_out_skips_only_the_dns_role() {
-    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
-        node_id("node_1"),
+fn first_machine_dns_opt_out_skips_only_the_dns_role() {
+    let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -272,9 +272,9 @@ fn first_node_dns_opt_out_skips_only_the_dns_role() {
 }
 
 #[test]
-fn first_node_gateway_opt_out_skips_only_the_gateway_role() {
-    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
-        node_id("node_1"),
+fn first_machine_gateway_opt_out_skips_only_the_gateway_role() {
+    let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),

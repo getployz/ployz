@@ -7,19 +7,19 @@
 //! so a low-privilege credential cannot sniff another client's replies.
 //!
 //! There is no Gateway principal in v1: gateway and DNS processes
-//! authenticate as their machine's `Node{node_id}` user, and the Node
+//! authenticate as their machine's `Machine{machine_id}` user, and the Machine
 //! profile carries the read-only route-state subjects they need.
 
-use crate::ids::NodeId;
+use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
 use crate::state::{
     ACTIVE_MACHINE_STATE_PREFIX, ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX,
     GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
-    NATS_AUTHORIZED_USER_PREFIX, NodeContainerObservationKey, NodePublicIpObservationKey,
+    MachineContainerObservationKey, MachinePublicIpObservationKey, NATS_AUTHORIZED_USER_PREFIX,
 };
 use crate::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, NODE_SERVICE_SCOPE,
-    OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
+    OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
 };
 
 const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
@@ -35,7 +35,7 @@ const JETSTREAM_ACK_SCOPE: &str = "$JS.ACK.>";
 #[must_use]
 pub fn inbox_prefix(principal: &NatsPrincipal) -> String {
     match principal {
-        NatsPrincipal::Node { node_id } => format!("_INBOX_node_{}", node_id.as_str()),
+        NatsPrincipal::Machine { machine_id } => format!("_INBOX_machine_{}", machine_id.as_str()),
         NatsPrincipal::Controller => "_INBOX_ctl".to_owned(),
         NatsPrincipal::User => "_INBOX_user".to_owned(),
         NatsPrincipal::Join => "_INBOX_join".to_owned(),
@@ -75,19 +75,19 @@ pub fn operation_status_kv_write_scope() -> String {
     format!("$KV.{KV_OPS_BUCKET}.>")
 }
 
-/// A node's observation writes in `KV_OBS`, fenced to its own keys.
+/// A machine's observation writes in `KV_OBS`, fenced to its own keys.
 ///
 /// The subjects derive from the same typed keys the observation store
-/// writes (`containers.<node>`, `nodes.<node>.public_ip`,
-/// `gateways.<node>.status`), so one machine's Node credential cannot
+/// writes (`containers.<machine>`, `machines.<machine>.public_ip`,
+/// `gateways.<machine>.status`), so one machine's Machine credential cannot
 /// overwrite another machine's observations — routing and serving
-/// eligibility read these. Nodes keep read access to the whole bucket via
+/// eligibility read these. Machines keep read access to the whole bucket via
 /// [`kv_read_js_api_subjects`].
 #[must_use]
-pub fn node_observation_kv_write_subjects(node_id: &NodeId) -> [String; 3] {
-    let containers = NodeContainerObservationKey::from_node_id(node_id);
-    let public_ip = NodePublicIpObservationKey::from_node_id(node_id);
-    let gateway_status = GatewayStatusObservationKey::from_node_id(node_id);
+pub fn machine_observation_kv_write_subjects(machine_id: &MachineId) -> [String; 3] {
+    let containers = MachineContainerObservationKey::from_machine_id(machine_id);
+    let public_ip = MachinePublicIpObservationKey::from_machine_id(machine_id);
+    let gateway_status = GatewayStatusObservationKey::from_machine_id(machine_id);
     [
         format!("$KV.{KV_OBS_BUCKET}.{}", containers.as_str()),
         format!("$KV.{KV_OBS_BUCKET}.{}", public_ip.as_str()),
@@ -129,12 +129,12 @@ impl NatsPermissionProfile {
     pub fn render(principal: NatsPrincipal) -> Self {
         let inbox_scope = inbox_subscribe_scope(&principal);
         match &principal {
-            NatsPrincipal::Node { node_id } => {
-                // Gateway and DNS authenticate as the machine's Node user in
+            NatsPrincipal::Machine { machine_id } => {
+                // Gateway and DNS authenticate as the machine's Machine user in
                 // v1, so this profile carries their read-only route-state
                 // access (KV_CORE reads stay read-only via the publish deny).
-                let mut publish_allow = vec![node_observation_scope(node_id)];
-                publish_allow.extend(node_observation_kv_write_subjects(node_id));
+                let mut publish_allow = vec![machine_observation_scope(machine_id)];
+                publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
                 publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
                 publish_allow.extend(kv_read_js_api_subjects(KV_CORE_BUCKET));
                 Self {
@@ -142,7 +142,7 @@ impl NatsPermissionProfile {
                     publish: SubjectPermissions::allowing_all(publish_allow)
                         .with_denied([CORE_KV_WRITES]),
                     subscribe: SubjectPermissions::allowing([
-                        node_service_scope(node_id),
+                        machine_service_scope(machine_id),
                         inbox_scope,
                     ]),
                     allow_responses: ResponsePermission::Allowed,
@@ -151,7 +151,7 @@ impl NatsPermissionProfile {
             NatsPrincipal::Controller => Self {
                 principal: principal.clone(),
                 publish: SubjectPermissions::allowing([
-                    NODE_SERVICE_SCOPE.to_owned(),
+                    MACHINE_SERVICE_SCOPE.to_owned(),
                     OPS_STREAM_SUBJECT.to_owned(),
                     JETSTREAM_API_SCOPE.to_owned(),
                     JETSTREAM_ACK_SCOPE.to_owned(),

@@ -27,7 +27,7 @@ export {
   machineBootstrapUrl,
   machineJoinToken,
   machineName,
-  nodeId,
+  machineId,
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
@@ -48,7 +48,7 @@ import {
   logsTailLines,
   machineName,
   machineJoinToken,
-  nodeId,
+  machineId,
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
@@ -67,10 +67,10 @@ import type {
   DeploySubmitRequest,
   DeploySubmitResponse,
   EventSequence,
-  InitFirstNodeActivateError,
-  InitFirstNodeActivateRequest,
-  InitFirstNodeActivateResponse,
-  InitFirstNodeActivated,
+  InitFirstMachineActivateError,
+  InitFirstMachineActivateRequest,
+  InitFirstMachineActivateResponse,
+  InitFirstMachineActivated,
   LogsTailError,
   LogsTailLines,
   LogsTailRequest,
@@ -119,9 +119,9 @@ import type {
 
 export interface PloyzOperationTransport {
   deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse>;
-  initFirstNodeActivate(
-    request: InitFirstNodeActivateRequest,
-  ): Promise<InitFirstNodeActivateResponse>;
+  initFirstMachineActivate(
+    request: InitFirstMachineActivateRequest,
+  ): Promise<InitFirstMachineActivateResponse>;
   backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse>;
   machineAdd(request: MachineAddRequest): Promise<MachineAddResponse>;
   machineList(request: MachineListRequest): Promise<MachineListResponse>;
@@ -165,13 +165,13 @@ export interface PloyzDeployInput {
 export interface PloyzMachineAddInput {
   operationId: string;
   idempotencyKey: string;
-  nodeId: string;
+  machineId: string;
   name: string;
   roles: InstallRolePolicy;
 }
 
-export interface PloyzFirstNodeActivateInput {
-  nodeId: string;
+export interface PloyzFirstMachineActivateInput {
+  machineId: string;
   roles: InstallRolePolicy;
 }
 
@@ -196,7 +196,7 @@ export interface PloyzS3BackupTargetInput {
 }
 
 export interface PloyzMachineInspectInput {
-  nodeId: string;
+  machineId: string;
 }
 
 export interface PloyzServiceInspectInput {
@@ -205,7 +205,7 @@ export interface PloyzServiceInspectInput {
 
 export interface PloyzLogsTailInput {
   containerId: string;
-  nodeId?: string;
+  machineId?: string;
   tailLines?: number | LogsTailLines;
 }
 
@@ -233,14 +233,14 @@ export class PloyzClient {
     return new OperationHandle(this.#transport, accepted);
   }
 
-  async initFirstNodeActivate(
-    input: PloyzFirstNodeActivateInput,
-  ): Promise<FirstNodeActivationHandle> {
+  async initFirstMachineActivate(
+    input: PloyzFirstMachineActivateInput,
+  ): Promise<FirstMachineActivationHandle> {
     const activated = unwrapApiResponse(
-      "init.first_node.activate",
-      await this.#transport.initFirstNodeActivate(initFirstNodeActivateRequest(input)),
+      "init.first_machine.activate",
+      await this.#transport.initFirstMachineActivate(initFirstMachineActivateRequest(input)),
     );
-    return new FirstNodeActivationHandle(this.#transport, activated);
+    return new FirstMachineActivationHandle(this.#transport, activated);
   }
 
   async machineAdd(input: PloyzMachineAddInput): Promise<MachineAddHandle> {
@@ -382,17 +382,17 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
   return {
     operation_id: operationId(input.operationId),
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
-    node_id: nodeId(input.nodeId),
+    machine_id: machineId(input.machineId),
     name: machineName(input.name),
     roles: input.roles,
   };
 }
 
-export function initFirstNodeActivateRequest(
-  input: PloyzFirstNodeActivateInput,
-): InitFirstNodeActivateRequest {
+export function initFirstMachineActivateRequest(
+  input: PloyzFirstMachineActivateInput,
+): InitFirstMachineActivateRequest {
   return {
-    node_id: nodeId(input.nodeId),
+    machine_id: machineId(input.machineId),
     roles: input.roles,
   };
 }
@@ -405,7 +405,7 @@ export function machineInspectRequest(
   input: string | PloyzMachineInspectInput,
 ): MachineInspectRequest {
   return {
-    node_id: nodeId(typeof input === "string" ? input : input.nodeId),
+    machine_id: machineId(typeof input === "string" ? input : input.machineId),
   };
 }
 
@@ -438,7 +438,7 @@ export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailReq
 
   return {
     container_id: containerId(input.containerId),
-    ...(input.nodeId ? { node_id: nodeId(input.nodeId) } : {}),
+    ...(input.machineId ? { machine_id: machineId(input.machineId) } : {}),
     ...(input.tailLines === undefined ? {} : { tail_lines: logsTailLines(input.tailLines) }),
   };
 }
@@ -505,8 +505,8 @@ export class MachineAddHandle extends OperationHandle {
     this.machine = machine;
   }
 
-  get nodeId(): MachineAddAccepted["node_id"] {
-    return this.machine.node_id;
+  get machineId(): MachineAddAccepted["machine_id"] {
+    return this.machine.machine_id;
   }
 
   get bootstrapUrl(): MachineAddAccepted["bootstrap_url"] {
@@ -526,11 +526,11 @@ export class MachineAddHandle extends OperationHandle {
   }
 }
 
-export class FirstNodeActivationHandle {
+export class FirstMachineActivationHandle {
   readonly #transport: PloyzOperationTransport;
-  readonly activated: InitFirstNodeActivated;
+  readonly activated: InitFirstMachineActivated;
 
-  constructor(transport: PloyzOperationTransport, activated: InitFirstNodeActivated) {
+  constructor(transport: PloyzOperationTransport, activated: InitFirstMachineActivated) {
     this.#transport = transport;
     this.activated = activated;
   }
@@ -539,8 +539,8 @@ export class FirstNodeActivationHandle {
     return this.activated.operation_id;
   }
 
-  get nodeId(): InitFirstNodeActivated["node_id"] {
-    return this.activated.node_id;
+  get machineId(): InitFirstMachineActivated["machine_id"] {
+    return this.activated.machine_id;
   }
 
   async status(): Promise<OperationStatusSnapshot> {
@@ -568,7 +568,7 @@ function unwrapApiResponse<T, E>(
 export type PloyzOperationError =
   | PloyzApiError<BackupCreateError>
   | PloyzApiError<DeploySubmitError>
-  | PloyzApiError<InitFirstNodeActivateError>
+  | PloyzApiError<InitFirstMachineActivateError>
   | PloyzApiError<MachineAddError>
   | PloyzApiError<MachineListError>
   | PloyzApiError<MachineInspectError>

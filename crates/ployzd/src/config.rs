@@ -1,7 +1,7 @@
 //! Role-specific daemon configuration.
 
 use ployz_core::dataplane::default_endpoint_subnet;
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::{
     InstallContractError, MachineBootstrapUrl, MachineJoinTemplate, NatsMachineMaterialPaths,
 };
@@ -24,12 +24,12 @@ pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
-pub const PLOYZ_NATS_NODE_SEED_FILE_ENV: &str = "PLOYZ_NATS_NODE_SEED_FILE";
+pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
-pub const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
-pub const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
+pub const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
+pub const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
-pub const PLOYZ_DEPLOY_NODES_ENV: &str = "PLOYZ_DEPLOY_NODES";
+pub const PLOYZ_DEPLOY_MACHINES_ENV: &str = "PLOYZ_DEPLOY_MACHINES";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
 pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
@@ -47,7 +47,7 @@ pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfig {
     Control(ControlProcessConfig),
-    Node(NodeProcessConfig),
+    Machine(MachineProcessConfig),
     Gateway(GatewayProcessConfig),
     Dns(DnsProcessConfig),
 }
@@ -57,7 +57,7 @@ impl DaemonProcessConfig {
     pub fn role(&self) -> DaemonProcessRole {
         match self {
             Self::Control(_) => DaemonProcessRole::Control,
-            Self::Node(config) => DaemonProcessRole::Node(config.node_id.clone()),
+            Self::Machine(config) => DaemonProcessRole::Machine(config.machine_id.clone()),
             Self::Gateway(_) => DaemonProcessRole::Gateway,
             Self::Dns(_) => DaemonProcessRole::Dns,
         }
@@ -70,52 +70,54 @@ pub fn load_daemon_process_config(
 ) -> Result<DaemonProcessConfig, DaemonProcessConfigError> {
     match &role {
         DaemonProcessRole::Control => {
-            let node_id = load_process_node_id(&role, &env)?;
+            let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
             let nats_connect = read_connect_config_now(&role, &connect)?;
             let mut control = ControlProcessConfig::new(
                 NatsServerRuntime::External(connect.url),
-                node_id,
+                machine_id,
                 nats_connect,
             )
             .with_nats_authorization(load_control_nats_authorization(&env));
-            if let Some(deploy_nodes) = load_deploy_nodes(&env)? {
-                control = control.with_deploy_nodes(deploy_nodes);
+            if let Some(deploy_machines) = load_deploy_machines(&env)? {
+                control = control.with_deploy_machines(deploy_machines);
             }
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
-        DaemonProcessRole::Node(node_id) => {
+        DaemonProcessRole::Machine(machine_id) => {
             let connect = load_nats_connect_config(&role, &env)?;
-            let artifacts =
-                NodeProcessArtifacts::new(load_ebpf_bytecode_path(&env), load_ebpf_ctl_path(&env));
-            let dataplane = NodeDataplaneConfig::new(
+            let artifacts = MachineProcessArtifacts::new(
+                load_ebpf_bytecode_path(&env),
+                load_ebpf_ctl_path(&env),
+            );
+            let dataplane = MachineDataplaneConfig::new(
                 load_dataplane_bridge_ifname(&env),
                 load_dataplane_wg_ifname(&env),
-                load_dataplane_endpoint_subnet(&env, node_id),
+                load_dataplane_endpoint_subnet(&env, machine_id),
             );
-            Ok(DaemonProcessConfig::Node(NodeProcessConfig::new(
-                node_id.clone(),
+            Ok(DaemonProcessConfig::Machine(MachineProcessConfig::new(
+                machine_id.clone(),
                 connect,
                 artifacts,
                 dataplane,
-                load_node_public_ip(&env)?,
+                load_machine_public_ip(&env)?,
             )))
         }
         DaemonProcessRole::Gateway => {
-            let node_id = load_process_node_id(&role, &env)?;
+            let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
             Ok(DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
-                node_id,
+                machine_id,
                 connect,
                 load_gateway_listen_addr(&env)?,
             )))
         }
         DaemonProcessRole::Dns => {
-            let node_id = load_process_node_id(&role, &env)?;
+            let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
             Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(
-                node_id, connect,
+                machine_id, connect,
             )))
         }
     }
@@ -128,7 +130,7 @@ fn env_value(env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String>
 
 /// Everything a role needs to make its authenticated NATS connection,
 /// before the seed file is read. A configured-but-absent seed **file** is
-/// not a config error: node and gateway enter the bounded
+/// not a config error: machine and gateway enter the bounded
 /// `AwaitingSeedFile` startup state and re-read the path until ployzd
 /// control mints and writes the machine credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +204,7 @@ impl std::error::Error for SeedFileReadError {}
 /// Reads `PLOYZ_NATS_URL`, `PLOYZ_NATS_CA_FILE`, and
 /// `PLOYZ_NATS_NKEY_SEED_FILE` for the given role. Each missing or invalid
 /// input is a distinct typed error; the seed file's *contents* are read
-/// later (eagerly for control, awaited for node/gateway/DNS).
+/// later (eagerly for control, awaited for machine/gateway/DNS).
 pub fn load_nats_connect_config(
     role: &DaemonProcessRole,
     env: &impl Fn(&str) -> Option<String>,
@@ -216,13 +218,13 @@ pub fn load_nats_connect_config(
         .ok_or_else(|| DaemonProcessConfigError::MissingNatsSeedFile { role: role.clone() })?;
     let principal = match role {
         DaemonProcessRole::Control => NatsPrincipal::Controller,
-        // Gateway and DNS authenticate as the machine's Node user in v1 —
+        // Gateway and DNS authenticate as the machine's Machine user in v1 —
         // there is no Gateway principal (ADR: Committed Auth Scheme).
-        DaemonProcessRole::Node(node_id) => NatsPrincipal::Node {
-            node_id: node_id.clone(),
+        DaemonProcessRole::Machine(machine_id) => NatsPrincipal::Machine {
+            machine_id: machine_id.clone(),
         },
-        DaemonProcessRole::Gateway | DaemonProcessRole::Dns => NatsPrincipal::Node {
-            node_id: load_process_node_id(role, env)?,
+        DaemonProcessRole::Gateway | DaemonProcessRole::Dns => NatsPrincipal::Machine {
+            machine_id: load_process_machine_id(role, env)?,
         },
     };
 
@@ -257,18 +259,18 @@ fn load_control_nats_authorization(
         authorized_users_file: env_value(env, PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.authorized_users_file),
-        node_seed_file: env_value(env, PLOYZ_NATS_NODE_SEED_FILE_ENV)
+        machine_seed_file: env_value(env, PLOYZ_NATS_MACHINE_SEED_FILE_ENV)
             .map(PathBuf::from)
-            .unwrap_or(defaults.node_seed_file),
+            .unwrap_or(defaults.machine_seed_file),
     }
 }
 
 /// The two control-owned credential paths: the rendered authority file and
-/// the first node's locally written `node.seed`.
+/// the first machine's locally written `machine.seed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
-    pub node_seed_file: PathBuf,
+    pub machine_seed_file: PathBuf,
 }
 
 impl ControlNatsAuthorizationConfig {
@@ -276,7 +278,7 @@ impl ControlNatsAuthorizationConfig {
     pub fn in_default_paths() -> Self {
         Self {
             authorized_users_file: PathBuf::from(DEFAULT_NATS_AUTHORIZED_USERS_FILE),
-            node_seed_file: NatsMachineMaterialPaths::in_default_state_dir().node_seed_file(),
+            machine_seed_file: NatsMachineMaterialPaths::in_default_state_dir().machine_seed_file(),
         }
     }
 }
@@ -305,23 +307,23 @@ fn load_dataplane_wg_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
 
 fn load_dataplane_endpoint_subnet(
     env: &impl Fn(&str) -> Option<String>,
-    node_id: &NodeId,
+    machine_id: &MachineId,
 ) -> String {
     env_value(env, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV)
-        .unwrap_or_else(|| default_endpoint_subnet(node_id))
+        .unwrap_or_else(|| default_endpoint_subnet(machine_id))
 }
 
-fn load_node_public_ip(
+fn load_machine_public_ip(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<IpAddr>, DaemonProcessConfigError> {
-    let Some(value) = env_value(env, PLOYZ_NODE_PUBLIC_IP_ENV) else {
+    let Some(value) = env_value(env, PLOYZ_MACHINE_PUBLIC_IP_ENV) else {
         return Ok(None);
     };
 
     value
         .parse()
         .map(Some)
-        .map_err(|source| DaemonProcessConfigError::InvalidNodePublicIp { value, source })
+        .map_err(|source| DaemonProcessConfigError::InvalidMachinePublicIp { value, source })
 }
 
 fn load_nats_url(
@@ -339,32 +341,35 @@ fn load_nats_url(
     })
 }
 
-fn load_process_node_id(
+fn load_process_machine_id(
     role: &DaemonProcessRole,
     env: &impl Fn(&str) -> Option<String>,
-) -> Result<NodeId, DaemonProcessConfigError> {
-    let value = env(PLOYZ_NODE_ID_ENV)
-        .ok_or_else(|| DaemonProcessConfigError::MissingNodeId { role: role.clone() })?;
-    NodeId::try_new(value.clone()).map_err(|_source| DaemonProcessConfigError::InvalidNodeId {
-        role: role.clone(),
-        value,
+) -> Result<MachineId, DaemonProcessConfigError> {
+    let value = env(PLOYZ_MACHINE_ID_ENV)
+        .ok_or_else(|| DaemonProcessConfigError::MissingMachineId { role: role.clone() })?;
+    MachineId::try_new(value.clone()).map_err(|_source| {
+        DaemonProcessConfigError::InvalidMachineId {
+            role: role.clone(),
+            value,
+        }
     })
 }
 
-fn load_deploy_nodes(
+fn load_deploy_machines(
     env: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<Vec<NodeId>>, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_DEPLOY_NODES_ENV).filter(|value| !value.trim().is_empty()) else {
+) -> Result<Option<Vec<MachineId>>, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_DEPLOY_MACHINES_ENV).filter(|value| !value.trim().is_empty())
+    else {
         return Ok(None);
     };
     value
         .split(',')
         .map(str::trim)
-        .filter(|node| !node.is_empty())
-        .map(|node| {
-            NodeId::try_new(node.to_owned()).map_err(|_source| {
-                DaemonProcessConfigError::InvalidDeployNode {
-                    value: node.to_owned(),
+        .filter(|machine| !machine.is_empty())
+        .map(|machine| {
+            MachineId::try_new(machine.to_owned()).map_err(|_source| {
+                DaemonProcessConfigError::InvalidDeployMachine {
+                    value: machine.to_owned(),
                 }
             })
         })
@@ -434,17 +439,17 @@ fn default_gateway_listen_addr() -> SocketAddr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfigError {
-    MissingNodeId {
+    MissingMachineId {
         role: DaemonProcessRole,
     },
-    InvalidNodeId {
+    InvalidMachineId {
         role: DaemonProcessRole,
         value: String,
     },
-    InvalidDeployNode {
+    InvalidDeployMachine {
         value: String,
     },
-    InvalidNodePublicIp {
+    InvalidMachinePublicIp {
         value: String,
         source: std::net::AddrParseError,
     },
@@ -487,29 +492,29 @@ pub enum DaemonProcessConfigError {
 impl fmt::Display for DaemonProcessConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingNodeId { role } => write!(
+            Self::MissingMachineId { role } => write!(
                 formatter,
                 "{} is required for ployzd {}",
-                PLOYZ_NODE_ID_ENV,
+                PLOYZ_MACHINE_ID_ENV,
                 role.process_name()
             ),
-            Self::InvalidNodeId { role, value } => write!(
+            Self::InvalidMachineId { role, value } => write!(
                 formatter,
                 "{}={value:?} is invalid for ployzd {}",
-                PLOYZ_NODE_ID_ENV,
+                PLOYZ_MACHINE_ID_ENV,
                 role.process_name()
             ),
-            Self::InvalidDeployNode { value } => {
+            Self::InvalidDeployMachine { value } => {
                 write!(
                     formatter,
-                    "{} contains invalid node id {value:?}",
-                    PLOYZ_DEPLOY_NODES_ENV
+                    "{} contains invalid machine id {value:?}",
+                    PLOYZ_DEPLOY_MACHINES_ENV
                 )
             }
-            Self::InvalidNodePublicIp { value, .. } => write!(
+            Self::InvalidMachinePublicIp { value, .. } => write!(
                 formatter,
                 "{}={value:?} is invalid",
-                PLOYZ_NODE_PUBLIC_IP_ENV
+                PLOYZ_MACHINE_PUBLIC_IP_ENV
             ),
             Self::MissingNatsUrl { role } => write!(
                 formatter,
@@ -573,7 +578,7 @@ pub struct ControlProcessConfig {
     pub nats: NatsServerRuntime,
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
-    pub deploy_nodes: Vec<NodeId>,
+    pub deploy_machines: Vec<MachineId>,
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
 }
@@ -582,14 +587,14 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn new(
         nats: NatsServerRuntime,
-        first_deploy_node: NodeId,
+        first_deploy_machine: MachineId,
         nats_connect: NatsConnectConfig,
     ) -> Self {
         Self {
             nats,
             nats_connect,
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),
-            deploy_nodes: vec![first_deploy_node],
+            deploy_machines: vec![first_deploy_machine],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
         }
@@ -605,8 +610,8 @@ impl ControlProcessConfig {
     }
 
     #[must_use]
-    pub fn with_deploy_nodes(mut self, deploy_nodes: Vec<NodeId>) -> Self {
-        self.deploy_nodes = deploy_nodes;
+    pub fn with_deploy_machines(mut self, deploy_machines: Vec<MachineId>) -> Self {
+        self.deploy_machines = deploy_machines;
         self
     }
 
@@ -638,21 +643,21 @@ impl ControlProcessConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeProcessConfig {
-    pub node_id: NodeId,
+pub struct MachineProcessConfig {
+    pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
-    pub artifacts: NodeProcessArtifacts,
-    pub dataplane: NodeDataplaneConfig,
+    pub artifacts: MachineProcessArtifacts,
+    pub dataplane: MachineDataplaneConfig,
     pub public_ip: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeProcessArtifacts {
+pub struct MachineProcessArtifacts {
     pub ebpf_bytecode_path: std::path::PathBuf,
     pub ebpf_ctl_path: std::path::PathBuf,
 }
 
-impl NodeProcessArtifacts {
+impl MachineProcessArtifacts {
     #[must_use]
     pub fn new(ebpf_bytecode_path: std::path::PathBuf, ebpf_ctl_path: std::path::PathBuf) -> Self {
         Self {
@@ -663,13 +668,13 @@ impl NodeProcessArtifacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeDataplaneConfig {
+pub struct MachineDataplaneConfig {
     pub bridge_ifname: String,
     pub wg_ifname: String,
     pub endpoint_subnet: String,
 }
 
-impl NodeDataplaneConfig {
+impl MachineDataplaneConfig {
     #[must_use]
     pub fn new(bridge_ifname: String, wg_ifname: String, endpoint_subnet: String) -> Self {
         Self {
@@ -680,17 +685,17 @@ impl NodeDataplaneConfig {
     }
 }
 
-impl NodeProcessConfig {
+impl MachineProcessConfig {
     #[must_use]
     pub fn new(
-        node_id: NodeId,
+        machine_id: MachineId,
         nats: RoleNatsConnect,
-        artifacts: NodeProcessArtifacts,
-        dataplane: NodeDataplaneConfig,
+        artifacts: MachineProcessArtifacts,
+        dataplane: MachineDataplaneConfig,
         public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
-            node_id,
+            machine_id,
             nats,
             artifacts,
             dataplane,
@@ -701,16 +706,16 @@ impl NodeProcessConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProcessConfig {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
     pub listen_addr: SocketAddr,
 }
 
 impl GatewayProcessConfig {
     #[must_use]
-    pub fn new(node_id: NodeId, nats: RoleNatsConnect, listen_addr: SocketAddr) -> Self {
+    pub fn new(machine_id: MachineId, nats: RoleNatsConnect, listen_addr: SocketAddr) -> Self {
         Self {
-            node_id,
+            machine_id,
             nats,
             listen_addr,
         }
@@ -719,13 +724,13 @@ impl GatewayProcessConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsProcessConfig {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
 }
 
 impl DnsProcessConfig {
     #[must_use]
-    pub fn new(node_id: NodeId, nats: RoleNatsConnect) -> Self {
-        Self { node_id, nats }
+    pub fn new(machine_id: MachineId, nats: RoleNatsConnect) -> Self {
+        Self { machine_id, nats }
     }
 }

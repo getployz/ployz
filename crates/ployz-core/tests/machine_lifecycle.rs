@@ -7,7 +7,7 @@ use ployz_core::machine::{
 };
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
-use ployz_test_support::ids::{machine_name, node_id, operation_id};
+use ployz_test_support::ids::{machine_id, machine_name, operation_id};
 
 #[test]
 fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
@@ -25,18 +25,18 @@ fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
     );
     assert_eq!(
         plan.process_set.roles(),
-        &[DaemonProcessRole::Node(node_id("node_2"))]
+        &[DaemonProcessRole::Machine(machine_id("machine_2"))]
     );
 }
 
 #[test]
-fn machine_add_plan_defaults_gateway_and_dns_on_joining_node() {
+fn machine_add_plan_defaults_gateway_and_dns_on_joining_machine() {
     let plan = plan_machine_add(machine_add_command(InstallRolePolicy::install_all()));
 
     assert_eq!(
         plan.process_set.roles(),
         &[
-            DaemonProcessRole::Node(node_id("node_2")),
+            DaemonProcessRole::Machine(machine_id("machine_2")),
             DaemonProcessRole::Gateway,
             DaemonProcessRole::Dns,
         ]
@@ -115,7 +115,7 @@ fn missing_readiness_check_fails_without_activating_machine() {
         heartbeat: MachineReadinessCheck::Missing {
             reason: failure("heartbeat missing"),
         },
-        node_inspect: MachineReadinessCheck::Confirmed,
+        machine_inspect: MachineReadinessCheck::Confirmed,
     };
 
     assert_eq!(
@@ -152,14 +152,14 @@ fn confirmed_readiness_activates_machine_truth() {
     };
 
     assert_eq!(operation, MachineAddOperationState::Completed);
-    assert_eq!(active_machine.node_id, node_id("node_2"));
+    assert_eq!(active_machine.machine_id, machine_id("machine_2"));
     assert_eq!(active_machine.activated_by, operation_id("op_machine"));
 }
 
 fn machine_add_command(roles: InstallRolePolicy) -> MachineAddCommand {
     MachineAddCommand {
         operation_id: operation_id("op_machine"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: machine_name("edge_2"),
         join_token: issued_token(),
         roles,

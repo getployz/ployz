@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
 };
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
@@ -18,21 +18,23 @@ pub(super) struct HostDataplaneRouteProgramming {
 impl HostDataplaneRouteProgramming {
     pub(super) fn plans_for(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
     ) -> Result<Vec<HostCommandPlan>, WireGuardEbpfPrepareError> {
         let local_route = endpoint_routes
             .iter()
-            .find(|route| route.node_id == *node_id)
+            .find(|route| route.machine_id == *machine_id)
             .ok_or_else(|| {
                 unavailable(
-                    node_id,
+                    machine_id,
                     WireGuardEbpfComponent::WireGuard,
                     "local endpoint route is missing".to_owned(),
                 )
             })?;
-        let local_host_cidr = wireguard_host_cidr(&local_route.endpoint_subnet)
-            .map_err(|message| unavailable(node_id, WireGuardEbpfComponent::WireGuard, message))?;
+        let local_host_cidr =
+            wireguard_host_cidr(&local_route.endpoint_subnet).map_err(|message| {
+                unavailable(machine_id, WireGuardEbpfComponent::WireGuard, message)
+            })?;
         let local_host_ip = local_host_cidr
             .split_once('/')
             .expect("generated wireguard host CIDR includes prefix")
@@ -120,7 +122,7 @@ impl HostDataplaneRouteProgramming {
         requirements.extend(
             endpoint_routes
                 .iter()
-                .filter(|route| route.node_id != *node_id)
+                .filter(|route| route.machine_id != *machine_id)
                 .flat_map(|route| {
                     [
                         HostCommandPlan::provisioning_command(
@@ -195,14 +197,14 @@ mod tests {
         };
         let requirements = route_programming
             .plans_for(
-                &node_id("node_a"),
+                &machine_id("machine_a"),
                 &[
                     WireGuardEbpfEndpointRoute {
-                        node_id: node_id("node_a"),
+                        machine_id: machine_id("machine_a"),
                         endpoint_subnet: "10.42.1.0/24".to_owned(),
                     },
                     WireGuardEbpfEndpointRoute {
-                        node_id: node_id("node_b"),
+                        machine_id: machine_id("machine_b"),
                         endpoint_subnet: "10.42.2.0/24".to_owned(),
                     },
                 ],
@@ -294,9 +296,9 @@ mod tests {
 
         let error = route_programming
             .plans_for(
-                &node_id("node_a"),
+                &machine_id("machine_a"),
                 &[WireGuardEbpfEndpointRoute {
-                    node_id: node_id("node_b"),
+                    machine_id: machine_id("machine_b"),
                     endpoint_subnet: "10.42.2.0/24".to_owned(),
                 }],
             )
@@ -305,10 +307,10 @@ mod tests {
         assert!(matches!(
             error,
             WireGuardEbpfPrepareError::Unavailable {
-                node_id,
+                machine_id,
                 component: WireGuardEbpfComponent::WireGuard,
                 ..
-            } if node_id == self::node_id("node_a")
+            } if machine_id == self::machine_id("machine_a")
         ));
     }
 
@@ -322,7 +324,7 @@ mod tests {
         assert!(wireguard_host_cidr("10.42.7.12/24").is_err());
     }
 
-    fn node_id(value: &str) -> NodeId {
-        NodeId::try_new(value).expect("valid node id")
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
     }
 }

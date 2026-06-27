@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Node-local substrate bootstrap installer.
+//! Machine-local substrate bootstrap installer.
 //!
 //! Keeper owns local artifact installation, supervisor unit planning, and join
 //! material storage. It does not own product truth.

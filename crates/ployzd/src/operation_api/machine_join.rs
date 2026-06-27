@@ -3,7 +3,7 @@
 //! truth (record-then-activate).
 
 use crate::controllers::OperationControllers;
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::OperationStatus;
 use ployz_nats::operations::{MachineJoinRedemption, RecordMachineJoinReportError};
@@ -87,7 +87,7 @@ pub async fn machine_join_report(
     let OperationStatus::MachineAdd {
         last_event_sequence,
         name,
-        node_id,
+        machine_id,
         ..
     } = status
     else {
@@ -96,12 +96,12 @@ pub async fn machine_join_report(
         });
     };
     if let MachineJoinReportOutcome::Completed = outcome {
-        activate_reported_machine(handlers, &reported.operation_id, &node_id, &name).await?;
+        activate_reported_machine(handlers, &reported.operation_id, &machine_id, &name).await?;
     }
 
     Ok(MachineJoinReported {
         operation_id: reported.operation_id,
-        node_id: reported.node_id,
+        machine_id: reported.machine_id,
         last_event_sequence,
         outcome,
     })
@@ -132,7 +132,7 @@ async fn repair_completed_machine_join_report(
     };
     let OperationStatus::MachineAdd {
         id,
-        node_id,
+        machine_id,
         name,
         state: ployz_core::machine::MachineAddOperationState::Completed,
         last_event_sequence,
@@ -142,10 +142,10 @@ async fn repair_completed_machine_join_report(
         return Ok(None);
     };
 
-    activate_reported_machine(handlers, &id, &node_id, &name).await?;
+    activate_reported_machine(handlers, &id, &machine_id, &name).await?;
     Ok(Some(MachineJoinReported {
         operation_id: id,
-        node_id,
+        machine_id,
         last_event_sequence,
         outcome: MachineJoinReportOutcome::Completed,
     }))
@@ -157,12 +157,12 @@ async fn repair_completed_machine_join_report(
 async fn activate_reported_machine(
     handlers: &OperationApiHandlers,
     operation_id: &OperationId,
-    node_id: &NodeId,
+    machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
-        node_id.clone(),
+        machine_id.clone(),
         name.clone(),
         ployz_core::machine::MachineAddOperationState::Completed,
     )
@@ -198,7 +198,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
 
     MachineJoinRedeemed {
         operation_id: joined.operation_id,
-        node_id: joined.node_id,
+        machine_id: joined.machine_id,
         name: joined.name,
         roles: joined.roles,
         join_bundle: joined.join_bundle,

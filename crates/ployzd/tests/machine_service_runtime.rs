@@ -1,63 +1,67 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    WireGuardEbpfMachineReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
     WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::node::ManagedContainerKind;
-use ployz_core::subjects::{NodeServiceEndpoint, node_service};
+use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::ids::{
-    container_id, failure_message, node_id, operation_id, revision_id, service_id, step_id,
+    container_id, failure_message, machine_id, operation_id, revision_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{
-    NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
+    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
     WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node::protocol::{
-    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeContainerRpcOk, NodeContainerRunRpcRequest, NodeContainerRunSpec,
-    NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
-    NodeEnsureEndpointNetworkRpcRequest, NodeLogsTailRpcOk, NodeLogsTailRpcRequest,
-    NodeLogsTailRpcResponse, NodeRunContainerOutcome, NodeWireGuardEbpfPreparePhase,
-    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+use ployzd::machine_runtime::client::{
+    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
 };
-use ployzd::node::runner::{
+use ployzd::machine_runtime::protocol::{
+    MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
+    MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
+    MachineContainerRunSpec, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerStopRpcResponse, MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailRpcOk,
+    MachineLogsTailRpcRequest, MachineLogsTailRpcResponse, MachineRunContainerOutcome,
+    MachineWireGuardEbpfPreparePhase, MachineWireGuardEbpfPrepareRpcRequest,
+    MachineWireGuardEbpfPrepareRpcResponse,
+};
+use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
+    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
+    MachineLogTail,
 };
-use ployzd::node::service::{
-    NodeWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_node_runtime_service,
+use ployzd::machine_runtime::service::{
+    MachineWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_machine_runtime_service,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[tokio::test]
-async fn node_runtime_service_ensures_endpoint_network() {
+async fn machine_runtime_service_ensures_endpoint_network() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     client
         .ensure_endpoint_network(
-            &node_id("node_a"),
-            NodeEnsureEndpointNetworkRpcRequest {
+            &machine_id("machine_a"),
+            MachineEnsureEndpointNetworkRpcRequest {
                 operation_id: operation_id("op_123"),
             },
         )
@@ -68,32 +72,32 @@ async fn node_runtime_service_ensures_endpoint_network() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_creates_missing_container() {
+async fn machine_runtime_service_creates_missing_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state.clone()).with_next_container("ctr_created"),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let outcome = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect("container run succeeds");
 
     assert_eq!(
         outcome,
-        NodeRunContainerOutcome::Created {
+        MachineRunContainerOutcome::Created {
             container_id: container_id("ctr_created"),
         }
     );
@@ -108,33 +112,33 @@ async fn node_runtime_service_creates_missing_container() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_reuses_existing_operation_step_container() {
+async fn machine_runtime_service_reuses_existing_operation_step_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state.clone())
             .with_existing(existing_container("ctr_existing", managed_labels())),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let outcome = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect("container run succeeds");
 
     assert_eq!(
         outcome,
-        NodeRunContainerOutcome::ReusedRunning {
+        MachineRunContainerOutcome::ReusedRunning {
             container_id: container_id("ctr_existing"),
         }
     );
@@ -142,12 +146,12 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_starts_existing_stopped_operation_step_container() {
+async fn machine_runtime_service_starts_existing_stopped_operation_step_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state.clone()).with_existing(existing_container_with_state(
             "ctr_existing",
             managed_labels(),
@@ -157,21 +161,21 @@ async fn node_runtime_service_starts_existing_stopped_operation_step_container()
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let outcome = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect("container run succeeds");
 
     assert_eq!(
         outcome,
-        NodeRunContainerOutcome::StartedExisting {
+        MachineRunContainerOutcome::StartedExisting {
             container_id: container_id("ctr_existing"),
         }
     );
@@ -180,33 +184,33 @@ async fn node_runtime_service_starts_existing_stopped_operation_step_container()
 }
 
 #[tokio::test]
-async fn node_runtime_service_reports_start_failure_with_container_evidence() {
+async fn machine_runtime_service_reports_start_failure_with_container_evidence() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state).with_start_failure("ctr_created", "exec format error"),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect_err("container start failure is returned");
 
     assert_eq!(
         error,
-        NodeContainerRuntimeError::CreatedContainerStartFailed {
-            node_id: node_id("node_a"),
+        MachineContainerRuntimeError::CreatedContainerStartFailed {
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_created"),
             message: failure_message("container start failed: exec format error"),
             inspect_hint: inspect_hint("ctr_created"),
@@ -215,33 +219,33 @@ async fn node_runtime_service_reports_start_failure_with_container_evidence() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_reports_existing_start_failure_without_created_evidence() {
+async fn machine_runtime_service_reports_existing_start_failure_without_created_evidence() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state).with_existing_start_failure("ctr_existing", "still stopping"),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect_err("existing container start failure is returned");
 
     assert_eq!(
         error,
-        NodeContainerRuntimeError::ExistingContainerStartFailed {
-            node_id: node_id("node_a"),
+        MachineContainerRuntimeError::ExistingContainerStartFailed {
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_existing"),
             message: failure_message("container start failed: still stopping"),
             inspect_hint: inspect_hint("ctr_existing"),
@@ -250,14 +254,14 @@ async fn node_runtime_service_reports_existing_start_failure_without_created_evi
 }
 
 #[tokio::test]
-async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() {
+async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error() {
     let nats = test_nats().await;
     let mut conflicting_labels = managed_labels();
     conflicting_labels.revision_id = revision_id("rev_other");
     let state = RecordingRunnerState::default();
-    let service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state).with_existing(existing_container(
             "ctr_conflict",
             conflicting_labels.clone(),
@@ -266,22 +270,22 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect_err("container run reports conflict");
 
     assert_eq!(
         error,
-        NodeContainerRuntimeError::OperationStepConflict {
-            node_id: node_id("node_a"),
+        MachineContainerRuntimeError::OperationStepConflict {
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_conflict"),
             expected: managed_labels(),
             actual: conflicting_labels,
@@ -291,33 +295,33 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
 }
 
 #[tokio::test]
-async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
+async fn machine_runtime_service_maps_create_failure_to_unavailable_runtime() {
     let nats = test_nats().await;
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default()).with_create_failure("disk full"),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(&node_id("node_a"), run_request())
+        .run_container(&machine_id("machine_a"), run_request())
         .await
         .expect_err("container create fails");
 
     assert_eq!(
         error,
-        NodeContainerRuntimeError::Unavailable {
-            node_id: node_id("node_a"),
-            reason: NodeRuntimeUnavailableReason::ServiceInternal {
+        MachineContainerRuntimeError::Unavailable {
+            machine_id: machine_id("machine_a"),
+            reason: MachineRuntimeUnavailableReason::ServiceInternal {
                 message: "container create failed: disk full".to_owned(),
             },
         }
@@ -325,27 +329,30 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_removes_container() {
+async fn machine_runtime_service_removes_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
+        .expect("flush machine service subscription");
 
-    let response = request_json::<_, NodeContainerRemoveRpcResponse>(
+    let response = request_json::<_, MachineContainerRemoveRpcResponse>(
         &nats.client,
-        node_service(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
-        &NodeContainerRemoveRpcRequest {
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::ContainerRemove,
+        ),
+        &MachineContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
             expected_identity: managed_labels().identity(),
@@ -353,12 +360,12 @@ async fn node_runtime_service_removes_container() {
         Duration::from_secs(1),
     )
     .await
-    .expect("node service responds");
+    .expect("machine service responds");
 
     assert_eq!(
         response,
-        NodeContainerRemoveRpcResponse::Ok(NodeContainerRpcOk {
-            node_id: node_id("node_a"),
+        MachineContainerRemoveRpcResponse::Ok(MachineContainerRpcOk {
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_old"),
         })
     );
@@ -366,28 +373,28 @@ async fn node_runtime_service_removes_container() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_stops_container() {
+async fn machine_runtime_service_stops_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeContainerRuntime::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
 
     client
         .stop_container(
-            &node_id("node_a"),
-            NodeContainerStopRpcRequest {
+            &machine_id("machine_a"),
+            MachineContainerStopRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_failed"),
                 expected_identity: managed_labels().identity(),
@@ -400,27 +407,30 @@ async fn node_runtime_service_stops_container() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_reports_remove_failure_as_domain_error() {
+async fn machine_runtime_service_reports_remove_failure_as_domain_error() {
     let nats = test_nats().await;
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
             .with_remove_failure("ctr_old", "busy"),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
+        .expect("flush machine service subscription");
 
-    let response = request_json::<_, NodeContainerRemoveRpcResponse>(
+    let response = request_json::<_, MachineContainerRemoveRpcResponse>(
         &nats.client,
-        node_service(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
-        &NodeContainerRemoveRpcRequest {
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::ContainerRemove,
+        ),
+        &MachineContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
             expected_identity: managed_labels().identity(),
@@ -428,13 +438,13 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
         Duration::from_secs(1),
     )
     .await
-    .expect("node service responds");
+    .expect("machine service responds");
 
     assert_eq!(
         response,
-        NodeContainerRemoveRpcResponse::DomainError {
-            node_id: node_id("node_a"),
-            error: NodeContainerRemoveDomainError::RemoveFailed {
+        MachineContainerRemoveRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: MachineContainerRemoveDomainError::RemoveFailed {
                 container_id: container_id("ctr_old"),
                 message: failure_message("container remove failed: busy"),
                 inspect_hint: inspect_hint("ctr_old"),
@@ -444,27 +454,30 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_reports_stop_failure_as_domain_error() {
+async fn machine_runtime_service_reports_stop_failure_as_domain_error() {
     let nats = test_nats().await;
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
             .with_stop_failure("ctr_failed", "permission denied"),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
+        .expect("flush machine service subscription");
 
-    let response = request_json::<_, NodeContainerStopRpcResponse>(
+    let response = request_json::<_, MachineContainerStopRpcResponse>(
         &nats.client,
-        node_service(&node_id("node_a"), NodeServiceEndpoint::ContainerStop),
-        &NodeContainerStopRpcRequest {
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::ContainerStop,
+        ),
+        &MachineContainerStopRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_failed"),
             expected_identity: managed_labels().identity(),
@@ -472,13 +485,13 @@ async fn node_runtime_service_reports_stop_failure_as_domain_error() {
         Duration::from_secs(1),
     )
     .await
-    .expect("node service responds");
+    .expect("machine service responds");
 
     assert_eq!(
         response,
-        NodeContainerStopRpcResponse::DomainError {
-            node_id: node_id("node_a"),
-            error: NodeContainerStopDomainError::StopFailed {
+        MachineContainerStopRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: MachineContainerStopDomainError::StopFailed {
                 container_id: container_id("ctr_failed"),
                 message: failure_message("container stop failed: permission denied"),
                 inspect_hint: inspect_hint("ctr_failed"),
@@ -488,40 +501,40 @@ async fn node_runtime_service_reports_stop_failure_as_domain_error() {
 }
 
 #[tokio::test]
-async fn node_runtime_service_tails_container_logs() {
+async fn machine_runtime_service_tails_container_logs() {
     let nats = test_nats().await;
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
             .with_existing(existing_container("ctr_failed", managed_labels())),
         ready_wireguard_ebpf(),
         RecordingLogReader::new("ctr_failed", "panic: missing DATABASE_URL\n"),
     )
     .await
-    .expect("node runtime service starts");
-    nats.node_a
+    .expect("machine runtime service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
+        .expect("flush machine service subscription");
 
-    let response = request_json::<_, NodeLogsTailRpcResponse>(
+    let response = request_json::<_, MachineLogsTailRpcResponse>(
         &nats.client,
-        node_service(&node_id("node_a"), NodeServiceEndpoint::LogsTail),
-        &NodeLogsTailRpcRequest {
+        machine_service(&machine_id("machine_a"), MachineServiceEndpoint::LogsTail),
+        &MachineLogsTailRpcRequest {
             container_id: container_id("ctr_failed"),
             tail_lines: Some(50),
         },
         Duration::from_secs(1),
     )
     .await
-    .expect("node service responds");
+    .expect("machine service responds");
 
     assert_eq!(
         response,
-        NodeLogsTailRpcResponse::Ok(NodeLogsTailRpcOk {
-            value: ployzd::node::protocol::NodeLogsTailResult {
-                node_id: node_id("node_a"),
+        MachineLogsTailRpcResponse::Ok(MachineLogsTailRpcOk {
+            value: ployzd::machine_runtime::protocol::MachineLogsTailResult {
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_failed"),
                 text: "panic: missing DATABASE_URL\n".to_owned(),
                 truncated: false,
@@ -531,117 +544,117 @@ async fn node_runtime_service_tails_container_logs() {
 }
 
 #[tokio::test]
-async fn node_wireguard_ebpf_service_calls_local_preparer() {
+async fn machine_wireguard_ebpf_service_calls_local_preparer() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
         idle_logs(),
     )
     .await
-    .expect("node wireguard ebpf service starts");
-    nats.node_a
+    .expect("machine wireguard ebpf service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineWireGuardEbpfPreparer::new(nats.client);
 
     let report = client
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a"]))
+        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_a"]))
         .await
         .expect("wireguard ebpf prepare succeeds");
 
     assert_eq!(state.prepare_count(), 1);
-    assert_eq!(state.endpoint_routes(), endpoint_routes(&["node_a"]));
+    assert_eq!(state.endpoint_routes(), endpoint_routes(&["machine_a"]));
     assert_eq!(state.peers(), Vec::new());
-    assert_eq!(report.nodes, vec![ready_node("node_a")]);
+    assert_eq!(report.machines, vec![ready_machine("machine_a")]);
 }
 
 #[tokio::test]
-async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
+async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machine() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
         idle_logs(),
     )
     .await
-    .expect("node wireguard ebpf service starts");
-    nats.node_a
+    .expect("machine wireguard ebpf service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
+        .expect("flush machine service subscription");
+    let response = request_json::<_, MachineWireGuardEbpfPrepareRpcResponse>(
         &nats.client,
-        node_service(
-            &node_id("node_a"),
-            NodeServiceEndpoint::WireGuardEbpfPrepare,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::WireGuardEbpfPrepare,
         ),
-        &NodeWireGuardEbpfPrepareRpcRequest {
-            phase: NodeWireGuardEbpfPreparePhase::PrepareDataplane,
+        &MachineWireGuardEbpfPrepareRpcRequest {
+            phase: MachineWireGuardEbpfPreparePhase::PrepareDataplane,
             operation_id: operation_id("op_123"),
-            nodes: vec![node_id("node_b")],
-            endpoint_routes: endpoint_routes(&["node_b"]),
+            machines: vec![machine_id("machine_b")],
+            endpoint_routes: endpoint_routes(&["machine_b"]),
             peer_endpoints: Vec::new(),
             peers: Vec::new(),
         },
         Duration::from_secs(1),
     )
     .await
-    .expect("node service responds");
+    .expect("machine service responds");
 
     assert!(matches!(
         response,
-        NodeWireGuardEbpfPrepareRpcResponse::DomainError {
-            node_id,
-            error: ployzd::node::protocol::NodeWireGuardEbpfPrepareDomainError::Unavailable {
+        MachineWireGuardEbpfPrepareRpcResponse::DomainError {
+            machine_id,
+            error: ployzd::machine_runtime::protocol::MachineWireGuardEbpfPrepareDomainError::Unavailable {
                 component: WireGuardEbpfComponent::WireGuard,
                 ..
             },
             ..
-        } if node_id == self::node_id("node_a")
+        } if machine_id == self::machine_id("machine_a")
     ));
     assert_eq!(state.prepare_count(), 0);
 }
 
 #[tokio::test]
-async fn node_wireguard_ebpf_service_preserves_prepare_failure() {
+async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_node_runtime_service(
-        nats.node_a.clone(),
-        node_id("node_a"),
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state).with_failure(WireGuardEbpfPrepareError::Unavailable {
-            node_id: node_id("node_a"),
+            machine_id: machine_id("machine_a"),
             component: WireGuardEbpfComponent::EbpfForwarding,
             message: failure_message("ebpf program missing"),
         }),
         idle_logs(),
     )
     .await
-    .expect("node wireguard ebpf service starts");
-    nats.node_a
+    .expect("machine wireguard ebpf service starts");
+    nats.machine_a
         .flush()
         .await
-        .expect("flush node service subscription");
-    let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineWireGuardEbpfPreparer::new(nats.client);
 
     let error = client
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a"]))
+        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_a"]))
         .await
         .expect_err("wireguard ebpf prepare failure is returned");
 
     assert_eq!(
         error,
         WireGuardEbpfPrepareError::Unavailable {
-            node_id: node_id("node_a"),
+            machine_id: machine_id("machine_a"),
             component: WireGuardEbpfComponent::EbpfForwarding,
             message: failure_message("ebpf program missing"),
         }
@@ -769,14 +782,14 @@ impl RecordingRunner {
     }
 }
 
-impl NodeContainerRunner for RecordingRunner {
+impl MachineContainerRunner for RecordingRunner {
     async fn existing_managed_containers(
         &self,
-    ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
         Ok(self.existing.clone())
     }
 
-    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
         self.state
             .inner
             .lock()
@@ -788,9 +801,9 @@ impl NodeContainerRunner for RecordingRunner {
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> Result<ContainerId, NodeContainerRunnerError> {
+    ) -> Result<ContainerId, MachineContainerRunnerError> {
         if let Some(message) = self.create_failure.clone() {
-            return Err(NodeContainerRunnerError::Create { message });
+            return Err(MachineContainerRunnerError::Create { message });
         }
 
         self.state
@@ -801,7 +814,7 @@ impl NodeContainerRunner for RecordingRunner {
             .push(command);
         self.next_container
             .clone()
-            .ok_or_else(|| NodeContainerRunnerError::Create {
+            .ok_or_else(|| MachineContainerRunnerError::Create {
                 message: "missing next container id".to_owned(),
             })
     }
@@ -809,11 +822,11 @@ impl NodeContainerRunner for RecordingRunner {
     async fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         if let Some((failed_container_id, message)) = self.start_failure.clone()
             && failed_container_id == *container_id
         {
-            return Err(NodeContainerRunnerError::Start {
+            return Err(MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message,
             });
@@ -832,11 +845,11 @@ impl NodeContainerRunner for RecordingRunner {
         &self,
         container_id: &ContainerId,
         _expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         if let Some((failed_container_id, message)) = self.remove_failure.clone()
             && failed_container_id == *container_id
         {
-            return Err(NodeContainerRunnerError::Remove {
+            return Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message,
             });
@@ -855,11 +868,11 @@ impl NodeContainerRunner for RecordingRunner {
         &self,
         container_id: &ContainerId,
         _expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         if let Some((failed_container_id, message)) = self.stop_failure.clone()
             && failed_container_id == *container_id
         {
-            return Err(NodeContainerRunnerError::Stop {
+            return Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message,
             });
@@ -961,9 +974,9 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
     }
 }
 
-fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
-    WireGuardEbpfNodeReady {
-        node_id: self::node_id(node_id),
+fn ready_machine(machine_id: &str) -> WireGuardEbpfMachineReady {
+    WireGuardEbpfMachineReady {
+        machine_id: self::machine_id(machine_id),
         ready: ready_components(),
     }
 }
@@ -1021,18 +1034,18 @@ impl RecordingLogReader {
     }
 }
 
-impl NodeLogReader for RecordingLogReader {
+impl MachineLogReader for RecordingLogReader {
     async fn tail_container_logs(
         &self,
         container_id: &ContainerId,
         _tail_lines: Option<u16>,
-    ) -> Result<NodeLogTail, NodeLogReaderError> {
+    ) -> Result<MachineLogTail, MachineLogReaderError> {
         match &self.container_id {
-            Some(expected) if expected == container_id => Ok(NodeLogTail {
+            Some(expected) if expected == container_id => Ok(MachineLogTail {
                 text: self.text.clone(),
                 truncated: false,
             }),
-            _ => Err(NodeLogReaderError::NotFound {
+            _ => Err(MachineLogReaderError::NotFound {
                 container_id: container_id.clone(),
             }),
         }
@@ -1043,45 +1056,48 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
-    /// Node principal: the node-runtime service side.
-    node_a: async_nats::Client,
+    /// Machine principal: the machine-runtime service side.
+    machine_a: async_nats::Client,
 }
 
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_a")]).await;
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let client = nats.controller.clone();
-    let node_a = nats.node_client(&node_id("node_a")).await;
+    let machine_a = nats.machine_client(&machine_id("machine_a")).await;
 
     TestNats {
         _nats: nats,
         client,
-        node_a,
+        machine_a,
     }
 }
 
-fn run_request() -> NodeContainerRunRpcRequest {
-    NodeContainerRunRpcRequest {
+fn run_request() -> MachineContainerRunRpcRequest {
+    MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
         endpoint: None,
         container: managed_container_spec(),
     }
 }
 
-fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
+fn wireguard_ebpf_request(machines: &[&str]) -> WireGuardEbpfPrepareRequest {
     WireGuardEbpfPrepareRequest {
         operation_id: operation_id("op_123"),
-        nodes: nodes.iter().map(|node| node_id(node)).collect(),
-        endpoint_routes: endpoint_routes(nodes),
+        machines: machines.iter().map(|machine| machine_id(machine)).collect(),
+        endpoint_routes: endpoint_routes(machines),
         peer_endpoints: Vec::new(),
         peers: Vec::new(),
     }
 }
 
-fn endpoint_routes(nodes: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute> {
-    nodes
+fn endpoint_routes(machines: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute> {
+    machines
         .iter()
-        .map(|node| {
-            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id(node))
+        .map(|machine| {
+            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(&machine_id(
+                machine,
+            ))
         })
         .collect()
 }
@@ -1091,8 +1107,8 @@ fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
         .expect("valid inspect hint")
 }
 
-fn managed_container_spec() -> NodeContainerRunSpec {
-    NodeContainerRunSpec {
+fn managed_container_spec() -> MachineContainerRunSpec {
+    MachineContainerRunSpec {
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_2"),
         operation_id: operation_id("op_123"),

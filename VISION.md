@@ -43,7 +43,7 @@ Ployz should feel:
 - small enough to hold in your head.
 
 Failures are part of the product. A failed deploy should leave useful evidence,
-not erase the scene. A stale node should be visible as stale, not silently
+not erase the scene. A stale machine should be visible as stale, not silently
 converted into truth. Logs are evidence; operation status is the audience.
 
 ## Architecture Shape
@@ -54,7 +54,7 @@ Ployz is one daemon, one NATS control domain, and local runtime execution.
 CLI / SDK / Cloud
   -> NATS services
   -> operation workers
-  -> node services
+  -> machine services
   -> Docker / gateway / DNS / local machine reality
 ```
 
@@ -98,7 +98,7 @@ state, last-known-good projections. The ledger is machine truth, never
 cluster truth; the cluster view is assembled from machine facts and Docker
 reality, which is what makes the core rebuildable.
 
-Node-local storage outside the fact ledger is a cache and evidence surface,
+Machine-local storage outside the fact ledger is a cache and evidence surface,
 not truth of any kind.
 
 Operation state is first-class:
@@ -189,4 +189,4 @@ The core owns runtime truth: machines, services, routes, certs, observations,
 operation events, operation status, retained artifacts, and cleanup primitives.
 
 Cloud should call small core operations and watch operation events. It should
-not orchestrate low-level node work.
+not orchestrate low-level machine work.

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
@@ -17,14 +17,14 @@ use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, KeeperStep,
+    FirstMachineInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, KeeperStep,
     KeeperStepEffectError, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
-    RoleNatsCredentials, first_node_install_plan,
+    RoleNatsCredentials, first_machine_install_plan,
 };
 use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::ids::{failure_message, node_id, operation_id};
+use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use ployz_test_support::keeper::{
     artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,
     sha256_digest as digest,
@@ -99,12 +99,12 @@ impl KeeperJoinRedeemer for RecordingJoinRedeemer {
 
         Ok(RedeemedKeeperJoin::new(
             operation_id("op_machine"),
-            node_id("node_7"),
+            machine_id("machine_7"),
             KeeperJoinTarget::new(
                 keeper_join_material(),
                 ployzd_artifact(),
                 dataplane_artifacts(),
-                NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
+                NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Machine(machine_id("machine_7"))])
                     .expect("non-empty role set"),
                 role_environment(),
             ),
@@ -114,7 +114,7 @@ impl KeeperJoinRedeemer for RecordingJoinRedeemer {
 
 pub fn keeper_join_material() -> KeeperJoinMaterial {
     KeeperJoinMaterial::new(
-        node_id("node_7"),
+        machine_id("machine_7"),
         "prod",
         NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
             .expect("valid nats credentials"),
@@ -220,7 +220,7 @@ pub fn role_environment() -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
             .expect("valid role environment path"),
-        node_id("node_1"),
+        machine_id("machine_1"),
         NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid NATS URL"),
         RoleNatsCredentials::joined(std::path::Path::new("/var/lib/ployz/join-material.d")),
     )
@@ -232,7 +232,7 @@ pub fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
             .expect("valid role environment path"),
-        node_id("node_7"),
+        machine_id("machine_7"),
         NatsClientUrl::try_new("nats://127.0.0.1:7422").expect("valid NATS URL"),
         RoleNatsCredentials::joined(std::path::Path::new("/var/lib/ployz/join-material.d")),
     )
@@ -240,9 +240,9 @@ pub fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
 }
 
-pub fn first_node_plan() -> ployz_keeper::steps::KeeperStepPlan {
-    first_node_install_plan(FirstNodeInstallTarget::new(
-        node_id("node_1"),
+pub fn first_machine_plan() -> ployz_keeper::steps::KeeperStepPlan {
+    first_machine_install_plan(FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -285,9 +285,11 @@ pub fn plan_writes_unit(
     )
 }
 
-pub fn first_node_nats_target(node_id: NodeId) -> ployz_keeper::steps::NatsServerConfigTarget {
-    ployz_keeper::steps::NatsServerConfigTarget::for_first_node(
-        node_id,
+pub fn first_machine_nats_target(
+    machine_id: MachineId,
+) -> ployz_keeper::steps::NatsServerConfigTarget {
+    ployz_keeper::steps::NatsServerConfigTarget::for_first_machine(
+        machine_id,
         &ployz_keeper::systemd::NatsServerUnitTarget::default_paths(),
         &NatsMachineMaterialPaths::in_default_state_dir(),
         NatsListener::Loopback,

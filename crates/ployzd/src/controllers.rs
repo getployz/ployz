@@ -34,7 +34,7 @@ pub struct DeploySubmitCommand {
 pub struct MachineAddSubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
-    pub node_id: ployz_core::ids::NodeId,
+    pub machine_id: ployz_core::ids::MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
@@ -143,7 +143,7 @@ impl OperationControllers {
             .repository
             .submit_machine_add(MachineAddOperationSubmission {
                 operation_id: command.operation_id,
-                node_id: command.node_id,
+                machine_id: command.machine_id,
                 name: command.name,
                 roles: command.roles,
                 join_bundle: command.join_bundle,

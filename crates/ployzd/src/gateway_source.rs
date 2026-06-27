@@ -1,13 +1,13 @@
 //! Gateway projection source adapters.
 
 use crate::gateway::{
-    GatewayNodeObservation, GatewayObservationFreshness, GatewayProjectionError,
+    GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectionError,
     GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
 };
 use ployz_core::state::ActiveRouteState;
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use ployz_nats::observations::{
-    AsyncNatsObservationStore, NodeContainerObservationRecord, ObservationStoreError,
+    AsyncNatsObservationStore, MachineContainerObservationRecord, ObservationStoreError,
 };
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -75,17 +75,17 @@ pub async fn load_gateway_projection_input_from_nats_with_stale_after(
             .await
             .map_err(GatewaySourceError::from)
     };
-    let observed_nodes = async {
+    let observed_machines = async {
         observations
-            .node_snapshot_records()
+            .machine_snapshot_records()
             .await
             .map_err(GatewaySourceError::from)
     };
-    let (routes, observed_nodes) = tokio::try_join!(routes, observed_nodes)?;
+    let (routes, observed_machines) = tokio::try_join!(routes, observed_machines)?;
 
     Ok(gateway_projection_input_from_state(
         routes,
-        observed_nodes,
+        observed_machines,
         now_unix_nanos(),
         stale_after,
     ))
@@ -167,15 +167,15 @@ impl From<ObservationStoreError> for GatewaySourceError {
 
 fn gateway_projection_input_from_state(
     routes: Vec<ActiveRouteState>,
-    observed_nodes: Vec<NodeContainerObservationRecord>,
+    observed_machines: Vec<MachineContainerObservationRecord>,
     now_unix_nanos: i128,
     stale_after: Duration,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
-        observed_nodes: observed_nodes
+        observed_machines: observed_machines
             .into_iter()
-            .map(|record| GatewayNodeObservation {
+            .map(|record| GatewayMachineObservation {
                 freshness: observation_freshness(&record, now_unix_nanos, stale_after),
                 snapshot: record.snapshot,
             })
@@ -193,7 +193,7 @@ fn gateway_route_from_state(state: ActiveRouteState) -> GatewayRoute {
 }
 
 fn observation_freshness(
-    record: &NodeContainerObservationRecord,
+    record: &MachineContainerObservationRecord,
     now_unix_nanos: i128,
     stale_after: Duration,
 ) -> GatewayObservationFreshness {

@@ -1,6 +1,6 @@
 use std::fs;
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
@@ -9,12 +9,12 @@ use ployz_core::install::{
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_sdk_types::CloudBootstrapToken;
 use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
-use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::bootstrap_command::{
     BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, DEFAULT_BOOTSTRAP_URL,
     DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
@@ -30,7 +30,7 @@ use ployzctl::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetPa
 #[test]
 fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     let output = MachineAddOutput {
-        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
@@ -41,7 +41,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     .render();
 
     assert!(output.contains("operation op_machine"));
-    assert!(output.contains("node node_2"));
+    assert!(output.contains("machine machine_2"));
     assert!(output.contains("join-token join_once_123"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains(
@@ -58,7 +58,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
 #[test]
 fn machine_add_prints_runtime_nats_url_from_accepted_response() {
     let output = MachineAddOutput {
-        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
@@ -79,7 +79,7 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
 #[test]
 fn machine_add_debug_redacts_join_token() {
     let output = MachineAddOutput {
-        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
@@ -98,7 +98,7 @@ fn machine_add_debug_redacts_join_token() {
 #[test]
 fn machine_add_shell_quotes_join_material() {
     let output = MachineAddOutput {
-        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh/bootstrap?x='quoted'")
             .expect("valid bootstrap url"),
@@ -131,7 +131,7 @@ fn machine_add_rejects_join_tokens_with_shell_invisible_characters() {
 fn machine_list_renders_machine_summaries() {
     let output = MachineListOutput {
         machines: vec![machine_snapshot(
-            "node_1",
+            "machine_1",
             Some(GatewayServingStatus::Current),
         )],
     }
@@ -139,7 +139,7 @@ fn machine_list_renders_machine_summaries() {
 
     assert_eq!(
         output,
-        "node_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
+        "machine_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
     );
 }
 
@@ -156,27 +156,27 @@ fn machine_list_renders_no_output_without_machines() {
 #[test]
 fn machine_inspect_renders_machine_detail() {
     let output = MachineInspectOutput::new(machine_snapshot(
-        "node_1",
+        "machine_1",
         Some(GatewayServingStatus::LastKnownGood),
     ))
     .render();
 
     assert_eq!(
         output,
-        "node node_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
     );
 }
 
 #[test]
 fn machine_inspect_renders_missing_observations_as_unknown() {
-    let mut machine = machine_snapshot("node_1", None);
+    let mut machine = machine_snapshot("machine_1", None);
     machine.public_ip = None;
 
     let output = MachineInspectOutput::new(machine).render();
 
     assert_eq!(
         output,
-        "node node_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\n"
     );
 }
 
@@ -188,20 +188,20 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     }
 }
 
-fn machine_snapshot(node_id: &str, gateway: Option<GatewayServingStatus>) -> MachineSnapshot {
-    let node_id = self::node_id(node_id);
+fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> MachineSnapshot {
+    let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
         active: ActiveMachineState {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
         },
-        public_ip: Some(NodePublicIpObservation {
-            node_id: node_id.clone(),
+        public_ip: Some(MachinePublicIpObservation {
+            machine_id: machine_id.clone(),
             public_ip: "203.0.113.10".parse().expect("valid public ip"),
         }),
         gateway: gateway.map(|serving| GatewayStatusObservation {
-            node_id,
+            machine_id,
             listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
             serving,
             route_count: 2,
@@ -350,15 +350,15 @@ fn ssh_target_rejects_whitespace_and_extra_separators() {
 // --- Hostname-derived machine identity (U3) ---
 
 #[test]
-fn valid_hostname_derives_matching_node_id_and_machine_name() {
+fn valid_hostname_derives_matching_machine_id_and_machine_name() {
     let identity = MachineIdentity::from_remote_hostname("sg-core-1").expect("hostname is valid");
 
-    assert_eq!(identity.node_id, node_id("sg-core-1"));
+    assert_eq!(identity.machine_id, machine_id("sg-core-1"));
     assert_eq!(
         identity.name,
         MachineName::try_new("sg-core-1").expect("valid machine name")
     );
-    assert_eq!(identity.node_id.as_str(), identity.name.as_str());
+    assert_eq!(identity.machine_id.as_str(), identity.name.as_str());
 }
 
 #[test]
@@ -380,7 +380,7 @@ fn invalid_hostname_fails_with_name_escape_hatch() {
 fn name_override_wins_over_remote_hostname() {
     let identity = derive_machine_identity("sg.core.1", Some("edge-1")).expect("override is valid");
 
-    assert_eq!(identity.node_id, node_id("edge-1"));
+    assert_eq!(identity.machine_id, machine_id("edge-1"));
     assert_eq!(identity.name.as_str(), "edge-1");
 }
 
@@ -388,7 +388,7 @@ fn name_override_wins_over_remote_hostname() {
 fn hostname_is_used_when_no_name_override_is_given() {
     let identity = derive_machine_identity("sg-core-1", None).expect("hostname is valid");
 
-    assert_eq!(identity.node_id, node_id("sg-core-1"));
+    assert_eq!(identity.machine_id, machine_id("sg-core-1"));
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn machine_init_name_override_is_validated_at_parse_time() {
     let Some(identity) = command.identity_override else {
         panic!("expected an identity override");
     };
-    assert_eq!(identity.node_id, node_id("sg-core-1"));
+    assert_eq!(identity.machine_id, machine_id("sg-core-1"));
 
     let error = parse_command(
         [
@@ -715,7 +715,7 @@ fn machine_add_remote_accepts_name_and_gateway_opt_out() {
     let Some(identity) = &command.identity_override else {
         panic!("expected an identity override");
     };
-    assert_eq!(identity.node_id, node_id("sg-edge-1"));
+    assert_eq!(identity.machine_id, machine_id("sg-edge-1"));
     assert_eq!(
         command.roles,
         InstallRolePolicy::install_all().without_gateway()
@@ -741,7 +741,7 @@ fn machine_add_accepts_dns_and_combined_role_opt_outs() {
     let PloyzctlCommand::MachineAdd(command) = parse(&[
         "machine",
         "add",
-        "--node",
+        "--machine",
         "edge_2",
         "--name",
         "edge_2",
@@ -766,7 +766,7 @@ fn machine_add_accepts_dns_and_combined_role_opt_outs() {
 fn machine_add_explicit_flags_conflict_with_a_remote_target() {
     assert!(
         parse_command(
-            ["machine", "add", "root@203.0.113.11", "--node", "edge_2"].map(str::to_owned)
+            ["machine", "add", "root@203.0.113.11", "--machine", "edge_2"].map(str::to_owned)
         )
         .is_err()
     );
@@ -775,7 +775,7 @@ fn machine_add_explicit_flags_conflict_with_a_remote_target() {
 #[test]
 fn machine_add_without_target_still_requires_explicit_flags() {
     let error = parse_command(
-        ["machine", "add", "--name", "edge_2", "--node", "edge_2"].map(str::to_owned),
+        ["machine", "add", "--name", "edge_2", "--machine", "edge_2"].map(str::to_owned),
     )
     .expect_err("missing operation id fails");
     let rendered = error.to_string();
@@ -876,14 +876,14 @@ fn machine_init_rejects_deferred_link_cloud_flag() {
 // --- Founder install command rendering (U4) ---
 
 #[test]
-fn founder_bootstrap_command_carries_minimal_first_node_inputs() {
+fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
     let command = FounderBootstrapCommand {
         installer: BootstrapInstaller::BootstrapUrl(
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
         release: BootstrapRelease::Version("v0.0.1-alpha.1".to_owned()),
         release_manifest_url: Some("file:///tmp/manifest.env".to_owned()),
-        node_id: node_id("sg-core-1"),
+        machine_id: machine_id("sg-core-1"),
         roles: InstallRolePolicy::install_all()
             .without_gateway()
             .without_dns(),
@@ -892,7 +892,7 @@ fn founder_bootstrap_command_carries_minimal_first_node_inputs() {
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
-        node_public_ip: Some("203.0.113.10".parse().expect("valid IP")),
+        machine_public_ip: Some("203.0.113.10".parse().expect("valid IP")),
     };
 
     let rendered = command.render();
@@ -901,21 +901,21 @@ fn founder_bootstrap_command_carries_minimal_first_node_inputs() {
         "curl -fsSL -- 'https://ployz.sh'",
         "PLOYZ_VERSION='v0.0.1-alpha.1'",
         "PLOYZ_RELEASE_MANIFEST_URL='file:///tmp/manifest.env'",
-        "PLOYZ_NODE_PUBLIC_IP='203.0.113.10'",
-        "PLOYZ_NODE_ID='sg-core-1'",
+        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.10'",
+        "PLOYZ_MACHINE_ID='sg-core-1'",
         "PLOYZ_GATEWAY='skip'",
         "PLOYZ_DNS='skip'",
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
-        "sh -s -- --first-node",
+        "sh -s -- --first-machine",
     ] {
         assert!(
             rendered.contains(expected),
             "rendered command missing {expected}: {rendered}"
         );
     }
-    assert!(!rendered.contains("first-node-spec"));
+    assert!(!rendered.contains("first-machine-spec"));
 }
 
 #[test]
@@ -926,21 +926,21 @@ fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
         ),
         release: BootstrapRelease::Channel("alpha".to_owned()),
         release_manifest_url: None,
-        node_id: node_id("sg-core-1"),
+        machine_id: machine_id("sg-core-1"),
         roles: InstallRolePolicy::install_all(),
         bootstrap_url: MachineBootstrapUrl::try_new("https://ployz.sh")
             .expect("valid bootstrap url"),
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
-        node_public_ip: None,
+        machine_public_ip: None,
     };
 
     let rendered = command.render();
 
     assert!(rendered.contains("PLOYZ_CHANNEL='alpha'"));
     assert!(!rendered.contains("PLOYZ_VERSION="));
-    assert!(rendered.contains("sh -s -- --first-node"));
+    assert!(rendered.contains("sh -s -- --first-machine"));
 }
 
 // --- Remote install command rendering (U6) ---
@@ -948,7 +948,7 @@ fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
 #[test]
 fn remote_join_install_command_matches_the_printed_install_line() {
     let output = MachineAddOutput {
-        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
@@ -965,7 +965,7 @@ fn remote_join_install_command_matches_the_printed_install_line() {
         &MachineAddInstaller::FromAcceptedBootstrapUrl,
         Some("203.0.113.11".parse().expect("valid ip")),
     );
-    assert!(with_ip.contains("| PLOYZ_NODE_PUBLIC_IP='203.0.113.11' PLOYZ_VERSION="));
+    assert!(with_ip.contains("| PLOYZ_MACHINE_PUBLIC_IP='203.0.113.11' PLOYZ_VERSION="));
 
     let scripted = output.install_command(
         &MachineAddInstaller::RemoteScript("/tmp/ployz-install.sh".to_owned()),

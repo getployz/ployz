@@ -37,7 +37,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_network_create_request_sets_node_subnet() {
+    fn endpoint_network_create_request_sets_machine_subnet() {
         let request = endpoint_network_create_request("10.42.7.0/24", "br-ployz");
 
         assert_eq!(request.name, ENDPOINT_NETWORK_NAME);

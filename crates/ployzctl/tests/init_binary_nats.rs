@@ -8,11 +8,11 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    InitFirstNodeActivateRequest, InitFirstNodeActivateResponse, InitFirstNodeActivated,
+    InitFirstMachineActivateRequest, InitFirstMachineActivateResponse, InitFirstMachineActivated,
     OperationApiResponse,
-    operation_api::{InitFirstNodeActivateApi, OperationApiContract},
+    operation_api::{InitFirstMachineActivateApi, OperationApiContract},
 };
-use ployz_test_support::ids::{node_id, operation_id};
+use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::config::{CLUSTER_CONTEXT_FILE_NAME, ClusterContext, save_cluster_context};
 use ployzctl::runtime::{
@@ -25,7 +25,7 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
-    let spec = test_api_service(InitFirstNodeActivateApi::ENDPOINT);
+    let spec = test_api_service(InitFirstMachineActivateApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -33,15 +33,15 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
 
     runtime
         .bind_endpoint(endpoint, |request| async move {
-            let request: InitFirstNodeActivateRequest =
+            let request: InitFirstMachineActivateRequest =
                 serde_json::from_slice(&request.payload).expect("activate request decodes");
-            assert_eq!(request.node_id, node_id("core_1"));
+            assert_eq!(request.machine_id, machine_id("core_1"));
             assert_eq!(request.roles.gateway, GatewayRole::Install);
 
-            let response: InitFirstNodeActivateResponse = OperationApiResponse::Ok {
-                value: InitFirstNodeActivated {
+            let response: InitFirstMachineActivateResponse = OperationApiResponse::Ok {
+                value: InitFirstMachineActivated {
                     operation_id: operation_id("op_init_core_1"),
-                    node_id: node_id("core_1"),
+                    machine_id: machine_id("core_1"),
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -53,9 +53,11 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
         .arg(server.server.client_url().as_str())
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
-        .args(["init", "activate-first-node", "--node", "core_1"])
+        .args(["init", "activate-first-machine", "--machine", "core_1"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -67,7 +69,7 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
     );
     assert_eq!(
         stdout(&output),
-        "operation op_init_core_1\nfirst-node core_1 active\n"
+        "operation op_init_core_1\nfirst-machine core_1 active\n"
     );
     assert_eq!(stderr(&output), "");
 
@@ -81,7 +83,7 @@ async fn binary_loads_cluster_context_when_flag_and_env_are_absent() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
-    let runtime = bind_activate_first_node_service(client).await;
+    let runtime = bind_activate_first_machine_service(client).await;
 
     let config_home = tempfile::TempDir::new().expect("config home dir");
     write_cluster_context(
@@ -97,7 +99,7 @@ async fn binary_loads_cluster_context_when_flag_and_env_are_absent() {
         .env_remove(PLOYZ_NATS_CA_FILE_ENV)
         .env_remove(PLOYZ_NATS_NKEY_SEED_FILE_ENV)
         .env("XDG_CONFIG_HOME", config_home.path())
-        .args(["init", "activate-first-node", "--node", "core_1"])
+        .args(["init", "activate-first-machine", "--machine", "core_1"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -109,7 +111,7 @@ async fn binary_loads_cluster_context_when_flag_and_env_are_absent() {
     );
     assert_eq!(
         stdout(&output),
-        "operation op_init_core_1\nfirst-node core_1 active\n"
+        "operation op_init_core_1\nfirst-machine core_1 active\n"
     );
 
     runtime.shutdown().await.expect("service shuts down");
@@ -123,7 +125,7 @@ async fn binary_env_nats_url_overrides_cluster_context() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
-    let runtime = bind_activate_first_node_service(client).await;
+    let runtime = bind_activate_first_machine_service(client).await;
 
     let config_home = tempfile::TempDir::new().expect("config home dir");
     write_cluster_context(
@@ -139,7 +141,7 @@ async fn binary_env_nats_url_overrides_cluster_context() {
         .env(PLOYZ_NATS_URL_ENV, server.server.client_url().as_str())
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
-        .args(["init", "activate-first-node", "--node", "core_1"])
+        .args(["init", "activate-first-machine", "--machine", "core_1"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -153,10 +155,10 @@ async fn binary_env_nats_url_overrides_cluster_context() {
     runtime.shutdown().await.expect("service shuts down");
 }
 
-/// Binds a stub activate-first-node API that accepts node `core_1`.
-async fn bind_activate_first_node_service(client: async_nats::Client) -> RunningNatsService {
+/// Binds a stub activate-first-machine API that accepts machine `core_1`.
+async fn bind_activate_first_machine_service(client: async_nats::Client) -> RunningNatsService {
     let service_client = client.clone();
-    let spec = test_api_service(InitFirstNodeActivateApi::ENDPOINT);
+    let spec = test_api_service(InitFirstMachineActivateApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -164,14 +166,14 @@ async fn bind_activate_first_node_service(client: async_nats::Client) -> Running
 
     runtime
         .bind_endpoint(endpoint, |request| async move {
-            let request: InitFirstNodeActivateRequest =
+            let request: InitFirstMachineActivateRequest =
                 serde_json::from_slice(&request.payload).expect("activate request decodes");
-            assert_eq!(request.node_id, node_id("core_1"));
+            assert_eq!(request.machine_id, machine_id("core_1"));
 
-            let response: InitFirstNodeActivateResponse = OperationApiResponse::Ok {
-                value: InitFirstNodeActivated {
+            let response: InitFirstMachineActivateResponse = OperationApiResponse::Ok {
+                value: InitFirstMachineActivated {
                     operation_id: operation_id("op_init_core_1"),
-                    node_id: node_id("core_1"),
+                    machine_id: machine_id("core_1"),
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))

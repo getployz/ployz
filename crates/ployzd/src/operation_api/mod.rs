@@ -1,12 +1,12 @@
 //! User-facing operation service handlers.
 
 mod error_map;
-mod first_node;
+mod first_machine;
 mod machine_join;
 mod queries;
 mod submit;
 
-pub use first_node::init_first_node_activate;
+pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use queries::{
     LogsQueryRuntime, MachineQueryRuntime, ServiceQueryRuntime, ops_status, ops_status_missing,
@@ -17,8 +17,8 @@ pub use submit::{backup_create, deploy_submit, machine_add, owned_operation};
 use crate::backup_runtime::BackupOperationRuntime;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
+use crate::machine_runtime::client::NatsMachineLogsTailer;
 use crate::nats_authorization::MachineCredentialMintRuntime;
-use crate::node::client::NatsNodeLogsTailer;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub struct OperationApiHandlers {
     backup_runtime: Arc<BackupOperationRuntime>,
     machine_mint: Arc<MachineCredentialMintRuntime>,
     /// Cluster-truth store for the writes this layer owns (machine
-    /// activation on join completion) and the first-node idempotency
+    /// activation on join completion) and the first-machine idempotency
     /// read. The query runtimes stay genuinely read-only.
     core_state: AsyncNatsCoreStateStore,
     machine_query: Arc<MachineQueryRuntime>,
@@ -47,7 +47,7 @@ impl OperationApiHandlers {
         machine_mint: MachineCredentialMintRuntime,
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
-        logs_tailer: NatsNodeLogsTailer,
+        logs_tailer: NatsMachineLogsTailer,
     ) -> Self {
         let machine_query = MachineQueryRuntime::new(core_state.clone(), observations.clone());
         let service_query = ServiceQueryRuntime::new(core_state.clone());

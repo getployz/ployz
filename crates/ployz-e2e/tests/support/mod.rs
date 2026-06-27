@@ -5,8 +5,8 @@
 
 pub mod dind;
 pub mod http;
-pub mod nats;
-/// The ployzd-coupled in-memory node runner, shared with ployzd's own
+/// The ployzd-coupled in-memory machine runner, shared with ployzd's own
 /// integration tests (single source under ployzd/tests/support).
-#[path = "../../../ployzd/tests/support/node.rs"]
-pub mod node;
+#[path = "../../../ployzd/tests/support/machine_runtime.rs"]
+pub mod machine_runtime;
+pub mod nats;

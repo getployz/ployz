@@ -2,10 +2,10 @@ use std::future::Future;
 
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::node::ContainerEndpoint;
+use ployz_core::machine_runtime::ContainerEndpoint;
 
 use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use crate::node::protocol::{ContainerEndpointRequest, NodeContainerRunSpec};
+use crate::machine_runtime::protocol::{ContainerEndpointRequest, MachineContainerRunSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {
@@ -30,7 +30,7 @@ pub struct CreateManagedContainer {
 
 #[must_use]
 pub fn managed_container_labels(
-    spec: &NodeContainerRunSpec,
+    spec: &MachineContainerRunSpec,
     endpoint: Option<&ContainerEndpointRequest>,
 ) -> ManagedContainerLabels {
     ManagedContainerLabels {
@@ -44,7 +44,7 @@ pub fn managed_container_labels(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeContainerRunnerError {
+pub enum MachineContainerRunnerError {
     ListExisting {
         message: String,
     },
@@ -69,7 +69,7 @@ pub enum NodeContainerRunnerError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeLogReaderError {
+pub enum MachineLogReaderError {
     NotFound {
         container_id: ContainerId,
     },
@@ -80,53 +80,53 @@ pub enum NodeLogReaderError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeLogTail {
+pub struct MachineLogTail {
     pub text: String,
     pub truncated: bool,
 }
 
-pub trait NodeContainerRunner {
+pub trait MachineContainerRunner {
     fn existing_managed_containers(
         &self,
-    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError>> + Send;
 
     fn ensure_endpoint_network(
         &self,
-    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 
     fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> impl Future<Output = Result<ContainerId, NodeContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<ContainerId, MachineContainerRunnerError>> + Send;
 
     fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 
     fn stop_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 
     fn remove_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 }
 
-pub trait NodeLogReader {
+pub trait MachineLogReader {
     fn tail_container_logs(
         &self,
         container_id: &ContainerId,
         tail_lines: Option<u16>,
-    ) -> impl Future<Output = Result<NodeLogTail, NodeLogReaderError>> + Send;
+    ) -> impl Future<Output = Result<MachineLogTail, MachineLogReaderError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeContainerRunDecision {
+pub enum MachineContainerRunDecision {
     Create {
         labels: ManagedContainerLabels,
     },
@@ -140,7 +140,7 @@ pub enum NodeContainerRunDecision {
         container_id: ContainerId,
         state: ExistingManagedContainerState,
     },
-    Conflict(NodeContainerRunConflict),
+    Conflict(MachineContainerRunConflict),
     Ambiguous {
         operation_id: ployz_core::ids::OperationId,
         step_id: ployz_core::ids::StepId,
@@ -149,7 +149,7 @@ pub enum NodeContainerRunDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeContainerRunConflict {
+pub struct MachineContainerRunConflict {
     pub container_id: ContainerId,
     pub expected: ManagedContainerLabels,
     pub actual: ManagedContainerLabels,
@@ -159,14 +159,14 @@ pub struct NodeContainerRunConflict {
 pub fn decide_container_run(
     expected: &ManagedContainerLabels,
     existing: impl IntoIterator<Item = ExistingManagedContainer>,
-) -> NodeContainerRunDecision {
+) -> MachineContainerRunDecision {
     let mut matches = existing.into_iter().filter(|container| {
         container.labels.operation_id == expected.operation_id
             && container.labels.step_id == expected.step_id
     });
 
     let Some(first) = matches.next() else {
-        return NodeContainerRunDecision::Create {
+        return MachineContainerRunDecision::Create {
             labels: expected.clone(),
         };
     };
@@ -176,7 +176,7 @@ pub fn decide_container_run(
         let container_ids = std::iter::once(first.container_id)
             .chain(rest.into_iter().map(|container| container.container_id))
             .collect();
-        return NodeContainerRunDecision::Ambiguous {
+        return MachineContainerRunDecision::Ambiguous {
             operation_id: expected.operation_id.clone(),
             step_id: expected.step_id.clone(),
             container_ids,
@@ -192,13 +192,13 @@ pub fn decide_container_run(
     if labels == *expected {
         return match state {
             ExistingManagedContainerState::Running { .. } => {
-                NodeContainerRunDecision::ReuseRunning { container_id }
+                MachineContainerRunDecision::ReuseRunning { container_id }
             }
             ExistingManagedContainerState::StartableStopped => {
-                NodeContainerRunDecision::StartExisting { container_id }
+                MachineContainerRunDecision::StartExisting { container_id }
             }
             ExistingManagedContainerState::NotStartable { .. } => {
-                NodeContainerRunDecision::NotStartable {
+                MachineContainerRunDecision::NotStartable {
                     container_id,
                     state,
                 }
@@ -206,7 +206,7 @@ pub fn decide_container_run(
         };
     }
 
-    NodeContainerRunDecision::Conflict(NodeContainerRunConflict {
+    MachineContainerRunDecision::Conflict(MachineContainerRunConflict {
         container_id,
         expected: expected.clone(),
         actual: labels,

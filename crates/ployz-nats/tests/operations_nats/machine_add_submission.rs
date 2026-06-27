@@ -17,7 +17,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_rejects_duplicat
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -26,14 +26,14 @@ async fn operation_repository_machine_add_submit_is_durable_and_rejects_duplicat
         .submit_machine_add(machine_add_submission(
             "op_other",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
         .expect_err("duplicate machine add key is rejected");
 
     assert_eq!(first.operation_id, operation_id("op_machine"));
-    assert_eq!(first.node_id, node_id("node_2"));
+    assert_eq!(first.machine_id, machine_id("machine_2"));
     assert_eq!(
         first.name,
         MachineName::try_new("edge_2").expect("valid machine name")
@@ -46,7 +46,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_rejects_duplicat
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             state: ployz_core::machine::MachineAddOperationState::Pending {
@@ -72,7 +72,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_rejects_duplicat
         event.event,
         OperationEvent::MachineAddSubmitted {
             operation_id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             join_token: issued_join_token_for_raw("join_token"),
@@ -87,7 +87,7 @@ async fn operation_repository_redeem_before_material_ready_is_typed_not_ready() 
         .submit_machine_add(machine_add_submission(
             "op_machine",
             "idem_machine",
-            "node_2",
+            "machine_2",
             "edge_2",
         ))
         .await
@@ -138,7 +138,7 @@ async fn machine_add_claim_does_not_expose_join_token_before_acceptance() {
         .expect("write join token claim");
     let original = MachineAddOperationSubmission {
         operation_id: operation_id("op_other"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
@@ -214,7 +214,7 @@ async fn machine_add_retry_recovers_after_submit_event_without_submission() {
     let stored = event_log
         .append(OperationEventAppend::machine_add_submitted(
             claim.operation_id.clone(),
-            claim.node_id.clone(),
+            claim.machine_id.clone(),
             claim.name.clone(),
             claim.roles,
             claim.join_token.clone(),
@@ -255,7 +255,7 @@ async fn machine_add_retry_recovers_after_submission_without_status() {
     let stored = event_log
         .append(OperationEventAppend::machine_add_submitted(
             claim.operation_id.clone(),
-            claim.node_id.clone(),
+            claim.machine_id.clone(),
             claim.name.clone(),
             claim.roles,
             claim.join_token.clone(),
@@ -269,7 +269,7 @@ async fn machine_add_retry_recovers_after_submission_without_status() {
                 operation_id: claim.operation_id,
                 idempotency_key: idempotency_key.clone(),
                 start_sequence: stored.sequence,
-                node_id: claim.node_id,
+                machine_id: claim.machine_id,
                 name: claim.name,
                 roles: claim.roles,
                 join_bundle: claim.join_bundle,
@@ -360,7 +360,7 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
         repository
             .submit_machine_add(MachineAddOperationSubmission {
                 operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
                 join_bundle: machine_join_bundle(),
@@ -388,7 +388,7 @@ fn stored_machine_add_claim(
     let token = raw_join_token.as_str().to_owned();
     StoredMachineAddClaim {
         operation_id,
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
@@ -404,7 +404,7 @@ fn machine_add_submission_with_raw(
 ) -> MachineAddOperationSubmission {
     MachineAddOperationSubmission {
         operation_id: operation_id(operation_id_value),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
@@ -426,7 +426,7 @@ async fn assert_machine_add_pending(
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
             id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             state: ployz_core::machine::MachineAddOperationState::Pending {

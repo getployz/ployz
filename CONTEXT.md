@@ -1,6 +1,6 @@
 # Ployz
 
-Ployz is a small-cluster orchestration core for deploying and operating services through explicit, bounded operations.
+Ployz is a small-cluster orchestration core for deploying and operating services through explicit, bounded operations. Shared runtime bootstrap terms are canonical here and mirrored in the [Ployz Cloud glossary](../ployz-cloud/CONTEXT.md) for Cloud product language.
 
 ## Language
 
@@ -44,9 +44,25 @@ _Avoid_: Host identity, route name, route target
 A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations.
 _Avoid_: Route binding, gateway config, active route
 
+**Route DNS Projection**:
+A DNS process's local serving of route binding hostnames to the gateway answers that can serve them. It is separate from machine-name DNS provided by a mesh such as Tailscale MagicDNS.
+_Avoid_: MagicDNS route backend, machine name DNS, tailnet device DNS
+
 **Dataplane Projection**:
-A NATS-watch-driven, machine-local application of current machine and dataplane state into WireGuard, eBPF, routes, or related network configuration. Dataplane projection may continuously reconcile local network configuration because it is a projection of cluster state, not authority to mutate cluster truth.
-_Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, live RPC coordination
+A machine-local application of current machine and dataplane state into WireGuard, eBPF, routes, or related network configuration. Dataplane projection is eventually consistent and may be driven by NATS watches or bounded operation-owned NATS machine queries/commands; it is not authority to mutate cluster truth.
+_Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, synchronous cluster truth
+
+**Dataplane Prepare**:
+A bounded operation step that asks target machines to make dataplane projection usable for one operation attempt and report evidence. It may use NATS machine calls, but it does not make dataplane state cluster truth.
+_Avoid_: Dataplane Projection Readiness, Dataplane Host Preparation, mesh bootstrap
+
+**Dataplane Membership**:
+A machine's operation-derived participation in the cluster data-plane mesh for service endpoint reachability. It is distinct from durable machine control-plane authority, machine lifecycle, and workload placement eligibility.
+_Avoid_: Machine membership, runtime membership, control-plane authority, placement eligibility, durable membership registry
+
+**Dataplane Route Advertisement**:
+An operation-derived claim that one or more machine endpoint subnets should be reachable through a dataplane member. Route advertisements describe data-plane reachability intent or evidence; they do not own endpoint subnet assignment or route bindings.
+_Avoid_: Route Binding, subnet ownership, gateway route, WireGuard peer, durable route registry
 
 **Dataplane Host Preparation**:
 A bounded machine-local preparation step that makes a machine eligible for dataplane projection by preparing required host capabilities and local machine-owned dataplane material. It can run during bootstrap or an explicit substrate update; it does not create live WireGuard interfaces, routes, peers, or eBPF attachments.
@@ -257,12 +273,12 @@ A declared network entry point for a service container. Ports may describe host-
 _Avoid_: Route, endpoint
 
 **Machine**:
-An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for node.
-_Avoid_: Node, host
+An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for a machine-local agent.
+_Avoid_: host
 
 **Machine Identity**:
 The stable, non-reused identity of an accepted machine. Machine identity owns credentials, endpoint subnet assignment, observations, and operation history.
-_Avoid_: NodeId as product identity, machine name as identity, name-keyed observations
+_Avoid_: MachineId as product identity, machine name as identity, name-keyed observations
 
 **Machine Name**:
 A current-machine-unique operator-facing label for a machine. Machine names help humans search and recognize current machines, but they are not authority for subjects, credentials, endpoint subnets, observations, or operation identity. Removed machine history does not reserve names.
@@ -273,15 +289,15 @@ A pre-activation claim created while a machine add is waiting for join. A reserv
 _Avoid_: Active machine, subnet allocation, accepted machine identity
 
 **Machine Endpoint Subnet**:
-A cluster-assigned CIDR reserved for service container endpoints on one current machine. It is assigned when the machine identity is accepted into the cluster, remains stable while that machine is current, is released when the machine is removed, may be reused immediately after release, and must not be independently chosen by the machine.
-_Avoid_: Node-derived subnet, local subnet choice, Docker network subnet as authority, first-boot local allocation, subnet cooldown
+A cluster-assigned IPv4 or IPv6 CIDR reserved for service container endpoints on one current machine. It is assigned when the machine identity is accepted into the cluster, remains stable while that machine is current, is released when the machine is removed, may be reused immediately after release, and must not be independently chosen by the machine.
+_Avoid_: Runtime-derived subnet, local subnet choice, Docker network subnet as authority, first-boot local allocation, subnet cooldown
 
 **Pending Machine Endpoint Claim**:
 An operation-owned claim for a machine endpoint subnet that has been reserved but not yet attached to an accepted machine identity. A pending claim is durable transition evidence; it is resumed by the same operation or resolved by explicit cleanup or repair, not by automatic TTL.
 _Avoid_: Expiring subnet lease, hidden cleanup, unowned reservation
 
 **Accepted Machine Identity**:
-A machine identity committed by the control plane with credentials and an assigned endpoint subnet. Once accepted, later node startup or role failures are machine health evidence; the machine's resources are changed through explicit lifecycle operations rather than failed bootstrap cleanup.
+A machine identity committed by the control plane with credentials and an assigned endpoint subnet. Once accepted, later machine role startup or role failures are machine health evidence; the machine's resources are changed through explicit lifecycle operations rather than failed bootstrap cleanup.
 _Avoid_: Reservation, pending join, bootstrap attempt
 
 **Machine Join Redemption**:
@@ -305,7 +321,7 @@ A condition where a machine's local endpoint network uses a CIDR different from 
 _Avoid_: Auto-adopt local Docker subnet, silent subnet repair, automatic network recreation
 
 **Machine Endpoint Repair**:
-An explicit operation that resolves a machine endpoint subnet mismatch. Endpoint repair is separate from node startup so Ployz does not silently delete or recreate local networks that may contain runtime evidence.
+An explicit operation that resolves a machine endpoint subnet mismatch. Endpoint repair is separate from machine startup so Ployz does not silently delete or recreate local networks that may contain runtime evidence.
 _Avoid_: Startup repair, implicit network cleanup, automatic adoption
 
 **Machine Endpoint Allocation Corruption**:
@@ -333,7 +349,7 @@ An explicit operation that returns a draining machine to normal placement eligib
 _Avoid_: Rollback, undelete, workload restore
 
 **Machine Cleanup Reachability**:
-The ability to send node-local cleanup commands to a machine for runtime material already on that machine. A draining machine may remain cleanup-reachable while it is fresh and authorized, even though it is not eligible for new workload placement.
+The ability to send machine-local cleanup commands to a machine for runtime material already on that machine. A draining machine may remain cleanup-reachable while it is fresh and authorized, even though it is not eligible for new workload placement.
 _Avoid_: Placement eligibility, serving eligibility, liveness as authority
 
 **Unresolved Machine Cleanup**:
@@ -358,7 +374,7 @@ _Avoid_: Cluster membership, machine join, shared context
 
 **Machine Bootstrap**:
 The first installation and join of Ployz substrate on a machine. It makes a machine capable of running its assigned Ployz role processes and reporting bootstrap progress.
-_Avoid_: Install, provisioning, node bootstrap
+_Avoid_: Install, provisioning, runtime bootstrap
 
 **Bootstrapped Machine**:
 A machine that already contains durable Ployz machine-local material showing it has been initialized for a cluster. It is not a fresh bootstrap target; recovery and re-adoption need explicit operation vocabulary.
@@ -377,23 +393,23 @@ The act of running a founder or joiner bootstrap command on a target machine, ei
 _Avoid_: SSH control plane, daemon transport, provisioning authority
 
 **Cloud Bootstrap Invite**:
-A time-limited Cloud permission that lets one or more machines use pre-rendered Bootstrap Delivery material while the invite is valid. The invite carries Cloud-side org, cluster, actor, and bootstrap intent; each machine use is a separate redemption. Cloud Bootstrap Invites are for automation and cloud-init style delivery, not the default interactive human path.
+A time-limited Cloud permission that can issue one or more single-redemption Cloud Bootstrap Tokens for pre-rendered Bootstrap Delivery. The invite carries Cloud-side org, cluster, actor, and bootstrap intent; a valid token redeem request is the approval boundary for each tokenized machine use.
 _Avoid_: One-time bootstrap token, machine join token, org flag
 
 **Cloud Bootstrap Session**:
-A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose Cloud org, cluster, and bootstrap intent. The session is not an org, cluster, machine identity, join token, or operator credential.
+A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. The session is not an org, cluster, machine identity, join token, or operator credential.
 _Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
 
 **Cloud Bootstrap Token**:
-The bearer secret string embedded in noninteractive Bootstrap Delivery material for a Cloud Bootstrap Invite. The token is not the org, cluster, machine identity, join token, or callback credential.
+The single-redemption bearer secret string embedded in noninteractive Bootstrap Delivery material for a Cloud Bootstrap Invite. The token is not the org, cluster, machine identity, join token, or callback credential.
 _Avoid_: Org id, cluster id, join token, callback token
 
 **Cloud Bootstrap Redemption**:
-One machine's use of a Cloud Bootstrap Session or Cloud Bootstrap Invite. A redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session or invite itself cluster truth.
-_Avoid_: Bootstrap invite, bootstrap session, machine acceptance, operation completion
+One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session, invite, or token itself cluster truth.
+_Avoid_: Bootstrap invite, bootstrap session, token, machine acceptance, operation completion
 
 **Cloud Founder Claim**:
-The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure.
+The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
 _Avoid_: Leader election, automatic founder failover, first healthy server
 
 **Cloud Link**:
@@ -442,7 +458,7 @@ _Avoid_: Tunnel, peer connection, transport session
 
 **Machine Observation**:
 Runtime state reported by a machine about its host and local runtime. It can describe service containers, Docker health, resources, public IP, and local process health, but it does not own gateway or DNS status.
-_Avoid_: Node observation
+_Avoid_: Host observation
 
 **Fresh Machine Observation**:
 A recent machine observation that can contribute to current runtime views. Stale machine observations may remain as evidence, but they are not current cluster state and must not make an offline or force removed machine appear serveable.

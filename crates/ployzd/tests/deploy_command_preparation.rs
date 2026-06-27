@@ -1,11 +1,11 @@
 use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::StepId;
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::state::{ActiveServiceState, ExpectedActiveService};
-use ployz_test_support::ids::{container_id, node_id, operation_id, revision_id, service_id};
+use ployz_test_support::ids::{container_id, machine_id, operation_id, revision_id, service_id};
 use ployzd::deploy_worker::{DeployExecutionFacts, prepare_deploy_execution_command};
 use std::time::Duration;
 
@@ -15,23 +15,23 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
     let facts = DeployExecutionFacts {
         active_service: None,
         active_route: None,
-        eligible_nodes: vec![node_id("node_a")],
-        dataplane_nodes: Vec::new(),
-        observed_nodes: vec![
-            NodeContainerObservationSnapshot::try_new(
-                node_id("node_a"),
+        eligible_machines: vec![machine_id("machine_a")],
+        dataplane_machines: Vec::new(),
+        observed_machines: vec![
+            MachineContainerObservationSnapshot::try_new(
+                machine_id("machine_a"),
                 [
-                    observed_service_container("node_a", "ctr_old", "rev_old"),
+                    observed_service_container("machine_a", "ctr_old", "rev_old"),
                     observed_service_container_with_service(
-                        "node_a",
+                        "machine_a",
                         "ctr_other_service",
                         "rev_2",
                         "svc_worker",
                     ),
-                    exited_observed_service_container("node_a", "ctr_stopped", "rev_2"),
+                    exited_observed_service_container("machine_a", "ctr_stopped", "rev_2"),
                 ],
             )
-            .expect("valid node observation snapshot"),
+            .expect("valid machine observation snapshot"),
         ],
         wireguard_peer_endpoints: Vec::new(),
         step_timeout: Duration::from_secs(5),
@@ -43,7 +43,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
     assert!(command.existing_replicas().is_empty());
     assert_eq!(
         command.cleanup_candidates(),
-        [cleanup_container("node_a", "ctr_old", "rev_old")]
+        [cleanup_container("machine_a", "ctr_old", "rev_old")]
     );
     assert_eq!(command.expected_active(), &ExpectedActiveService::Absent);
 }
@@ -57,14 +57,18 @@ async fn uses_active_service_revision_and_target_replicas() {
             active_revision: revision_id("rev_1"),
         }),
         active_route: None,
-        eligible_nodes: vec![node_id("node_a")],
-        dataplane_nodes: Vec::new(),
-        observed_nodes: vec![
-            NodeContainerObservationSnapshot::try_new(
-                node_id("node_a"),
-                [observed_service_container("node_a", "ctr_target", "rev_2")],
+        eligible_machines: vec![machine_id("machine_a")],
+        dataplane_machines: Vec::new(),
+        observed_machines: vec![
+            MachineContainerObservationSnapshot::try_new(
+                machine_id("machine_a"),
+                [observed_service_container(
+                    "machine_a",
+                    "ctr_target",
+                    "rev_2",
+                )],
             )
-            .expect("valid node observation snapshot"),
+            .expect("valid machine observation snapshot"),
         ],
         wireguard_peer_endpoints: Vec::new(),
         step_timeout: Duration::from_secs(5),
@@ -79,11 +83,11 @@ async fn uses_active_service_revision_and_target_replicas() {
     );
     assert_eq!(
         command.existing_replicas(),
-        vec![existing_service_replica("node_a", "ctr_target")]
+        vec![existing_service_replica("machine_a", "ctr_target")]
     );
     assert_eq!(
         command.cleanup_candidates(),
-        [cleanup_container("node_a", "ctr_target", "rev_2")]
+        [cleanup_container("machine_a", "ctr_target", "rev_2")]
     );
 }
 
@@ -99,9 +103,9 @@ async fn rejects_active_state_for_a_different_service() {
                 active_revision: revision_id("rev_1"),
             }),
             active_route: None,
-            eligible_nodes: vec![node_id("node_a")],
-            dataplane_nodes: Vec::new(),
-            observed_nodes: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            dataplane_machines: Vec::new(),
+            observed_machines: Vec::new(),
             wireguard_peer_endpoints: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
@@ -130,22 +134,22 @@ fn deploy_request() -> DeployRequest {
 }
 
 fn existing_service_replica(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
 ) -> ployz_core::deploy::ExistingServiceReplica {
     ployz_core::deploy::ExistingServiceReplica {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
     }
 }
 
 fn cleanup_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
 ) -> DeployCleanupContainer {
     DeployCleanupContainer {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
@@ -157,12 +161,12 @@ fn cleanup_container(
 }
 
 fn observed_service_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
@@ -174,22 +178,22 @@ fn observed_service_container(
 }
 
 fn observed_service_container_with_service(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
     service_id: &str,
 ) -> ManagedContainerObservation {
-    let mut observation = observed_service_container(node_id, container_id, revision_id);
+    let mut observation = observed_service_container(machine_id, container_id, revision_id);
     observation.service_id = self::service_id(service_id);
     observation
 }
 
 fn exited_observed_service_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
 ) -> ManagedContainerObservation {
-    let mut observation = observed_service_container(node_id, container_id, revision_id);
+    let mut observation = observed_service_container(machine_id, container_id, revision_id);
     observation.state = ContainerRuntimeState::Exited;
     observation
 }

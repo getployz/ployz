@@ -21,7 +21,7 @@ use std::time::Duration;
 
 mod support;
 
-use ployz_test_support::ids::{idempotency_key, node_id, operation_id};
+use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
@@ -38,7 +38,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
         .await;
     let api = nats.api();
 
-    let accepted = machine_add(&api, "op_machine", "idem_machine", "node_2").await;
+    let accepted = machine_add(&api, "op_machine", "idem_machine", "machine_2").await;
 
     // The handler returned while the (gated) reload had not run: accepting
     // is fast and never includes render/reload/verify work.
@@ -60,8 +60,8 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_machine_retry"),
             idempotency_key: idempotency_key("idem_machine"),
-            node_id: node_id("node_2"),
-            name: ployz_sdk_types::MachineName::try_new("node_2").expect("valid machine name"),
+            machine_id: machine_id("machine_2"),
+            name: ployz_sdk_types::MachineName::try_new("machine_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
         })
         .await
@@ -96,8 +96,8 @@ async fn machine_add_mints_unique_credentials_per_machine() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
-    let first = machine_add(&api, "op_machine_a", "idem_machine_a", "node_a").await;
-    let second = machine_add(&api, "op_machine_b", "idem_machine_b", "node_b").await;
+    let first = machine_add(&api, "op_machine_a", "idem_machine_a", "machine_a").await;
+    let second = machine_add(&api, "op_machine_b", "idem_machine_b", "machine_b").await;
     let first_redeemed = redeem_when_ready(&api, &first.join_token).await;
     let second_redeemed = redeem_when_ready(&api, &second.join_token).await;
 
@@ -124,8 +124,8 @@ async fn concurrent_machine_adds_both_render_their_keys() {
     let api = nats.api();
 
     let (left, right) = tokio::join!(
-        machine_add(&api, "op_fence_a", "idem_fence_a", "node_fa"),
-        machine_add(&api, "op_fence_b", "idem_fence_b", "node_fb"),
+        machine_add(&api, "op_fence_a", "idem_fence_a", "machine_fa"),
+        machine_add(&api, "op_fence_b", "idem_fence_b", "machine_fb"),
     );
     let left_redeemed = redeem_when_ready(&api, &left.join_token).await;
     let right_redeemed = redeem_when_ready(&api, &right.join_token).await;
@@ -136,12 +136,12 @@ async fn concurrent_machine_adds_both_render_their_keys() {
     let left_key = public_key_of(left_redeemed.secret_delivery.nats_credentials.secret());
     let right_key = public_key_of(right_redeemed.secret_delivery.nats_credentials.secret());
     assert!(
-        rendered_principal_key(&users, "node_fa") == Some(left_key),
-        "node_fa's minted public key is rendered"
+        rendered_principal_key(&users, "machine_fa") == Some(left_key),
+        "machine_fa's minted public key is rendered"
     );
     assert!(
-        rendered_principal_key(&users, "node_fb") == Some(right_key),
-        "node_fb's minted public key is rendered"
+        rendered_principal_key(&users, "machine_fb") == Some(right_key),
+        "machine_fb's minted public key is rendered"
     );
 
     runtime
@@ -165,8 +165,8 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
         .expect("fixture authority file is readable");
     let mut users = parse_authorized_users(&existing).expect("fixture authority file parses");
     users.push(ployz_core::nats_config::NatsAuthorizedUser {
-        principal: NatsPrincipal::Node {
-            node_id: node_id("node_ghost"),
+        principal: NatsPrincipal::Machine {
+            machine_id: machine_id("machine_ghost"),
         },
         nkey_public: ghost_public.clone(),
     });
@@ -181,19 +181,19 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     let api = nats.api();
 
     // Trigger a render through a real machine-add.
-    let accepted = machine_add(&api, "op_adopt", "idem_adopt", "node_new").await;
+    let accepted = machine_add(&api, "op_adopt", "idem_adopt", "machine_new").await;
     redeem_when_ready(&api, &accepted.join_token).await;
 
     let rendered = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("authorized-users file is readable");
     let users = parse_authorized_users(&rendered).expect("rendered authority file parses");
     assert_eq!(
-        rendered_principal_key(&users, "node_ghost"),
+        rendered_principal_key(&users, "machine_ghost"),
         Some(ghost_public),
         "adopted unknown user survives the render (never shrink)"
     );
     assert!(
-        rendered_principal_key(&users, "node_new").is_some(),
+        rendered_principal_key(&users, "machine_new").is_some(),
         "minted user is rendered alongside the adopted one"
     );
 
@@ -215,7 +215,7 @@ async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
         .await;
     let api = nats.api();
 
-    machine_add(&api, "op_reload_fail", "idem_reload_fail", "node_rf").await;
+    machine_add(&api, "op_reload_fail", "idem_reload_fail", "machine_rf").await;
     let status = wait_for_terminal_status(
         &api,
         &operation_id("op_reload_fail"),
@@ -261,7 +261,7 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
         .await;
     let api = nats.api();
 
-    let accepted = machine_add(&api, "op_stranded", "idem_stranded", "node_st").await;
+    let accepted = machine_add(&api, "op_stranded", "idem_stranded", "machine_st").await;
     let not_ready = api
         .machine_join_redeem(&MachineJoinRedeemRequest {
             join_token: accepted.join_token.clone(),
@@ -318,7 +318,7 @@ async fn machine_join_redeem_waits_for_material_ready() {
         .await;
     let api = nats.api();
 
-    let accepted = machine_add(&api, "op_wait", "idem_wait", "node_w").await;
+    let accepted = machine_add(&api, "op_wait", "idem_wait", "machine_w").await;
     let not_ready = api
         .machine_join_redeem(&MachineJoinRedeemRequest {
             join_token: accepted.join_token.clone(),
@@ -349,13 +349,13 @@ async fn machine_add(
     api: &OperationApiClient,
     operation: &str,
     idempotency: &str,
-    node: &str,
+    machine: &str,
 ) -> MachineAddAccepted {
     api.machine_add(&MachineAddRequest {
         operation_id: operation_id(operation),
         idempotency_key: idempotency_key(idempotency),
-        node_id: node_id(node),
-        name: ployz_sdk_types::MachineName::try_new(node).expect("valid machine name"),
+        machine_id: machine_id(machine),
+        name: ployz_sdk_types::MachineName::try_new(machine).expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
     })
     .await
@@ -369,14 +369,14 @@ fn public_key_of(seed: &str) -> NatsUserPublicKey {
 
 fn rendered_principal_key(
     users: &[ployz_core::nats_config::NatsAuthorizedUser],
-    node: &str,
+    machine: &str,
 ) -> Option<NatsUserPublicKey> {
     users
         .iter()
         .find(|user| {
             user.principal
-                == NatsPrincipal::Node {
-                    node_id: node_id(node),
+                == NatsPrincipal::Machine {
+                    machine_id: machine_id(machine),
                 }
         })
         .map(|user| user.nkey_public.clone())

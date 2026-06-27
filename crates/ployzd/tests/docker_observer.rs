@@ -1,10 +1,10 @@
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
+    MachineContainerObservationSnapshotError, ManagedContainerKind, ManagedContainerObservation,
 };
-use ployz_core::state::NodeContainerObservationKey;
+use ployz_core::state::MachineContainerObservationKey;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, service_id, step_id,
+    container_id, machine_id, operation_id, revision_id, service_id, step_id,
 };
 use ployzd::docker::labels::{
     CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError, ManagedContainerLabels,
@@ -12,16 +12,16 @@ use ployzd::docker::labels::{
 };
 
 #[test]
-fn node_snapshot_rejects_observations_for_a_different_node() {
-    let mut wrong_node =
+fn machine_snapshot_rejects_observations_for_a_different_machine() {
+    let mut wrong_machine =
         managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
-    wrong_node.node_id = node_id("node_8");
+    wrong_machine.machine_id = machine_id("machine_8");
 
     assert_eq!(
-        NodeContainerObservationSnapshot::try_new(node_id("node_7"), [wrong_node]),
-        Err(NodeContainerObservationSnapshotError::NodeMismatch {
-            expected: node_id("node_7"),
-            actual: node_id("node_8"),
+        MachineContainerObservationSnapshot::try_new(machine_id("machine_7"), [wrong_machine]),
+        Err(MachineContainerObservationSnapshotError::MachineMismatch {
+            expected: machine_id("machine_7"),
+            actual: machine_id("machine_8"),
             container_id: container_id("ctr_456")
         })
     );
@@ -90,8 +90,8 @@ fn managed_container_labels_reject_unknown_container_kind() {
 #[test]
 fn observation_key_matches_kv_obs_container_path() {
     assert_eq!(
-        NodeContainerObservationKey::from_node_id(&node_id("node_7")).as_str(),
-        "containers.node_7"
+        MachineContainerObservationKey::from_machine_id(&machine_id("machine_7")).as_str(),
+        "containers.machine_7"
     );
 }
 
@@ -100,7 +100,7 @@ fn managed_observation(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id("node_7"),
+        machine_id: machine_id("machine_7"),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),

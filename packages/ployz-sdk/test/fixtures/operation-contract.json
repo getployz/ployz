@@ -45,24 +45,24 @@
       "start_sequence": "3"
     }
   },
-  "init_first_node_activate_request": {
-    "node_id": "core_1",
+  "init_first_machine_activate_request": {
+    "machine_id": "core_1",
     "roles": {
       "gateway": "skip",
       "dns": "install"
     }
   },
-  "init_first_node_activate_response": {
+  "init_first_machine_activate_response": {
     "status": "ok",
     "value": {
       "operation_id": "op_init_core_1",
-      "node_id": "core_1"
+      "machine_id": "core_1"
     }
   },
   "machine_add_request": {
     "operation_id": "op_machine",
     "idempotency_key": "idem_machine",
-    "node_id": "node_2",
+    "machine_id": "machine_2",
     "name": "edge_2",
     "roles": {
       "gateway": "skip",
@@ -77,7 +77,7 @@
         "watch_subject": "plz.v1.op.op_machine.>",
         "start_sequence": "7"
       },
-      "node_id": "node_2",
+      "machine_id": "machine_2",
       "bootstrap_url": "https://get.ployz.sh",
       "join_bundle": {
         "material": {
@@ -116,7 +116,7 @@
     "status": "ok",
     "value": {
       "operation_id": "op_machine",
-      "node_id": "node_2",
+      "machine_id": "machine_2",
       "name": "edge_2",
       "roles": {
         "gateway": "skip",
@@ -228,7 +228,7 @@
     "outcome": {
       "outcome": "founder_succeeded",
       "result": {
-        "node_id": "core_1",
+        "machine_id": "core_1",
         "runtime_nats_url": "tls://203.0.113.10:4222",
         "trusted_nats": {
           "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"

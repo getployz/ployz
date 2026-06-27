@@ -12,15 +12,15 @@
 //! serializes through one single-writer task owning the file. Concurrent
 //! machine-adds queue render requests; no two renders interleave.
 
+mod machine_seed;
 mod mint;
-mod node_seed;
 mod reload;
 mod writer;
 
+pub use machine_seed::{MachineSeedWriteError, write_machine_seed_file};
 pub use mint::{
     MachineCredentialMintRuntime, MintOutcome, MintRequest, MintResumeError, MintVerifyEndpoint,
 };
-pub use node_seed::{NodeSeedWriteError, write_node_seed_file};
 pub use reload::{
     NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
     SignalNatsReloadRunner, SystemctlNatsReloadRunner,

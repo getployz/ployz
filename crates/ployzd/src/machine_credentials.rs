@@ -1,9 +1,9 @@
-//! Bounded-retry startup state for the machine's Node credential.
+//! Bounded-retry startup state for the machine's Machine credential.
 //!
-//! `node.seed` does not exist at install time on the first node: ployzd
-//! control writes it after activate-first-node mints the `Node{node_id}`
-//! user. Node, gateway, and DNS processes therefore treat a missing seed
-//! file as the typed [`NodeCredentialState::AwaitingSeedFile`] state —
+//! `machine.seed` does not exist at install time on the first machine: ployzd
+//! control writes it after activate-first-machine mints the `Machine{machine_id}`
+//! user. Machine, gateway, and DNS processes therefore treat a missing seed
+//! file as the typed [`MachineCredentialState::AwaitingSeedFile`] state —
 //! re-reading the path on each bounded backoff tick with visible health —
 //! instead of crash-looping or falling back to controller authority.
 
@@ -17,7 +17,7 @@ use crate::config::{RoleNatsConnect, SeedFileReadError};
 
 /// Where a role process stands with its NATS credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeCredentialState {
+pub enum MachineCredentialState {
     Ready(NatsConnectConfig),
     AwaitingSeedFile {
         path: PathBuf,
@@ -50,10 +50,13 @@ impl SeedFileRetryPolicy {
 
 /// One read attempt expressed as the typed credential state.
 #[must_use]
-pub fn observe_role_credentials(connect: &RoleNatsConnect, attempts: u32) -> NodeCredentialState {
+pub fn observe_role_credentials(
+    connect: &RoleNatsConnect,
+    attempts: u32,
+) -> MachineCredentialState {
     match connect.read_connect_config() {
-        Ok(config) => NodeCredentialState::Ready(config),
-        Err(error) => NodeCredentialState::AwaitingSeedFile {
+        Ok(config) => MachineCredentialState::Ready(config),
+        Err(error) => MachineCredentialState::AwaitingSeedFile {
             path: connect.seed_file.clone(),
             attempts,
             last_error: error,
@@ -74,8 +77,8 @@ pub async fn await_role_credentials(
     let mut last_error: Option<SeedFileReadError> = None;
     for attempt in 1..=policy.max_attempts {
         match observe_role_credentials(connect, attempt) {
-            NodeCredentialState::Ready(config) => return Ok(config),
-            NodeCredentialState::AwaitingSeedFile {
+            MachineCredentialState::Ready(config) => return Ok(config),
+            MachineCredentialState::AwaitingSeedFile {
                 path,
                 attempts,
                 last_error: error,

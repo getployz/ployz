@@ -1,40 +1,43 @@
 use clap::Args;
-use ployz_core::ids::NodeId;
-use ployz_core::install::{FirstNodeInstallSpec, NatsMachineMaterialPaths};
-pub use ployz_core::roles::{GatewayRole, InstallRolePolicy, plan_first_node_process_set};
+use ployz_core::ids::MachineId;
+use ployz_core::install::{FirstMachineInstallSpec, NatsMachineMaterialPaths};
+pub use ployz_core::roles::{GatewayRole, InstallRolePolicy, plan_first_machine_process_set};
 use std::fs;
 use std::io::Read;
 
 use super::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
-use ployz_sdk_types::InitFirstNodeActivateRequest;
+use ployz_sdk_types::InitFirstMachineActivateRequest;
 
 pub mod join_template;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeInitCommand {
-    pub mode: FirstNodeInitMode,
+pub struct FirstMachineInitCommand {
+    pub mode: FirstMachineInitMode,
 }
 
-impl FirstNodeInitCommand {
+impl FirstMachineInitCommand {
     #[must_use]
-    pub fn summary(node_id: NodeId, roles: InstallRolePolicy) -> Self {
+    pub fn summary(machine_id: MachineId, roles: InstallRolePolicy) -> Self {
         Self {
-            mode: FirstNodeInitMode::Summary { node_id, roles },
+            mode: FirstMachineInitMode::Summary { machine_id, roles },
         }
     }
 
     #[must_use]
-    pub fn keeper_install(keeper_install: FirstNodeInstallSpec) -> Self {
+    pub fn keeper_install(keeper_install: FirstMachineInstallSpec) -> Self {
         Self {
-            mode: FirstNodeInitMode::EmitKeeperInstall(keeper_install),
+            mode: FirstMachineInitMode::EmitKeeperInstall(keeper_install),
         }
     }
 
     #[must_use]
-    pub fn run_keeper_install(keeper_install: FirstNodeInstallSpec, keeper_binary: String) -> Self {
+    pub fn run_keeper_install(
+        keeper_install: FirstMachineInstallSpec,
+        keeper_binary: String,
+    ) -> Self {
         Self {
-            mode: FirstNodeInitMode::RunKeeperInstall {
+            mode: FirstMachineInitMode::RunKeeperInstall {
                 keeper_install,
                 keeper_binary,
             },
@@ -42,23 +45,25 @@ impl FirstNodeInitCommand {
     }
 
     #[must_use]
-    pub fn node_id(&self) -> &NodeId {
+    pub fn machine_id(&self) -> &MachineId {
         match &self.mode {
-            FirstNodeInitMode::Summary { node_id, .. }
-            | FirstNodeInitMode::EmitKeeperInstall(FirstNodeInstallSpec { node_id, .. })
-            | FirstNodeInitMode::RunKeeperInstall {
-                keeper_install: FirstNodeInstallSpec { node_id, .. },
+            FirstMachineInitMode::Summary { machine_id, .. }
+            | FirstMachineInitMode::EmitKeeperInstall(FirstMachineInstallSpec {
+                machine_id, ..
+            })
+            | FirstMachineInitMode::RunKeeperInstall {
+                keeper_install: FirstMachineInstallSpec { machine_id, .. },
                 ..
-            } => node_id,
+            } => machine_id,
         }
     }
 
     #[must_use]
     pub fn roles(&self) -> InstallRolePolicy {
         match &self.mode {
-            FirstNodeInitMode::Summary { roles, .. } => *roles,
-            FirstNodeInitMode::EmitKeeperInstall(spec)
-            | FirstNodeInitMode::RunKeeperInstall {
+            FirstMachineInitMode::Summary { roles, .. } => *roles,
+            FirstMachineInitMode::EmitKeeperInstall(spec)
+            | FirstMachineInitMode::RunKeeperInstall {
                 keeper_install: spec,
                 ..
             } => spec.role_policy(),
@@ -66,8 +71,8 @@ impl FirstNodeInitCommand {
     }
 
     #[must_use]
-    pub fn output(&self) -> FirstNodeInitOutput {
-        FirstNodeInitOutput {
+    pub fn output(&self) -> FirstMachineInitOutput {
+        FirstMachineInitOutput {
             mode: self.mode.clone(),
         }
     }
@@ -79,83 +84,85 @@ impl FirstNodeInitCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FirstNodeInitMode {
+pub enum FirstMachineInitMode {
     Summary {
-        node_id: NodeId,
+        machine_id: MachineId,
         roles: InstallRolePolicy,
     },
-    EmitKeeperInstall(FirstNodeInstallSpec),
+    EmitKeeperInstall(FirstMachineInstallSpec),
     RunKeeperInstall {
-        keeper_install: FirstNodeInstallSpec,
+        keeper_install: FirstMachineInstallSpec,
         keeper_binary: String,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeActivateCommand {
-    pub node_id: NodeId,
+pub struct FirstMachineActivateCommand {
+    pub machine_id: MachineId,
     pub roles: InstallRolePolicy,
 }
 
-impl FirstNodeActivateCommand {
+impl FirstMachineActivateCommand {
     #[must_use]
-    pub const fn new(node_id: NodeId, roles: InstallRolePolicy) -> Self {
-        Self { node_id, roles }
+    pub const fn new(machine_id: MachineId, roles: InstallRolePolicy) -> Self {
+        Self { machine_id, roles }
     }
 
     #[must_use]
-    pub fn into_request(self) -> InitFirstNodeActivateRequest {
-        InitFirstNodeActivateRequest {
-            node_id: self.node_id,
+    pub fn into_request(self) -> InitFirstMachineActivateRequest {
+        InitFirstMachineActivateRequest {
+            machine_id: self.machine_id,
             roles: self.roles,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeActivationOutput {
+pub struct FirstMachineActivationOutput {
     pub operation_id: ployz_core::ids::OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
 }
 
-impl FirstNodeActivationOutput {
+impl FirstMachineActivationOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nfirst-node {} active\n",
+            "operation {}\nfirst-machine {} active\n",
             self.operation_id.as_str(),
-            self.node_id.as_str()
+            self.machine_id.as_str()
         )
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeInitOutput {
-    pub mode: FirstNodeInitMode,
+pub struct FirstMachineInitOutput {
+    pub mode: FirstMachineInitMode,
 }
 
-impl FirstNodeInitOutput {
+impl FirstMachineInitOutput {
     #[must_use]
-    pub fn summary(node_id: NodeId, roles: InstallRolePolicy) -> Self {
+    pub fn summary(machine_id: MachineId, roles: InstallRolePolicy) -> Self {
         Self {
-            mode: FirstNodeInitMode::Summary { node_id, roles },
+            mode: FirstMachineInitMode::Summary { machine_id, roles },
         }
     }
 
     #[must_use]
     pub fn render(&self) -> String {
-        let (node_id, roles, keeper_install) = match &self.mode {
-            FirstNodeInitMode::Summary { node_id, roles } => (node_id, *roles, None),
-            FirstNodeInitMode::EmitKeeperInstall(keeper_install) => (
-                &keeper_install.node_id,
+        let (machine_id, roles, keeper_install) = match &self.mode {
+            FirstMachineInitMode::Summary { machine_id, roles } => (machine_id, *roles, None),
+            FirstMachineInitMode::EmitKeeperInstall(keeper_install) => (
+                &keeper_install.machine_id,
                 keeper_install.role_policy(),
                 Some(keeper_install),
             ),
-            FirstNodeInitMode::RunKeeperInstall { keeper_install, .. } => {
-                (&keeper_install.node_id, keeper_install.role_policy(), None)
-            }
+            FirstMachineInitMode::RunKeeperInstall { keeper_install, .. } => (
+                &keeper_install.machine_id,
+                keeper_install.role_policy(),
+                None,
+            ),
         };
-        let process_set = plan_first_node_process_set(node_id, roles);
+        let process_set = plan_first_machine_process_set(machine_id, roles);
         let roles = process_set
             .roles()
             .iter()
@@ -164,18 +171,18 @@ impl FirstNodeInitOutput {
             .join(" ");
 
         let mut output = format!(
-            "init first node {}\nsupervise {}\nsupervise roles {}\n",
-            node_id.as_str(),
+            "init first machine {}\nsupervise {}\nsupervise roles {}\n",
+            machine_id.as_str(),
             process_set.nats_server.process_name(),
             roles
         );
 
         if let Some(keeper_install) = keeper_install {
-            output.push_str("install ployz-keeper first-node-install --spec -\n");
-            output.push_str(&render_first_node_credential_paths());
+            output.push_str("install ployz-keeper first-machine-install --spec -\n");
+            output.push_str(&render_first_machine_credential_paths());
             output.push_str(
                 &serde_json::to_string_pretty(keeper_install)
-                    .expect("first-node install spec serializes"),
+                    .expect("first-machine install spec serializes"),
             );
             output.push('\n');
         }
@@ -187,7 +194,7 @@ impl FirstNodeInitOutput {
 /// Where the keeper install leaves the operator credential and cluster CA
 /// that `ployzctl` connects with.
 #[must_use]
-pub fn render_first_node_credential_paths() -> String {
+pub fn render_first_machine_credential_paths() -> String {
     let paths = NatsMachineMaterialPaths::in_default_state_dir();
     format!(
         "operator seed {}\ncluster ca {}\n",
@@ -196,9 +203,9 @@ pub fn render_first_node_credential_paths() -> String {
     )
 }
 
-pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
+pub(crate) fn init_command(parsed: InitCli) -> Result<FirstMachineInitCommand, PloyzctlCliError> {
     let InitCli {
-        node,
+        machine,
         roles,
         emit_keeper_install,
         run_keeper_install,
@@ -206,25 +213,29 @@ pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, Ploy
         keeper_binary,
     } = parsed;
     // clap enforces the flag combinations: the keeper-install modes conflict
-    // with each other and with --node, both modes require
+    // with each other and with --machine, both modes require
     // --install-spec, and --keeper-binary requires --run-keeper-install.
     match (emit_keeper_install, run_keeper_install) {
         (false, false) => {
-            let node_id = NodeId::try_new(node.ok_or_else(|| cli_error("--node is required"))?)
-                .map_err(|error| invalid_value("--node", error))?;
-            Ok(FirstNodeInitCommand::summary(node_id, roles.into_policy()))
+            let machine_id =
+                MachineId::try_new(machine.ok_or_else(|| cli_error("--machine is required"))?)
+                    .map_err(|error| invalid_value("--machine", error))?;
+            Ok(FirstMachineInitCommand::summary(
+                machine_id,
+                roles.into_policy(),
+            ))
         }
         (true, _) => {
             reject_keeper_mode_role_flags(roles)?;
-            Ok(FirstNodeInitCommand::keeper_install(
-                read_first_node_install_spec(
+            Ok(FirstMachineInitCommand::keeper_install(
+                read_first_machine_install_spec(
                     install_spec.ok_or_else(|| cli_error("--install-spec is required"))?,
                 )?,
             ))
         }
         (false, true) => {
             reject_keeper_mode_role_flags(roles)?;
-            let keeper_install = read_first_node_install_spec(
+            let keeper_install = read_first_machine_install_spec(
                 install_spec.ok_or_else(|| cli_error("--install-spec is required"))?,
             )?;
             let keeper_binary = keeper_binary.unwrap_or_else(|| "ployz-keeper".to_owned());
@@ -234,7 +245,7 @@ pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, Ploy
                     message: "keeper binary is empty".to_owned(),
                 });
             }
-            Ok(FirstNodeInitCommand::run_keeper_install(
+            Ok(FirstMachineInitCommand::run_keeper_install(
                 keeper_install,
                 keeper_binary,
             ))
@@ -248,7 +259,7 @@ pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, Ploy
     .multiple(false))]
 pub(crate) struct InitCli {
     #[arg(long, conflicts_with = "keeper_install_mode")]
-    node: Option<String>,
+    machine: Option<String>,
     #[command(flatten)]
     roles: RolePolicyCli,
     #[arg(long, requires = "install_spec")]
@@ -268,20 +279,21 @@ pub(crate) struct InitCli {
     keeper_binary: Option<String>,
 }
 
-pub(crate) fn first_node_activate_command(
-    parsed: FirstNodeActivateCli,
-) -> Result<FirstNodeActivateCommand, PloyzctlCliError> {
-    let node_id = NodeId::try_new(parsed.node).map_err(|error| invalid_value("--node", error))?;
-    Ok(FirstNodeActivateCommand::new(
-        node_id,
+pub(crate) fn first_machine_activate_command(
+    parsed: FirstMachineActivateCli,
+) -> Result<FirstMachineActivateCommand, PloyzctlCliError> {
+    let machine_id =
+        MachineId::try_new(parsed.machine).map_err(|error| invalid_value("--machine", error))?;
+    Ok(FirstMachineActivateCommand::new(
+        machine_id,
         parsed.roles.into_policy(),
     ))
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct FirstNodeActivateCli {
+pub(crate) struct FirstMachineActivateCli {
     #[arg(long)]
-    node: String,
+    machine: String,
     #[command(flatten)]
     roles: RolePolicyCli,
 }
@@ -290,14 +302,17 @@ fn reject_keeper_mode_role_flags(roles: RolePolicyCli) -> Result<(), PloyzctlCli
     if roles.has_explicit_flags() {
         return Err(PloyzctlCliError::InvalidValue {
             flag: "--no-gateway/--no-dns",
-            message: "role opt-outs belong in the first-node install spec for keeper install modes"
-                .to_owned(),
+            message:
+                "role opt-outs belong in the first-machine install spec for keeper install modes"
+                    .to_owned(),
         });
     }
     Ok(())
 }
 
-fn read_first_node_install_spec(path: String) -> Result<FirstNodeInstallSpec, PloyzctlCliError> {
+fn read_first_machine_install_spec(
+    path: String,
+) -> Result<FirstMachineInstallSpec, PloyzctlCliError> {
     let mut contents = String::new();
     if path == "-" {
         std::io::stdin()
@@ -314,6 +329,6 @@ fn read_first_node_install_spec(path: String) -> Result<FirstNodeInstallSpec, Pl
     }
     serde_json::from_str(&contents).map_err(|error| PloyzctlCliError::InvalidValue {
         flag: "--install-spec",
-        message: format!("invalid first-node install spec json: {error}"),
+        message: format!("invalid first-machine install spec json: {error}"),
     })
 }

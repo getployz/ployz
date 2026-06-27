@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 
 pub use ployz_core::roles::DaemonProcessRole;
 
@@ -35,9 +35,9 @@ struct PloyzdRoleCli {
 #[derive(Debug, Subcommand)]
 enum PloyzdRoleCommand {
     Control,
-    Node {
-        #[arg(long, value_parser = parse_node_id)]
-        id: NodeId,
+    Machine {
+        #[arg(long, value_parser = parse_machine_id)]
+        id: MachineId,
     },
     Gateway,
     Dns,
@@ -47,13 +47,13 @@ impl PloyzdRoleCommand {
     fn into_role(self) -> DaemonProcessRole {
         match self {
             Self::Control => DaemonProcessRole::Control,
-            Self::Node { id } => DaemonProcessRole::Node(id),
+            Self::Machine { id } => DaemonProcessRole::Machine(id),
             Self::Gateway => DaemonProcessRole::Gateway,
             Self::Dns => DaemonProcessRole::Dns,
         }
     }
 }
 
-fn parse_node_id(value: &str) -> Result<NodeId, String> {
-    NodeId::try_new(value.to_owned()).map_err(|error| error.to_string())
+fn parse_machine_id(value: &str) -> Result<MachineId, String> {
+    MachineId::try_new(value.to_owned()).map_err(|error| error.to_string())
 }

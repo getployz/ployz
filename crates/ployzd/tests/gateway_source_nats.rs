@@ -1,7 +1,7 @@
 use async_nats::jetstream;
-use ployz_core::node::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{ActiveRouteCommitRequest, ActiveRouteState, ExpectedActiveRoute};
@@ -9,7 +9,7 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
     step_id,
 };
 use ployzd::gateway::{
@@ -28,7 +28,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let target = route_target("api.example.com", 443);
@@ -43,15 +43,20 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         })
         .await
         .expect("route stores");
-    AsyncNatsObservationStore::from_jetstream(&nats.node_7_jetstream)
+    AsyncNatsObservationStore::from_jetstream(&nats.machine_7_jetstream)
         .await
-        .expect("open node_7 observation store")
-        .replace_node_containers(&node_snapshot(
-            "node_7",
-            [managed_observation("node_7", "ctr_7", "svc_api", "rev_1")],
+        .expect("open machine_7 observation store")
+        .replace_machine_containers(&machine_snapshot(
+            "machine_7",
+            [managed_observation(
+                "machine_7",
+                "ctr_7",
+                "svc_api",
+                "rev_1",
+            )],
         ))
         .await
-        .expect("node snapshot stores");
+        .expect("machine snapshot stores");
 
     let update = load_gateway_projection_update_from_nats(&routes, &observations).await;
     let GatewayProjectionUpdate::SourceAvailable(input) = update else {
@@ -64,7 +69,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         vec![GatewayProjectedRoute {
             target,
             upstreams: vec![GatewayUpstream {
-                node_id: node_id("node_7"),
+                machine_id: machine_id("machine_7"),
                 container_id: container_id("ctr_7"),
                 endpoint: endpoint("10.0.0.7", 8080),
             }],
@@ -79,7 +84,7 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let target = route_target("api.example.com", 443);
@@ -94,15 +99,20 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
         })
         .await
         .expect("route stores");
-    AsyncNatsObservationStore::from_jetstream(&nats.node_7_jetstream)
+    AsyncNatsObservationStore::from_jetstream(&nats.machine_7_jetstream)
         .await
-        .expect("open node_7 observation store")
-        .replace_node_containers(&node_snapshot(
-            "node_7",
-            [managed_observation("node_7", "ctr_7", "svc_api", "rev_1")],
+        .expect("open machine_7 observation store")
+        .replace_machine_containers(&machine_snapshot(
+            "machine_7",
+            [managed_observation(
+                "machine_7",
+                "ctr_7",
+                "svc_api",
+                "rev_1",
+            )],
         ))
         .await
-        .expect("node snapshot stores");
+        .expect("machine snapshot stores");
 
     let update = load_gateway_projection_update_from_nats_with_stale_after(
         &routes,
@@ -131,7 +141,7 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let core_bucket = nats
@@ -165,50 +175,50 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: route-state writes and bucket administration.
     jetstream: jetstream::Context,
-    /// The gateway machine's Node principal: the read side (the gateway
-    /// runs as the machine's Node user in v1).
-    node_jetstream: jetstream::Context,
-    /// `node_7`'s Node principal: each node may only write its own
-    /// observation keys, so the workload node seeds its own snapshot.
-    node_7_jetstream: jetstream::Context,
+    /// The gateway machine's Machine principal: the read side (the gateway
+    /// runs as the machine's Machine user in v1).
+    machine_jetstream: jetstream::Context,
+    /// `machine_7`'s Machine principal: each machine may only write its own
+    /// observation keys, so the workload machine seeds its own snapshot.
+    machine_7_jetstream: jetstream::Context,
 }
 
 async fn test_nats() -> TestNats {
-    let gateway_node = node_id("gateway_node");
-    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[
-        gateway_node.clone(),
-        node_id("node_7"),
+    let gateway_machine = machine_id("gateway_machine");
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+        gateway_machine.clone(),
+        machine_id("machine_7"),
     ])
     .await;
     nats.bootstrap_resources().await;
-    let node_jetstream = jetstream::new(nats.node_client(&gateway_node).await);
-    let node_7_jetstream = jetstream::new(nats.node_client(&node_id("node_7")).await);
+    let machine_jetstream = jetstream::new(nats.machine_client(&gateway_machine).await);
+    let machine_7_jetstream = jetstream::new(nats.machine_client(&machine_id("machine_7")).await);
     let jetstream = nats.jetstream.clone();
 
     TestNats {
         _nats: nats,
         jetstream,
-        node_jetstream,
-        node_7_jetstream,
+        machine_jetstream,
+        machine_7_jetstream,
     }
 }
 
-fn node_snapshot(
-    node_id_value: &str,
+fn machine_snapshot(
+    machine_id_value: &str,
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
-) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(node_id(node_id_value), containers)
-        .expect("matching node snapshot")
+) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id(machine_id_value), containers)
+        .expect("matching machine snapshot")
 }
 
 fn managed_observation(
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
     service_id_value: &str,
     revision_id_value: &str,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id(service_id_value),
         revision_id: revision_id(revision_id_value),

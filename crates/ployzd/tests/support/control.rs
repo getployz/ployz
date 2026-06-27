@@ -2,14 +2,14 @@
 //! control runtime pointed at the fixture server, and the reload-runner
 //! test double used to drive machine-add minting.
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinToken,
 };
 use ployz_test_support::fixtures::machine_join_material;
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::controllers::MachineAddBootstrapConfig;
@@ -28,11 +28,11 @@ pub struct TestNats {
 
 impl TestNats {
     pub async fn start() -> Self {
-        Self::start_with_nodes(&[]).await
+        Self::start_with_machines(&[]).await
     }
 
-    pub async fn start_with_nodes(node_ids: &[NodeId]) -> Self {
-        let connected = ployz_test_support::nats::TestNats::start_with_nodes(node_ids).await;
+    pub async fn start_with_machines(machine_ids: &[MachineId]) -> Self {
+        let connected = ployz_test_support::nats::TestNats::start_with_machines(machine_ids).await;
         let work_dir = tempfile::TempDir::new().expect("test work dir creates");
 
         Self {
@@ -49,8 +49,8 @@ impl TestNats {
         self.connected.api()
     }
 
-    pub async fn node_client(&self, node_id: &NodeId) -> async_nats::Client {
-        self.connected.node_client(node_id).await
+    pub async fn machine_client(&self, machine_id: &MachineId) -> async_nats::Client {
+        self.connected.machine_client(machine_id).await
     }
 
     pub fn reload_runner(&self) -> RecordingReload {
@@ -71,12 +71,12 @@ impl TestNats {
     pub fn control_config_without_join_template(&self) -> ControlProcessConfig {
         ControlProcessConfig::new(
             NatsServerRuntime::External(self.server().client_url().clone()),
-            node_id("core_1"),
+            machine_id("core_1"),
             self.server().controller_config(),
         )
         .with_nats_authorization(ControlNatsAuthorizationConfig {
             authorized_users_file: self.server().authorized_users_path().to_path_buf(),
-            node_seed_file: self.work_dir.path().join("node.seed"),
+            machine_seed_file: self.work_dir.path().join("machine.seed"),
         })
     }
 

@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ployz_core::ids::{NodeId, OperationId, ServiceId, SubjectTokenError};
+use ployz_core::ids::{MachineId, OperationId, ServiceId, SubjectTokenError};
 use ployz_core::ops::OperationIdempotencyKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,13 +27,13 @@ pub(crate) fn generate_client_deploy_id(
 }
 
 pub(crate) fn generate_client_machine_add_ids(
-    node_id: &NodeId,
+    machine_id: &MachineId,
 ) -> Result<ClientGeneratedMachineAddIds, ClientGeneratedIdsError> {
-    let generated = generate_client_operation_id("add", node_id.as_str())?;
+    let generated = generate_client_operation_id("add", machine_id.as_str())?;
     Ok(ClientGeneratedMachineAddIds {
         idempotency_key: OperationIdempotencyKey::try_new(format!(
             "idem_add_{}_{}",
-            node_id.as_str(),
+            machine_id.as_str(),
             generated.suffix
         ))
         .map_err(|source| ClientGeneratedIdsError::IdempotencyKey { source })?,

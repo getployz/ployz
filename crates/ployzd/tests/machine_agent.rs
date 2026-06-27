@@ -1,9 +1,9 @@
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_test_support::ids::{container_id, operation_id, revision_id, service_id, step_id};
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::node::runner::{
-    ExistingManagedContainer, ExistingManagedContainerState, NodeContainerRunConflict,
-    NodeContainerRunDecision, decide_container_run,
+use ployzd::machine_runtime::runner::{
+    ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunConflict,
+    MachineContainerRunDecision, decide_container_run,
 };
 
 #[test]
@@ -15,7 +15,7 @@ fn matching_operation_step_and_request_labels_reuse_existing_container() {
             &expected,
             [existing_container("ctr_existing", expected.clone())]
         ),
-        NodeContainerRunDecision::ReuseRunning {
+        MachineContainerRunDecision::ReuseRunning {
             container_id: container_id("ctr_existing"),
         }
     );
@@ -35,7 +35,7 @@ fn same_operation_step_with_different_request_metadata_conflicts() {
                 conflicting_labels.clone()
             )]
         ),
-        NodeContainerRunDecision::Conflict(NodeContainerRunConflict {
+        MachineContainerRunDecision::Conflict(MachineContainerRunConflict {
             container_id: container_id("ctr_existing"),
             expected,
             actual: conflicting_labels,
@@ -50,7 +50,7 @@ fn different_step_does_not_reuse_container() {
 
     assert_eq!(
         decide_container_run(&expected, [existing_container("ctr_other", other_step)]),
-        NodeContainerRunDecision::Create { labels: expected }
+        MachineContainerRunDecision::Create { labels: expected }
     );
 }
 
@@ -67,7 +67,7 @@ fn stopped_matching_operation_step_starts_existing_container() {
                 ExistingManagedContainerState::StartableStopped,
             )]
         ),
-        NodeContainerRunDecision::StartExisting {
+        MachineContainerRunDecision::StartExisting {
             container_id: container_id("ctr_existing"),
         }
     );
@@ -88,7 +88,7 @@ fn non_startable_matching_operation_step_reports_not_startable() {
                 },
             )]
         ),
-        NodeContainerRunDecision::NotStartable {
+        MachineContainerRunDecision::NotStartable {
             container_id: container_id("ctr_existing"),
             state: ExistingManagedContainerState::NotStartable {
                 description: "paused".to_owned(),
@@ -109,7 +109,7 @@ fn duplicate_operation_step_matches_are_ambiguous() {
                 existing_container("ctr_b", expected.clone()),
             ]
         ),
-        NodeContainerRunDecision::Ambiguous {
+        MachineContainerRunDecision::Ambiguous {
             operation_id: operation_id("op_123"),
             step_id: step_id("step_1"),
             container_ids: vec![container_id("ctr_a"), container_id("ctr_b")],

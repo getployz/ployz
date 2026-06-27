@@ -16,7 +16,7 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
-    GatewayStatusObservation, NodePublicIpObservation,
+    GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::connect_authenticated;
@@ -31,17 +31,17 @@ use ployz_sdk_types::{
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::node::service::start_node_runtime_service;
+use ployzd::machine_runtime::service::start_machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
-use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 mod support;
 
 use ployz_test_support::ids::{
-    event_sequence, idempotency_key, node_id, operation_id, revision_id, route_hostname,
+    event_sequence, idempotency_key, machine_id, operation_id, revision_id, route_hostname,
     route_port, service_id,
 };
 use support::control::{TestNats, machine_join_template, redeem_when_ready};
@@ -132,7 +132,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_machine"),
             idempotency_key: idempotency_key("idem_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
         })
@@ -147,7 +147,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_machine_retry"),
             idempotency_key: idempotency_key("idem_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
         })
@@ -164,7 +164,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     );
 
     let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
-    assert_eq!(redeemed.node_id, node_id("node_2"));
+    assert_eq!(redeemed.machine_id, machine_id("machine_2"));
 
     api.machine_join_report(&MachineJoinReportRequest {
         join_token: accepted.join_token.clone(),
@@ -172,7 +172,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     })
     .await
     .expect("join completion reports");
-    // The minted per-machine seed is a working Node credential: connect
+    // The minted per-machine seed is a working Machine credential: connect
     // with it and publish this machine's observations.
     let minted_seed = ployz_core::nats_config::NatsUserSeed::try_new(
         redeemed.secret_delivery.nats_credentials.secret(),
@@ -180,29 +180,29 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     .expect("minted material is a valid seed");
     let minted_client = connect_authenticated(
         &nats.server().config_with_seed(
-            NatsPrincipal::Node {
-                node_id: node_id("node_2"),
+            NatsPrincipal::Machine {
+                machine_id: machine_id("machine_2"),
             },
             minted_seed,
         ),
         ployz_test_support::nats::TEST_NATS_CONNECT_TIMEOUT,
     )
     .await
-    .expect("minted node credential connects");
-    let node_jetstream = jetstream::new(minted_client);
-    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+    .expect("minted machine credential connects");
+    let machine_jetstream = jetstream::new(minted_client);
+    let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observations");
     observations
-        .replace_node_public_ip(&NodePublicIpObservation {
-            node_id: node_id("node_2"),
+        .replace_machine_public_ip(&MachinePublicIpObservation {
+            machine_id: machine_id("machine_2"),
             public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)),
         })
         .await
         .expect("public ip stores");
     observations
         .replace_gateway_status(&GatewayStatusObservation {
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
             serving: GatewayServingStatus::Current,
             route_count: 0,
@@ -212,11 +212,11 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
 
     let inspected = api
         .machine_inspect(&MachineInspectRequest {
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
         })
         .await
         .expect("machine inspects");
-    assert_eq!(inspected.active.node_id, node_id("node_2"));
+    assert_eq!(inspected.active.machine_id, machine_id("machine_2"));
     assert_eq!(inspected.active.name.as_str(), "edge_2");
     assert_eq!(
         inspected
@@ -309,7 +309,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 
 #[tokio::test]
 async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
-    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect_err("control has not bootstrapped observations yet");
@@ -320,30 +320,30 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 
     let config = nats
         .control_config()
-        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
     let runtime = nats.start_control(&config).await;
-    let node_client = nats.node_client(&node_id("node_a")).await;
-    let node_jetstream = jetstream::new(node_client.clone());
-    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    let machine_jetstream = jetstream::new(machine_client.clone());
+    let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observations");
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
     core_state
-        .replace_active_machine(&active_machine("node_a"))
+        .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
-    let node_runtime = start_node_runtime_service(
-        node_client.clone(),
-        node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+    let machine_runtime = start_machine_runtime_service(
+        machine_client.clone(),
+        machine_id("machine_a"),
+        ObservingContainerRunner::new(machine_id("machine_a"), observations.clone()),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        ObservingContainerRunner::new(machine_id("machine_a"), observations.clone()),
     )
     .await
-    .expect("node runtime starts");
+    .expect("machine runtime starts");
     let api = nats.api();
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_run"),
@@ -390,19 +390,19 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         observations
-            .node_snapshot(&node_id("node_a"))
+            .machine_snapshot(&machine_id("machine_a"))
             .await
-            .expect("node observations read")
-            .expect("node snapshot exists")
+            .expect("machine observations read")
+            .expect("machine snapshot exists")
             .containers()
             .len(),
         1
     );
 
-    node_runtime
+    machine_runtime
         .shutdown()
         .await
-        .expect("node runtime shuts down");
+        .expect("machine runtime shuts down");
     runtime
         .shutdown()
         .await
@@ -411,46 +411,48 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 
 #[tokio::test]
 async fn control_runtime_routed_deploy_serves_through_gateway() {
-    let nats = TestNats::start_with_nodes(&[node_id("node_a"), node_id("node_gateway")]).await;
+    let nats =
+        TestNats::start_with_machines(&[machine_id("machine_a"), machine_id("machine_gateway")])
+            .await;
     let config = nats
         .control_config()
-        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
     let runtime = nats.start_control(&config).await;
-    let node_client = nats.node_client(&node_id("node_a")).await;
-    let node_jetstream = jetstream::new(node_client.clone());
-    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    let machine_jetstream = jetstream::new(machine_client.clone());
+    let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observations");
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
     core_state
-        .replace_active_machine(&active_machine("node_a"))
+        .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
     observations
-        .replace_node_public_ip(&NodePublicIpObservation {
-            node_id: node_id("node_a"),
+        .replace_machine_public_ip(&MachinePublicIpObservation {
+            machine_id: machine_id("machine_a"),
             public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
         })
         .await
-        .expect("node public ip stores");
-    let node_runtime = start_node_runtime_service(
-        node_client.clone(),
-        node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        .expect("machine public ip stores");
+    let machine_runtime = start_machine_runtime_service(
+        machine_client.clone(),
+        machine_id("machine_a"),
+        ObservingContainerRunner::new(machine_id("machine_a"), observations.clone()),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        ObservingContainerRunner::new(machine_id("machine_a"), observations.clone()),
     )
     .await
-    .expect("node runtime starts");
-    let gateway_client = nats.node_client(&node_id("node_gateway")).await;
+    .expect("machine runtime starts");
+    let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
     let gateway = start_gateway_process_runtime_with_client(
         gateway_client,
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
-        node_id("node_gateway"),
+        machine_id("machine_gateway"),
     )
     .await
     .expect("gateway runtime starts");
@@ -527,10 +529,10 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     );
 
     gateway.shutdown().await;
-    node_runtime
+    machine_runtime
         .shutdown()
         .await
-        .expect("node runtime shuts down");
+        .expect("machine runtime shuts down");
     runtime
         .shutdown()
         .await
@@ -585,7 +587,7 @@ fn replicas(value: u16) -> ReplicaCount {
 
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
-        node_id: node_id(value),
+        machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
     }

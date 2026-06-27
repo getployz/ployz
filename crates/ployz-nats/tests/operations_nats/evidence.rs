@@ -38,7 +38,7 @@ async fn operation_repository_records_container_started_without_state_change() {
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -48,7 +48,7 @@ async fn operation_repository_records_container_started_without_state_change() {
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -207,7 +207,7 @@ async fn operation_repository_rejects_plan_retry_with_different_steps() {
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::PlanCreated {
-                plan: deploy_plan_on("node_a"),
+                plan: deploy_plan_on("machine_a"),
             },
         )
         .await
@@ -217,7 +217,7 @@ async fn operation_repository_rejects_plan_retry_with_different_steps() {
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::PlanCreated {
-                plan: deploy_plan_on("node_b"),
+                plan: deploy_plan_on("machine_b"),
             },
         )
         .await

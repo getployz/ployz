@@ -9,11 +9,11 @@ use ployz_keeper::executor::{
 };
 use ployz_keeper::report::render_step_event;
 use ployz_keeper::steps::{
-    ContainerRuntime, FirstNodeInstallTarget, HostPrerequisite, KeeperStep, KeeperStepFailure,
-    KeeperStepFailureReason, KeeperStepLabel, first_node_install_plan,
+    ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, KeeperStep, KeeperStepFailure,
+    KeeperStepFailureReason, KeeperStepLabel, first_machine_install_plan,
 };
 use ployz_keeper::systemd::SupervisorUnitTarget;
-use ployz_test_support::ids::{failure_message, node_id};
+use ployz_test_support::ids::{failure_message, machine_id};
 use ployz_test_support::keeper::{nats_server_artifact, ployzd_artifact};
 use support::bootstrap::*;
 
@@ -32,8 +32,8 @@ fn keeper_step_failure_is_bootstrap_scoped_and_typed() {
 
 #[test]
 fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
-    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
-        node_id("node_1"),
+    let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
@@ -84,7 +84,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
         ..,
     ] = effects.calls.as_slice()
     else {
-        panic!("first-node plan records nats setup calls");
+        panic!("first-machine plan records nats setup calls");
     };
     assert_eq!(
         *fifth,
@@ -118,7 +118,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     );
     assert_eq!(
         *eleventh,
-        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+        KeeperStepLabel::WriteNatsServerConfig(first_machine_nats_target(machine_id("machine_1")))
     );
     assert_eq!(
         execution.events,
@@ -139,7 +139,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
 
 #[test]
 fn keeper_plan_executor_stops_on_first_failed_step() {
-    let plan = first_node_plan();
+    let plan = first_machine_plan();
     let ployzd_target = ployzd_artifact();
     let mut effects = RecordingEffects {
         fail_on: Some(KeeperStepLabel::InstallArtifact(ployzd_target.clone())),
@@ -195,7 +195,7 @@ fn keeper_progress_renders_container_runtime_steps() {
 
 #[test]
 fn keeper_plan_executor_records_started_before_applying_step() {
-    let plan = first_node_plan();
+    let plan = first_machine_plan();
     let failed_event = KeeperStepEvent::Started {
         step: KeeperStepLabel::InstallArtifact(ployzd_artifact()),
     };

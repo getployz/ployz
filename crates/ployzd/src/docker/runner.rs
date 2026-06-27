@@ -2,9 +2,10 @@ use super::network::{ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
 use crate::docker::labels::{
     MANAGED_LABEL, ManagedContainerIdentity, ManagedContainerLabelError, ManagedContainerLabels,
 };
-use crate::node::runner::{
+use crate::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
+    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
+    MachineLogTail,
 };
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
@@ -18,7 +19,7 @@ use bollard::query_parameters::{
 };
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
-use ployz_core::node::ContainerEndpoint;
+use ployz_core::machine_runtime::ContainerEndpoint;
 use ployz_core::ops::RoutePort;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -37,7 +38,7 @@ pub struct DockerManagedContainerRunner {
 }
 
 /// How the runner reaches the Docker daemon: an already-built client, or a
-/// client built from local defaults on first use so the node runtime can
+/// client built from local defaults on first use so the machine runtime can
 /// start before Docker is reachable.
 #[derive(Debug, Clone)]
 enum DockerHandle {
@@ -89,20 +90,20 @@ fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnec
     })
 }
 
-impl NodeContainerRunner for DockerManagedContainerRunner {
+impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn existing_managed_containers(
         &self,
-    ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
         let docker =
             self.docker()
                 .await
-                .map_err(|error| NodeContainerRunnerError::ListExisting {
+                .map_err(|error| MachineContainerRunnerError::ListExisting {
                     message: error.to_string(),
                 })?;
         let summaries = docker
             .list_containers(Some(managed_container_list_options()))
             .await
-            .map_err(|error| NodeContainerRunnerError::ListExisting {
+            .map_err(|error| MachineContainerRunnerError::ListExisting {
                 message: error.to_string(),
             })?;
 
@@ -110,19 +111,19 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             .into_iter()
             .map(existing_container_from_summary)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| NodeContainerRunnerError::ListExisting {
+            .map_err(|error| MachineContainerRunnerError::ListExisting {
                 message: error.to_string(),
             })
     }
 
-    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
         self.ensure_endpoint_network_inner().await
     }
 
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> Result<ContainerId, NodeContainerRunnerError> {
+    ) -> Result<ContainerId, MachineContainerRunnerError> {
         self.pull_image(command.image.as_str()).await?;
 
         let requires_endpoint_network = command.endpoint.is_some();
@@ -133,16 +134,16 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
         let response = docker
             .create_container(None, create_body(command))
             .await
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
-        ContainerId::try_new(response.id).map_err(|error| NodeContainerRunnerError::Create {
+        ContainerId::try_new(response.id).map_err(|error| MachineContainerRunnerError::Create {
             message: error.to_string(),
         })
     }
@@ -150,18 +151,18 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
     async fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeContainerRunnerError::Start {
+            .map_err(|error| MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
         docker
             .start_container(container_id.as_str(), None)
             .await
-            .map_err(|error| NodeContainerRunnerError::Start {
+            .map_err(|error| MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })
@@ -171,7 +172,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let existing = self
             .existing_managed_containers()
             .await?
@@ -181,7 +182,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             return Ok(());
         };
         if existing.labels.identity() != *expected_identity {
-            return Err(NodeContainerRunnerError::Remove {
+            return Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match cleanup target: expected {:?}, found {:?}",
@@ -194,7 +195,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeContainerRunnerError::Remove {
+            .map_err(|error| MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -205,7 +206,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         {
             Ok(()) => Ok(()),
             Err(error) if is_container_missing(&error) => Ok(()),
-            Err(error) => Err(NodeContainerRunnerError::Remove {
+            Err(error) => Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
@@ -216,7 +217,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let existing = self
             .existing_managed_containers()
             .await?
@@ -226,7 +227,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             return Ok(());
         };
         if existing.labels.identity() != *expected_identity {
-            return Err(NodeContainerRunnerError::Stop {
+            return Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match stop target: expected {:?}, found {:?}",
@@ -246,7 +247,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeContainerRunnerError::Stop {
+            .map_err(|error| MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -257,7 +258,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         {
             Ok(()) => Ok(()),
             Err(error) if is_container_missing(&error) => Ok(()),
-            Err(error) => Err(NodeContainerRunnerError::Stop {
+            Err(error) => Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
@@ -265,16 +266,16 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
     }
 }
 
-impl NodeLogReader for DockerManagedContainerRunner {
+impl MachineLogReader for DockerManagedContainerRunner {
     async fn tail_container_logs(
         &self,
         container_id: &ContainerId,
         tail_lines: Option<u16>,
-    ) -> Result<NodeLogTail, NodeLogReaderError> {
+    ) -> Result<MachineLogTail, MachineLogReaderError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeLogReaderError::ReadFailed {
+            .map_err(|error| MachineLogReaderError::ReadFailed {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -300,12 +301,12 @@ impl NodeLogReader for DockerManagedContainerRunner {
                     output.extend_from_slice(bytes);
                 }
                 Err(error) if is_container_missing(&error) => {
-                    return Err(NodeLogReaderError::NotFound {
+                    return Err(MachineLogReaderError::NotFound {
                         container_id: container_id.clone(),
                     });
                 }
                 Err(error) => {
-                    return Err(NodeLogReaderError::ReadFailed {
+                    return Err(MachineLogReaderError::ReadFailed {
                         container_id: container_id.clone(),
                         message: error.to_string(),
                     });
@@ -313,7 +314,7 @@ impl NodeLogReader for DockerManagedContainerRunner {
             }
         }
 
-        Ok(NodeLogTail {
+        Ok(MachineLogTail {
             text: String::from_utf8_lossy(&output).into_owned(),
             truncated,
         })
@@ -321,18 +322,18 @@ impl NodeLogReader for DockerManagedContainerRunner {
 }
 
 impl DockerManagedContainerRunner {
-    async fn pull_image(&self, image: &str) -> Result<(), NodeContainerRunnerError> {
+    async fn pull_image(&self, image: &str) -> Result<(), MachineContainerRunnerError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = docker.create_image(Some(options), None, None);
 
         while let Some(result) = stream.next().await {
-            result.map_err(|error| NodeContainerRunnerError::Create {
+            result.map_err(|error| MachineContainerRunnerError::Create {
                 message: format!("pull Docker image {image}: {error}"),
             })?;
         }
@@ -340,11 +341,11 @@ impl DockerManagedContainerRunner {
         Ok(())
     }
 
-    async fn ensure_endpoint_network_inner(&self) -> Result<(), NodeContainerRunnerError> {
+    async fn ensure_endpoint_network_inner(&self) -> Result<(), MachineContainerRunnerError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
         if docker
@@ -371,7 +372,7 @@ impl DockerManagedContainerRunner {
                 {
                     Ok(())
                 } else {
-                    Err(NodeContainerRunnerError::EnsureEndpointNetwork {
+                    Err(MachineContainerRunnerError::EnsureEndpointNetwork {
                         message: format!("ensure Docker network {ENDPOINT_NETWORK_NAME}: {error}"),
                     })
                 }
@@ -603,7 +604,7 @@ mod tests {
     use super::*;
     use ployz_core::deploy::ImageReference;
     use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId};
-    use ployz_core::node::ManagedContainerKind;
+    use ployz_core::machine_runtime::ManagedContainerKind;
 
     #[test]
     fn list_options_filter_to_managed_containers() {
@@ -642,7 +643,7 @@ mod tests {
         };
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            endpoint: Some(crate::node::protocol::ContainerEndpointRequest {
+            endpoint: Some(crate::machine_runtime::protocol::ContainerEndpointRequest {
                 port: route_port(8080),
             }),
             labels,

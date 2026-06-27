@@ -5,13 +5,13 @@ use ployz_core::subjects::{
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
-use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzd::operation_api::{ops_status_missing, owned_operation};
 use ployzd::services::DaemonServiceCatalog;
 
 #[test]
 fn control_catalog_supports_srv_ping_discovery() {
-    let node_id = node_id("node_7");
+    let machine_id = machine_id("machine_7");
     let catalog = DaemonServiceCatalog::for_control();
 
     assert_eq!(ServiceDiscoveryQuery::All.subject(), "$SRV.PING");
@@ -38,31 +38,31 @@ fn control_catalog_supports_srv_ping_discovery() {
     assert!(catalog.has_endpoint_subject(API_MACHINE_JOIN_REPORT));
     assert!(catalog.has_endpoint_subject(API_SERVICE_LIST));
     assert!(catalog.has_endpoint_subject(API_SERVICE_INSPECT));
-    assert!(!catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
+    assert!(!catalog.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
 
-    let node_catalog = DaemonServiceCatalog::for_node(&node_id);
-    assert!(node_catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
-    assert!(!node_catalog.has_endpoint_subject(API_OPS_STATUS));
+    let machine_catalog = DaemonServiceCatalog::for_machine(&machine_id);
+    assert!(machine_catalog.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
+    assert!(!machine_catalog.has_endpoint_subject(API_OPS_STATUS));
 }
 
 #[test]
-fn service_catalogs_keep_control_and_node_surfaces_separate() {
-    let node_id = node_id("node_7");
+fn service_catalogs_keep_control_and_machine_surfaces_separate() {
+    let machine_id = machine_id("machine_7");
 
     let control = DaemonServiceCatalog::for_control();
-    let node = DaemonServiceCatalog::for_node(&node_id);
+    let machine = DaemonServiceCatalog::for_machine(&machine_id);
 
     assert_eq!(service_names(&control), vec!["plz-api"]);
-    assert_eq!(service_names(&node), vec!["plz-node"]);
+    assert_eq!(service_names(&machine), vec!["plz-machine"]);
 
-    let pings = node.discover(ServiceDiscoveryQuery::All);
+    let pings = machine.discover(ServiceDiscoveryQuery::All);
     assert!(pings.iter().any(|ping| {
-        ping.name == "plz-node"
-            && ping.id == "plz-node.node_7"
-            && ping.metadata.get("node_id") == Some(node_id.as_str())
+        ping.name == "plz-machine"
+            && ping.id == "plz-machine.machine_7"
+            && ping.metadata.get("machine_id") == Some(machine_id.as_str())
     }));
-    assert!(!node.has_endpoint_subject(API_OPS_STATUS));
-    assert!(node.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
+    assert!(!machine.has_endpoint_subject(API_OPS_STATUS));
+    assert!(machine.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
 }
 
 #[test]

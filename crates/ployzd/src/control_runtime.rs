@@ -6,12 +6,12 @@ use crate::backup_runtime::BackupOperationRuntime;
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
-use crate::deploy_worker::DeployExecutionNodeScope;
+use crate::deploy_worker::DeployExecutionMachineScope;
+use crate::machine_runtime::client::NatsMachineLogsTailer;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
     NatsAuthorizationStartError, NatsReloadRunner, SystemctlNatsReloadRunner,
 };
-use crate::node::client::NatsNodeLogsTailer;
 use crate::operation_api::OperationApiHandlers;
 use crate::process_support::shutdown_signal;
 use crate::tasks::TaskRegistry;
@@ -132,7 +132,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         core_state.clone(),
         observations.clone(),
         controllers.clone(),
-        DeployExecutionNodeScope::same_nodes(config.deploy_nodes.clone()),
+        DeployExecutionMachineScope::same_machines(config.deploy_machines.clone()),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );
@@ -141,7 +141,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         core_state.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
-        config.nats_authorization.node_seed_file.clone(),
+        config.nats_authorization.machine_seed_file.clone(),
         mint_tasks.clone(),
     );
     // Startup reconciliation (one bounded pass, owned by control start): a
@@ -152,7 +152,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         .resume_unfinished_mints()
         .await
         .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
-    let logs_tailer = NatsNodeLogsTailer::new(client.clone());
+    let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let backup_runtime = BackupOperationRuntime::new(
         jetstream,
         controllers.clone(),

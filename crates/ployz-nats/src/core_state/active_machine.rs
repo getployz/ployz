@@ -1,6 +1,6 @@
 use super::AsyncNatsCoreStateStore;
 use crate::kv::{KvListError, NatsIoTimeout, list_current, with_io_timeout};
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::state::{ACTIVE_MACHINE_STATE_PREFIX, ActiveMachineState, ActiveMachineStateKey};
 use std::fmt;
 
@@ -9,7 +9,7 @@ impl AsyncNatsCoreStateStore {
         &self,
         state: &ActiveMachineState,
     ) -> Result<(), ActiveMachineWriteError> {
-        let key = ActiveMachineStateKey::from_node_id(&state.node_id);
+        let key = ActiveMachineStateKey::from_machine_id(&state.machine_id);
         let payload = serde_json::to_vec(state).map_err(ActiveMachineWriteError::Encode)?;
         with_io_timeout(
             "active machine state put",
@@ -26,9 +26,9 @@ impl AsyncNatsCoreStateStore {
 
     pub async fn active_machine(
         &self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
     ) -> Result<Option<ActiveMachineState>, ActiveMachineReadError> {
-        let key = ActiveMachineStateKey::from_node_id(node_id);
+        let key = ActiveMachineStateKey::from_machine_id(machine_id);
         let Some(payload) =
             with_io_timeout("active machine state get", self.bucket.get(key.as_str()))
                 .await?
@@ -40,7 +40,7 @@ impl AsyncNatsCoreStateStore {
             return Ok(None);
         };
 
-        decode_active_machine_state(node_id, &key, &payload).map(Some)
+        decode_active_machine_state(machine_id, &key, &payload).map(Some)
     }
 
     pub async fn active_machines(&self) -> Result<Vec<ActiveMachineState>, ActiveMachineReadError> {
@@ -48,11 +48,11 @@ impl AsyncNatsCoreStateStore {
             &self.bucket,
             &format!("{ACTIVE_MACHINE_STATE_PREFIX}."),
             |state: &ActiveMachineState| {
-                ActiveMachineStateKey::from_node_id(&state.node_id)
+                ActiveMachineStateKey::from_machine_id(&state.machine_id)
                     .as_str()
                     .to_owned()
             },
-            |state| state.node_id.clone(),
+            |state| state.machine_id.clone(),
         )
         .await
         .map_err(ActiveMachineReadError::from)
@@ -60,16 +60,16 @@ impl AsyncNatsCoreStateStore {
 }
 
 fn decode_active_machine_state(
-    expected_node_id: &NodeId,
+    expected_machine_id: &MachineId,
     key: &ActiveMachineStateKey,
     payload: &[u8],
 ) -> Result<ActiveMachineState, ActiveMachineReadError> {
     let state: ActiveMachineState =
         serde_json::from_slice(payload).map_err(ActiveMachineReadError::Decode)?;
-    if state.node_id != *expected_node_id {
+    if state.machine_id != *expected_machine_id {
         return Err(ActiveMachineReadError::CorruptActiveMachineState {
             key: key.as_str().to_owned(),
-            expected_node_id: expected_node_id.clone(),
+            expected_machine_id: expected_machine_id.clone(),
         });
     }
 
@@ -113,7 +113,7 @@ pub enum ActiveMachineReadError {
     },
     CorruptActiveMachineState {
         key: String,
-        expected_node_id: NodeId,
+        expected_machine_id: MachineId,
     },
     CorruptKey {
         key: String,
@@ -132,12 +132,12 @@ impl fmt::Display for ActiveMachineReadError {
             Self::ListKeys { message } => write!(formatter, "list active machine keys: {message}"),
             Self::CorruptActiveMachineState {
                 key,
-                expected_node_id,
+                expected_machine_id,
             } => write!(
                 formatter,
                 "active machine state at {} does not belong to {}",
                 key,
-                expected_node_id.as_str()
+                expected_machine_id.as_str()
             ),
             Self::CorruptKey { key, actual_key } => write!(
                 formatter,

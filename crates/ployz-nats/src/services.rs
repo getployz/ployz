@@ -128,7 +128,7 @@ pub enum EndpointExecution {
     Query,
     AcceptsOperation,
     MutatesOperation,
-    NodeRpc,
+    MachineRpc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

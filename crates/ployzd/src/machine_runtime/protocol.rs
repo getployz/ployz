@@ -1,31 +1,31 @@
-//! Node-local NATS RPC protocol types.
+//! Machine-local NATS RPC protocol types.
 
 use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady,
+    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfMachineReady,
     WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest, WireGuardPeer, WireGuardPeerEndpoint,
     WireGuardPublicKey,
 };
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{FailureMessage, OperatorHint, RoutePort};
 use serde::{Deserialize, Serialize};
 
-/// Shared node RPC response envelope: every endpoint answers either with its
-/// success payload or with `{ node_id, error }`. The serialized shape is
+/// Shared machine RPC response envelope: every endpoint answers either with its
+/// success payload or with `{ machine_id, error }`. The serialized shape is
 /// identical to the previous per-endpoint enums.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeRpcResponse<T, E> {
+pub enum MachineRpcResponse<T, E> {
     Ok(T),
-    DomainError { node_id: NodeId, error: E },
+    DomainError { machine_id: MachineId, error: E },
 }
 
-/// Success payloads carry the responding node id so the request side can
-/// reject answers from the wrong node.
-pub trait NodeRpcResponder {
-    fn responder_node_id(&self) -> &NodeId;
+/// Success payloads carry the responding machine id so the request side can
+/// reject answers from the wrong machine.
+pub trait MachineRpcResponder {
+    fn responder_machine_id(&self) -> &MachineId;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub struct ContainerEndpointRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeContainerRunSpec {
+pub struct MachineContainerRunSpec {
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
     pub operation_id: OperationId,
@@ -46,13 +46,13 @@ pub struct NodeContainerRunSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeRunContainerOutcome {
+pub enum MachineRunContainerOutcome {
     Created { container_id: ContainerId },
     ReusedRunning { container_id: ContainerId },
     StartedExisting { container_id: ContainerId },
 }
 
-impl NodeRunContainerOutcome {
+impl MachineRunContainerOutcome {
     #[must_use]
     pub fn container_id(&self) -> &ContainerId {
         match self {
@@ -65,61 +65,61 @@ impl NodeRunContainerOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeEnsureEndpointNetworkRpcRequest {
+pub struct MachineEnsureEndpointNetworkRpcRequest {
     pub operation_id: OperationId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeEnsureEndpointNetworkRpcOk {
-    pub node_id: NodeId,
+pub struct MachineEnsureEndpointNetworkRpcOk {
+    pub machine_id: MachineId,
 }
 
-impl NodeRpcResponder for NodeEnsureEndpointNetworkRpcOk {
-    fn responder_node_id(&self) -> &NodeId {
-        let Self { node_id } = self;
-        node_id
+impl MachineRpcResponder for MachineEnsureEndpointNetworkRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id } = self;
+        machine_id
     }
 }
 
-pub type NodeEnsureEndpointNetworkRpcResponse =
-    NodeRpcResponse<NodeEnsureEndpointNetworkRpcOk, NodeEnsureEndpointNetworkDomainError>;
+pub type MachineEnsureEndpointNetworkRpcResponse =
+    MachineRpcResponse<MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeEnsureEndpointNetworkDomainError {
+pub enum MachineEnsureEndpointNetworkDomainError {
     EnsureFailed { message: FailureMessage },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeContainerRunRpcRequest {
+pub struct MachineContainerRunRpcRequest {
     pub image: ImageReference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<ContainerEndpointRequest>,
-    pub container: NodeContainerRunSpec,
+    pub container: MachineContainerRunSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeContainerRunRpcOk {
-    pub node_id: NodeId,
-    pub outcome: NodeRunContainerOutcome,
+pub struct MachineContainerRunRpcOk {
+    pub machine_id: MachineId,
+    pub outcome: MachineRunContainerOutcome,
 }
 
-impl NodeRpcResponder for NodeContainerRunRpcOk {
-    fn responder_node_id(&self) -> &NodeId {
-        let Self { node_id, .. } = self;
-        node_id
+impl MachineRpcResponder for MachineContainerRunRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
     }
 }
 
-pub type NodeContainerRunRpcResponse =
-    NodeRpcResponse<NodeContainerRunRpcOk, NodeContainerRunDomainError>;
+pub type MachineContainerRunRpcResponse =
+    MachineRpcResponse<MachineContainerRunRpcOk, MachineContainerRunDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeContainerRunDomainError {
+pub enum MachineContainerRunDomainError {
     OperationStepConflict {
         container_id: ContainerId,
         expected: ManagedContainerLabels,
@@ -149,7 +149,7 @@ pub enum NodeContainerRunDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeContainerRemoveRpcRequest {
+pub struct MachineContainerRemoveRpcRequest {
     pub operation_id: OperationId,
     pub container_id: ContainerId,
     pub expected_identity: ManagedContainerIdentity,
@@ -158,24 +158,24 @@ pub struct NodeContainerRemoveRpcRequest {
 /// Shared success payload for container remove/stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeContainerRpcOk {
-    pub node_id: NodeId,
+pub struct MachineContainerRpcOk {
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
 }
 
-impl NodeRpcResponder for NodeContainerRpcOk {
-    fn responder_node_id(&self) -> &NodeId {
-        let Self { node_id, .. } = self;
-        node_id
+impl MachineRpcResponder for MachineContainerRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
     }
 }
 
-pub type NodeContainerRemoveRpcResponse =
-    NodeRpcResponse<NodeContainerRpcOk, NodeContainerRemoveDomainError>;
+pub type MachineContainerRemoveRpcResponse =
+    MachineRpcResponse<MachineContainerRpcOk, MachineContainerRemoveDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeContainerRemoveDomainError {
+pub enum MachineContainerRemoveDomainError {
     RemoveFailed {
         container_id: ContainerId,
         message: FailureMessage,
@@ -185,18 +185,18 @@ pub enum NodeContainerRemoveDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeContainerStopRpcRequest {
+pub struct MachineContainerStopRpcRequest {
     pub operation_id: OperationId,
     pub container_id: ContainerId,
     pub expected_identity: ManagedContainerIdentity,
 }
 
-pub type NodeContainerStopRpcResponse =
-    NodeRpcResponse<NodeContainerRpcOk, NodeContainerStopDomainError>;
+pub type MachineContainerStopRpcResponse =
+    MachineRpcResponse<MachineContainerRpcOk, MachineContainerStopDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeContainerStopDomainError {
+pub enum MachineContainerStopDomainError {
     StopFailed {
         container_id: ContainerId,
         message: FailureMessage,
@@ -206,7 +206,7 @@ pub enum NodeContainerStopDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeLogsTailRpcRequest {
+pub struct MachineLogsTailRpcRequest {
     pub container_id: ContainerId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_lines: Option<u16>,
@@ -214,8 +214,8 @@ pub struct NodeLogsTailRpcRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeLogsTailResult {
-    pub node_id: NodeId,
+pub struct MachineLogsTailResult {
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub text: String,
     pub truncated: bool,
@@ -223,22 +223,23 @@ pub struct NodeLogsTailResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeLogsTailRpcOk {
-    pub value: NodeLogsTailResult,
+pub struct MachineLogsTailRpcOk {
+    pub value: MachineLogsTailResult,
 }
 
-impl NodeRpcResponder for NodeLogsTailRpcOk {
-    fn responder_node_id(&self) -> &NodeId {
+impl MachineRpcResponder for MachineLogsTailRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
         let Self { value } = self;
-        &value.node_id
+        &value.machine_id
     }
 }
 
-pub type NodeLogsTailRpcResponse = NodeRpcResponse<NodeLogsTailRpcOk, NodeLogsTailDomainError>;
+pub type MachineLogsTailRpcResponse =
+    MachineRpcResponse<MachineLogsTailRpcOk, MachineLogsTailDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeLogsTailDomainError {
+pub enum MachineLogsTailDomainError {
     NotFound {
         container_id: ContainerId,
     },
@@ -250,10 +251,10 @@ pub enum NodeLogsTailDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeWireGuardEbpfPrepareRpcRequest {
-    pub phase: NodeWireGuardEbpfPreparePhase,
+pub struct MachineWireGuardEbpfPrepareRpcRequest {
+    pub phase: MachineWireGuardEbpfPreparePhase,
     pub operation_id: OperationId,
-    pub nodes: Vec<NodeId>,
+    pub machines: Vec<MachineId>,
     pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
     pub peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub peers: Vec<WireGuardPeer>,
@@ -261,17 +262,17 @@ pub struct NodeWireGuardEbpfPrepareRpcRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NodeWireGuardEbpfPreparePhase {
+pub enum MachineWireGuardEbpfPreparePhase {
     ReadPublicKey,
     PrepareDataplane,
 }
 
-impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
+impl From<WireGuardEbpfPrepareRequest> for MachineWireGuardEbpfPrepareRpcRequest {
     fn from(value: WireGuardEbpfPrepareRequest) -> Self {
         Self {
-            phase: NodeWireGuardEbpfPreparePhase::PrepareDataplane,
+            phase: MachineWireGuardEbpfPreparePhase::PrepareDataplane,
             operation_id: value.operation_id,
-            nodes: value.nodes,
+            machines: value.machines,
             endpoint_routes: value.endpoint_routes,
             peer_endpoints: value.peer_endpoints,
             peers: value.peers,
@@ -281,30 +282,30 @@ impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeWireGuardEbpfPrepareRpcResponse {
+pub enum MachineWireGuardEbpfPrepareRpcResponse {
     Ok {
-        readiness: WireGuardEbpfNodeReady,
+        readiness: WireGuardEbpfMachineReady,
     },
     PublicKey {
-        node_id: NodeId,
+        machine_id: MachineId,
         public_key: WireGuardPublicKey,
     },
     DomainError {
-        node_id: NodeId,
-        error: NodeWireGuardEbpfPrepareDomainError,
+        machine_id: MachineId,
+        error: MachineWireGuardEbpfPrepareDomainError,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeWireGuardEbpfPrepareDomainError {
+pub enum MachineWireGuardEbpfPrepareDomainError {
     Unavailable {
         component: WireGuardEbpfComponent,
         message: FailureMessage,
     },
 }
 
-impl From<WireGuardEbpfPrepareError> for NodeWireGuardEbpfPrepareDomainError {
+impl From<WireGuardEbpfPrepareError> for MachineWireGuardEbpfPrepareDomainError {
     fn from(value: WireGuardEbpfPrepareError) -> Self {
         match value {
             WireGuardEbpfPrepareError::Unavailable {
@@ -323,8 +324,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn node_id(value: &str) -> NodeId {
-        NodeId::try_new(value).expect("valid node id")
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
     }
 
     fn container_id(value: &str) -> ContainerId {
@@ -337,29 +338,29 @@ mod tests {
 
     #[test]
     fn ensure_endpoint_network_response_wire_shape_is_pinned() {
-        let ok = NodeEnsureEndpointNetworkRpcResponse::Ok(NodeEnsureEndpointNetworkRpcOk {
-            node_id: node_id("node_a"),
+        let ok = MachineEnsureEndpointNetworkRpcResponse::Ok(MachineEnsureEndpointNetworkRpcOk {
+            machine_id: machine_id("machine_a"),
         });
-        let ok_json = json!({ "status": "ok", "node_id": "node_a" });
+        let ok_json = json!({ "status": "ok", "machine_id": "machine_a" });
         assert_eq!(
             serde_json::to_value(&ok).expect("response serializes"),
             ok_json
         );
         assert_eq!(
-            serde_json::from_value::<NodeEnsureEndpointNetworkRpcResponse>(ok_json)
+            serde_json::from_value::<MachineEnsureEndpointNetworkRpcResponse>(ok_json)
                 .expect("response deserializes"),
             ok
         );
 
-        let domain_error = NodeEnsureEndpointNetworkRpcResponse::DomainError {
-            node_id: node_id("node_a"),
-            error: NodeEnsureEndpointNetworkDomainError::EnsureFailed {
+        let domain_error = MachineEnsureEndpointNetworkRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: MachineEnsureEndpointNetworkDomainError::EnsureFailed {
                 message: failure_message("ensure failed"),
             },
         };
         let domain_error_json = json!({
             "status": "domain_error",
-            "node_id": "node_a",
+            "machine_id": "machine_a",
             "error": { "error": "ensure_failed", "message": "ensure failed" },
         });
         assert_eq!(
@@ -367,7 +368,7 @@ mod tests {
             domain_error_json
         );
         assert_eq!(
-            serde_json::from_value::<NodeEnsureEndpointNetworkRpcResponse>(domain_error_json)
+            serde_json::from_value::<MachineEnsureEndpointNetworkRpcResponse>(domain_error_json)
                 .expect("response deserializes"),
             domain_error
         );
@@ -375,15 +376,15 @@ mod tests {
 
     #[test]
     fn container_run_response_wire_shape_is_pinned() {
-        let ok = NodeContainerRunRpcResponse::Ok(NodeContainerRunRpcOk {
-            node_id: node_id("node_a"),
-            outcome: NodeRunContainerOutcome::Created {
+        let ok = MachineContainerRunRpcResponse::Ok(MachineContainerRunRpcOk {
+            machine_id: machine_id("machine_a"),
+            outcome: MachineRunContainerOutcome::Created {
                 container_id: container_id("ctr_123"),
             },
         });
         let ok_json = json!({
             "status": "ok",
-            "node_id": "node_a",
+            "machine_id": "machine_a",
             "outcome": { "outcome": "created", "container_id": "ctr_123" },
         });
         assert_eq!(
@@ -391,7 +392,7 @@ mod tests {
             ok_json
         );
         assert_eq!(
-            serde_json::from_value::<NodeContainerRunRpcResponse>(ok_json)
+            serde_json::from_value::<MachineContainerRunRpcResponse>(ok_json)
                 .expect("response deserializes"),
             ok
         );
@@ -399,13 +400,13 @@ mod tests {
 
     #[test]
     fn container_remove_and_stop_response_wire_shapes_are_pinned() {
-        let removed = NodeContainerRemoveRpcResponse::Ok(NodeContainerRpcOk {
-            node_id: node_id("node_a"),
+        let removed = MachineContainerRemoveRpcResponse::Ok(MachineContainerRpcOk {
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_old"),
         });
         let removed_json = json!({
             "status": "ok",
-            "node_id": "node_a",
+            "machine_id": "machine_a",
             "container_id": "ctr_old",
         });
         assert_eq!(
@@ -413,14 +414,14 @@ mod tests {
             removed_json
         );
         assert_eq!(
-            serde_json::from_value::<NodeContainerRemoveRpcResponse>(removed_json)
+            serde_json::from_value::<MachineContainerRemoveRpcResponse>(removed_json)
                 .expect("response deserializes"),
             removed
         );
 
-        let stop_failed = NodeContainerStopRpcResponse::DomainError {
-            node_id: node_id("node_a"),
-            error: NodeContainerStopDomainError::StopFailed {
+        let stop_failed = MachineContainerStopRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: MachineContainerStopDomainError::StopFailed {
                 container_id: container_id("ctr_old"),
                 message: failure_message("container stop failed: busy"),
                 inspect_hint: OperatorHint::try_new("ployz container inspect ctr_old")
@@ -429,7 +430,7 @@ mod tests {
         };
         let stop_failed_json = json!({
             "status": "domain_error",
-            "node_id": "node_a",
+            "machine_id": "machine_a",
             "error": {
                 "error": "stop_failed",
                 "container_id": "ctr_old",
@@ -442,7 +443,7 @@ mod tests {
             stop_failed_json
         );
         assert_eq!(
-            serde_json::from_value::<NodeContainerStopRpcResponse>(stop_failed_json)
+            serde_json::from_value::<MachineContainerStopRpcResponse>(stop_failed_json)
                 .expect("response deserializes"),
             stop_failed
         );
@@ -450,9 +451,9 @@ mod tests {
 
     #[test]
     fn logs_tail_response_wire_shape_is_pinned() {
-        let ok = NodeLogsTailRpcResponse::Ok(NodeLogsTailRpcOk {
-            value: NodeLogsTailResult {
-                node_id: node_id("node_a"),
+        let ok = MachineLogsTailRpcResponse::Ok(MachineLogsTailRpcOk {
+            value: MachineLogsTailResult {
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_failed"),
                 text: "panic\n".to_owned(),
                 truncated: false,
@@ -461,7 +462,7 @@ mod tests {
         let ok_json = json!({
             "status": "ok",
             "value": {
-                "node_id": "node_a",
+                "machine_id": "machine_a",
                 "container_id": "ctr_failed",
                 "text": "panic\n",
                 "truncated": false,
@@ -472,7 +473,7 @@ mod tests {
             ok_json
         );
         assert_eq!(
-            serde_json::from_value::<NodeLogsTailRpcResponse>(ok_json)
+            serde_json::from_value::<MachineLogsTailRpcResponse>(ok_json)
                 .expect("response deserializes"),
             ok
         );

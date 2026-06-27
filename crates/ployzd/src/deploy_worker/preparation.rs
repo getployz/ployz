@@ -4,8 +4,8 @@ use ployz_core::dataplane::WireGuardPeerEndpoint;
 use ployz_core::deploy::{
     DeployPreparationError, DeployPreparationInput, DeployRequest, prepare_deploy,
 };
-use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::node::NodeContainerObservationSnapshot;
+use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use std::time::Duration;
 
@@ -15,9 +15,9 @@ use super::DeployExecutionCommand;
 pub struct DeployExecutionFacts {
     pub active_service: Option<ActiveServiceState>,
     pub active_route: Option<ActiveRouteState>,
-    pub eligible_nodes: Vec<NodeId>,
-    pub dataplane_nodes: Vec<NodeId>,
-    pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
+    pub eligible_machines: Vec<MachineId>,
+    pub dataplane_machines: Vec<MachineId>,
+    pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub wireguard_peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub step_timeout: Duration,
 }
@@ -31,8 +31,8 @@ pub fn prepare_deploy_execution_command(
         request,
         active_service: facts.active_service,
         active_route: facts.active_route,
-        eligible_nodes: facts.eligible_nodes,
-        observed_nodes: facts.observed_nodes,
+        eligible_machines: facts.eligible_machines,
+        observed_machines: facts.observed_machines,
     })?;
 
     Ok(DeployExecutionCommand {
@@ -40,10 +40,10 @@ pub fn prepare_deploy_execution_command(
         request: prepared.request,
         expected_active: prepared.expected_active,
         route_commit: prepared.route_commit,
-        eligible_nodes: prepared.eligible_nodes,
+        eligible_machines: prepared.eligible_machines,
         existing_replicas: prepared.existing_replicas,
         cleanup_candidates: prepared.cleanup_candidates,
-        dataplane_nodes: facts.dataplane_nodes,
+        dataplane_machines: facts.dataplane_machines,
         wireguard_peer_endpoints: facts.wireguard_peer_endpoints,
         step_timeout: facts.step_timeout,
     })

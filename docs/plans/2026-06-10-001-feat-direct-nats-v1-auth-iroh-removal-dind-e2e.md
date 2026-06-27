@@ -31,18 +31,18 @@ Three phases, in order:
   and ADR-0013's "possible future option").
 - **Phase B — Real NATS auth.** One concrete scheme: cluster CA TLS on the
   wire + config-file-rendered per-machine **NKey users** with server-side
-  subject permissions rendered from `NatsPermissionProfile`. First-node keeper
+  subject permissions rendered from `NatsPermissionProfile`. First-machine keeper
   install generates the cluster CA, the server cert, and the
   controller/operator/join NKeys. `machine add` returns its operation id
   quickly, then mints a per-machine NKey as bounded operation work: append its
-  public key + Node permissions to a ployzd-owned `authorized-users.conf`
+  public key + Machine permissions to a ployzd-owned `authorized-users.conf`
   (single-writer, never-shrinking), hot-reload `nats-server`, verify, and
   deliver the seed in `MachineJoinSecretDelivery.nats_credentials` at
   redeem time. The CA cert (public) rides in the join bundle, replacing both
   `core_iroh` and the `config_sha256` pin. Request-reply inboxes are
   per-principal prefixes, so the low-privilege Join credential cannot sniff
   another client's redeem reply. Gateway/DNS authenticate as the machine's
-  Node user in v1 — no dedicated Gateway principal exists (a principal with
+  Machine user in v1 — no dedicated Gateway principal exists (a principal with
   no minting path would be a representable-invalid state). JWT operator mode
   is deliberately rejected for v1 (operator-key custody, resolver infra,
   audit opacity — wrong trade for 1–200 machines in one account with
@@ -63,26 +63,26 @@ eliminates.
 ## Committed Auth Scheme (Phase B contract)
 
 - **Wire:** `nats-server` config gains `tls { cert_file, key_file }`. Cluster
-  CA is self-signed, generated once at first-node install. Server cert SANs
-  cover `127.0.0.1`, the node public IP/hostname (`--node-public-ip`), and the
+  CA is self-signed, generated once at first-machine install. Server cert SANs
+  cover `127.0.0.1`, the machine public IP/hostname (`--machine-public-ip`), and the
   machine hostname.
 - **Identity:** every NATS principal is an NKey user in a config-file
   `authorization { users [...] }` block. Public keys + permissions live in the
   config (non-secret, readable recovery evidence); seeds live in
   `0600` files on the machine that owns them.
-- **Principals:** `Controller` (core ployzd control), `Node{node_id}` (one per
-  machine, minted at machine-add / first-node activate), `User` (ployzctl
+- **Principals:** `Controller` (core ployzd control), `Machine{machine_id}` (one per
+  machine, minted at machine-add / first-machine activate), `User` (ployzctl
   operator), `Join` (shared low-privilege bootstrap user: publish only
   `plz.v1.svc.api.machine.join.redeem|report`, subscribe only its own inbox
   prefix), `System` (`$SYS.>`). **There is no Gateway principal in v1:**
-  gateway and DNS processes authenticate as their machine's `Node{node_id}`
-  user, and the Node profile carries the read-only route-state KV watch
+  gateway and DNS processes authenticate as their machine's `Machine{machine_id}`
+  user, and the Machine profile carries the read-only route-state KV watch
   subjects they need. This is documented in the profile and revisited only if
   a dedicated gateway credential gains a real minting path.
 - **Inbox isolation (no inbox sniffing):** each principal connects with a
   custom inbox prefix (`async-nats` `ConnectOptions::custom_inbox_prefix`,
   available in 0.49 — verified): `_INBOX_ctl` (Controller), `_INBOX_user`
-  (User), `_INBOX_join` (Join), `_INBOX_node_<node_id>` (Node),
+  (User), `_INBOX_join` (Join), `_INBOX_machine_<machine_id>` (Machine),
   `_INBOX_sys` (System). Each profile's subscribe allow is scoped to its own
   prefix (`_INBOX_join.>` etc.) — **no profile subscribes `_INBOX.>`**. This
   closes the hole where the deliberately weak Join credential (printed into
@@ -96,13 +96,13 @@ eliminates.
   `/etc/nats/authorized-users.conf` and rewrites + reloads it during
   machine-add. Keeper creates `/var/lib/ployz/nats/` at install and writes
   `ca.pem`, `server.crt`, `server.key`, `controller.seed`, `operator.seed`,
-  `join.seed`; ployzd control writes `node.seed` there at activate-first-node
+  `join.seed`; ployzd control writes `machine.seed` there at activate-first-machine
   (see B3 sequencing). The systemd unit gains
   `ExecReload=/bin/kill -HUP $MAINPID`; reload is non-disruptive.
 - **Minting flow (bounded operation work, not handler work):** the
   machine-add handler validates, persists the operation, and returns the
   operation id + join token + join bundle quickly — it does **not** mint.
-  Minting runs as bounded operation work after acceptance: generate node NKey
+  Minting runs as bounded operation work after acceptance: generate machine NKey
   keypair → upsert principal record into KV → render desired user set to
   `authorized-users.conf` → `systemctl reload nats-server` → verify with a
   bounded test-connect using the minted seed → store the seed as the
@@ -137,7 +137,7 @@ eliminates.
 
 ## Out Of Scope
 
-- Hetzner acceptance (`scripts/hetzner-two-node-acceptance.sh` is left stale
+- Hetzner acceptance (`scripts/hetzner-two-machine-acceptance.sh` is left stale
   with a "superseded by ADR-0013, do not run" header; its mirror test
   `crates/ployz-e2e/tests/h0_script.rs` is deleted).
 - JWT operator mode, account multi-tenancy, cert rotation operations.
@@ -151,7 +151,7 @@ eliminates.
 ### A1. Delete the tunnel role and tunnel runtime
 
 - **Goal:** `DaemonProcessRole::Tunnel`/`TunnelSide` and the entire ployzd
-  tunnel runtime cease to exist; role sets shrink to control/node/gateway/dns.
+  tunnel runtime cease to exist; role sets shrink to control/machine/gateway/dns.
 - **Delete:**
   - `crates/ployzd/src/iroh_tunnel.rs` (whole file, 711 lines:
     `PreparedTunnelService`, `TunnelRestartPolicy`, `start_tunnel_runtime*`,
@@ -166,8 +166,8 @@ eliminates.
     `parse_role_args` tunnel branches + `parse_tunnel_side` (194–210),
     `is_known_role` `tunnel` (214), error variants
     `MissingTunnelSide`/`UnknownTunnelSide` + Display (150–163), in-file
-    tunnel tests. `first_node_process_set` becomes `[Control, Node,
-    (Gateway)]`; `joined_node_process_set` becomes `[Node, (Gateway)]`.
+    tunnel tests. `first_machine_process_set` becomes `[Control, Machine,
+    (Gateway)]`; `joined_machine_process_set` becomes `[Machine, (Gateway)]`.
   - `crates/ployzd/src/config.rs`: remove all 9 `PLOYZ_TUNNEL_*` env constants
     (35–43), `DEFAULT_TUNNEL_*`/`DEFAULT_CORE_TUNNEL_IROH_PORT` (44–46),
     `DaemonProcessConfig::Tunnel` variant, `load_tunnel_config` + helpers
@@ -193,17 +193,17 @@ eliminates.
     `TunnelSide` import.
   - `crates/ployz-keeper/src/main.rs`: `keeper_join_target_with_public_ip`
     stops calling `MachineJoinEdgeTunnel::from_join_bundle`/`with_edge_tunnel`;
-    joined-node role env renders `PLOYZ_NATS_URL` directly from
+    joined-machine role env renders `PLOYZ_NATS_URL` directly from
     `join_bundle.material.runtime_nats_url`.
   - `crates/ployzctl/src/commands/machine.rs`: delete
     `render_bootstrap_tunnel_command` (86–126) and the `bootstrap-tunnel`
-    output line; machine-add output keeps operation/node/join-token/install
+    output line; machine-add output keeps operation/machine/join-token/install
     lines only.
   - `crates/ployz-core/src/install.rs`: delete `MachineJoinEdgeTunnel` +
     `from_join_bundle` (197–220) — its only consumers die in this step.
   - Tests rewritten in lockstep: `crates/ployzd/tests/role_process.rs` (drop
     iroh/transport/tunnel imports and the 8 tunnel tests listed in the iroh
-    map; keep control/node/gateway/dns tests — note: its
+    map; keep control/machine/gateway/dns tests — note: its
     `temp_join_template_file` fixture is reshaped in A2, not here),
     `crates/ployzctl/tests/cli_contract.rs` (5+ exact-string
     `supervise roles ...` assertions lose `tunnel-core`/`tunnel-edge`;
@@ -238,7 +238,7 @@ eliminates.
     `SocketAddr`-only `nats_url_socket_addr` requirement at 544; the
     `.socket_addr()` consumers were the tunnel listener and are gone).
     `trusted_nats`, `nats_credentials`, `secret_delivery`, artifact
-    descriptors, and `KeeperFirstNodeInstall` keep their shapes in this step
+    descriptors, and `KeeperFirstMachineInstall` keep their shapes in this step
     (reshaped further in B1/B4).
   - `crates/ployz-sdk-types/src/lib.rs` + `src/typescript.rs`: remove the five
     iroh re-exports/TS exports; `crates/ployz-sdk-types/tests/exports.rs`:
@@ -273,13 +273,13 @@ eliminates.
   - `crates/ployz-e2e/tests/support/nats.rs`: keep `TestNats` (1–69); delete
     `EdgeNatsTunnel` + `start_edge_nats_tunnel` (70–121) + iroh imports.
   - `crates/ployz-e2e/tests/operations.rs`: rewrite
-    `e2e_edge_node_and_gateway_use_nats_over_iroh_tunnel` (897–1030) as
-    `e2e_edge_node_and_gateway_use_direct_nats` (edge runtimes connect
+    `e2e_edge_machine_and_gateway_use_nats_over_iroh_tunnel` (897–1030) as
+    `e2e_edge_machine_and_gateway_use_direct_nats` (edge runtimes connect
     straight to `nats.url()`); rename the `op_e2e_iroh_*` ids; fix the
     join-template fixture (1266–1311).
 - **Delete:** `crates/ployz-e2e/tests/h0_script.rs` (whole file — text-contract
   test pinned to the stale Hetzner script). Add a top-of-file comment in
-  `scripts/hetzner-two-node-acceptance.sh`: stale, superseded by ADR-0013, do
+  `scripts/hetzner-two-machine-acceptance.sh`: stale, superseded by ADR-0013, do
   not run.
 - **Verification:** `cargo test --workspace`;
   `grep -rn "core_iroh\|IrohTicket\|IrohPublicKey" crates/ scripts/` empty
@@ -327,11 +327,11 @@ eliminates.
   re-export for one release of the seam or callers update imports). Fix the
   known gaps while moving:
   - `Controller`: add publish allow `$JS.API.>` (bootstrap/KV/streams need it).
-  - `Node{node_id}`: add the `$JS.API` consumer/KV subjects needed for the
-    observation store writes and node-scoped KV reads; keep deny
+  - `Machine{machine_id}`: add the `$JS.API` consumer/KV subjects needed for the
+    observation store writes and machine-scoped KV reads; keep deny
     `$KV.KV_CORE.>` writes. **Also add the read-only route-state KV watch
     subjects** (plus the `$JS.API` read/consumer subjects they require):
-    gateway and DNS authenticate as the machine's Node user in v1 — there is
+    gateway and DNS authenticate as the machine's Machine user in v1 — there is
     no Gateway principal (see Committed Auth Scheme).
   - New `Join` profile: publish allow exactly
     `plz.v1.svc.api.machine.join.redeem` and
@@ -341,7 +341,7 @@ eliminates.
     `RESPONSE_INBOX = "_INBOX.>"` constant
     (`crates/ployz-nats/src/permissions.rs:12`, used by Controller/User/System
     at lines 71, 78, 84) with per-principal prefixes: `_INBOX_ctl.>`,
-    `_INBOX_user.>`, `_INBOX_join.>`, `_INBOX_node_<node_id>.>`,
+    `_INBOX_user.>`, `_INBOX_join.>`, `_INBOX_machine_<machine_id>.>`,
     `_INBOX_sys.>`. The prefix derivation lives next to the profile (one
     function `inbox_prefix(&NatsPrincipal) -> String`) so profile render and
     client connect (B2) cannot disagree.
@@ -367,7 +367,7 @@ eliminates.
     - New typed ids: `NatsUserPublicKey` (validated `U`-prefixed base32),
       `NatsUserSeed` (validated `SU`-prefix, `Debug` redacts),
       `NatsCaCertificatePem` (validated PEM block, public material).
-    - Delete `trusted_nats_for_first_node`'s `config_sha256` derivation
+    - Delete `trusted_nats_for_first_machine`'s `config_sha256` derivation
       (72–82).
   - `crates/ployz-core/src/install.rs`: `MachineJoinTrustedNats` becomes
     `{ server_name: NatsServerName, ca_pem: NatsCaCertificatePem }`.
@@ -387,9 +387,9 @@ eliminates.
     `RedactedJoinMaterial.trusted_nats_config_sha256` field + constructors —
     reshape to match join.rs.
   - `crates/ployz-keeper/src/steps.rs:757`: `NatsServerConfig::single_node`
-    call inside `NatsServerConfigTarget::for_first_node` — gains tls/listener
+    call inside `NatsServerConfigTarget::for_first_machine` — gains tls/listener
     arguments (B3 supplies the real material; here it takes the new required
-    parameters with first-node defaults).
+    parameters with first-machine defaults).
   - `crates/ployzd/src/nats_process.rs`: re-exports `NatsServerConfig`/
     `NatsServerConfigError` (line 6) and `PreparedNatsServerService::prepare`
     renders it (37–38) — update for the new required fields and validate the
@@ -448,24 +448,24 @@ eliminates.
   `crates/ployzd/tests/wireguard_dataplane.rs` incrementally (full flip in
   B4/B5 — see the enumerated suite list there).
 - **Tests:** new `crates/ployz-nats/tests/secured_connect.rs`: valid
-  seed+CA connects over TLS; wrong seed rejected; valid Node seed publishing
+  seed+CA connects over TLS; wrong seed rejected; valid Machine seed publishing
   outside its allow list gets a permissions violation; plaintext connect to
   the TLS port fails; **inbox-isolation regression: a Join-credential client
   attempting to subscribe `_INBOX.>` (and another principal's prefix, e.g.
-  `_INBOX_node_x.>`) receives a permission violation and observably cannot
+  `_INBOX_machine_x.>`) receives a permission violation and observably cannot
   receive another client's request-reply traffic** (drive a Controller
   request-reply while the Join sniffer is subscribed; assert no delivery).
 - **Verification:** `cargo test -p ployz-nats -p ployz-test-support`.
 
-### B3. Keeper first-node install mints cluster identity and renders the secured server
+### B3. Keeper first-machine install mints cluster identity and renders the secured server
 
 - **Goal:** `ployzctl init --run-keeper-install` produces a running
   `nats-server` with TLS + authorization, plus on-disk credentials for
-  Controller/User/Join — no `sed`, no post-install mutation. First-node
-  Node-seed sequencing is explicit and typed.
+  Controller/User/Join — no `sed`, no post-install mutation. First-machine
+  Machine-seed sequencing is explicit and typed.
 - **Create:** `crates/ployz-keeper/src/nats_identity.rs`: generate cluster CA
   + server cert (deps: `rcgen` in ployz-keeper) with SANs
-  `[127.0.0.1, <--node-public-ip>, <hostname>]`; generate Controller, User
+  `[127.0.0.1, <--machine-public-ip>, <hostname>]`; generate Controller, User
   (operator), and Join NKey keypairs (dep: `nkeys`). Pure functions returning
   typed material (`ClusterNatsIdentity { ca, server_cert, controller,
   operator, join }`), no I/O.
@@ -478,7 +478,7 @@ eliminates.
     `WriteNatsClientCredentials` (→
     `/var/lib/ployz/nats/{controller.seed,operator.seed,join.seed}`, `0600`).
     `WriteNatsServerConfig` renders via B1 types: `listener: External` when
-    `--node-public-ip` is given (this is the deliberate security flip — TLS +
+    `--machine-public-ip` is given (this is the deliberate security flip — TLS +
     auth land in the same rendered config), `tls{}` block, `include
     "authorized-users.conf"`.
   - `crates/ployz-keeper/src/systemd.rs`: `nats-server.service` unit gains
@@ -487,25 +487,25 @@ eliminates.
     `PLOYZ_NATS_URL=tls://...` and
     `PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem`. Seed paths are
     role-specific: control → `/var/lib/ployz/nats/controller.seed`;
-    **node and gateway → the fixed path `/var/lib/ployz/nats/node.seed`** —
+    **machine and gateway → the fixed path `/var/lib/ployz/nats/machine.seed`** —
     which does **not exist yet at install time**. There is no controller-seed
-    fallback for node/gateway (that would hand them Controller authority).
-  - **First-node Node-seed sequencing (committed, one path):**
-    1. Keeper install renders node/gateway envs pointing at
-       `/var/lib/ployz/nats/node.seed` and starts the units.
-    2. `ployzd node` / `ployzd gateway` treat a missing/unreadable seed file
+    fallback for machine/gateway (that would hand them Controller authority).
+  - **First-machine Machine-seed sequencing (committed, one path):**
+    1. Keeper install renders machine/gateway envs pointing at
+       `/var/lib/ployz/nats/machine.seed` and starts the units.
+    2. `ployzd machine` / `ployzd gateway` treat a missing/unreadable seed file
        as a **typed bounded-retry startup state**
-       (`NodeCredentialState::AwaitingSeedFile`), re-reading the path on each
+       (`MachineCredentialState::AwaitingSeedFile`), re-reading the path on each
        bounded backoff tick, with visible health (the process health endpoint
        reports `awaiting-credentials`, not a crash loop). Wiring lands in B4;
        the env contract is fixed here.
-    3. `ployzctl init activate-first-node` mints the first node's
-       `Node{node_id}` NKey (B4 minting path). **The named writer of
-       `node.seed` is ployzd control**, which runs on the same machine: after
+    3. `ployzctl init activate-first-machine` mints the first machine's
+       `Machine{machine_id}` NKey (B4 minting path). **The named writer of
+       `machine.seed` is ployzd control**, which runs on the same machine: after
        mint+render+reload+verify, control writes
-       `/var/lib/ployz/nats/node.seed` (`0600`) directly — local file write,
-       no RPC hop needed for first node.
-    4. Pickup is **in-process re-read**: the awaiting node/gateway processes
+       `/var/lib/ployz/nats/machine.seed` (`0600`) directly — local file write,
+       no RPC hop needed for first machine.
+    4. Pickup is **in-process re-read**: the awaiting machine/gateway processes
        find the file on their next retry tick and connect. No systemd restart
        is required or issued.
   - **File-ownership table (extends the ADR-0014 split):**
@@ -515,9 +515,9 @@ eliminates.
     | `/etc/nats/authorized-users.conf` | keeper (initial), then ployzd control exclusively | install; every mint/remove |
     | `/var/lib/ployz/nats/{ca.pem,server.crt,server.key}` | keeper | install |
     | `/var/lib/ployz/nats/{controller.seed,operator.seed,join.seed}` | keeper | install |
-    | `/var/lib/ployz/nats/node.seed` | ployzd control (first node) / keeper join commit (joined nodes, as `nats.creds`) | activate-first-node / join |
-  - `crates/ployz-keeper/src/first_node_install_cli.rs` +
-    `crates/ployzctl/src/commands/init.rs`: surface `--node-public-ip` into
+    | `/var/lib/ployz/nats/machine.seed` | ployzd control (first machine) / keeper join commit (joined nodes, as `nats.creds`) | activate-first-machine / join |
+  - `crates/ployz-keeper/src/first_machine_install_cli.rs` +
+    `crates/ployzctl/src/commands/init.rs`: surface `--machine-public-ip` into
     cert SANs and listener; init output prints the operator seed + CA paths
     for ployzctl use.
   - `crates/ployz-keeper/src/local.rs`: join path stores the redeemed
@@ -525,7 +525,7 @@ eliminates.
 - **Tests rewritten:** `crates/ployz-keeper/tests/bootstrap.rs`,
   `tests/local.rs`, `tests/systemd.rs` — env-file expectations now contain
   `PLOYZ_NATS_URL=tls://`, `PLOYZ_NATS_CA_FILE`, `PLOYZ_NATS_NKEY_SEED_FILE`
-  (node/gateway pointing at `node.seed`); rendered nats config contains
+  (machine/gateway pointing at `machine.seed`); rendered nats config contains
   `tls {` and `include`; new unit tests for `nats_identity.rs` (SAN coverage,
   seed prefixes, PEM round-trip).
 - **Verification:** `cargo test -p ployz-keeper`.
@@ -542,14 +542,14 @@ eliminates.
     into `NatsConnectConfig`; typed error variants for each missing/invalid
     input. `DaemonProcessConfig` role variants carry `NatsConnectConfig`
     instead of bare `NatsClientUrl`. A present-but-missing seed **file** (path
-    configured, file absent) is not a config error for node/gateway roles —
+    configured, file absent) is not a config error for machine/gateway roles —
     it enters the `AwaitingSeedFile` bounded-retry state from B3.
   - `crates/ployzd/src/control_runtime.rs:43`,
-    `node_process_runtime.rs:52` (+ the second bare connect at 731),
+    `machine_process_runtime.rs:52` (+ the second bare connect at 731),
     `gateway_process_runtime.rs:74` (today a bare `connect_with_timeout`,
     import at line 14): switch to `connect_authenticated`. Gateway/DNS use the
-    machine's Node `NatsConnectConfig` (no Gateway principal — see B1).
-    Node/gateway implement the `AwaitingSeedFile` startup state (typed enum,
+    machine's Machine `NatsConnectConfig` (no Gateway principal — see B1).
+    Machine/gateway implement the `AwaitingSeedFile` startup state (typed enum,
     bounded backoff, visible health) committed in B3.
   - `crates/ployzctl/src/runtime.rs:658`: same; ployzctl reads the same three
     envs (operator seed, `NatsPrincipal::User`).
@@ -581,8 +581,8 @@ eliminates.
       needs only token + URL + CA + the cluster-static Join seed). The
       handler does not mint, render, reload, or test-connect.
     - Minting runs as **bounded operation work after acceptance** (the
-      operation owner/worker side): generate node NKey keypair (dep: `nkeys`
-      in ployzd), upsert `Node{node_id}` into the KV principal set, submit a
+      operation owner/worker side): generate machine NKey keypair (dep: `nkeys`
+      in ployzd), upsert `Machine{machine_id}` into the KV principal set, submit a
       render request to the `nats_authorization` single-writer, await
       render+reload, bounded test-connect with the minted seed, then store the
       per-machine `MachineJoinSecretDelivery { nats_credentials: <seed> }` in
@@ -619,9 +619,9 @@ eliminates.
     `crates/ployzd/src/config.rs` join-template loading
     (`PLOYZ_MACHINE_JOIN_TEMPLATE_FILE`): template carries bundle material
     only, `trusted_nats.ca_pem`.
-  - `activate-first-node` mints the first node's `Node{node_id}` user through
+  - `activate-first-machine` mints the first machine's `Machine{machine_id}` user through
     the same worker-side path, then ployzd control writes
-    `/var/lib/ployz/nats/node.seed` locally (B3 sequencing).
+    `/var/lib/ployz/nats/machine.seed` locally (B3 sequencing).
   - `crates/ployzctl/src/commands/machine.rs`: install line gains
     `PLOYZ_NATS_URL=tls://<core>:4222`, `PLOYZ_NATS_CA_B64=<base64 ca.pem>`,
     `PLOYZ_JOIN_NKEY_SEED=<join seed>` env prefixes consumed by
@@ -630,22 +630,22 @@ eliminates.
   - `crates/ployz-keeper/src/main.rs` join redeem (163, 221): connect with
     Join seed + CA over TLS (Join inbox prefix); bounded redeem retry until
     material-ready/TTL; store the redeemed per-machine seed at `nats.creds`;
-    joined-node role envs point `PLOYZ_NATS_NKEY_SEED_FILE` at it (node and
-    gateway both — Node principal).
+    joined-machine role envs point `PLOYZ_NATS_NKEY_SEED_FILE` at it (machine and
+    gateway both — Machine principal).
 - **Test-suite flips in this step** (rule: **every test that spawns
   `nats-server` or runs product binaries/runtimes against `PLOYZ_NATS_URL`
   flips to `SecuredTestNats` when its product code path starts requiring
   auth**; find them with `grep -rln 'nats_server::run_server' crates/` and
   `grep -rln PLOYZ_NATS_URL crates/`):
-  - ployzd integration suites: `control_runtime.rs`, `node_runtime.rs`,
-    `node_rpc.rs`, `node_service_runtime.rs`, `deploy_runtime_nats.rs`,
+  - ployzd integration suites: `control_runtime.rs`, `machine_runtime.rs`,
+    `machine_rpc.rs`, `machine_service_runtime.rs`, `deploy_runtime_nats.rs`,
     `deploy_command_preparation_nats.rs`, `dns_source_nats.rs`,
     `gateway_process_runtime.rs`, `gateway_source_nats.rs`,
     `backup_restore.rs`, `nats_bootstrap.rs` (now spawns against rendered
     TLS configs with fixture certs), `role_process.rs`,
     `wireguard_dataplane.rs`.
   - the in-file `#[cfg(test)] TestNats` in
-    `crates/ployzd/src/node_process_runtime.rs` (~718–740, used at 427, 591,
+    `crates/ployzd/src/machine_process_runtime.rs` (~718–740, used at 427, 591,
     622, 649) — replaced by the shared secured fixture.
   - ployzctl binary suites: `machine_add_binary_nats.rs`,
     `api_client_nats.rs`, `init_binary_nats.rs`, `ops_watch_binary_nats.rs`,
@@ -689,10 +689,10 @@ eliminates.
     never by widening an inbox allow beyond the principal's own prefix); each
     fix gets a regression assertion in
     `crates/ployz-nats/tests/secured_connect.rs`. Gateway/DNS denials are
-    Node-profile fixes by design (no Gateway principal exists to widen).
+    Machine-profile fixes by design (no Gateway principal exists to widen).
   - `scripts/local-dataplane-proof.sh`: delete the
     `sed host: 0.0.0.0 + restart` hack (line 282) — init now takes
-    `--node-public-ip` and renders the external TLS listener; the template
+    `--machine-public-ip` and renders the external TLS listener; the template
     heredoc drops `secret_delivery`; edge join uses the printed
     `PLOYZ_JOIN_NKEY_SEED`/`PLOYZ_NATS_CA_B64` envs.
 - **Verification:** `cargo test --workspace` (all suites against secured
@@ -781,20 +781,20 @@ commands, label-based cleanup) merged with the proven systemd recipe from
 
 - **Goal:** prove the real product path forms a TLS-authenticated cluster.
 - **Create:** `crates/ployz-e2e/tests/dind_cluster.rs` (tokio tests, gated):
-  - **Scenario 1 — init + activate-first-node:** exec inside core:
-    `ployzctl init --run-keeper-install --node core_1 --gateway
-    --node-public-ip <bridge_ip> --ployzd-source file:///opt/ployz/artifacts/...`
-    then `ployzctl init activate-first-node`. Harness copies
+  - **Scenario 1 — init + activate-first-machine:** exec inside core:
+    `ployzctl init --run-keeper-install --machine core_1 --gateway
+    --machine-public-ip <bridge_ip> --ployzd-source file:///opt/ployz/artifacts/...`
+    then `ployzctl init activate-first-machine`. Harness copies
     `/var/lib/ployz/nats/{ca.pem,operator.seed}` out of the core container
     and connects a **host-side** `ployzctl::api_client::OperationApiClient`
     through the published `127.0.0.1` NATS port (works because B3 puts
     `127.0.0.1` in the server-cert SANs). Asserts: activate operation reaches
     Completed with the expected event sequence (including the mint events
     `minted`/`rendered`/`reloaded`/`verified`); `nats-server.service`,
-    `ployzd-control.service`, `ployzd-node-core_1.service`,
-    `ployzd-gateway.service` active; **`/var/lib/ployz/nats/node.seed` exists
-    after activate and the node/gateway units left the awaiting-credentials
-    state without a restart** (B3 sequencing); the core node's public key is
+    `ployzd-control.service`, `ployzd-machine-core_1.service`,
+    `ployzd-gateway.service` active; **`/var/lib/ployz/nats/machine.seed` exists
+    after activate and the machine/gateway units left the awaiting-credentials
+    state without a restart** (B3 sequencing); the core machine's public key is
     in `/etc/nats/authorized-users.conf`; bootstrap KV/streams exist.
   - **Scenario 2 — machine add via join bundle:** host-side `machine add`
     via the API client; the submit response carries the operation id
@@ -807,9 +807,9 @@ commands, label-based cleanup) merged with the proven systemd recipe from
     evidence; edge
     `/var/lib/ployz/keeper/join-material.d/nats.creds` exists and differs
     from the core controller seed; core
-    `/etc/nats/authorized-users.conf` contains the edge node's public key
+    `/etc/nats/authorized-users.conf` contains the edge machine's public key
     **alongside the previously present users (never-shrink)**; the edge
-    gateway/DNS units authenticate with the same Node seed (no separate
+    gateway/DNS units authenticate with the same Machine seed (no separate
     gateway credential exists — assert `PLOYZ_NATS_NKEY_SEED_FILE` in the
     gateway env points at `nats.creds`); token re-redeem refused (single-use
     evidence preserved).
@@ -828,7 +828,7 @@ commands, label-based cleanup) merged with the proven systemd recipe from
     via the published `127.0.0.1` gateway ports.
   - **Scenario 4 — daemon-restart invisibility:** with the deploy serving,
     exec `systemctl restart ployzd-control` on core and
-    `systemctl restart ployzd-node-<id>` on the edge; assert: gateway HTTP
+    `systemctl restart ployzd-machine-<id>` on the edge; assert: gateway HTTP
     keeps answering throughout (poll during restart window), workload
     container IDs unchanged after restart (adopt-not-recreate), and the
     operations API answers again after reconnect with no mutated machine
@@ -836,11 +836,11 @@ commands, label-based cleanup) merged with the proven systemd recipe from
   - **Scenario 5 — auth rejection:** (a) host client with a freshly generated
     random NKey seed + correct CA → connection refused (authorization
     violation); (b) host client with **no TLS** to the published port →
-    handshake failure; (c) client using the edge node's minted seed
-    publishing to the core node's service scope
-    (`plz.v1.svc.node.core_1.>`) and writing `$KV.KV_CORE.>` → permission
+    handshake failure; (c) client using the edge machine's minted seed
+    publishing to the core machine's service scope
+    (`plz.v1.svc.machine.core_1.>`) and writing `$KV.KV_CORE.>` → permission
     violation; (d) client using the cluster's Join seed subscribing
-    `_INBOX.>` and the core node's inbox prefix → permission violation
+    `_INBOX.>` and the core machine's inbox prefix → permission violation
     (inbox isolation holds in the real cluster, not just the fixture) — and
     the cluster remains healthy after all of (a)–(d) (gateway still serves).
 - **Verification:** `PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test
@@ -883,13 +883,13 @@ commands, label-based cleanup) merged with the proven systemd recipe from
 `MachineJoinTrustedNats.config_sha256`, `MachineJoinTemplate.secret_delivery`
 (B4) + the `--secret-delivery-file` ployzctl flag, the shared
 `RESPONSE_INBOX = "_INBOX.>"` permission constant, the in-file `TestNats` in
-`node_process_runtime.rs`, placeholder credential `"user-jwt-and-seed"`.
+`machine_process_runtime.rs`, placeholder credential `"user-jwt-and-seed"`.
 
 **Rewritten (kept, new shape):** `ployz-core` `install.rs`/`roles.rs`/
 `machine.rs`/`nats_config.rs`/`security.rs` (+ new `permissions.rs`, updated
 `tests/nats_config.rs`), `ployz-nats` `connect.rs`/`operations/status_store.rs`,
 `ployzd` `config.rs`/`app.rs`/`daemon_runtime.rs`/`main.rs`/`controllers.rs`/
-`operation_api.rs`/`nats_process.rs`/`node_process_runtime.rs`/
+`operation_api.rs`/`nats_process.rs`/`machine_process_runtime.rs`/
 `gateway_process_runtime.rs` (+ new `nats_authorization.rs`), `ployzd`
 `tests/nats_bootstrap.rs`/`tests/role_process.rs` (+ the full B4 suite list),
 `ployz-keeper` `steps.rs`/`join.rs`/`local.rs`/`systemd.rs`/`main.rs` (+ new

@@ -1,4 +1,4 @@
-//! Cluster NATS identity minting for first-node install.
+//! Cluster NATS identity minting for first-machine install.
 //!
 //! Pure generation only: a self-signed cluster CA, a server certificate
 //! covering the machine's reachable names, and the install-time NKey users
@@ -15,7 +15,7 @@ use ployz_core::nats_config::{
 const CA_COMMON_NAME: &str = "ployz-cluster-ca";
 const LOOPBACK_SAN: &str = "127.0.0.1";
 
-/// Everything minted once at first-node install.
+/// Everything minted once at first-machine install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterNatsIdentity {
     pub ca: NatsCaCertificatePem,
@@ -51,17 +51,17 @@ impl fmt::Debug for NatsServerKeyPem {
 }
 
 /// The subject alternative names the server certificate must cover:
-/// loopback always, plus the node's public IP and machine hostname when
+/// loopback always, plus the machine's public IP and machine hostname when
 /// known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerCertificateSans {
-    node_public_ip: Option<IpAddr>,
+    machine_public_ip: Option<IpAddr>,
     hostname: Option<String>,
 }
 
 impl ServerCertificateSans {
     pub fn try_new(
-        node_public_ip: Option<IpAddr>,
+        machine_public_ip: Option<IpAddr>,
         hostname: Option<String>,
     ) -> Result<Self, NatsIdentityError> {
         if let Some(hostname) = &hostname
@@ -72,7 +72,7 @@ impl ServerCertificateSans {
             });
         }
         Ok(Self {
-            node_public_ip,
+            machine_public_ip,
             hostname,
         })
     }
@@ -80,7 +80,7 @@ impl ServerCertificateSans {
     #[must_use]
     pub fn subject_alt_names(&self) -> Vec<String> {
         let mut names = vec![LOOPBACK_SAN.to_owned()];
-        if let Some(ip) = self.node_public_ip {
+        if let Some(ip) = self.machine_public_ip {
             let rendered = ip.to_string();
             if !names.contains(&rendered) {
                 names.push(rendered);
