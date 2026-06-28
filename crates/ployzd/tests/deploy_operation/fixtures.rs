@@ -1,8 +1,8 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport,
-    WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardPeerEndpoint, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
+    DataplaneProviderKind, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport,
+    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -25,9 +25,9 @@ pub(crate) use ployz_test_support::ids::{
 };
 use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
-    DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
-    DeployOperationRecordError, DeployOperationRecorder, MachineContainerRuntime,
-    MachineContainerRuntimeError, MachineRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
+    DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
+    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
     prepare_deploy_execution_command,
 };
 use ployzd::machine_runtime::protocol::{
@@ -35,7 +35,6 @@ use ployzd::machine_runtime::protocol::{
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
 };
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -72,7 +71,7 @@ pub(super) enum RecordedOperation {
     PlanCreated {
         replica_count: usize,
     },
-    WireGuardEbpfPrepared {
+    DataplanePrepared {
         machine_count: usize,
     },
     HealthCheckStarted,
@@ -118,8 +117,9 @@ impl DeployOperationRecorder for RecordingOperations {
                     replica_count: plan.steps.len(),
                 });
             }
-            DeployEvidence::WireGuardEbpfPrepared { report } => {
-                self.records.push(RecordedOperation::WireGuardEbpfPrepared {
+            DeployEvidence::DataplanePrepared { report } => {
+                let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
+                self.records.push(RecordedOperation::DataplanePrepared {
                     machine_count: report.machines.len(),
                 });
             }
@@ -166,8 +166,8 @@ pub(super) struct RecordingRuntime {
 
 #[derive(Default)]
 pub(super) struct RecordingWireGuardEbpf {
-    pub(super) requests: Vec<WireGuardEbpfPrepareRequest>,
-    failure: Option<WireGuardEbpfPrepareError>,
+    pub(super) requests: Vec<DataplanePrepareRequest>,
+    failure: Option<DataplanePrepareError>,
 }
 
 impl RecordingWireGuardEbpf {
@@ -178,8 +178,9 @@ impl RecordingWireGuardEbpf {
     pub(super) fn wireguard_failed(machine_id: &str) -> Self {
         Self {
             requests: Vec::new(),
-            failure: Some(WireGuardEbpfPrepareError::Unavailable {
+            failure: Some(DataplanePrepareError::Unavailable {
                 machine_id: self::machine_id(machine_id),
+                provider: DataplaneProviderKind::PloyzNativeMesh,
                 component: WireGuardEbpfComponent::WireGuard,
                 message: ployz_core::ops::FailureMessage::try_new("wireguard interface failed")
                     .expect("valid failure message"),
@@ -188,25 +189,23 @@ impl RecordingWireGuardEbpf {
     }
 }
 
-impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
-    async fn prepare_wireguard_ebpf(
+impl DataplanePreparer for RecordingWireGuardEbpf {
+    async fn prepare_dataplane(
         &mut self,
-        request: WireGuardEbpfPrepareRequest,
-    ) -> Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError> {
+        request: DataplanePrepareRequest,
+    ) -> Result<DataplanePrepareProviderReport, DataplanePrepareError> {
         let ready_machines = request
-            .machines
+            .membership
             .iter()
-            .cloned()
-            .map(ready_machine)
+            .map(|member| ready_machine(member.machine_id.clone()))
             .collect::<Vec<_>>();
         self.requests.push(request);
         match &self.failure {
             Some(error) => Err(error.clone()),
-            None => Ok(WireGuardEbpfPrepareReport::for_request(
-                self.requests.last().expect("request was just pushed"),
-                ready_machines,
-            )
-            .expect("recording report matches request machines")),
+            None => Ok(DataplanePrepareProviderReport::PloyzNativeMesh(
+                WireGuardEbpfPrepareReport::from_machines(ready_machines)
+                    .expect("recording report has unique machines"),
+            )),
         }
     }
 }
@@ -646,10 +645,6 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
-            wireguard_peer_endpoints: wireguard_peer_endpoints(&[
-                machine_id("machine_a"),
-                machine_id("machine_b"),
-            ]),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -719,7 +714,6 @@ fn prepared_deploy_command(
         DeployExecutionFacts {
             active_service: None,
             active_route: None,
-            wireguard_peer_endpoints: wireguard_peer_endpoints(&eligible_machines),
             dataplane_machines: Vec::new(),
             eligible_machines,
             observed_machines,
@@ -727,22 +721,6 @@ fn prepared_deploy_command(
         },
     )
     .expect("deploy command preparation succeeds")
-}
-
-fn wireguard_peer_endpoints(machines: &[MachineId]) -> Vec<WireGuardPeerEndpoint> {
-    machines
-        .iter()
-        .enumerate()
-        .map(|(index, machine_id)| {
-            WireGuardPeerEndpoint::new(
-                machine_id.clone(),
-                SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, (index + 1) as u8)),
-                    ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
-                ),
-            )
-        })
-        .collect()
 }
 
 fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {

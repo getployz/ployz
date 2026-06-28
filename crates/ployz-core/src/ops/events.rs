@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backup::{BackupManifest, BackupTarget};
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
-use crate::dataplane::WireGuardEbpfPrepareReport;
+use crate::dataplane::DataplanePrepareProviderReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
 use crate::machine::{
@@ -49,10 +49,9 @@ pub enum OperationEvent {
         operation_id: OperationId,
         stage: DeployRunningStage,
     },
-    #[serde(rename = "deploy_wireguard_ebpf_prepared")]
-    DeployWireGuardEbpfPrepared {
+    DeployDataplanePrepared {
         operation_id: OperationId,
-        report: WireGuardEbpfPrepareReport,
+        report: DataplanePrepareProviderReport,
     },
     DeployContainerStarted {
         operation_id: OperationId,

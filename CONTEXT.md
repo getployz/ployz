@@ -56,13 +56,41 @@ _Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, synchro
 A bounded operation step that asks target machines to make dataplane projection usable for one operation attempt and report evidence. It may use NATS machine calls, but it does not make dataplane state cluster truth.
 _Avoid_: Dataplane Projection Readiness, Dataplane Host Preparation, mesh bootstrap
 
+**Dataplane Provider**:
+The cluster-level data-plane mesh implementation used for dataplane projection. Deploys declare Dataplane Membership; they do not choose providers, and machines do not bring their own provider.
+_Avoid_: Per-deploy mesh, per-machine provider, route backend
+
+**Dataplane Provider Transition**:
+An explicit cluster operation that changes the cluster's Dataplane Provider. It is separate from deploy and must leave evidence about provider preparation, cutover, rollback, and cleanup.
+_Avoid_: Deploy side effect, silent mesh switch, mixed provider rollout
+
+**Tailnet Integration**:
+A family of optional future integrations that use a Tailscale tailnet for selected access, control-plane reachability, subnet routing, or egress without making Tailscale the cluster Dataplane Provider by default.
+_Avoid_: Dataplane Provider, hidden provider migration, MagicDNS route backend
+
+**Tailnet Access Bridge**:
+An optional Tailnet Integration that lets a Tailscale tailnet reach selected Ployz gateway, admin, or machine-access surfaces while the cluster keeps its Dataplane Provider. It is access exposure, not dataplane provider choice, route binding authority, machine membership, or control-plane connectivity.
+_Avoid_: Dataplane Provider, Private Control-Plane Path, Tailscale dataplane adapter, all subnets exposed, MagicDNS route backend
+
+**Tailnet Subnet Access**:
+An optional Tailnet Integration that, after explicit cluster-level enablement, advertises active Machine Endpoint Subnets to a Tailscale tailnet for operator or debugging access to machine-local endpoint networks and containers. It is raw subnet reachability and must not be treated as app ingress, route protection, control-plane authority, or silent exposure before enablement.
+_Avoid_: Route Binding, Tunnel Ingress, gateway route, implicit all-subnet exposure, control-plane authority
+
+**Ployz Native Mesh**:
+The built-in dataplane provider that implements dataplane projection through Ployz-owned WireGuard, eBPF, routes, and local machine dataplane material. It is one implementation behind Dataplane Prepare; WireGuard and eBPF details are provider internals and evidence.
+_Avoid_: ManagedWireGuardEbpf, WireGuard data plane, generic mesh
+
 **Dataplane Membership**:
 A machine's operation-derived participation in the cluster data-plane mesh for service endpoint reachability. It is distinct from durable machine control-plane authority, machine lifecycle, and workload placement eligibility.
 _Avoid_: Machine membership, runtime membership, control-plane authority, placement eligibility, durable membership registry
 
 **Dataplane Route Advertisement**:
-An operation-derived claim that one or more machine endpoint subnets should be reachable through a dataplane member. Route advertisements describe data-plane reachability intent or evidence; they do not own endpoint subnet assignment or route bindings.
+An operation-derived claim or provider evidence that one or more machine endpoint subnets should be reachable through a dataplane member. In the minimum declared dataplane prepare shape, route advertisements are derived from Dataplane Membership and provider facts, not submitted as separate generic request data. They do not own endpoint subnet assignment or route bindings.
 _Avoid_: Route Binding, subnet ownership, gateway route, WireGuard peer, durable route registry
+
+**Dataplane Traffic Observation**:
+A passive view of data-plane traffic movement for diagnostics, analytics, and capacity insight. It does not decide routing, access, placement, deploy success, or cluster truth.
+_Avoid_: Dataplane Prepare, route authority, access authority, billing truth
 
 **Dataplane Host Preparation**:
 A bounded machine-local preparation step that makes a machine eligible for dataplane projection by preparing required host capabilities and local machine-owned dataplane material. It can run during bootstrap or an explicit substrate update; it does not create live WireGuard interfaces, routes, peers, or eBPF attachments.
@@ -95,6 +123,18 @@ _Avoid_: Dashboard grant, Cloud session, auth cookie, user session
 **Gateway Session Key**:
 Secret material shared by gateway replicas in a cluster for creating and verifying route access sessions. It is local authority for gateway request admission, not route state or operation history.
 _Avoid_: Route secret, auth secret, cookie secret
+
+**Closed Public Ingress**:
+A machine network posture where no public inbound service ports are required for normal operation. The machine may still require explicit outbound egress to the control plane, tailnet, tunnel provider, package sources, or operator-approved dependencies.
+_Avoid_: Air gap, no network, firewall disabled, no egress
+
+**Private Control-Plane Path**:
+A future topology where machine control-plane connectivity reaches NATS through an approved private network path such as a tailnet or private mesh, instead of requiring public internet reachability to the NATS endpoint. It changes control-plane reachability, not cluster truth or data-plane provider semantics.
+_Avoid_: Dataplane Provider, Tailnet Access Bridge, public NATS, hidden control channel
+
+**Tunnel Ingress**:
+An optional ingress transport where an outbound tunnel connector carries external route traffic to Ployz gateway surfaces, without opening public 80/443 on a machine. The gateway still applies route bindings and route protection; the tunnel must not bypass the gateway to target service containers directly.
+_Avoid_: Route Binding, gateway replacement, direct service tunnel, public firewall rule, Tailnet Access Bridge
 
 **Embed Access Renewal**:
 An iframe-oriented protected-route presentation where the gateway asks the embedding product surface for fresh access-provider evidence. It preserves route protection while allowing dashboard embeds to recover from expired or invalid route access sessions without a manual sign-in click.
@@ -300,6 +340,10 @@ _Avoid_: Expiring subnet lease, hidden cleanup, unowned reservation
 A machine identity committed by the control plane with credentials and an assigned endpoint subnet. Once accepted, later machine role startup or role failures are machine health evidence; the machine's resources are changed through explicit lifecycle operations rather than failed bootstrap cleanup.
 _Avoid_: Reservation, pending join, bootstrap attempt
 
+**Accepted Machine Evidence**:
+Durable machine-local material proving this host has held an Accepted Machine Identity or Machine Control-Plane Authority, such as accepted machine id state, NATS machine credentials, role authority material, or assigned substrate state. It does not include the keeper binary, generic install residue, failed bootstrap attempt state, abandoned Cloud Bootstrap Session material, or unaccepted bootstrap delivery files.
+_Avoid_: Installed file presence, failed attempt evidence, abandoned session evidence, generic substrate residue
+
 **Machine Join Redemption**:
 The control-plane action that validates one machine reservation's join token and accepts the machine identity. Join redemption is the boundary where machine credentials and endpoint subnet assignment become usable; later bootstrap reporting records outcome evidence for an already accepted machine. Retrying redemption for the same accepted identity is idempotent, but redemption must not resurrect a removed machine identity.
 _Avoid_: Bootstrap completion, credential pre-issue, local activation
@@ -397,7 +441,7 @@ A time-limited Cloud permission that can issue one or more single-redemption Clo
 _Avoid_: One-time bootstrap token, machine join token, org flag
 
 **Cloud Bootstrap Session**:
-A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. The session is not an org, cluster, machine identity, join token, or operator credential.
+A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. A session that expires or is rejected before approval creates no Cloud Bootstrap Redemption. The session is not an org, cluster, machine identity, join token, or operator credential.
 _Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
 
 **Cloud Bootstrap Token**:
@@ -405,12 +449,24 @@ The single-redemption bearer secret string embedded in noninteractive Bootstrap 
 _Avoid_: Org id, cluster id, join token, callback token
 
 **Cloud Bootstrap Redemption**:
-One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session, invite, or token itself cluster truth.
+One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. For interactive bootstrap, browser approval creates the redemption by binding the session to an organization. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session, invite, or token itself cluster truth.
 _Avoid_: Bootstrap invite, bootstrap session, token, machine acceptance, operation completion
 
 **Cloud Founder Claim**:
-The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
+The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap for one Organization Cluster. Competing new-cluster redemptions serialize through this claim: the first approved redemption that wins the claim becomes founder, and later redemptions wait for founder outcome. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
 _Avoid_: Leader election, automatic founder failover, first healthy server
+
+**Waiting Cloud Bootstrap Redemption**:
+A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Cloud Founder Claim but no Cloud Connection. It waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire; it does not perform local machine mutation and does not become founder automatically.
+_Avoid_: Founder candidate, standby founder, pending machine join
+
+**Abandon Founder Attempt**:
+A Cloud-side operator action that marks a formed-but-unreachable Cloud Founder Claim terminal so the organization can start a new Founder Bootstrap through a new Cloud Bootstrap Session. It does not clean up, revoke, or mutate the already-formed local machine.
+_Avoid_: Founder failover, automatic promotion, Cloud cleanup, machine removal
+
+**Cloud Connection**:
+Cloud's durable product-side relationship to an Organization Cluster after Cloud has accepted bootstrap evidence and can authenticate as an authorized NATS client. A Cloud Connection exists only after reachability succeeds; a Cloud Bootstrap Redemption may establish one, but they are separate concepts and a connection is not cluster truth, machine membership, or recovery authority.
+_Avoid_: Runtime authority, machine membership, Cloud control plane, recovery authority
 
 **Cloud Link**:
 An explicit operation that authorizes Cloud as an operator client for an existing local cluster and gives Cloud the endpoint and trust material it needs to connect over direct TLS NATS. Cloud link does not bootstrap a machine and does not make Cloud runtime truth.
@@ -419,6 +475,10 @@ _Avoid_: Machine bootstrap, Cloud migration, tunnel setup
 **Substrate Update**:
 An explicit operation that changes already-installed non-keeper Ployz substrate on one machine to one requested Ployz version. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, not workload service containers or keeper.
 _Avoid_: Update, upgrade, rollout, in-place update
+
+**Substrate Uninstall**:
+An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success.
+_Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
 **Keeper Update**:
 An explicit operation that changes keeper on one machine to one requested Ployz version. It is separate from substrate update because keeper is the local executor for substrate steps.

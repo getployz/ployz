@@ -1,6 +1,5 @@
 //! Convert current cluster facts into a deploy execution command.
 
-use ployz_core::dataplane::WireGuardPeerEndpoint;
 use ployz_core::deploy::{
     DeployPreparationError, DeployPreparationInput, DeployRequest, prepare_deploy,
 };
@@ -18,7 +17,6 @@ pub struct DeployExecutionFacts {
     pub eligible_machines: Vec<MachineId>,
     pub dataplane_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
-    pub wireguard_peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub step_timeout: Duration,
 }
 
@@ -44,7 +42,6 @@ pub fn prepare_deploy_execution_command(
         existing_replicas: prepared.existing_replicas,
         cleanup_candidates: prepared.cleanup_candidates,
         dataplane_machines: facts.dataplane_machines,
-        wireguard_peer_endpoints: facts.wireguard_peer_endpoints,
         step_timeout: facts.step_timeout,
     })
 }

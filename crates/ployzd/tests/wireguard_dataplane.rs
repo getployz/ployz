@@ -1,16 +1,15 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReadyEvidence, WireGuardEbpfComponent, WireGuardEbpfEndpointRoute,
-    WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest, WireGuardPeer, WireGuardPublicKey,
-    WireGuardReadyEvidence,
+    DataplanePrepareProviderReport, DataplanePrepareRequest, EbpfForwardingReadyEvidence,
+    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
+    WireGuardPublicKey, WireGuardReadyEvidence,
 };
+use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
-use ployzd::dataplane_runtime::{HostDataplaneConfig, HostWireGuardEbpfPreparer};
-use ployzd::deploy_worker::{MachineContainerRuntime, WireGuardEbpfPreparer};
+use ployzd::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
+use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::docker::runner::DockerManagedContainerRunner;
-use ployzd::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
-};
+use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use ployzd::machine_runtime::runner::MachineContainerRunner;
 use ployzd::machine_runtime::service::MachineWireGuardEbpfPreparer;
@@ -58,14 +57,15 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
     );
 
     let peer_key = generated_wireguard_public_key();
-    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        machine_id("core_1"),
-        ebpf_bytecode.clone(),
-        ebpf_ctl.clone(),
-        DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
-        DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-    ))
-    .with_command_timeout(Duration::from_secs(20));
+    let preparer =
+        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+            machine_id("core_1"),
+            ebpf_bytecode.clone(),
+            ebpf_ctl.clone(),
+            DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
+            DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
+        ))
+        .with_command_timeout(Duration::from_secs(20));
 
     let ready = preparer
         .prepare_wireguard_ebpf(&endpoint_routes(), &[edge_peer_with_public_key(peer_key)])
@@ -96,7 +96,6 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
     cleanup_dataplane();
     let ebpf_ctl = required_path_env(EBPF_CTL_ENV);
     let ebpf_bytecode = required_path_env(EBPF_BYTECODE_ENV);
-    let peer_key = generated_wireguard_public_key();
     let nats = test_nats().await;
     let machine_id = machine_id("core_1");
     let runner = DockerManagedContainerRunner::local_defaults(
@@ -104,14 +103,15 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
         DEFAULT_DATAPLANE_BRIDGE_IFNAME,
     )
     .expect("connect to local Docker daemon");
-    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        machine_id.clone(),
-        ebpf_bytecode,
-        ebpf_ctl.clone(),
-        DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
-        DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-    ))
-    .with_command_timeout(Duration::from_secs(20));
+    let preparer =
+        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+            machine_id.clone(),
+            ebpf_bytecode,
+            ebpf_ctl.clone(),
+            DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
+            DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
+        ))
+        .with_command_timeout(Duration::from_secs(20));
     let _service = start_machine_runtime_service(
         nats.machine_client.clone(),
         machine_id.clone(),
@@ -138,25 +138,21 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
         &["link", "show", "dev", DEFAULT_DATAPLANE_BRIDGE_IFNAME],
     );
 
-    let mut dataplane = NatsMachineWireGuardEbpfPreparer::new(nats.client)
+    let mut dataplane = NatsMachineDataplanePreparer::new(nats.client, nats.observations)
         .with_request_timeout(Duration::from_secs(30));
     let report = dataplane
-        .prepare_wireguard_ebpf(WireGuardEbpfPrepareRequest {
-            operation_id: operation_id("op_123"),
-            machines: vec![machine_id.clone()],
-            endpoint_routes: endpoint_routes(),
-            peer_endpoints: Vec::new(),
-            peers: vec![edge_peer_with_public_key(peer_key)],
-        })
+        .prepare_dataplane(DataplanePrepareRequest::for_machines(
+            operation_id("op_123"),
+            vec![machine_id.clone()],
+        ))
         .await
         .expect("real dataplane prepares through machine-scoped NATS service");
+    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
     let [ready] = report.machines.as_slice() else {
         panic!("expected one machine readiness report");
     };
     assert_eq!(ready.machine_id, machine_id);
-    assert_wireguard_peer_evidence(&ready.ready.wireguard.evidence);
     assert_ebpf_attached_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
-    assert_edge_route_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
 }
 
 #[tokio::test]
@@ -171,14 +167,15 @@ async fn local_privileged_dataplane_reports_missing_bridge_as_domain_failure() {
     cleanup_dataplane();
     let ebpf_ctl = required_path_env(EBPF_CTL_ENV);
     let ebpf_bytecode = required_path_env(EBPF_BYTECODE_ENV);
-    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        machine_id("core_1"),
-        ebpf_bytecode,
-        ebpf_ctl,
-        "missing-ployz".to_owned(),
-        DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-    ))
-    .with_command_timeout(Duration::from_secs(20));
+    let preparer =
+        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+            machine_id("core_1"),
+            ebpf_bytecode,
+            ebpf_ctl,
+            "missing-ployz".to_owned(),
+            DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
+        ))
+        .with_command_timeout(Duration::from_secs(20));
 
     let error = preparer
         .prepare_wireguard_ebpf(&endpoint_routes(), &[])
@@ -328,6 +325,7 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
+    observations: AsyncNatsObservationStore,
     /// Machine principal: the machine-runtime service side.
     machine_client: async_nats::Client,
 }
@@ -335,12 +333,17 @@ struct TestNats {
 async fn test_nats() -> TestNats {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("core_1")]).await;
+    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open controller observation store");
     let machine_client = nats.machine_client(&machine_id("core_1")).await;
 
     TestNats {
         _nats: nats,
         client,
+        observations,
         machine_client,
     }
 }

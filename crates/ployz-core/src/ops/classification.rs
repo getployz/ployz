@@ -73,13 +73,13 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Running { stage }),
             },
-            OperationEvent::DeployWireGuardEbpfPrepared {
+            OperationEvent::DeployDataplanePrepared {
                 operation_id,
                 report,
                 ..
             } => Self::Deploy {
                 operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::WireGuardEbpfPrepared { report }),
+                event: DeployEvent::Evidence(DeployEvidence::DataplanePrepared { report }),
             },
             OperationEvent::DeployContainerStarted {
                 operation_id,

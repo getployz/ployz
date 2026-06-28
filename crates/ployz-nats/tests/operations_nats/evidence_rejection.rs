@@ -55,7 +55,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await
@@ -171,7 +171,7 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await
@@ -271,7 +271,7 @@ async fn operation_repository_rejects_plan_created_after_planning() {
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await
@@ -418,7 +418,7 @@ async fn record_active_commit_stage(repository: &AsyncNatsOperationRepository, o
         .record_deploy_transition(
             &operation_id(operation),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await

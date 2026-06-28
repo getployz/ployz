@@ -598,8 +598,8 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         OperationEvent::DeployPlanCreated { plan, .. } => {
             Some(DeployEvidence::PlanCreated { plan: plan.clone() })
         }
-        OperationEvent::DeployWireGuardEbpfPrepared { report, .. } => {
-            Some(DeployEvidence::WireGuardEbpfPrepared {
+        OperationEvent::DeployDataplanePrepared { report, .. } => {
+            Some(DeployEvidence::DataplanePrepared {
                 report: report.clone(),
             })
         }

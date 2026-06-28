@@ -54,7 +54,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -124,7 +124,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -188,7 +188,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -263,7 +263,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -340,7 +340,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
         },

@@ -15,7 +15,7 @@ curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap
 Cloud tokens, install `ployzctl`, choose a Cloud org, decide founder vs joiner,
 or inspect machine bootstrap state. Keeper owns the prompt, optional Cloud
 session, typed bootstrap envelope validation, local machine mutation, and
-terminal callback when Cloud is connected.
+terminal callback when bootstrap uses Cloud.
 
 The future automation command is:
 
@@ -24,7 +24,7 @@ curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap --cloud-token pc
 ```
 
 `--cloud-host <host-or-https-url>` may select staging or self-hosted Cloud for
-Cloud-connected bootstrap. It does not identify the target machine, org, or
+Cloud bootstrap. It does not identify the target machine, org, or
 cluster.
 
 ## Session And Token Modes
@@ -36,16 +36,27 @@ approval is one `Connect this machine` action; Cloud derives founder, joiner,
 or wait behavior from that organization's Organization Cluster state. Future
 founder options can be added to the browser approval flow without changing the
 copied command.
+If the session expires before browser approval, no Cloud Bootstrap Redemption
+is created. Keeper polling exits with an approval-expired message and tells the
+user to rerun `sudo ployz-keeper bootstrap`; rerunning creates a fresh Cloud
+Bootstrap Session rather than reusing the expired one.
+If the browser user rejects the approval before clicking `Connect this
+machine`, the session becomes terminal rejected, no Cloud Bootstrap Redemption
+is created, and keeper exits nonzero with a Cloud-rejected message plus the
+same rerun guidance.
 
 Future token bootstrap may redeem a Cloud Bootstrap Token for cloud-init and
 fleet automation. A token is a single-redemption bearer secret issued by a
 time-limited Cloud Bootstrap Invite. The default invite duration is 1 hour;
 multi-machine automation uses multiple tokens from the same invite.
 
-Cloud-connected modes produce a Cloud Bootstrap Redemption. The redemption
-returns a typed envelope with a callback URL, callback token, release
-selection, and one intent: Founder Bootstrap, Joiner Bootstrap, or
-wait-for-founder.
+Cloud bootstrap modes produce a Cloud Bootstrap Redemption. The redemption
+is created when Cloud approves a session or token for one machine use. For
+interactive bootstrap, the browser `Connect this machine` approval creates the
+durable redemption; keeper polling then receives the same redemption and
+intent idempotently. The redemption returns a typed envelope with a callback
+URL, callback token, release selection, and one intent: Founder Bootstrap,
+Joiner Bootstrap, or wait-for-founder.
 
 ## Continue Without Cloud
 
@@ -68,16 +79,80 @@ secret-handling story, and cleanup behavior.
 Cloud-mediated Founder Bootstrap authorizes Cloud by NATS user public key. The
 founder result callback is Cloud-safe: it returns the machine id, runtime NATS URL,
 and trusted CA material, but not the local operator seed or Join seed.
+Fresh-machine approvals for the same Organization Cluster serialize through a
+single sticky Cloud Founder Claim. The first approved redemption that wins the
+claim receives Founder Bootstrap; other approved redemptions wait for the
+founder to establish a Cloud Connection, be abandoned, or expire. Waiters are
+not automatically promoted to founder; Abandon Founder Attempt rejects them.
+Waiting Cloud Bootstrap Redemptions are polling-only from the target machine's
+perspective. Keeper prints that it is waiting for the first machine to finish,
+honors Cloud retry hints, and performs no local mutation until Cloud has a
+Cloud Connection and returns a Joiner Bootstrap envelope.
 
 Cloud proves founder usability with an outside-in direct TLS NATS probe. Local
 public-IP checks can be diagnostics, but they are not proof that Cloud can reach
-the control plane.
+the control plane. If that probe fails after local founder success, the
+founder Cloud Bootstrap Redemption or Cloud Founder Claim becomes
+formed-but-unreachable; no Cloud Connection exists yet, and waiting redemptions
+remain blocked.
+Cloud stores the callback-reported endpoint, CA, and Cloud client material on
+the founder redemption or Founder Claim until reachability succeeds. The Cloud
+Connection row is created only after Cloud authenticates successfully.
+If the user picked a machine that cannot be exposed to Cloud, they use Abandon
+Founder Attempt. Cloud marks the formed-but-unreachable Founder Claim terminal,
+rejects waiting redemptions, and allows a new Cloud Bootstrap Session to claim
+Founder Bootstrap. The original machine is left as an unmanaged local cluster;
+cleanup is explicit local work outside Cloud bootstrap. Substrate Uninstall can
+be run with `sudo ployz-keeper uninstall` to remove Ployz substrate and
+machine-local Ployz material from that machine, but it does not delete user
+workloads, Docker images, Docker volumes, service containers, arbitrary
+networks, or runtime data by default. Keeper removes its own binary as the
+final step; failure to remove the binary is a leftover-binary warning after
+substrate uninstall has otherwise completed. `sudo ployz-keeper uninstall`
+requires interactive confirmation by default; `--yes` is the scripted bypass.
+By default, uninstall refuses when local evidence says the machine is still an
+accepted cluster member. `--force` overrides that local refusal and removes
+local substrate anyway, but it does not perform Force Removed Machine or mutate
+cluster truth. `--force` and `--yes` are independent: automation that wants
+forced local cleanup must pass both. `--yes` only skips waiting for input; it
+does not suppress removal plans, accepted-machine evidence, or warnings.
+That refusal is a hard stop before the normal confirmation prompt. Keeper
+prints the accepted-machine evidence it found, tells the user to remove the
+machine from the cluster first and rerun uninstall, and shows `--force` as the
+local-only escape hatch when cluster removal is impossible.
+When `--force` is used with accepted-machine evidence present, keeper prints a
+second warning before confirmation: local substrate removal does not remove the
+machine from cluster truth, and cluster cleanup remains explicit operator work.
+The warning shows `ployzctl machine remove --force <machine>` as the follow-up
+cluster cleanup command when the user still has an operator context.
+With `--force --yes`, keeper still prints the evidence and cluster-cleanup
+warning before removing local substrate without prompting.
+The refusal check uses Accepted Machine Evidence: accepted machine id state,
+NATS machine credentials, role authority material, or assigned substrate state.
+Failed or abandoned bootstrap attempt state, the keeper binary, and generic
+install residue do not require `--force`.
+If no Accepted Machine Evidence and no removable Ployz substrate or material
+remain, uninstall reports that the machine is already clean and exits 0 without
+prompting. This no-op path does not bypass accepted-machine refusal.
+If uninstall removes some substrate or machine-local material but fails to
+remove other required items, it exits nonzero and prints the remaining-items
+list plus rerun guidance. The keeper binary remains the only warning-only
+exception: if all other substrate and machine-local material are gone, a keeper
+self-removal failure exits 0 with a leftover-binary warning.
 
 If founder bootstrap succeeds locally but the Cloud callback fails, keeper
 exits failed with local evidence and does not start a background retry worker.
 Rerunning `sudo ployz-keeper bootstrap` on the same machine resumes the same
 attempt and retries the terminal callback instead of creating a new Founder
-Claim.
+Claim. Keeper persists the exact Cloud-safe terminal callback payload in
+root-owned attempt state before posting it; reruns replay that payload and
+refuse to recompute or mutate founder state for the terminal attempt.
+If Cloud has already accepted the callback, rerun exits success with current
+terminal Cloud status evidence and performs no local mutation. A Cloud
+Connection exists only after Cloud can authenticate to the cluster as an
+authorized NATS client.
+The Cloud Connection is an Organization Cluster-level product relationship,
+separate from the per-machine Cloud Bootstrap Redemption that created it.
 
 ## Joiner Bootstrap
 
@@ -88,8 +163,18 @@ join token against the cluster and reports terminal evidence. The Cloud callback
 for success carries operation id, machine id, machine name, last event sequence,
 and redeem result; it omits the join token and Join credential.
 
+Joiner callback failure follows the same terminal-payload rule as founder
+callback failure: keeper persists the exact Cloud-safe terminal payload before
+posting it, exits failed with evidence if the post fails, starts no background
+retry worker, and replays the persisted payload on rerun. If Cloud has already
+accepted the callback, rerun exits success with current terminal Cloud status
+evidence and performs no local mutation.
+
 Duplicate reported hostnames are allowed as machine facts. Cloud derives a
 unique current Machine Name before it submits core operations.
+
+Joiner decisions depend on the Organization Cluster's Cloud Connection rather
+than on a founder redemption's status.
 
 ## Local Direct Path
 

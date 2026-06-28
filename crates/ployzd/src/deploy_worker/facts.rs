@@ -1,15 +1,12 @@
 //! Load deploy execution facts from current-state stores.
 
 use futures_util::{StreamExt, stream};
-use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, WireGuardPeerEndpoint};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::state::MachinePublicIpObservation;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
@@ -62,30 +59,12 @@ pub async fn load_deploy_execution_facts_from_nats(
         load_machine_snapshots(observations, &machine_scope.observed_machine_ids).await?;
     let dataplane_machines =
         routed_dataplane_machines(request, machine_scope.observed_machine_ids.clone());
-    let peer_endpoint_machine_ids = sorted_unique_machines(
-        machine_scope
-            .eligible_machines
-            .iter()
-            .chain(dataplane_machines.iter()),
-    );
-    let public_ip_requirement = match request.route {
-        Some(_) => MachinePublicIpRequirement::RequireAll,
-        None => MachinePublicIpRequirement::BestEffort,
-    };
-    let wireguard_peer_endpoints = load_wireguard_peer_endpoints(
-        observations,
-        &peer_endpoint_machine_ids,
-        public_ip_requirement,
-    )
-    .await?;
-
     Ok(DeployExecutionFacts {
         active_service,
         active_route,
         eligible_machines: machine_scope.eligible_machines,
         dataplane_machines,
         observed_machines,
-        wireguard_peer_endpoints,
         step_timeout,
     })
 }
@@ -148,56 +127,6 @@ async fn load_machine_snapshots(
     Ok(snapshots)
 }
 
-async fn load_wireguard_peer_endpoints(
-    observations: &AsyncNatsObservationStore,
-    machine_ids: &[MachineId],
-    requirement: MachinePublicIpRequirement,
-) -> Result<Vec<WireGuardPeerEndpoint>, DeployFactLoadError> {
-    let requested = machine_ids
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut endpoints = observations
-        .machine_public_ips()
-        .await
-        .map_err(
-            |source| DeployFactLoadError::MachinePublicIpObservationRead {
-                message: source.to_string(),
-            },
-        )?
-        .into_iter()
-        .filter(|observation| requested.contains(&observation.machine_id))
-        .map(peer_endpoint_from_public_ip)
-        .collect::<Vec<_>>();
-
-    endpoints.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
-    if requirement == MachinePublicIpRequirement::RequireAll {
-        for machine_id in machine_ids {
-            if endpoints
-                .iter()
-                .all(|endpoint| endpoint.machine_id != *machine_id)
-            {
-                return Err(DeployFactLoadError::MissingMachinePublicIpObservation {
-                    machine_id: machine_id.clone(),
-                });
-            }
-        }
-    }
-    Ok(endpoints)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MachinePublicIpRequirement {
-    BestEffort,
-    RequireAll,
-}
-
-fn peer_endpoint_from_public_ip(observation: MachinePublicIpObservation) -> WireGuardPeerEndpoint {
-    WireGuardPeerEndpoint::new(
-        observation.machine_id,
-        SocketAddr::new(observation.public_ip, DEFAULT_WIREGUARD_LISTEN_PORT),
-    )
-}
-
 fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>) -> Vec<MachineId> {
     machines
         .into_iter()
@@ -225,12 +154,6 @@ pub enum DeployFactLoadError {
     MachineObservationRead {
         machine_id: MachineId,
         message: String,
-    },
-    MachinePublicIpObservationRead {
-        message: String,
-    },
-    MissingMachinePublicIpObservation {
-        machine_id: MachineId,
     },
 }
 
@@ -262,17 +185,6 @@ impl fmt::Display for DeployFactLoadError {
                 "machine observations for {} could not be read: {}",
                 machine_id.as_str(),
                 message
-            ),
-            Self::MachinePublicIpObservationRead { message } => {
-                write!(
-                    formatter,
-                    "machine public ip observations could not be read: {message}"
-                )
-            }
-            Self::MissingMachinePublicIpObservation { machine_id } => write!(
-                formatter,
-                "machine public ip observation for {} is missing",
-                machine_id.as_str()
             ),
         }
     }

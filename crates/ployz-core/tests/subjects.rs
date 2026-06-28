@@ -4,10 +4,10 @@ use ployz_core::subjects::{
     MachineObservationEvent, MachineServiceEndpoint, cert_renewal_job, cert_renewal_schedule,
     machine_observation, machine_service, op_cert_challenge_published, op_cert_completed,
     op_cert_failed, op_cert_submitted, op_cert_validation_started, op_deploy_completed,
-    op_deploy_container_started, op_deploy_health_check_started, op_deploy_plan_created,
-    op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
-    op_deploy_wireguard_ebpf_prepared, op_machine_add_completed, op_machine_add_failed,
-    op_machine_add_joined, op_machine_add_submitted, op_watch,
+    op_deploy_container_started, op_deploy_dataplane_prepared, op_deploy_health_check_started,
+    op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
+    op_machine_add_completed, op_machine_add_failed, op_machine_add_joined,
+    op_machine_add_submitted, op_watch,
 };
 use ployz_test_support::ids::{container_id, machine_id};
 
@@ -33,8 +33,8 @@ fn operation_subjects_use_validated_operation_ids() {
         "plz.v1.op.op_123.deploy.running.active_service_commit"
     );
     assert_eq!(
-        op_deploy_wireguard_ebpf_prepared(&op_id),
-        "plz.v1.op.op_123.deploy.wireguard_ebpf.prepared"
+        op_deploy_dataplane_prepared(&op_id),
+        "plz.v1.op.op_123.deploy.dataplane.prepared"
     );
     assert_eq!(
         op_deploy_container_started(&op_id, &machine_id("machine_7"), &container_id("ctr_1")),
@@ -89,8 +89,8 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.svc.machine.machine_7.container.remove"
     );
     assert_eq!(
-        machine_service(&machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare),
-        "plz.v1.svc.machine.machine_7.wireguard_ebpf.prepare"
+        machine_service(&machine_id, MachineServiceEndpoint::DataplanePrepare),
+        "plz.v1.svc.machine.machine_7.dataplane.prepare"
     );
     assert_eq!(
         machine_observation(&machine_id, MachineObservationEvent::ContainerRunning),

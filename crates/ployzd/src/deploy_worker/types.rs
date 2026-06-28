@@ -1,4 +1,4 @@
-use ployz_core::dataplane::{WireGuardEbpfPrepareRequest, WireGuardPeerEndpoint};
+use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, ExistingServiceReplica,
 };
@@ -23,7 +23,6 @@ pub struct DeployExecutionCommand {
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) dataplane_machines: Vec<MachineId>,
-    pub(super) wireguard_peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub(super) step_timeout: Duration,
 }
 
@@ -46,11 +45,6 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
         &self.cleanup_candidates
-    }
-
-    #[must_use]
-    pub fn wireguard_peer_endpoints(&self) -> &[WireGuardPeerEndpoint] {
-        &self.wireguard_peer_endpoints
     }
 
     #[must_use]
@@ -93,12 +87,11 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn wireguard_ebpf_prepare_request(&self, plan: &DeployPlan) -> WireGuardEbpfPrepareRequest {
-        WireGuardEbpfPrepareRequest::for_deploy_plan(
+    pub fn dataplane_prepare_request(&self, plan: &DeployPlan) -> DataplanePrepareRequest {
+        DataplanePrepareRequest::for_deploy_plan(
             self.operation_id.clone(),
             plan,
             &self.dataplane_machines,
-            &self.wireguard_peer_endpoints,
         )
     }
 }
@@ -174,7 +167,7 @@ impl DeployContainer {
 
 pub struct DeployExecutionPorts<'a, R, D, N, H, C, A> {
     pub recorder: &'a mut R,
-    pub wireguard_ebpf: &'a mut D,
+    pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
     pub route_state: &'a mut C,

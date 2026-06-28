@@ -1,25 +1,27 @@
+use async_nats::jetstream;
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareError,
-    WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardPeerEndpoint, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    DEFAULT_WIREGUARD_LISTEN_PORT, DataplanePrepareError, DataplanePrepareProviderReport,
+    DataplanePrepareRequest, DataplaneProviderKind, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, WireGuardEbpfComponent, WireGuardEbpfMachineReady,
+    WireGuardEbpfReady, WireGuardPeerEndpoint, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, operation_id, revision_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    WireGuardEbpfPreparer,
+    DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
+    MachineRuntimeUnavailableReason,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
-};
+use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
@@ -315,12 +317,13 @@ async fn nats_machine_preparer_calls_wireguard_ebpf_prepare_service() {
             }
         })
         .await;
-    let mut preparer = NatsMachineWireGuardEbpfPreparer::new(nats.client);
+    let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
 
     let report = preparer
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_a"]))
+        .prepare_dataplane(dataplane_request(&["machine_a"]))
         .await
-        .expect("wireguard ebpf prepare succeeds");
+        .expect("dataplane prepare succeeds");
+    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
     assert_eq!(report.machines, vec![ready_machine("machine_a")]);
 
     assert_eq!(
@@ -333,7 +336,7 @@ async fn nats_machine_preparer_calls_wireguard_ebpf_prepare_service() {
             operation_id: operation_id("op_123"),
             machines: vec![machine_id("machine_a")],
             endpoint_routes: endpoint_routes(&["machine_a"]),
-            peer_endpoints: peer_endpoints(&["machine_a"]),
+            peer_endpoints: Vec::new(),
             peers: Vec::new(),
         }]
     );
@@ -364,12 +367,23 @@ async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
             .await,
         );
     }
-    let mut preparer = NatsMachineWireGuardEbpfPreparer::new(nats.client);
+    nats.machine_observations("machine_a")
+        .await
+        .replace_machine_public_ip(&machine_public_ip("machine_a", 1))
+        .await
+        .expect("machine_a public ip stores");
+    nats.machine_observations("machine_b")
+        .await
+        .replace_machine_public_ip(&machine_public_ip("machine_b", 2))
+        .await
+        .expect("machine_b public ip stores");
+    let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
 
     let report = preparer
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_a", "machine_b"]))
+        .prepare_dataplane(dataplane_request(&["machine_a", "machine_b"]))
         .await
-        .expect("wireguard ebpf prepare succeeds");
+        .expect("dataplane prepare succeeds");
+    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
 
     assert_eq!(
         report.machines,
@@ -419,19 +433,46 @@ async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
 #[tokio::test]
 async fn nats_machine_preparer_maps_missing_responder_to_wireguard_unavailable() {
     let nats = test_nats().await;
-    let mut preparer = NatsMachineWireGuardEbpfPreparer::new(nats.client);
+    let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
 
     let error = preparer
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_missing"]))
+        .prepare_dataplane(dataplane_request(&["machine_missing"]))
         .await
         .expect_err("missing machine responder fails");
 
     assert_eq!(
         error,
-        WireGuardEbpfPrepareError::Unavailable {
+        DataplanePrepareError::Unavailable {
             machine_id: machine_id("machine_missing"),
+            provider: DataplaneProviderKind::PloyzNativeMesh,
             component: WireGuardEbpfComponent::WireGuard,
             message: failure_message("machine runtime has no responders"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_preparer_requires_public_ip_observations_for_multi_machine_mesh() {
+    let nats = test_nats().await;
+    nats.machine_observations("machine_a")
+        .await
+        .replace_machine_public_ip(&machine_public_ip("machine_a", 1))
+        .await
+        .expect("machine_a public ip stores");
+    let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
+
+    let error = preparer
+        .prepare_dataplane(dataplane_request(&["machine_a", "machine_b"]))
+        .await
+        .expect_err("missing public ip observation fails before machine RPC");
+
+    assert_eq!(
+        error,
+        DataplanePrepareError::Unavailable {
+            machine_id: machine_id("machine_b"),
+            provider: DataplaneProviderKind::PloyzNativeMesh,
+            component: WireGuardEbpfComponent::WireGuard,
+            message: failure_message("machine public ip observation for machine_b is missing"),
         }
     );
 }
@@ -573,9 +614,9 @@ async fn start_wireguard_ebpf_prepare_raw_service(
         .iter()
         .find(|endpoint| {
             endpoint.subject
-                == machine_service(&machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare)
+                == machine_service(&machine_id, MachineServiceEndpoint::DataplanePrepare)
         })
-        .expect("wireguard_ebpf.prepare endpoint exists")
+        .expect("dataplane.prepare endpoint exists")
         .clone();
     let mut service = start_nats_service(client.clone(), &spec)
         .await
@@ -586,7 +627,7 @@ async fn start_wireguard_ebpf_prepare_raw_service(
             async move { response }
         })
         .await
-        .expect("bind wireguard_ebpf.prepare endpoint");
+        .expect("bind dataplane.prepare endpoint");
     client.flush().await.expect("flush service subscription");
     service
 }
@@ -735,30 +776,11 @@ fn remove_request(container_id: &str) -> MachineContainerRemoveRpcRequest {
     }
 }
 
-fn wireguard_ebpf_request(machines: &[&str]) -> WireGuardEbpfPrepareRequest {
-    WireGuardEbpfPrepareRequest {
-        operation_id: operation_id("op_123"),
-        machines: machines.iter().map(|machine| machine_id(machine)).collect(),
-        endpoint_routes: endpoint_routes(machines),
-        peer_endpoints: peer_endpoints(machines),
-        peers: Vec::new(),
-    }
-}
-
-fn peer_endpoints(machines: &[&str]) -> Vec<WireGuardPeerEndpoint> {
-    machines
-        .iter()
-        .enumerate()
-        .map(|(index, machine)| {
-            WireGuardPeerEndpoint::new(
-                machine_id(machine),
-                SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, (index + 1) as u8)),
-                    DEFAULT_WIREGUARD_LISTEN_PORT,
-                ),
-            )
-        })
-        .collect()
+fn dataplane_request(machines: &[&str]) -> DataplanePrepareRequest {
+    DataplanePrepareRequest::for_machines(
+        operation_id("op_123"),
+        machines.iter().map(|machine| machine_id(machine)).collect(),
+    )
 }
 
 fn peer_endpoint(machine: &str, last_octet: u8) -> WireGuardPeerEndpoint {
@@ -769,6 +791,13 @@ fn peer_endpoint(machine: &str, last_octet: u8) -> WireGuardPeerEndpoint {
             DEFAULT_WIREGUARD_LISTEN_PORT,
         ),
     )
+}
+
+fn machine_public_ip(machine_id: &str, last_octet: u8) -> MachinePublicIpObservation {
+    MachinePublicIpObservation {
+        machine_id: self::machine_id(machine_id),
+        public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
+    }
 }
 
 fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
@@ -795,9 +824,22 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
+    observations: AsyncNatsObservationStore,
     /// Machine principals: the machine-service stub side.
     machine_a: async_nats::Client,
     machine_b: async_nats::Client,
+}
+
+impl TestNats {
+    async fn machine_observations(&self, machine_id_value: &str) -> AsyncNatsObservationStore {
+        let machine_client = self
+            ._nats
+            .machine_client(&machine_id(machine_id_value))
+            .await;
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
+            .await
+            .expect("open machine observation store")
+    }
 }
 
 async fn test_nats() -> TestNats {
@@ -806,13 +848,18 @@ async fn test_nats() -> TestNats {
         machine_id("machine_b"),
     ])
     .await;
+    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open controller observation store");
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_b = nats.machine_client(&machine_id("machine_b")).await;
 
     TestNats {
         _nats: nats,
         client,
+        observations,
         machine_a,
         machine_b,
     }

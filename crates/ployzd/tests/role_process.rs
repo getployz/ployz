@@ -11,8 +11,8 @@ use ployz_test_support::ids::machine_id;
 use ployzd::app::{ControlWork, DnsWork, GatewayWork, RoleProcessPlan, plan_configured_process};
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, MachineDataplaneConfig, MachineProcessArtifacts, MachineProcessConfig,
-    PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
+    GatewayProcessConfig, MachinePloyzNativeMeshConfig, MachineProcessArtifacts,
+    MachineProcessConfig, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
     PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_MACHINES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
     PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
     PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_MACHINE_PUBLIC_IP_ENV,
@@ -139,7 +139,7 @@ fn machine_process_owns_machine_rpc_and_observations_only() {
             },
         ),
         MachineProcessArtifacts::new("/tmp/ployz-ebpf".into(), "/tmp/ployz-ebpf-ctl".into()),
-        MachineDataplaneConfig::new(
+        MachinePloyzNativeMeshConfig::new(
             "br-ployz".to_owned(),
             "ployz-wg0".to_owned(),
             "10.42.7.0/24".to_owned(),
@@ -283,9 +283,9 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
         config.artifacts.ebpf_ctl_path,
         std::path::PathBuf::from("/tmp/ployz-ebpf-ctl")
     );
-    assert_eq!(config.dataplane.bridge_ifname, "br-ployz");
-    assert_eq!(config.dataplane.wg_ifname, "wg-ployz");
-    assert_eq!(config.dataplane.endpoint_subnet, "10.77.2.0/24");
+    assert_eq!(config.ployz_native_mesh.bridge_ifname, "br-ployz");
+    assert_eq!(config.ployz_native_mesh.wg_ifname, "wg-ployz");
+    assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.77.2.0/24");
     assert_eq!(
         config.public_ip,
         Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
@@ -310,7 +310,7 @@ fn machine_role_derives_endpoint_subnet_from_machine_id() {
     let DaemonProcessConfig::Machine(config) = config else {
         panic!("machine role should produce machine config");
     };
-    assert_eq!(config.dataplane.endpoint_subnet, "10.42.2.0/24");
+    assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.42.2.0/24");
 }
 
 #[test]

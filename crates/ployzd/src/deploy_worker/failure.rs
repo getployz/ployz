@@ -1,4 +1,4 @@
-use ployz_core::dataplane::WireGuardEbpfPrepareError;
+use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, StepId, SubjectTokenError};
 use ployz_core::ops::{
@@ -135,7 +135,7 @@ pub enum DeployExecutionError {
     },
     RecordTransition(DeployOperationRecordError),
     RecordEvidence(DeployOperationRecordError),
-    PrepareWireGuardEbpf(WireGuardEbpfPrepareError),
+    PrepareDataplane(DataplanePrepareError),
     RunContainer(MachineContainerRuntimeError),
     WaitHealthy(DeployHealthCheckError),
     CommitRoute(ActiveRouteCommitError),
@@ -161,7 +161,7 @@ pub enum DeployExecutionError {
 pub enum DeployExecutionStep {
     RecordOperationEvent,
     EnsureEndpointNetwork { machine_id: MachineId },
-    PrepareWireGuardEbpf { machines: Vec<MachineId> },
+    PrepareDataplane { machines: Vec<MachineId> },
     RunContainer { machine_id: MachineId },
     WaitHealthy,
     CommitRoute { route: ployz_core::ops::RouteTarget },
@@ -180,7 +180,7 @@ impl DeployExecutionStep {
         match self {
             Self::RecordOperationEvent => "record_operation_event",
             Self::EnsureEndpointNetwork { .. } => "ensure_endpoint_network",
-            Self::PrepareWireGuardEbpf { .. } => "prepare_wireguard_ebpf",
+            Self::PrepareDataplane { .. } => "prepare_dataplane",
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
             Self::CommitRoute { .. } => "commit_route",
@@ -207,8 +207,8 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("machine runtime", timeout),
                 retained_artifacts,
             },
-            Self::PrepareWireGuardEbpf { machines } => {
-                DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
+            Self::PrepareDataplane { machines } => {
+                DeployOperationFailure::DataplanePrepareTimedOut {
                     machines: machines.clone(),
                     timeout_seconds: timeout_seconds(timeout),
                     retained_artifacts,
@@ -263,9 +263,9 @@ impl From<DeployHealthCheckError> for DeployExecutionError {
     }
 }
 
-impl From<WireGuardEbpfPrepareError> for DeployExecutionError {
-    fn from(value: WireGuardEbpfPrepareError) -> Self {
-        Self::PrepareWireGuardEbpf(value)
+impl From<DataplanePrepareError> for DeployExecutionError {
+    fn from(value: DataplanePrepareError) -> Self {
+        Self::PrepareDataplane(value)
     }
 }
 
@@ -288,9 +288,7 @@ impl DeployExecutionError {
             Self::RecordTransition(_) | Self::RecordEvidence(_) => {
                 Self::record_failure(command, retained_artifacts)
             }
-            Self::PrepareWireGuardEbpf(error) => {
-                wireguard_ebpf_deploy_failure(error, retained_artifacts)
-            }
+            Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
             Self::CommitRoute(error) => error.deploy_failure(command, retained_artifacts),
@@ -323,23 +321,25 @@ impl DeployExecutionError {
     }
 }
 
-fn wireguard_ebpf_deploy_failure(
-    error: &WireGuardEbpfPrepareError,
+fn dataplane_deploy_failure(
+    error: &DataplanePrepareError,
     retained_artifacts: Vec<RetainedArtifact>,
 ) -> DeployOperationFailure {
     match error {
-        WireGuardEbpfPrepareError::Unavailable {
+        DataplanePrepareError::Unavailable {
             machine_id,
+            provider,
             component,
             message,
-        } => DeployOperationFailure::WireGuardEbpfUnavailable {
+        } => DeployOperationFailure::DataplaneUnavailable {
             machine_id: machine_id.clone(),
+            provider: *provider,
             component: *component,
             message: message.clone(),
             retained_artifacts,
         },
-        WireGuardEbpfPrepareError::InvalidReport { message } => {
-            DeployOperationFailure::WireGuardEbpfInvalidReport {
+        DataplanePrepareError::InvalidReport { message } => {
+            DeployOperationFailure::DataplanePrepareInvalidReport {
                 message: message.clone(),
                 retained_artifacts,
             }
@@ -656,13 +656,13 @@ fn retained_artifacts(containers: &[DeployContainer]) -> Vec<RetainedArtifact> {
 
 fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<RetainedArtifact>) {
     let retained_artifacts = match failure {
-        DeployOperationFailure::WireGuardEbpfUnavailable {
+        DeployOperationFailure::DataplaneUnavailable {
             retained_artifacts, ..
         }
-        | DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
+        | DeployOperationFailure::DataplanePrepareTimedOut {
             retained_artifacts, ..
         }
-        | DeployOperationFailure::WireGuardEbpfInvalidReport {
+        | DeployOperationFailure::DataplanePrepareInvalidReport {
             retained_artifacts, ..
         }
         | DeployOperationFailure::RuntimeUnavailable {

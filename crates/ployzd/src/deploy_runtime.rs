@@ -2,15 +2,12 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
-    DeployCommandPreparationError, DeployContainer, DeployExecutionError,
+    DataplanePreparer, DeployCommandPreparationError, DeployContainer, DeployExecutionError,
     DeployExecutionMachineScope, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
-    DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, WireGuardEbpfPreparer,
-    execute_deploy_operation, load_deploy_execution_facts_from_nats,
-    prepare_deploy_execution_command,
+    DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, execute_deploy_operation,
+    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
-use crate::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
-};
+use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
@@ -35,7 +32,7 @@ pub async fn run_deploy_operation<D, N, H>(
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
-    D: WireGuardEbpfPreparer,
+    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
 {
@@ -45,7 +42,7 @@ where
         controllers,
     } = stores;
     let DeployOperationPorts {
-        wireguard_ebpf,
+        dataplane,
         machine_runtime,
         health_checker,
     } = ports;
@@ -100,7 +97,7 @@ where
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf,
+            dataplane,
             machine_runtime,
             health_checker,
             route_state: &mut route_state,
@@ -152,7 +149,7 @@ pub struct DeployOperationStores {
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
-    pub wireguard_ebpf: &'a mut D,
+    pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
 }
@@ -224,8 +221,9 @@ impl DeployOperationRuntime {
             return Err(DeployOperationRunError::AlreadyStarted);
         }
 
-        let mut wireguard_ebpf = NatsMachineWireGuardEbpfPreparer::new(self.client.clone())
-            .with_request_timeout(self.step_timeout);
+        let mut dataplane =
+            NatsMachineDataplanePreparer::new(self.client.clone(), self.observations.clone())
+                .with_request_timeout(self.step_timeout);
         let mut machine_runtime = NatsMachineContainerRuntime::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
         let mut health_checker =
@@ -240,7 +238,7 @@ impl DeployOperationRuntime {
                 controllers: self.controllers,
             },
             DeployOperationPorts {
-                wireguard_ebpf: &mut wireguard_ebpf,
+                dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,
             },
