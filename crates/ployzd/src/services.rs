@@ -121,7 +121,7 @@ pub fn machine_runtime_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
         ],
     )
@@ -154,7 +154,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerRun => "machine.container.run",
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
-        MachineServiceEndpoint::WireGuardEbpfPrepare => "machine.wireguard_ebpf.prepare",
+        MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",
         MachineServiceEndpoint::LogsTail => "machine.logs.tail",
     }
 }

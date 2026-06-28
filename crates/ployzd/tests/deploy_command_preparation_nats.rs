@@ -1,5 +1,4 @@
 use async_nats::jetstream;
-use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, WireGuardPeerEndpoint};
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
 };
@@ -12,7 +11,7 @@ use ployz_core::machine_runtime::{
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService, MachinePublicIpObservation,
+    ExpectedActiveService,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -24,7 +23,6 @@ use ployzd::deploy_worker::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 #[tokio::test]
@@ -76,15 +74,6 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ))
         .await
         .expect("machine_b observations store");
-    observations
-        .replace_machine_public_ip(&machine_public_ip("machine_a", 1))
-        .await
-        .expect("machine_a public ip stores");
-    machine_b_observations
-        .replace_machine_public_ip(&machine_public_ip("machine_b", 2))
-        .await
-        .expect("machine_b public ip stores");
-
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
@@ -126,13 +115,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ]
     );
     assert_eq!(command.step_timeout(), Duration::from_secs(7));
-    assert_eq!(
-        command.wireguard_peer_endpoints(),
-        [
-            wireguard_peer_endpoint("machine_a", 1),
-            wireguard_peer_endpoint("machine_b", 2)
-        ]
-    );
+    assert!(command.dataplane_machines().is_empty());
 }
 
 #[tokio::test]
@@ -157,11 +140,6 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         ))
         .await
         .expect("edge observations store");
-    edge_observations
-        .replace_machine_public_ip(&machine_public_ip("edge_2", 7))
-        .await
-        .expect("edge public ip stores");
-
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
@@ -180,10 +158,7 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
             container_id: container_id("ctr_target")
         }]
     );
-    assert_eq!(
-        command.wireguard_peer_endpoints(),
-        [wireguard_peer_endpoint("edge_2", 7)]
-    );
+    assert!(command.dataplane_machines().is_empty());
 }
 
 #[tokio::test]
@@ -194,17 +169,6 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    nats.machine_observations("core_1")
-        .await
-        .replace_machine_public_ip(&machine_public_ip("core_1", 1))
-        .await
-        .expect("core public ip stores");
-    nats.machine_observations("edge_2")
-        .await
-        .replace_machine_public_ip(&machine_public_ip("edge_2", 2))
-        .await
-        .expect("edge public ip stores");
-
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
@@ -217,22 +181,12 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 
     assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
     assert_eq!(command.dataplane_machines(), [machine_id("edge_2")]);
-    assert_eq!(
-        command.wireguard_peer_endpoints(),
-        [wireguard_peer_endpoint("edge_2", 2)]
-    );
 }
 
 #[tokio::test]
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    nats.machine_observations("core_1")
-        .await
-        .replace_machine_public_ip(&machine_public_ip("core_1", 1))
-        .await
-        .expect("core public ip stores");
-
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
@@ -245,41 +199,28 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
 
     assert_eq!(command.eligible_machines(), [machine_id("core_1")]);
     assert_eq!(command.dataplane_machines(), [machine_id("core_1")]);
-    assert_eq!(
-        command.wireguard_peer_endpoints(),
-        [wireguard_peer_endpoint("core_1", 1)]
-    );
 }
 
 #[tokio::test]
-async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
+async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    nats.machine_observations("core_1")
-        .await
-        .replace_machine_public_ip(&machine_public_ip("core_1", 1))
-        .await
-        .expect("core public ip stores");
 
-    let error = load_deploy_execution_facts_from_nats(
-        &routed_deploy_request(),
+    let command = prepare_command_from_nats(
+        operation_id("op_123"),
+        routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
     )
-    .await
-    .expect_err("missing active dataplane public ip is rejected");
+    .await;
 
-    assert!(matches!(
-        error,
-        DeployFactLoadError::MissingMachinePublicIpObservation { machine_id }
-            if machine_id == self::machine_id("edge_2")
-    ));
+    assert_eq!(command.dataplane_machines(), [machine_id("edge_2")]);
 }
 
 #[tokio::test]
@@ -508,23 +449,6 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
         name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
     }
-}
-
-fn machine_public_ip(machine_id: &str, last_octet: u8) -> MachinePublicIpObservation {
-    MachinePublicIpObservation {
-        machine_id: self::machine_id(machine_id),
-        public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
-    }
-}
-
-fn wireguard_peer_endpoint(machine_id: &str, last_octet: u8) -> WireGuardPeerEndpoint {
-    WireGuardPeerEndpoint::new(
-        self::machine_id(machine_id),
-        SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
-            DEFAULT_WIREGUARD_LISTEN_PORT,
-        ),
-    )
 }
 
 fn cleanup_container(

@@ -1,8 +1,8 @@
 //! Request-side NATS adapters for machine-local services.
 
 use crate::deploy_worker::{
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    WireGuardEbpfPreparer,
+    DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
+    MachineRuntimeUnavailableReason,
 };
 use crate::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest, MachineContainerRpcOk,
@@ -17,12 +17,16 @@ use crate::machine_runtime::protocol::{
 };
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareError,
-    WireGuardEbpfPrepareReport, WireGuardEbpfPrepareReportError, WireGuardEbpfPrepareRequest,
-    WireGuardPeer, WireGuardPublicKey,
+    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember, DataplanePrepareError,
+    DataplanePrepareProviderReport, DataplanePrepareRequest, WireGuardEbpfComponent,
+    WireGuardEbpfMachineReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport,
+    WireGuardEbpfPrepareReportError, WireGuardEbpfPrepareRequest, WireGuardPeer,
+    WireGuardPeerEndpoint, WireGuardPublicKey,
 };
 use ployz_core::ids::MachineId;
+use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
@@ -40,8 +44,9 @@ pub struct NatsMachineContainerRuntime {
 }
 
 #[derive(Debug, Clone)]
-pub struct NatsMachineWireGuardEbpfPreparer {
+pub struct NatsMachineDataplanePreparer {
     client: async_nats::Client,
+    observations: AsyncNatsObservationStore,
     request_timeout: Duration,
 }
 
@@ -150,11 +155,12 @@ impl NatsMachineLogsTailer {
     }
 }
 
-impl NatsMachineWireGuardEbpfPreparer {
+impl NatsMachineDataplanePreparer {
     #[must_use]
-    pub fn new(client: async_nats::Client) -> Self {
+    pub fn new(client: async_nats::Client, observations: AsyncNatsObservationStore) -> Self {
         Self {
             client,
+            observations,
             request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
     }
@@ -405,9 +411,78 @@ impl MachineContainerStopDomainError {
     }
 }
 
-impl WireGuardEbpfPreparer for NatsMachineWireGuardEbpfPreparer {
-    async fn prepare_wireguard_ebpf(
+impl DataplanePreparer for NatsMachineDataplanePreparer {
+    async fn prepare_dataplane(
         &mut self,
+        request: DataplanePrepareRequest,
+    ) -> Result<DataplanePrepareProviderReport, DataplanePrepareError> {
+        let request = self
+            .ployz_native_mesh_prepare_request(request)
+            .await
+            .map_err(DataplanePrepareError::from)?;
+        let report = self
+            .prepare_ployz_native_mesh(request)
+            .await
+            .map_err(DataplanePrepareError::from)?;
+        Ok(DataplanePrepareProviderReport::PloyzNativeMesh(report))
+    }
+}
+
+impl NatsMachineDataplanePreparer {
+    async fn ployz_native_mesh_prepare_request(
+        &self,
+        request: DataplanePrepareRequest,
+    ) -> Result<WireGuardEbpfPrepareRequest, WireGuardEbpfPrepareError> {
+        let peer_endpoints = self
+            .load_wireguard_peer_endpoints(&request.membership)
+            .await?;
+        Ok(WireGuardEbpfPrepareRequest::from_dataplane_request(
+            request,
+            peer_endpoints,
+        ))
+    }
+
+    async fn load_wireguard_peer_endpoints(
+        &self,
+        membership: &[DataplaneMember],
+    ) -> Result<Vec<WireGuardPeerEndpoint>, WireGuardEbpfPrepareError> {
+        if membership.len() < 2 {
+            return Ok(Vec::new());
+        }
+
+        let public_ips = self
+            .observations
+            .machine_public_ips()
+            .await
+            .map_err(|error| {
+                invalid_ployz_native_mesh_report(format!(
+                    "machine public ip observations could not be read: {error}"
+                ))
+            })?;
+        let mut endpoints = Vec::new();
+        for member in membership {
+            let observation = public_ips
+                .iter()
+                .find(|observation| observation.machine_id == member.machine_id)
+                .cloned()
+                .ok_or_else(|| {
+                    ployz_native_mesh_unavailable(
+                        &member.machine_id,
+                        ployz_core::ops::FailureMessage::try_new(format!(
+                            "machine public ip observation for {} is missing",
+                            member.machine_id.as_str()
+                        ))
+                        .expect("generated dataplane failure message is non-empty"),
+                    )
+                })?;
+            endpoints.push(peer_endpoint_from_public_ip(member, observation));
+        }
+        endpoints.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+        Ok(endpoints)
+    }
+
+    async fn prepare_ployz_native_mesh(
+        &self,
         request: WireGuardEbpfPrepareRequest,
     ) -> Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError> {
         let peers = if request.peers.is_empty() && request.machines.len() > 1 {
@@ -432,7 +507,21 @@ impl WireGuardEbpfPreparer for NatsMachineWireGuardEbpfPreparer {
         .await?;
 
         WireGuardEbpfPrepareReport::for_request(&final_request, machines)
-            .map_err(wireguard_ebpf_report_error)
+            .map_err(ployz_native_mesh_report_error)
+    }
+}
+
+fn peer_endpoint_from_public_ip(
+    member: &DataplaneMember,
+    observation: MachinePublicIpObservation,
+) -> WireGuardPeerEndpoint {
+    WireGuardPeerEndpoint {
+        machine_id: observation.machine_id,
+        endpoint_subnet: member.endpoint_subnet.as_string(),
+        public_endpoint: std::net::SocketAddr::new(
+            observation.public_ip,
+            DEFAULT_WIREGUARD_LISTEN_PORT,
+        ),
     }
 }
 
@@ -465,7 +554,7 @@ fn wireguard_peers_from_public_keys(
             .find(|endpoint| endpoint.machine_id == *machine_id)
             .cloned()
         else {
-            return Err(invalid_wireguard_report(format!(
+            return Err(invalid_ployz_native_mesh_report(format!(
                 "wireguard endpoint is missing for {}",
                 machine_id.as_str()
             )));
@@ -474,7 +563,7 @@ fn wireguard_peers_from_public_keys(
             .iter()
             .find(|(ready_machine_id, _)| ready_machine_id == machine_id)
         else {
-            return Err(invalid_wireguard_report(format!(
+            return Err(invalid_ployz_native_mesh_report(format!(
                 "wireguard public key is missing for {}",
                 machine_id.as_str()
             )));
@@ -486,11 +575,11 @@ fn wireguard_peers_from_public_keys(
 }
 
 async fn read_machine_wireguard_public_key(
-    preparer: &NatsMachineWireGuardEbpfPreparer,
+    preparer: &NatsMachineDataplanePreparer,
     machine_id: &MachineId,
     request: &MachineWireGuardEbpfPrepareRpcRequest,
 ) -> Result<(MachineId, WireGuardPublicKey), WireGuardEbpfPrepareError> {
-    let subject = machine_service(machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare);
+    let subject = machine_service(machine_id, MachineServiceEndpoint::DataplanePrepare);
     let response = request_json::<_, MachineWireGuardEbpfPrepareRpcResponse>(
         &preparer.client,
         subject,
@@ -498,21 +587,21 @@ async fn read_machine_wireguard_public_key(
         preparer.request_timeout,
     )
     .await
-    .map_err(|error| wireguard_ebpf_request_error(machine_id, error))?;
+    .map_err(|error| ployz_native_mesh_request_error(machine_id, error))?;
 
     match response {
         MachineWireGuardEbpfPrepareRpcResponse::PublicKey {
             machine_id: actual_machine_id,
             public_key,
         } => match wrong_response_machine(machine_id, actual_machine_id.clone()) {
-            Some(reason) => Err(wireguard_ebpf_unavailable(
+            Some(reason) => Err(ployz_native_mesh_unavailable(
                 machine_id,
                 reason.failure_message(),
             )),
             None => Ok((actual_machine_id, public_key)),
         },
         MachineWireGuardEbpfPrepareRpcResponse::Ok { .. } => {
-            Err(invalid_wireguard_report(format!(
+            Err(invalid_ployz_native_mesh_report(format!(
                 "machine {} returned dataplane readiness for public key request",
                 machine_id.as_str()
             )))
@@ -521,7 +610,7 @@ async fn read_machine_wireguard_public_key(
             machine_id: actual_machine_id,
             error,
         } => match wrong_response_machine(machine_id, actual_machine_id) {
-            Some(reason) => Err(wireguard_ebpf_unavailable(
+            Some(reason) => Err(ployz_native_mesh_unavailable(
                 machine_id,
                 reason.failure_message(),
             )),
@@ -531,11 +620,11 @@ async fn read_machine_wireguard_public_key(
 }
 
 async fn prepare_machine_wireguard_ebpf(
-    preparer: &NatsMachineWireGuardEbpfPreparer,
+    preparer: &NatsMachineDataplanePreparer,
     machine_id: &MachineId,
     request: &MachineWireGuardEbpfPrepareRpcRequest,
 ) -> Result<WireGuardEbpfMachineReady, WireGuardEbpfPrepareError> {
-    let subject = machine_service(machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare);
+    let subject = machine_service(machine_id, MachineServiceEndpoint::DataplanePrepare);
     let response = request_json::<_, MachineWireGuardEbpfPrepareRpcResponse>(
         &preparer.client,
         subject,
@@ -543,12 +632,12 @@ async fn prepare_machine_wireguard_ebpf(
         preparer.request_timeout,
     )
     .await
-    .map_err(|error| wireguard_ebpf_request_error(machine_id, error))?;
+    .map_err(|error| ployz_native_mesh_request_error(machine_id, error))?;
 
     match response {
         MachineWireGuardEbpfPrepareRpcResponse::Ok { readiness } => {
             match wrong_response_machine(machine_id, readiness.machine_id.clone()) {
-                Some(reason) => Err(wireguard_ebpf_unavailable(
+                Some(reason) => Err(ployz_native_mesh_unavailable(
                     machine_id,
                     reason.failure_message(),
                 )),
@@ -556,7 +645,7 @@ async fn prepare_machine_wireguard_ebpf(
             }
         }
         MachineWireGuardEbpfPrepareRpcResponse::PublicKey { .. } => {
-            Err(invalid_wireguard_report(format!(
+            Err(invalid_ployz_native_mesh_report(format!(
                 "machine {} returned public key for dataplane prepare request",
                 machine_id.as_str()
             )))
@@ -565,7 +654,7 @@ async fn prepare_machine_wireguard_ebpf(
             machine_id: actual_machine_id,
             error,
         } => match wrong_response_machine(machine_id, actual_machine_id) {
-            Some(reason) => Err(wireguard_ebpf_unavailable(
+            Some(reason) => Err(ployz_native_mesh_unavailable(
                 machine_id,
                 reason.failure_message(),
             )),
@@ -653,14 +742,14 @@ fn machine_service_failure_reason(error: NatsServiceError) -> MachineRuntimeUnav
     }
 }
 
-fn wireguard_ebpf_request_error(
+fn ployz_native_mesh_request_error(
     machine_id: &MachineId,
     error: NatsJsonServiceRequestError,
 ) -> WireGuardEbpfPrepareError {
-    wireguard_ebpf_unavailable(machine_id, unavailable_reason(error).failure_message())
+    ployz_native_mesh_unavailable(machine_id, unavailable_reason(error).failure_message())
 }
 
-fn wireguard_ebpf_unavailable(
+fn ployz_native_mesh_unavailable(
     machine_id: &MachineId,
     message: ployz_core::ops::FailureMessage,
 ) -> WireGuardEbpfPrepareError {
@@ -671,7 +760,7 @@ fn wireguard_ebpf_unavailable(
     }
 }
 
-fn wireguard_ebpf_report_error(
+fn ployz_native_mesh_report_error(
     error: WireGuardEbpfPrepareReportError,
 ) -> WireGuardEbpfPrepareError {
     let message = match error {
@@ -689,7 +778,7 @@ fn wireguard_ebpf_report_error(
     }
 }
 
-fn invalid_wireguard_report(message: String) -> WireGuardEbpfPrepareError {
+fn invalid_ployz_native_mesh_report(message: String) -> WireGuardEbpfPrepareError {
     WireGuardEbpfPrepareError::InvalidReport {
         message: ployz_core::ops::FailureMessage::try_new(message)
             .expect("generated dataplane failure message is non-empty"),

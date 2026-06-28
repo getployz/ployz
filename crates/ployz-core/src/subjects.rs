@@ -155,9 +155,9 @@ pub fn op_deploy_running(operation_id: &OperationId, stage: DeployRunningStage) 
 }
 
 #[must_use]
-pub fn op_deploy_wireguard_ebpf_prepared(operation_id: &OperationId) -> String {
+pub fn op_deploy_dataplane_prepared(operation_id: &OperationId) -> String {
     format!(
-        "plz.v1.op.{}.deploy.wireguard_ebpf.prepared",
+        "plz.v1.op.{}.deploy.dataplane.prepared",
         operation_id.as_str()
     )
 }
@@ -325,7 +325,7 @@ impl DeployRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
         match self {
-            Self::PreparingWireGuardEbpf => "preparing_wireguard_ebpf",
+            Self::PreparingDataplane => "preparing_dataplane",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
             Self::RouteCutover => "route_cutover",
@@ -366,7 +366,7 @@ pub enum MachineServiceEndpoint {
     ContainerRun,
     ContainerStop,
     ContainerRemove,
-    WireGuardEbpfPrepare,
+    DataplanePrepare,
     LogsTail,
 }
 
@@ -379,7 +379,7 @@ impl MachineServiceEndpoint {
             Self::ContainerRun => "container.run",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
-            Self::WireGuardEbpfPrepare => "wireguard_ebpf.prepare",
+            Self::DataplanePrepare => "dataplane.prepare",
             Self::LogsTail => "logs.tail",
         }
     }

@@ -20,7 +20,7 @@ async fn operation_repository_records_container_started_without_state_change() {
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await
@@ -90,7 +90,7 @@ async fn operation_repository_records_health_check_started_without_state_change(
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await

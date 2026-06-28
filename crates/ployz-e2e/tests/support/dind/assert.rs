@@ -275,23 +275,26 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
             Box::new(|event| matches!(event, OperationEvent::DeployPlanCreated { .. })),
         ),
         (
-            "running:preparing-wireguard-ebpf",
+            "running:preparing-dataplane",
             Box::new(|event| {
                 matches!(
                     event,
                     OperationEvent::DeployRunning {
-                        stage: DeployRunningStage::PreparingWireGuardEbpf,
+                        stage: DeployRunningStage::PreparingDataplane,
                         ..
                     }
                 )
             }),
         ),
         (
-            "wireguard-ebpf-prepared-on-both-machines",
+            "dataplane-prepared-on-both-machines",
             Box::new(|event| {
                 matches!(
                     event,
-                    OperationEvent::DeployWireGuardEbpfPrepared { report, .. }
+                    OperationEvent::DeployDataplanePrepared {
+                        report: ployz_core::dataplane::DataplanePrepareProviderReport::PloyzNativeMesh(report),
+                        ..
+                    }
                         if report
                             .machines
                             .iter()

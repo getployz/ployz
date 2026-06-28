@@ -91,7 +91,7 @@ pub fn load_daemon_process_config(
                 load_ebpf_bytecode_path(&env),
                 load_ebpf_ctl_path(&env),
             );
-            let dataplane = MachineDataplaneConfig::new(
+            let ployz_native_mesh = MachinePloyzNativeMeshConfig::new(
                 load_dataplane_bridge_ifname(&env),
                 load_dataplane_wg_ifname(&env),
                 load_dataplane_endpoint_subnet(&env, machine_id),
@@ -100,7 +100,7 @@ pub fn load_daemon_process_config(
                 machine_id.clone(),
                 connect,
                 artifacts,
-                dataplane,
+                ployz_native_mesh,
                 load_machine_public_ip(&env)?,
             )))
         }
@@ -647,7 +647,7 @@ pub struct MachineProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
     pub artifacts: MachineProcessArtifacts,
-    pub dataplane: MachineDataplaneConfig,
+    pub ployz_native_mesh: MachinePloyzNativeMeshConfig,
     pub public_ip: Option<IpAddr>,
 }
 
@@ -668,13 +668,13 @@ impl MachineProcessArtifacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineDataplaneConfig {
+pub struct MachinePloyzNativeMeshConfig {
     pub bridge_ifname: String,
     pub wg_ifname: String,
     pub endpoint_subnet: String,
 }
 
-impl MachineDataplaneConfig {
+impl MachinePloyzNativeMeshConfig {
     #[must_use]
     pub fn new(bridge_ifname: String, wg_ifname: String, endpoint_subnet: String) -> Self {
         Self {
@@ -691,14 +691,14 @@ impl MachineProcessConfig {
         machine_id: MachineId,
         nats: RoleNatsConnect,
         artifacts: MachineProcessArtifacts,
-        dataplane: MachineDataplaneConfig,
+        ployz_native_mesh: MachinePloyzNativeMeshConfig,
         public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
             machine_id,
             nats,
             artifacts,
-            dataplane,
+            ployz_native_mesh,
             public_ip,
         }
     }

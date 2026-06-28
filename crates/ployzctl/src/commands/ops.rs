@@ -261,7 +261,7 @@ const fn deploy_completion_outcome(
 
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
-        DeployRunningStage::PreparingWireGuardEbpf => "running:preparing-wireguard-ebpf",
+        DeployRunningStage::PreparingDataplane => "running:preparing-dataplane",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::RouteCutover => "running:route-cutover",
@@ -349,7 +349,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployRunning { .. } => "deploy.running",
         OperationEvent::DeployContainerStarted { .. } => "deploy.container_started",
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
-        OperationEvent::DeployWireGuardEbpfPrepared { .. } => "deploy.wireguard_ebpf_prepared",
+        OperationEvent::DeployDataplanePrepared { .. } => "deploy.dataplane_prepared",
         OperationEvent::DeployCleanupFinished { .. } => "deploy.cleanup_finished",
         OperationEvent::DeployCompleted { .. } => "deploy.completed",
         OperationEvent::DeployFailed { .. } => "deploy.failed",

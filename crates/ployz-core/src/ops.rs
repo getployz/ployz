@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
-use crate::dataplane::{WireGuardEbpfComponent, WireGuardEbpfPrepareReport};
+use crate::dataplane::{
+    DataplanePrepareProviderReport, DataplaneProviderKind, WireGuardEbpfComponent,
+};
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
     CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, SubjectToken,
@@ -46,8 +48,7 @@ pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
-    #[serde(rename = "preparing_wireguard_ebpf")]
-    PreparingWireGuardEbpf,
+    PreparingDataplane,
     StartingContainers,
     WaitingForHealth,
     RouteCutover,
@@ -157,21 +158,19 @@ pub enum DeployOperationFailure {
         revision_id: RevisionId,
         reason: ArtifactUnavailableReason,
     },
-    #[serde(rename = "wireguard_ebpf_unavailable")]
-    WireGuardEbpfUnavailable {
+    DataplaneUnavailable {
         machine_id: MachineId,
+        provider: DataplaneProviderKind,
         component: WireGuardEbpfComponent,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
-    #[serde(rename = "wireguard_ebpf_preparation_timed_out")]
-    WireGuardEbpfPreparationTimedOut {
+    DataplanePrepareTimedOut {
         machines: Vec<MachineId>,
         timeout_seconds: u32,
         retained_artifacts: Vec<RetainedArtifact>,
     },
-    #[serde(rename = "wireguard_ebpf_invalid_report")]
-    WireGuardEbpfInvalidReport {
+    DataplanePrepareInvalidReport {
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
@@ -425,8 +424,8 @@ pub enum DeployEvidence {
     PlanCreated {
         plan: DeployPlan,
     },
-    WireGuardEbpfPrepared {
-        report: WireGuardEbpfPrepareReport,
+    DataplanePrepared {
+        report: DataplanePrepareProviderReport,
     },
     ContainerStarted {
         machine_id: MachineId,
@@ -479,7 +478,7 @@ impl DeployEvidence {
                 operation_id: operation_id.clone(),
                 plan: plan.clone(),
             },
-            Self::WireGuardEbpfPrepared { report } => OperationEvent::DeployWireGuardEbpfPrepared {
+            Self::DataplanePrepared { report } => OperationEvent::DeployDataplanePrepared {
                 operation_id: operation_id.clone(),
                 report: report.clone(),
             },

@@ -84,7 +84,7 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
-        MachineServiceEndpoint::WireGuardEbpfPrepare,
+        MachineServiceEndpoint::DataplanePrepare,
         preparer,
         handle_wireguard_ebpf_prepare,
     )

@@ -1,7 +1,8 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    DataplanePrepareProviderReport, DataplaneProviderKind, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, WireGuardEbpfComponent, WireGuardEbpfMachineReady,
+    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ops::{
@@ -29,51 +30,53 @@ fn operation_state_serializes_with_stable_wire_names() {
 }
 
 #[test]
-fn wireguard_ebpf_running_stage_has_stable_wire_name() {
+fn dataplane_running_stage_has_stable_wire_name() {
     let state = DeployOperationState::Running {
-        stage: DeployRunningStage::PreparingWireGuardEbpf,
+        stage: DeployRunningStage::PreparingDataplane,
     };
 
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
-        r#"{"state":"running","stage":"preparing_wireguard_ebpf"}"#
+        r#"{"state":"running","stage":"preparing_dataplane"}"#
     );
 }
 
 #[test]
-fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
-    let event = OperationEvent::DeployWireGuardEbpfPrepared {
+fn dataplane_prepared_event_has_stable_wire_shape() {
+    let event = OperationEvent::DeployDataplanePrepared {
         operation_id: operation_id("op_123"),
-        report: WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
-            machine_id: machine_id("machine_7"),
-            ready: WireGuardEbpfReady {
-                wireguard: WireGuardReady {
-                    public_key: wireguard_public_key("test-public-key"),
-                    evidence: vec![WireGuardReadyEvidence::Command {
-                        program: "wg".to_owned(),
-                        args: vec!["--version".to_owned()],
-                    }],
+        report: DataplanePrepareProviderReport::PloyzNativeMesh(
+            WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
+                machine_id: machine_id("machine_7"),
+                ready: WireGuardEbpfReady {
+                    wireguard: WireGuardReady {
+                        public_key: wireguard_public_key("test-public-key"),
+                        evidence: vec![WireGuardReadyEvidence::Command {
+                            program: "wg".to_owned(),
+                            args: vec!["--version".to_owned()],
+                        }],
+                    },
+                    ebpf_forwarding: EbpfForwardingReady {
+                        evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                            path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                            symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                        }],
+                    },
                 },
-                ebpf_forwarding: EbpfForwardingReady {
-                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                        symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                    }],
-                },
-            },
-        }])
-        .expect("valid report"),
+            }])
+            .expect("valid report"),
+        ),
     };
 
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
         concat!(
-            r#"{"event":"deploy_wireguard_ebpf_prepared","operation_id":"op_123","#,
-            r#""report":{"machines":[{"machine_id":"machine_7","#,
+            r#"{"event":"deploy_dataplane_prepared","operation_id":"op_123","#,
+            r#""report":{"provider":"ployz_native_mesh","report":{"machines":[{"machine_id":"machine_7","#,
             r#""wireguard":{"public_key":"test-public-key","evidence":[{"kind":"command","program":"wg","args":["--version"]}]},"#,
             r#""ebpf_forwarding":{"evidence":[{"kind":"ployz_tc_bytecode","#,
             r#""path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc","#,
-            r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}"#
+            r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}}"#
         )
     );
 }
@@ -156,9 +159,10 @@ fn retained_artifact_carries_variant_specific_failure_data() {
 }
 
 #[test]
-fn wireguard_ebpf_failures_are_distinct_from_runtime_failures() {
-    let failure = DeployOperationFailure::WireGuardEbpfUnavailable {
+fn dataplane_failures_are_distinct_from_runtime_failures() {
+    let failure = DeployOperationFailure::DataplaneUnavailable {
         machine_id: machine_id("machine_7"),
+        provider: DataplaneProviderKind::PloyzNativeMesh,
         component: WireGuardEbpfComponent::EbpfForwarding,
         message: failure_message("bpf route install failed"),
         retained_artifacts: Vec::new(),
@@ -166,13 +170,13 @@ fn wireguard_ebpf_failures_are_distinct_from_runtime_failures() {
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"wireguard_ebpf_unavailable","machine_id":"machine_7","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
+        r#"{"kind":"dataplane_unavailable","machine_id":"machine_7","provider":"ployz_native_mesh","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
     );
 }
 
 #[test]
-fn wireguard_ebpf_timeout_failures_keep_machine_scope() {
-    let failure = DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
+fn dataplane_timeout_failures_keep_machine_scope() {
+    let failure = DeployOperationFailure::DataplanePrepareTimedOut {
         machines: vec![machine_id("machine_7"), machine_id("machine_8")],
         timeout_seconds: 30,
         retained_artifacts: Vec::new(),
@@ -180,7 +184,7 @@ fn wireguard_ebpf_timeout_failures_keep_machine_scope() {
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"wireguard_ebpf_preparation_timed_out","machines":["machine_7","machine_8"],"timeout_seconds":30,"retained_artifacts":[]}"#
+        r#"{"kind":"dataplane_prepare_timed_out","machines":["machine_7","machine_8"],"timeout_seconds":30,"retained_artifacts":[]}"#
     );
 }
 

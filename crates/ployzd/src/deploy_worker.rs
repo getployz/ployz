@@ -27,8 +27,8 @@ pub use failure::{
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
-    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DeployHealthChecker,
-    DeployOperationRecorder, MachineContainerRuntime, WireGuardEbpfPreparer,
+    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DataplanePreparer,
+    DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
@@ -51,7 +51,7 @@ pub async fn execute_deploy_operation<R, D, N, H, C, A>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
-    D: WireGuardEbpfPreparer,
+    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: ActiveRouteCommitter,
@@ -122,7 +122,7 @@ async fn execute_deploy<R, D, N, H, C, A>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
-    D: WireGuardEbpfPreparer,
+    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: ActiveRouteCommitter,
@@ -150,20 +150,20 @@ where
     record_running_stage(
         command,
         &mut *ports.recorder,
-        DeployRunningStage::PreparingWireGuardEbpf,
+        DeployRunningStage::PreparingDataplane,
     )
     .await
     .map_err(|source| run.fail(source))?;
     ensure_endpoint_networks(command, &plan, &mut *ports.machine_runtime)
         .await
         .map_err(|source| run.fail(source))?;
-    let dataplane = prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
+    let dataplane = prepare_dataplane(command, &plan, &mut *ports.dataplane)
         .await
         .map_err(|source| run.fail(source))?;
     record_evidence(
         command,
         &mut *ports.recorder,
-        DeployEvidence::WireGuardEbpfPrepared { report: dataplane },
+        DeployEvidence::DataplanePrepared { report: dataplane },
     )
     .await
     .map_err(|source| run.fail(source))?;
@@ -575,21 +575,21 @@ where
     }
 }
 
-async fn prepare_wireguard_ebpf<D>(
+async fn prepare_dataplane<D>(
     command: &DeployExecutionCommand,
     plan: &DeployPlan,
-    wireguard_ebpf: &mut D,
-) -> Result<ployz_core::dataplane::WireGuardEbpfPrepareReport, DeployExecutionError>
+    dataplane: &mut D,
+) -> Result<ployz_core::dataplane::DataplanePrepareProviderReport, DeployExecutionError>
 where
-    D: WireGuardEbpfPreparer,
+    D: DataplanePreparer,
 {
-    let request = command.wireguard_ebpf_prepare_request(plan);
+    let request = command.dataplane_prepare_request(plan);
     with_step_timeout(
         command,
-        DeployExecutionStep::PrepareWireGuardEbpf {
-            machines: request.machines.clone(),
+        DeployExecutionStep::PrepareDataplane {
+            machines: request.machines(),
         },
-        wireguard_ebpf.prepare_wireguard_ebpf(request),
+        dataplane.prepare_dataplane(request),
     )
     .await
 }
@@ -602,8 +602,9 @@ async fn ensure_endpoint_networks<N>(
 where
     N: MachineContainerRuntime,
 {
-    let request = command.wireguard_ebpf_prepare_request(plan);
-    for machine_id in request.machines {
+    let request = command.dataplane_prepare_request(plan);
+    for member in request.membership {
+        let machine_id = member.machine_id;
         let network_request = MachineEnsureEndpointNetworkRpcRequest {
             operation_id: command.operation_id.clone(),
         };
