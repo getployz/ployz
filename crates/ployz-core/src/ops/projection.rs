@@ -68,8 +68,8 @@ enum EvidenceRequirement {
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
         DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
-        DeployEvidence::WireGuardEbpfPrepared { .. } => {
-            EvidenceRequirement::RunningStage(DeployRunningStage::PreparingWireGuardEbpf)
+        DeployEvidence::DataplanePrepared { .. } => {
+            EvidenceRequirement::RunningStage(DeployRunningStage::PreparingDataplane)
         }
         DeployEvidence::ContainerStarted { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::StartingContainers)
@@ -832,7 +832,7 @@ fn deploy_transition_allowed(
         (
             DeployOperationState::Planning,
             DeployOperationState::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         ) => true,
         (
@@ -850,7 +850,7 @@ fn deploy_transition_allowed(
 
 fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
-        DeployRunningStage::PreparingWireGuardEbpf => 0,
+        DeployRunningStage::PreparingDataplane => 0,
         DeployRunningStage::StartingContainers => 1,
         DeployRunningStage::WaitingForHealth => 2,
         DeployRunningStage::RouteCutover => 3,
@@ -863,7 +863,7 @@ fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningSta
     matches!(
         (current, attempted),
         (
-            DeployRunningStage::PreparingWireGuardEbpf,
+            DeployRunningStage::PreparingDataplane,
             DeployRunningStage::StartingContainers
         ) | (
             DeployRunningStage::StartingContainers,

@@ -1,15 +1,187 @@
-//! WireGuard/eBPF preparation models.
+//! Dataplane preparation models.
 
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use crate::deploy::DeployPlan;
 use crate::ids::{MachineId, OperationId};
 use crate::ops::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataplanePrepareRequest {
+    pub operation_id: OperationId,
+    pub membership: Vec<DataplaneMember>,
+}
+
+impl DataplanePrepareRequest {
+    #[must_use]
+    pub fn for_deploy_plan(
+        operation_id: OperationId,
+        plan: &DeployPlan,
+        dataplane_machines: &[MachineId],
+    ) -> Self {
+        let machines = sorted_unique_machines(
+            plan.target_machines()
+                .into_iter()
+                .chain(dataplane_machines.iter().cloned()),
+        );
+        Self::for_machines(operation_id, machines)
+    }
+
+    #[must_use]
+    pub fn for_machines(operation_id: OperationId, machines: Vec<MachineId>) -> Self {
+        Self {
+            operation_id,
+            membership: machines
+                .into_iter()
+                .map(DataplaneMember::default_for_machine)
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn machines(&self) -> Vec<MachineId> {
+        self.membership
+            .iter()
+            .map(|member| member.machine_id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneMember {
+    pub machine_id: MachineId,
+    pub endpoint_subnet: MachineEndpointSubnet,
+}
+
+impl DataplaneMember {
+    #[must_use]
+    pub fn default_for_machine(machine_id: MachineId) -> Self {
+        let endpoint_subnet = MachineEndpointSubnet::try_new(default_endpoint_subnet(&machine_id))
+            .expect("default endpoint subnet is a valid CIDR");
+        Self {
+            machine_id,
+            endpoint_subnet,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineEndpointSubnet(IpNet);
+
+impl MachineEndpointSubnet {
+    pub fn try_new(value: impl AsRef<str>) -> Result<Self, MachineEndpointSubnetError> {
+        IpNet::from_str(value.as_ref())
+            .map(Self)
+            .map_err(|_| MachineEndpointSubnetError::Invalid {
+                value: value.as_ref().to_owned(),
+            })
+    }
+
+    #[must_use]
+    pub const fn ipnet(&self) -> IpNet {
+        self.0
+    }
+
+    #[must_use]
+    pub fn as_string(&self) -> String {
+        self.0.to_string()
+    }
+}
+
+impl fmt::Debug for MachineEndpointSubnet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("MachineEndpointSubnet")
+            .field(&self.0.to_string())
+            .finish()
+    }
+}
+
+impl TryFrom<String> for MachineEndpointSubnet {
+    type Error = MachineEndpointSubnetError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineEndpointSubnet> for String {
+    fn from(value: MachineEndpointSubnet) -> Self {
+        value.0.to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineEndpointSubnetError {
+    Invalid { value: String },
+}
+
+impl fmt::Display for MachineEndpointSubnetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid { value } => {
+                write!(formatter, "machine endpoint subnet {value:?} is not a CIDR")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "provider", content = "report", rename_all = "snake_case")]
+pub enum DataplanePrepareProviderReport {
+    PloyzNativeMesh(WireGuardEbpfPrepareReport),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataplanePrepareError {
+    Unavailable {
+        machine_id: MachineId,
+        provider: DataplaneProviderKind,
+        component: WireGuardEbpfComponent,
+        message: FailureMessage,
+    },
+    InvalidReport {
+        message: FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DataplaneProviderKind {
+    PloyzNativeMesh,
+}
+
+impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
+    fn from(value: WireGuardEbpfPrepareError) -> Self {
+        match value {
+            WireGuardEbpfPrepareError::Unavailable {
+                machine_id,
+                component,
+                message,
+            } => Self::Unavailable {
+                machine_id,
+                provider: DataplaneProviderKind::PloyzNativeMesh,
+                component,
+                message,
+            },
+            WireGuardEbpfPrepareError::InvalidReport { message } => Self::InvalidReport { message },
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireGuardEbpfPrepareRequest {
@@ -40,6 +212,30 @@ impl WireGuardEbpfPrepareRequest {
             .cloned()
             .collect();
         Self::for_machines(operation_id, machines, peer_endpoints, Vec::new())
+    }
+
+    #[must_use]
+    pub fn from_dataplane_request(
+        request: DataplanePrepareRequest,
+        peer_endpoints: Vec<WireGuardPeerEndpoint>,
+    ) -> Self {
+        let machines = request.machines();
+        let requested = machines.iter().collect::<BTreeSet<_>>();
+        let peer_endpoints = peer_endpoints
+            .into_iter()
+            .filter(|peer| requested.contains(&peer.machine_id))
+            .collect();
+        Self {
+            operation_id: request.operation_id,
+            endpoint_routes: request
+                .membership
+                .into_iter()
+                .map(WireGuardEbpfEndpointRoute::from_member)
+                .collect(),
+            machines,
+            peer_endpoints,
+            peers: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -90,6 +286,14 @@ impl WireGuardEbpfEndpointRoute {
         Self {
             machine_id: machine_id.clone(),
             endpoint_subnet: default_endpoint_subnet(machine_id),
+        }
+    }
+
+    #[must_use]
+    pub fn from_member(member: DataplaneMember) -> Self {
+        Self {
+            machine_id: member.machine_id,
+            endpoint_subnet: member.endpoint_subnet.as_string(),
         }
     }
 }
@@ -456,6 +660,60 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn dataplane_prepare_request_declares_membership_only() {
+        let plan = DeployPlan {
+            service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+            target_revision: crate::ids::RevisionId::try_new("rev_1").expect("valid revision id"),
+            steps: vec![
+                crate::deploy::DeployPlanStep::RunContainer {
+                    machine_id: machine_id("edge_2"),
+                    slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+                },
+                crate::deploy::DeployPlanStep::RunContainer {
+                    machine_id: machine_id("core_1"),
+                    slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
+                },
+            ],
+            cleanup_containers: Vec::new(),
+        };
+
+        let request = DataplanePrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[]);
+
+        assert_eq!(
+            request.membership,
+            vec![
+                DataplaneMember {
+                    machine_id: machine_id("core_1"),
+                    endpoint_subnet: MachineEndpointSubnet::try_new("10.42.1.0/24")
+                        .expect("valid subnet"),
+                },
+                DataplaneMember {
+                    machine_id: machine_id("edge_2"),
+                    endpoint_subnet: MachineEndpointSubnet::try_new("10.42.2.0/24")
+                        .expect("valid subnet"),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn machine_endpoint_subnet_accepts_ipv4_and_ipv6_cidrs() {
+        assert_eq!(
+            MachineEndpointSubnet::try_new("10.42.1.0/24")
+                .expect("valid ipv4")
+                .as_string(),
+            "10.42.1.0/24"
+        );
+        assert_eq!(
+            MachineEndpointSubnet::try_new("fd7a:115c:a1e0::/64")
+                .expect("valid ipv6")
+                .as_string(),
+            "fd7a:115c:a1e0::/64"
+        );
+        assert!(MachineEndpointSubnet::try_new("not-a-cidr").is_err());
     }
 
     fn machine_id(value: &str) -> MachineId {

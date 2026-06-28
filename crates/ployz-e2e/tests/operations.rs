@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use async_nats::jetstream;
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfMachineReady,
-    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
+    DataplanePrepareProviderReport, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -273,33 +273,35 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployRunning {
                 operation_id: operation_id("op_e2e_run"),
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
-            OperationEvent::DeployWireGuardEbpfPrepared {
+            OperationEvent::DeployDataplanePrepared {
                 operation_id: operation_id("op_e2e_run"),
-                report: WireGuardEbpfPrepareReport {
-                    machines: vec![WireGuardEbpfMachineReady {
-                        machine_id: machine_id("machine_a"),
-                        ready: WireGuardEbpfReady {
-                            wireguard: WireGuardReady {
-                                public_key: wireguard_public_key("test-public-key"),
-                                evidence: vec![WireGuardReadyEvidence::Command {
-                                    program: "wg".to_owned(),
-                                    args: vec!["--version".to_owned()],
-                                }],
+                report: DataplanePrepareProviderReport::PloyzNativeMesh(
+                    WireGuardEbpfPrepareReport {
+                        machines: vec![WireGuardEbpfMachineReady {
+                            machine_id: machine_id("machine_a"),
+                            ready: WireGuardEbpfReady {
+                                wireguard: WireGuardReady {
+                                    public_key: wireguard_public_key("test-public-key"),
+                                    evidence: vec![WireGuardReadyEvidence::Command {
+                                        program: "wg".to_owned(),
+                                        args: vec!["--version".to_owned()],
+                                    }],
+                                },
+                                ebpf_forwarding: EbpfForwardingReady {
+                                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                                        symbols: vec![
+                                            "ployz_egress".to_owned(),
+                                            "ployz_ingress".to_owned(),
+                                        ],
+                                    }],
+                                },
                             },
-                            ebpf_forwarding: EbpfForwardingReady {
-                                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                    symbols: vec![
-                                        "ployz_egress".to_owned(),
-                                        "ployz_ingress".to_owned(),
-                                    ],
-                                }],
-                            },
-                        },
-                    }],
-                },
+                        }],
+                    }
+                ),
             },
             OperationEvent::DeployRunning {
                 operation_id: operation_id("op_e2e_run"),
@@ -809,7 +811,11 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         .await?
         .into_iter()
         .filter_map(|event| {
-            let OperationEvent::DeployWireGuardEbpfPrepared { report, .. } = event else {
+            let OperationEvent::DeployDataplanePrepared {
+                report: DataplanePrepareProviderReport::PloyzNativeMesh(report),
+                ..
+            } = event
+            else {
                 return None;
             };
             Some(

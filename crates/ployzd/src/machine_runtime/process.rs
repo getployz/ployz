@@ -1,7 +1,7 @@
 //! Runtime wiring for the machine role.
 
 use crate::config::MachineProcessConfig;
-use crate::dataplane_runtime::{HostDataplaneConfig, HostWireGuardEbpfPreparer};
+use crate::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
 use crate::docker::runner::DockerManagedContainerRunner;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::machine_runtime::runner::{
@@ -66,16 +66,17 @@ pub async fn start_machine_process_runtime(
         .await
         .map_err(MachineProcessRuntimeError::ConnectNats)?;
     let runner = DockerManagedContainerRunner::lazy_local_defaults(
-        config.dataplane.endpoint_subnet.clone(),
-        config.dataplane.bridge_ifname.clone(),
+        config.ployz_native_mesh.endpoint_subnet.clone(),
+        config.ployz_native_mesh.bridge_ifname.clone(),
     );
-    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        config.machine_id.clone(),
-        config.artifacts.ebpf_bytecode_path.clone(),
-        config.artifacts.ebpf_ctl_path.clone(),
-        config.dataplane.bridge_ifname.clone(),
-        config.dataplane.wg_ifname.clone(),
-    ));
+    let preparer =
+        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+            config.machine_id.clone(),
+            config.artifacts.ebpf_bytecode_path.clone(),
+            config.artifacts.ebpf_ctl_path.clone(),
+            config.ployz_native_mesh.bridge_ifname.clone(),
+            config.ployz_native_mesh.wg_ifname.clone(),
+        ));
 
     start_machine_process_runtime_with_ports(
         client,

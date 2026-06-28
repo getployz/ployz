@@ -20,7 +20,7 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await
@@ -110,7 +110,7 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await
@@ -180,7 +180,7 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             },
         )
         .await

@@ -146,6 +146,22 @@ operation events; Cloud callback rows are product workflow evidence.
   Redemption. Browser approval creates the redemption by binding the session to
   an organization; Cloud derives the bootstrap target from that organization's
   Organization Cluster state.
+- R8a. If keeper disconnects after browser approval but before receiving the
+  poll result, the Cloud Bootstrap Redemption remains durable as an
+  approved-but-not-delivered attempt. Later keeper polls for the same session
+  receive the same redemption and intent idempotently until the session or
+  redemption reaches a terminal state.
+- R8b. If a Cloud Bootstrap Session expires before browser approval, it becomes
+  terminal expired and creates no Cloud Bootstrap Redemption. Keeper polling
+  exits with an approval-expired message and rerun guidance. A later
+  `sudo ployz-keeper bootstrap` creates a fresh session rather than reusing the
+  expired one.
+- R8c. If the browser user rejects or cancels approval before clicking
+  `Connect this machine`, the Cloud Bootstrap Session becomes terminal rejected
+  and creates no Cloud Bootstrap Redemption. Keeper polling exits nonzero with
+  a Cloud-rejected message and rerun guidance. A later
+  `sudo ployz-keeper bootstrap` creates a fresh session rather than reusing the
+  rejected one.
 - R9. Session secrets and callback credentials are sent in HTTPS headers or
   JSON bodies, never URL query strings.
 - R9a. The browser URL may include a non-secret user code so the approval page
@@ -251,14 +267,53 @@ operation events; Cloud callback rows are product workflow evidence.
 - R23i. `--force` and `--yes` are independent uninstall flags. `--force`
   bypasses accepted-machine local refusal but still requires confirmation;
   `--yes` skips confirmation but does not bypass accepted-machine local refusal.
-  Automation that wants forced local cleanup must pass both flags.
+  Automation that wants forced local cleanup must pass both flags. `--yes`
+  only skips waiting for input; it does not suppress removal plans,
+  accepted-machine evidence, or warnings.
+- R23j. Accepted-machine local refusal is based on Accepted Machine Evidence:
+  accepted machine id state, NATS machine credentials, role authority material,
+  or assigned substrate state. Keeper binary presence, generic install residue,
+  failed bootstrap attempt state, abandoned Cloud Bootstrap Session material,
+  and unaccepted bootstrap delivery files do not require `--force`.
+- R23k. Accepted-machine local refusal is a hard stop before the normal
+  uninstall confirmation prompt. Keeper prints the Accepted Machine Evidence it
+  found, tells the user to remove the machine from the cluster first and rerun
+  uninstall, and shows `sudo ployz-keeper uninstall --force` as the local-only
+  escape hatch when cluster removal is impossible.
+- R23l. When `sudo ployz-keeper uninstall --force` sees Accepted Machine
+  Evidence, keeper prints a second warning before confirmation: forced
+  uninstall only removes local substrate, does not remove the machine from
+  cluster truth, and cluster cleanup remains explicit operator work. The
+  warning shows `ployzctl machine remove --force <machine>` as the follow-up
+  cluster cleanup command when the user still has an operator context.
+- R23m. `sudo ployz-keeper uninstall --force --yes` still prints the Accepted
+  Machine Evidence and cluster-cleanup warning before removing local substrate
+  without prompting.
+- R23n. `ployz-keeper uninstall` is idempotent only when no Accepted Machine
+  Evidence exists. If no accepted evidence and no removable Ployz substrate or
+  machine-local Ployz material remain, keeper reports that the machine is
+  already clean and exits 0 without prompting. This no-op path does not bypass
+  accepted-machine refusal.
+- R23o. Partial substrate or machine-local material removal failure makes
+  uninstall exit nonzero with a remaining-items list and rerun guidance. The
+  keeper binary is the only warning-only exception: if all other substrate and
+  machine-local material are gone, keeper self-removal failure exits 0 with a
+  leftover-binary warning.
 - R24. Cloud's NATS reachability probe validates public-routable host, allowed
   scheme and port, DNS rebinding protections, TLS trust, and successful auth as
   Cloud's authorized NATS user. Loopback, private, link-local, and metadata IPs
   are rejected.
 - R25. New-cluster redemptions serialize one sticky Cloud Founder Claim per
-  Organization Cluster. Once founder material is issued, Cloud does not
-  auto-promote another waiter to founder after failure.
+  Organization Cluster. The first approved redemption that wins the claim
+  receives Founder Bootstrap; later approved redemptions become
+  wait-for-founder and poll until the founder establishes a Cloud Connection,
+  the Founder Claim is abandoned, or the waiter expires. Once founder material
+  is issued, Cloud does not auto-promote another waiter to founder after
+  failure.
+- R25a. Wait-for-founder is polling-only from the target machine's perspective.
+  Keeper prints that it is waiting for the first machine to finish, respects
+  Cloud retry hints, and performs no local mutation until Cloud has a Cloud
+  Connection and returns a Joiner Bootstrap envelope.
 - R26. Joiner Bootstrap is still core `machine.add`, Machine Join Redemption,
   and Machine Join Report. Cloud brokers delivery and watches operation events;
   it does not make callback evidence cluster truth.
@@ -302,6 +357,9 @@ operation events; Cloud callback rows are product workflow evidence.
 - KTD5. The Cloud Founder Claim is sticky and serialized by Cloud storage.
   Founder failure requires explicit user action or a new session, not automatic
   promotion.
+- KTD5a. Waiting Cloud Bootstrap Redemptions do not prepare or mutate the local
+  machine. They are Cloud-polling state until a Joiner Bootstrap envelope is
+  available or the waiter reaches a terminal state.
 - KTD6. Cloud callback evidence is product workflow evidence. NATS operations,
   current state, and operation events remain runtime truth.
 - KTD6a. Cloud is optional to Ployz setup, but keeper does not own local
@@ -335,6 +393,21 @@ operation events; Cloud callback rows are product workflow evidence.
   despite accepted-machine evidence"; it does not mean Force Removed Machine.
 - KTD7f. `--force` and `--yes` stay independent because they acknowledge
   different risks: cluster-membership evidence and interactive confirmation.
+- KTD7g. Accepted-machine uninstall refusal is a hard stop, not an interactive
+  menu. The recovery path is explicit machine removal followed by local
+  uninstall, with `--force` reserved for local cleanup when cluster removal is
+  impossible.
+- KTD7h. Forced local uninstall still warns that cluster cleanup remains
+  required. Keeper may point to `ployzctl machine remove --force <machine>`,
+  but it must not run that command, contact Cloud, or mutate cluster truth.
+- KTD7i. `--yes` skips input only. It must not hide accepted-machine evidence,
+  removal plans, or force warnings from automation logs.
+- KTD7j. Uninstall is idempotent on an already-clean machine only after the
+  accepted-machine evidence check passes. No removable local material means no
+  prompt and exit 0.
+- KTD7k. Uninstall reports partial substrate cleanup failure as nonzero with
+  remaining evidence. Keeper self-removal is warning-only only after every
+  other required item has been removed.
 - KTD8. Provider cloud-init stays on the legacy path for this slice; migrating
   it to Cloud Bootstrap Invites is deferred.
 - KTD9. `ployzctl cloud link` stays out of this implementation because the
@@ -373,10 +446,10 @@ sequenceDiagram
   K->>C: create session (client, attempt id, machine facts)
   C-->>K: browser_url with user_code, session_secret, ttl
   K-->>U: print URL with prefilled code
-  B->>C: authenticated organization approval
+  B->>C: authenticated organization approval or rejection
   loop bounded poll
     K->>C: poll session
-    C-->>K: pending or ready/rejected
+    C-->>K: pending, ready, rejected, or expired
   end
   K->>K: validate envelope before mutation
   alt Founder intent
@@ -397,6 +470,8 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> pending_user_approval: session
   pending_user_approval --> redemption_created: browser approval
+  pending_user_approval --> session_rejected: browser rejection
+  pending_user_approval --> session_expired: ttl elapsed
   redemption_created --> founder_claimed: no Cloud Connection
   redemption_created --> wait_for_founder: founder claim already active
   redemption_created --> join_requested: Cloud Connection exists
@@ -407,6 +482,7 @@ stateDiagram-v2
   cloud_nats_probe --> founder_formed_but_unreachable
   founder_formed_but_unreachable --> founder_abandoned: Abandon Founder Attempt
   cloud_connection_established --> join_requested: waiting redemption retries
+  wait_for_founder --> rejected: founder abandoned
   join_requested --> join_envelope_issued
   join_envelope_issued --> join_callback_received
   join_callback_received --> joined_or_failed_by_core_operation
@@ -532,23 +608,61 @@ stateDiagram-v2
   remove. Require typing `uninstall` by default and support `--yes` for
   scripts. Refuse by default when local evidence shows the machine is still an
   accepted cluster member; support `--force` to override that local refusal
-  without contacting Cloud or mutating cluster truth. Keep `--force` and
-  `--yes` independent, so forced automation passes `--force --yes`. Stop and
-  remove Ployz-owned units and substrate material, remove machine-local Ployz
-  material, then remove the keeper binary last. Do not remove user workloads,
-  Docker images, Docker volumes, service containers, arbitrary networks, or
-  runtime data. Treat final keeper self-removal failure as a warning after
-  substrate uninstall has otherwise completed.
+  without contacting Cloud or mutating cluster truth. Treat accepted machine id
+  state, NATS machine credentials, role authority material, and assigned
+  substrate state as Accepted Machine Evidence. Do not require `--force` for
+  keeper binary presence, generic install residue, failed bootstrap attempt
+  state, abandoned Cloud Bootstrap Session material, or unaccepted bootstrap
+  delivery files. Make accepted-machine refusal a hard stop before the normal
+  confirmation prompt: print the evidence found, tell the user to run
+  `ployzctl machine remove <machine>` followed by
+  `sudo ployz-keeper uninstall`, and show
+  `sudo ployz-keeper uninstall --force` as the local-only escape hatch when
+  cluster removal is impossible. When `--force` is used with Accepted Machine
+  Evidence present, print a second warning before confirmation that local
+  substrate removal does not remove the machine from cluster truth and that
+  cluster cleanup remains explicit operator work; show
+  `ployzctl machine remove --force <machine>` as follow-up guidance when the
+  user still has an operator context. Keep `--force` and `--yes` independent,
+  so forced automation passes `--force --yes`; `--yes` skips waiting for input
+  only and must not suppress the removal plan, accepted-machine evidence, or
+  force warnings. Stop and remove Ployz-owned units and substrate material,
+  remove machine-local Ployz material, then remove the keeper binary last. Do
+  not remove user workloads, Docker images, Docker volumes, service containers,
+  arbitrary networks, or runtime data. Treat final keeper self-removal failure
+  as a warning after substrate uninstall has otherwise completed. If no
+  Accepted Machine Evidence exists and there is no removable Ployz substrate or
+  machine-local Ployz material, report that the machine is already clean and
+  exit 0 without prompting. If any non-keeper substrate or machine-local
+  material removal fails, exit nonzero with a remaining-items list and rerun
+  guidance.
 - **Test scenarios:**
   - Uninstall without confirmation exits before mutation.
+  - Already-clean machine without accepted-machine evidence exits 0 without
+    prompting.
+  - Already-clean machine with accepted-machine evidence still hard-stops unless
+    `--force` is present.
   - `--yes` bypasses the prompt and runs the same removal plan.
   - `--yes` does not bypass accepted-machine refusal without `--force`.
   - `--force` still requires confirmation unless `--yes` is also present.
   - Accepted-machine evidence refuses uninstall unless `--force` is present.
+  - Accepted-machine refusal prints the evidence found and exits before the
+    normal uninstall confirmation prompt.
+  - Accepted-machine refusal shows `ployzctl machine remove <machine>` followed
+    by `sudo ployz-keeper uninstall`, plus the `--force` local-only escape
+    hatch.
+  - `--force` with accepted-machine evidence warns that cluster cleanup remains
+    required and shows `ployzctl machine remove --force <machine>` as follow-up
+    guidance.
+  - `--force --yes` still prints accepted-machine evidence and force warnings
+    before removing local substrate without prompting.
+  - Failed or abandoned bootstrap attempt material does not require `--force`.
   - `--force` does not call Cloud, submit machine removal, revoke cluster NATS
     authority, release endpoint subnets, or mutate cluster truth.
   - The removal plan does not include workloads, Docker images, Docker volumes,
     service containers, arbitrary networks, or runtime data.
+  - Partial non-keeper substrate or machine-local material removal exits
+    nonzero and prints remaining items plus rerun guidance.
   - Keeper self-removal runs last and failure produces a leftover-binary
     warning without marking substrate uninstall failed.
   - After successful substrate uninstall, keeper bootstrap preflight treats the
@@ -600,8 +714,12 @@ stateDiagram-v2
 - **Approach:** Validate runtime NATS URL, trusted CA, join token, Join
   credential delivery, release selection, and callback fields before mutation.
   Reuse the existing join executor. Implement wait-for-founder as bounded
-  retry/poll behavior that respects Cloud retry hints and session expiry.
+  retry/poll behavior that respects Cloud retry hints and session expiry; while
+  waiting, print that keeper is waiting for the first machine to finish and do
+  not mutate local substrate or machine identity material.
 - **Test scenarios:**
+  - Wait-for-founder performs no local mutation before a Joiner Bootstrap
+    envelope is returned.
   - Valid joiner envelope writes trusted CA, connects as Join, redeems the join
     token, reports the join result, and posts a Cloud-safe callback.
   - Missing CA, bad URL, bad Join seed, expired join token, and callback failure
@@ -733,6 +851,9 @@ stateDiagram-v2
 - **Test scenarios:**
   - Browser approval creates a redemption only after organization selection and
     `Connect this machine`.
+  - Browser rejection or cancellation before `Connect this machine` creates no
+    redemption, marks the session rejected, and makes keeper polling exit with
+    rerun guidance.
   - Approval page opens with the user code prefilled and still rejects missing,
     expired, or unknown session codes.
   - Formed-but-unreachable founder status offers `Retry reachability` and
@@ -827,11 +948,28 @@ stateDiagram-v2
   if self-removal fails.
 - AE9a. Given local evidence says the machine is still an accepted cluster
   member, when the user runs `sudo ployz-keeper uninstall`, then keeper refuses
-  before mutation and explains that uninstall is local-only. Given the user
-  reruns with `--force`, keeper still requires confirmation before removing
-  local substrate. Given the user reruns with `--force --yes`, keeper removes
-  local substrate without prompting but does not perform Force Removed Machine
-  or mutate cluster truth.
+  before mutation or the normal confirmation prompt, prints the evidence found,
+  and shows `ployzctl machine remove <machine>` followed by
+  `sudo ployz-keeper uninstall` as the normal recovery path plus
+  `sudo ployz-keeper uninstall --force` as the local-only escape hatch. Given
+  the user reruns with `--force`, keeper prints a second warning that cluster
+  cleanup remains required, shows `ployzctl machine remove --force <machine>`
+  as follow-up guidance, and still requires confirmation before removing local
+  substrate. Given the user reruns with `--force --yes`, keeper still prints
+  the accepted-machine evidence and cluster-cleanup warning, then removes local
+  substrate without prompting but does not perform Force Removed Machine or
+  mutate cluster truth.
+- AE9b. Given no Accepted Machine Evidence and no removable Ployz substrate or
+  machine-local Ployz material remain, when the user runs
+  `sudo ployz-keeper uninstall`, then keeper reports that the machine is
+  already clean and exits 0 without prompting. Given Accepted Machine Evidence
+  exists, the already-clean no-op path is not used and the accepted-machine
+  refusal rules apply.
+- AE9c. Given uninstall removes some non-keeper substrate or machine-local
+  material but fails to remove other required items, when the command finishes,
+  then it exits nonzero and prints the remaining-items list plus rerun guidance.
+  Given every non-keeper required item is gone but keeper self-removal fails,
+  then it exits 0 with a leftover-binary warning.
 
 ---
 

@@ -25,7 +25,7 @@ pub const DEFAULT_WIREGUARD_PRIVATE_KEY: &str = "/etc/ployz/wireguard.key";
 /// Everything the host preparer needs to provision and verify the local
 /// WireGuard/eBPF dataplane.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostDataplaneConfig {
+pub struct PloyzNativeMeshHostConfig {
     pub machine_id: MachineId,
     pub ebpf_bytecode_path: PathBuf,
     pub ebpf_ctl_path: PathBuf,
@@ -36,7 +36,7 @@ pub struct HostDataplaneConfig {
     pub ebpf_pin_path: Option<PathBuf>,
 }
 
-impl HostDataplaneConfig {
+impl PloyzNativeMeshHostConfig {
     /// Production defaults for key material: the canonical on-host private
     /// key path and the default WireGuard listen port, with no pin override.
     #[must_use]
@@ -61,7 +61,7 @@ impl HostDataplaneConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct HostWireGuardEbpfPreparer {
+pub struct PloyzNativeMeshPreparer {
     machine_id: MachineId,
     plans: Vec<HostCommandPlan>,
     route_programming: Option<HostDataplaneRouteProgramming>,
@@ -70,10 +70,10 @@ pub struct HostWireGuardEbpfPreparer {
     command_timeout: Duration,
 }
 
-impl HostWireGuardEbpfPreparer {
+impl PloyzNativeMeshPreparer {
     #[must_use]
-    pub fn new(config: HostDataplaneConfig) -> Self {
-        let HostDataplaneConfig {
+    pub fn new(config: PloyzNativeMeshHostConfig) -> Self {
+        let PloyzNativeMeshHostConfig {
             machine_id,
             ebpf_bytecode_path,
             ebpf_ctl_path,
@@ -137,7 +137,7 @@ impl HostWireGuardEbpfPreparer {
     }
 }
 
-impl MachineWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
+impl MachineWireGuardEbpfPreparer for PloyzNativeMeshPreparer {
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
@@ -757,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_preparer_rejects_empty_command_plan_set() {
-        let preparer = HostWireGuardEbpfPreparer::with_command_plans(
+        let preparer = PloyzNativeMeshPreparer::with_command_plans(
             machine_id("machine_a"),
             Vec::<HostCommandPlan>::new(),
         );
@@ -947,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_preparer_reports_missing_required_path() {
-        let preparer = HostWireGuardEbpfPreparer::with_command_plans(
+        let preparer = PloyzNativeMeshPreparer::with_command_plans(
             machine_id("machine_a"),
             [HostCommandPlan::readiness_path(
                 WireGuardEbpfComponent::EbpfForwarding,
@@ -972,7 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_preparer_times_out_hung_commands() {
-        let preparer = HostWireGuardEbpfPreparer::with_command_plans(
+        let preparer = PloyzNativeMeshPreparer::with_command_plans(
             machine_id("machine_a"),
             [HostCommandPlan::readiness_command(
                 WireGuardEbpfComponent::WireGuard,
@@ -1006,7 +1006,7 @@ mod tests {
             b"ployz_egress\0ployz_ingress\0ROUTES\0WG_IFINDEX\0OBSERVE_FLAG\0EVENTS\0",
         )
         .expect("write test bytecode");
-        let preparer = HostWireGuardEbpfPreparer::with_command_plans(
+        let preparer = PloyzNativeMeshPreparer::with_command_plans(
             machine_id("machine_a"),
             [HostCommandPlan::readiness_ployz_tc_bytecode(&path)],
         );
@@ -1034,7 +1034,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&path, b"not the required bpf object").expect("write test bytecode");
-        let preparer = HostWireGuardEbpfPreparer::with_command_plans(
+        let preparer = PloyzNativeMeshPreparer::with_command_plans(
             machine_id("machine_a"),
             [HostCommandPlan::readiness_ployz_tc_bytecode(&path)],
         );

@@ -2,6 +2,7 @@
 mod fixtures;
 
 use fixtures::*;
+use ployz_core::dataplane::{DataplaneMember, DataplaneProviderKind};
 use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
@@ -12,10 +13,10 @@ use ployz_core::state::{
 };
 use ployz_test_support::ids::failure_message;
 use ployzd::deploy_worker::{
-    ActiveRouteCommitter, ActiveServiceCommitter, DeployCleanupResult, DeployExecutionCommand,
-    DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
-    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent,
-    MachineContainerRuntime, MachineContainerRuntimeError, WireGuardEbpfPreparer,
+    ActiveRouteCommitter, ActiveServiceCommitter, DataplanePreparer, DeployCleanupResult,
+    DeployExecutionCommand, DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts,
+    DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
+    DeployTerminalEvent, MachineContainerRuntime, MachineContainerRuntimeError,
     execute_deploy_operation,
 };
 use ployzd::docker::labels::ManagedContainerIdentity;
@@ -63,7 +64,7 @@ async fn execute_deploy<R, D, N, H, C, A>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
-    D: WireGuardEbpfPreparer,
+    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: ActiveRouteCommitter,
@@ -86,7 +87,7 @@ async fn deploy_worker_runs_containers_then_completes() {
         command.clone(),
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -113,9 +114,9 @@ async fn deploy_worker_runs_containers_then_completes() {
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
+            RecordedOperation::DataplanePrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -155,26 +156,16 @@ async fn deploy_worker_runs_containers_then_completes() {
             ),
         ]
     );
-    let [wireguard_ebpf_request] = wireguard_ebpf.requests.as_slice() else {
-        panic!("expected exactly one wireguard/ebpf prepare request");
+    let [dataplane_request] = wireguard_ebpf.requests.as_slice() else {
+        panic!("expected exactly one dataplane prepare request");
     };
     assert_eq!(
-        wireguard_ebpf_request.machines,
-        vec![machine_id("machine_a"), machine_id("machine_b")]
-    );
-    assert_eq!(
-        wireguard_ebpf_request.endpoint_routes,
+        dataplane_request.membership,
         vec![
-            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(&machine_id(
-                "machine_a"
-            )),
-            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(&machine_id(
-                "machine_b"
-            ))
+            DataplaneMember::default_for_machine(machine_id("machine_a")),
+            DataplaneMember::default_for_machine(machine_id("machine_b")),
         ]
     );
-    assert_eq!(wireguard_ebpf_request.peer_endpoints.len(), 2);
-    assert!(wireguard_ebpf_request.peers.is_empty());
     assert_eq!(
         active_state.requests,
         vec![ActiveServiceCommitRequest {
@@ -218,7 +209,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -254,9 +245,9 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
+            RecordedOperation::DataplanePrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -290,7 +281,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -353,7 +344,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -411,7 +402,7 @@ async fn deploy_worker_does_not_record_warning_completion_without_cleanup_failur
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -450,7 +441,7 @@ async fn deploy_worker_counts_warning_completion_write_failure() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -482,7 +473,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -528,7 +519,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -575,7 +566,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -600,9 +591,9 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
+            RecordedOperation::DataplanePrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -638,7 +629,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -703,7 +694,7 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -744,7 +735,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -795,7 +786,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -823,7 +814,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::RuntimeUnavailable {
@@ -852,7 +843,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -867,7 +858,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
         DeployExecutionError::Failed {
             source,
             ..
-        } if matches!(*source, DeployExecutionError::PrepareWireGuardEbpf(_))
+        } if matches!(*source, DeployExecutionError::PrepareDataplane(_))
     ));
     assert!(runtime.requests.is_empty());
     assert!(health.checked.is_empty());
@@ -878,11 +869,12 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::WireGuardEbpfUnavailable {
+                failure: DeployOperationFailure::DataplaneUnavailable {
                     machine_id: machine_id("machine_b"),
+                    provider: DataplaneProviderKind::PloyzNativeMesh,
                     component: ployz_core::dataplane::WireGuardEbpfComponent::WireGuard,
                     message: failure_message("wireguard interface failed"),
                     retained_artifacts: Vec::new(),
@@ -906,7 +898,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -929,9 +921,9 @@ async fn deploy_worker_waits_for_health_before_completing() {
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
+            RecordedOperation::DataplanePrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -982,7 +974,7 @@ async fn routed_deploy_commits_route_before_completion() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -1050,7 +1042,7 @@ async fn routed_deploy_fails_before_completion_when_route_is_stale() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -1110,7 +1102,7 @@ async fn deploy_worker_times_out_hanging_steps() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -1153,7 +1145,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -1173,9 +1165,9 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 1 },
+            RecordedOperation::DataplanePrepared { machine_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -1210,7 +1202,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -1240,9 +1232,9 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 1 },
+            RecordedOperation::DataplanePrepared { machine_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -1283,7 +1275,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            wireguard_ebpf: &mut wireguard_ebpf,
+            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
@@ -1306,9 +1298,9 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::PlanCreated { replica_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingWireGuardEbpf,
+                stage: DeployRunningStage::PreparingDataplane,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { machine_count: 1 },
+            RecordedOperation::DataplanePrepared { machine_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),

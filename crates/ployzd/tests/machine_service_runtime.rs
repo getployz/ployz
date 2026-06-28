@@ -1,24 +1,24 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
+    DataplaneProviderKind, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareError,
     WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, operation_id, revision_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    WireGuardEbpfPreparer,
+    DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
+    MachineRuntimeUnavailableReason,
 };
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use ployzd::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
-};
+use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
@@ -560,12 +560,13 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
         .flush()
         .await
         .expect("flush machine service subscription");
-    let mut client = NatsMachineWireGuardEbpfPreparer::new(nats.client);
+    let mut client = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
 
     let report = client
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_a"]))
+        .prepare_dataplane(dataplane_request(&["machine_a"]))
         .await
-        .expect("wireguard ebpf prepare succeeds");
+        .expect("dataplane prepare succeeds");
+    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
 
     assert_eq!(state.prepare_count(), 1);
     assert_eq!(state.endpoint_routes(), endpoint_routes(&["machine_a"]));
@@ -594,7 +595,7 @@ async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machi
         &nats.client,
         machine_service(
             &machine_id("machine_a"),
-            MachineServiceEndpoint::WireGuardEbpfPrepare,
+            MachineServiceEndpoint::DataplanePrepare,
         ),
         &MachineWireGuardEbpfPrepareRpcRequest {
             phase: MachineWireGuardEbpfPreparePhase::PrepareDataplane,
@@ -644,17 +645,18 @@ async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
         .flush()
         .await
         .expect("flush machine service subscription");
-    let mut client = NatsMachineWireGuardEbpfPreparer::new(nats.client);
+    let mut client = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
 
     let error = client
-        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["machine_a"]))
+        .prepare_dataplane(dataplane_request(&["machine_a"]))
         .await
-        .expect_err("wireguard ebpf prepare failure is returned");
+        .expect_err("dataplane prepare failure is returned");
 
     assert_eq!(
         error,
-        WireGuardEbpfPrepareError::Unavailable {
+        DataplanePrepareError::Unavailable {
             machine_id: machine_id("machine_a"),
+            provider: DataplaneProviderKind::PloyzNativeMesh,
             component: WireGuardEbpfComponent::EbpfForwarding,
             message: failure_message("ebpf program missing"),
         }
@@ -1056,6 +1058,7 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
+    observations: AsyncNatsObservationStore,
     /// Machine principal: the machine-runtime service side.
     machine_a: async_nats::Client,
 }
@@ -1063,12 +1066,17 @@ struct TestNats {
 async fn test_nats() -> TestNats {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open controller observation store");
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
 
     TestNats {
         _nats: nats,
         client,
+        observations,
         machine_a,
     }
 }
@@ -1081,14 +1089,11 @@ fn run_request() -> MachineContainerRunRpcRequest {
     }
 }
 
-fn wireguard_ebpf_request(machines: &[&str]) -> WireGuardEbpfPrepareRequest {
-    WireGuardEbpfPrepareRequest {
-        operation_id: operation_id("op_123"),
-        machines: machines.iter().map(|machine| machine_id(machine)).collect(),
-        endpoint_routes: endpoint_routes(machines),
-        peer_endpoints: Vec::new(),
-        peers: Vec::new(),
-    }
+fn dataplane_request(machines: &[&str]) -> DataplanePrepareRequest {
+    DataplanePrepareRequest::for_machines(
+        operation_id("op_123"),
+        machines.iter().map(|machine| machine_id(machine)).collect(),
+    )
 }
 
 fn endpoint_routes(machines: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute> {

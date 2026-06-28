@@ -73,8 +73,8 @@ An optional Tailnet Integration that lets a Tailscale tailnet reach selected Plo
 _Avoid_: Dataplane Provider, Private Control-Plane Path, Tailscale dataplane adapter, all subnets exposed, MagicDNS route backend
 
 **Tailnet Subnet Access**:
-An optional Tailnet Integration that advertises selected Machine Endpoint Subnets to a Tailscale tailnet for operator or debugging access to machine-local endpoint networks and containers. It is raw subnet reachability and must not be treated as app ingress or route protection.
-_Avoid_: Route Binding, Tunnel Ingress, gateway route, default all-subnet exposure, control-plane authority
+An optional Tailnet Integration that, after explicit cluster-level enablement, advertises active Machine Endpoint Subnets to a Tailscale tailnet for operator or debugging access to machine-local endpoint networks and containers. It is raw subnet reachability and must not be treated as app ingress, route protection, control-plane authority, or silent exposure before enablement.
+_Avoid_: Route Binding, Tunnel Ingress, gateway route, implicit all-subnet exposure, control-plane authority
 
 **Ployz Native Mesh**:
 The built-in dataplane provider that implements dataplane projection through Ployz-owned WireGuard, eBPF, routes, and local machine dataplane material. It is one implementation behind Dataplane Prepare; WireGuard and eBPF details are provider internals and evidence.
@@ -340,6 +340,10 @@ _Avoid_: Expiring subnet lease, hidden cleanup, unowned reservation
 A machine identity committed by the control plane with credentials and an assigned endpoint subnet. Once accepted, later machine role startup or role failures are machine health evidence; the machine's resources are changed through explicit lifecycle operations rather than failed bootstrap cleanup.
 _Avoid_: Reservation, pending join, bootstrap attempt
 
+**Accepted Machine Evidence**:
+Durable machine-local material proving this host has held an Accepted Machine Identity or Machine Control-Plane Authority, such as accepted machine id state, NATS machine credentials, role authority material, or assigned substrate state. It does not include the keeper binary, generic install residue, failed bootstrap attempt state, abandoned Cloud Bootstrap Session material, or unaccepted bootstrap delivery files.
+_Avoid_: Installed file presence, failed attempt evidence, abandoned session evidence, generic substrate residue
+
 **Machine Join Redemption**:
 The control-plane action that validates one machine reservation's join token and accepts the machine identity. Join redemption is the boundary where machine credentials and endpoint subnet assignment become usable; later bootstrap reporting records outcome evidence for an already accepted machine. Retrying redemption for the same accepted identity is idempotent, but redemption must not resurrect a removed machine identity.
 _Avoid_: Bootstrap completion, credential pre-issue, local activation
@@ -437,7 +441,7 @@ A time-limited Cloud permission that can issue one or more single-redemption Clo
 _Avoid_: One-time bootstrap token, machine join token, org flag
 
 **Cloud Bootstrap Session**:
-A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. The session is not an org, cluster, machine identity, join token, or operator credential.
+A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. A session that expires or is rejected before approval creates no Cloud Bootstrap Redemption. The session is not an org, cluster, machine identity, join token, or operator credential.
 _Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
 
 **Cloud Bootstrap Token**:
@@ -445,12 +449,16 @@ The single-redemption bearer secret string embedded in noninteractive Bootstrap 
 _Avoid_: Org id, cluster id, join token, callback token
 
 **Cloud Bootstrap Redemption**:
-One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session, invite, or token itself cluster truth.
+One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. For interactive bootstrap, browser approval creates the redemption by binding the session to an organization. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session, invite, or token itself cluster truth.
 _Avoid_: Bootstrap invite, bootstrap session, token, machine acceptance, operation completion
 
 **Cloud Founder Claim**:
-The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
+The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap for one Organization Cluster. Competing new-cluster redemptions serialize through this claim: the first approved redemption that wins the claim becomes founder, and later redemptions wait for founder outcome. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
 _Avoid_: Leader election, automatic founder failover, first healthy server
+
+**Waiting Cloud Bootstrap Redemption**:
+A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Cloud Founder Claim but no Cloud Connection. It waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire; it does not perform local machine mutation and does not become founder automatically.
+_Avoid_: Founder candidate, standby founder, pending machine join
 
 **Abandon Founder Attempt**:
 A Cloud-side operator action that marks a formed-but-unreachable Cloud Founder Claim terminal so the organization can start a new Founder Bootstrap through a new Cloud Bootstrap Session. It does not clean up, revoke, or mutate the already-formed local machine.
@@ -469,7 +477,7 @@ An explicit operation that changes already-installed non-keeper Ployz substrate 
 _Avoid_: Update, upgrade, rollout, in-place update
 
 **Substrate Uninstall**:
-An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite local evidence that the machine is still part of a cluster, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default.
+An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite Accepted Machine Evidence, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default. If no Accepted Machine Evidence and no removable Ployz substrate or material remain, it is an idempotent no-op success.
 _Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
 **Keeper Update**:

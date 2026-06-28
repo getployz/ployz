@@ -69,7 +69,7 @@ That shape makes a future Tailscale data-plane adapter look like a second specia
 - R18. Provider reports remain visible operation evidence, but they are sanitized: no peer graphs, public keys, private keys, auth material, raw provider config, or future Tailscale device/auth secrets.
 - R19. Dataplane provider choice is a cluster-level concern. Deploys declare membership only, and machines do not choose or advertise their own provider.
 - R20. Changing dataplane providers is a future explicit cluster operation, not a deploy side effect. Deploy execution should not silently change provider behavior.
-- R21. Tailnet Integration is a separate future family, not a Dataplane Provider and not part of Dataplane Prepare. The native mesh can remain the cluster dataplane while selected Ployz surfaces or selected Machine Endpoint Subnets are exposed to a tailnet through explicit operations later.
+- R21. Tailnet Integration is a separate future family, not a Dataplane Provider and not part of Dataplane Prepare. The native mesh can remain the cluster dataplane while selected Ployz surfaces or, after explicit Tailnet Subnet Access enablement, active Machine Endpoint Subnets are exposed to a tailnet through future integration work.
 - R22. Closed Public Ingress, Private Control-Plane Path, and Tunnel Ingress are future topology/access work. This refactor should not add new public inbound port requirements, but it also does not implement closed public ingress.
 - R23. Private Control-Plane Path and Tailnet Access Bridge remain separate future concepts. Private reachability to NATS must not imply user/operator access to machine surfaces, and tailnet access exposure must not imply control-plane authority.
 
@@ -91,7 +91,7 @@ The first adapter is `PloyzNativeMesh`, initially implemented with the existing 
 
 Provider choice is cluster-level. This refactor should not introduce per-deploy provider selection or mixed-provider machine membership. A future Tailscale implementation can add a Dataplane Provider Transition operation with explicit preparation, cutover, rollback, and cleanup evidence, but deploy execution should continue to see only membership.
 
-Tailnet Integration is separate from Tailscale as a Dataplane Provider. Future integrations can expose selected gateway/admin surfaces, advertise selected Machine Endpoint Subnets, provide private control-plane reachability, or support service egress while `PloyzNativeMesh` remains the internal dataplane. These should be explicit operations, not a default "all machines and subnets are on Tailscale" behavior and not a route-binding DNS replacement.
+Tailnet Integration is separate from Tailscale as a Dataplane Provider. Future integrations can expose selected gateway/admin surfaces, automatically advertise active Machine Endpoint Subnets after Tailnet Subnet Access is explicitly enabled, provide private control-plane reachability, or support service egress while `PloyzNativeMesh` remains the internal dataplane. Subnet access should be cluster-level opt-in with visible integration evidence, not a deploy side effect, machine-add side effect, route-binding DNS replacement, or silent default on a fresh cluster.
 
 Closed Public Ingress is also separate future work. The target is no public inbound service ports, with tightly allowlisted outbound egress for the chosen control-plane, tailnet, tunnel, and dependency paths. A future Private Control-Plane Path could move machine-to-NATS connectivity onto a tailnet or private mesh. A future Tunnel Ingress option could avoid opening public 80/443 by routing selected external traffic through an outbound connector such as Cloudflare Tunnel to Ployz gateway surfaces.
 
@@ -148,6 +148,25 @@ pub enum DataplanePrepareProviderReport {
 
 Do not add `DataplanePrepareProviderReport::Tailscale`, generated SDK Tailscale types, config values, env vars, CLI flags, or operation payloads until the adapter can be constructed, applied, observed, and tested end to end. The future Tailscale shape belongs in docs/TODOs for now.
 
+## Future Tailscale Record
+
+The Tailscale investigation is complete for this refactor. Its purpose was to shape a clean adapter seam, not to design or implement Tailscale now. The current work should land the generic Dataplane Prepare boundary with minimal Dataplane Membership and `PloyzNativeMesh` as the only implemented provider.
+
+Future Tailscale work should split into two separate tracks:
+
+- **Tailscale Dataplane Provider:** a future cluster-level provider implementation that maps Dataplane Membership to tailnet device participation, advertised endpoint subnet or connector routes, daemon readiness, and sanitized provider evidence. It should be introduced through a Dataplane Provider Transition operation, not a deploy flag, machine-local choice, or hidden migration.
+- **Tailnet Integration:** future access/topology integrations that can coexist with `PloyzNativeMesh`, including Tailnet Access Bridge, Tailnet Subnet Access, Private Control-Plane Path, and Tailnet Egress Bridge. These are not Dataplane Prepare inputs and should not change the current adapter contract.
+
+The durable design constraints learned from Tailscale are:
+
+- Membership remains the generic input. Provider-specific route approval, ACLs, tags, auth keys, OAuth clients, daemon state, and tailnet identity stay behind the provider or future integration boundary.
+- Generic membership carries typed Machine Endpoint Subnets and supports IPv4 and IPv6 at the schema level.
+- Public IP observations are not generic membership data. Native mesh may require them; Tailscale should not.
+- Ployz route-binding DNS remains separate from MagicDNS. MagicDNS may be useful for tailnet machine names, not Ployz route authority.
+- Tailscale auth material, OAuth secrets, machine keys, peer graphs, raw provider config, and route approval tokens must not appear in operation events, KV state, SDK fixtures, or logs.
+- Tailnet Subnet Access is future cluster-level opt-in. After enablement, active Machine Endpoint Subnets may sync automatically with visible integration evidence, but no subnet is exposed before enablement.
+- Closed Public Ingress, Private Control-Plane Path, and Tunnel Ingress are future topology work. They can reduce public inbound ports later without changing the current direct TLS NATS control-plane assumption.
+
 ## Proposed Module Shape
 
 Split the large runtime module into a folder:
@@ -191,10 +210,11 @@ If the split becomes too mechanical, land it in two passes: first rename the sea
 - KTD18. Keep provider reports as sanitized evidence. Operators need component-level proof and failures; secrets and provider mechanics stay out of reports.
 - KTD19. Treat dataplane provider choice as cluster-level. No per-deploy provider selection and no per-machine provider mixing in this refactor.
 - KTD20. Provider migration is future explicit operation work. Deploy should fail or wait when the cluster provider is unavailable or mid-transition; it should not perform provider migration.
-- KTD21. Keep Tailnet Integration separate from Dataplane Provider. Tailnet Access Bridge, Tailnet Subnet Access, Private Control-Plane Path, and Tailnet Egress Bridge are future explicit integration modes, not internal dataplane membership.
+- KTD21. Keep Tailnet Integration separate from Dataplane Provider. Tailnet Access Bridge, Tailnet Subnet Access, Private Control-Plane Path, and Tailnet Egress Bridge are future integration modes, not internal dataplane membership.
 - KTD22. Model the firewall goal as Closed Public Ingress plus explicit egress allowlists. The intent is no public inbound service ports, not a fully disconnected machine.
 - KTD23. Keep Tunnel Ingress separate from Dataplane Prepare and gateway authority. A Cloudflare Tunnel-style connector may carry route traffic to gateway surfaces later, but Route Binding and route protection remain Ployz concepts and tunnels must not target service containers directly.
 - KTD24. Separate private control-plane reachability from tailnet access exposure and subnet access. Tailnet routing is not control authority; NATS credentials and subject permissions remain the authority boundary.
+- KTD25. Tailnet Subnet Access should be explicit cluster-level enablement followed by automatic sync of active Machine Endpoint Subnets. The sync should leave visible integration evidence and must not be hidden inside deploy, machine add, Dataplane Prepare, or route binding behavior.
 
 ## Implementation Units
 
@@ -275,11 +295,11 @@ If the split becomes too mechanical, land it in two passes: first rename the sea
 - **Files:** Add or update architecture docs such as `docs/architecture/tailnet-integration.md`, `docs/architecture/tailnet-subnet-access.md`, or `docs/architecture/tailnet-access-bridge.md`; this plan and `CONTEXT.md` are the initial TODO sources if no doc is added during implementation.
 - **Approach:** Document Tailnet Integration as a future family:
   - Tailnet Access Bridge: selected private access to Ployz gateway, admin, or machine-access surfaces.
-  - Tailnet Subnet Access: explicit advertisement of selected Machine Endpoint Subnets for operator/debug access to endpoint networks and containers.
+  - Tailnet Subnet Access: explicit cluster-level enablement followed by automatic advertisement and withdrawal of active Machine Endpoint Subnets for operator/debug access to endpoint networks and containers.
   - Private Control-Plane Path: NATS reachability over a tailnet/private path while NATS auth remains authority.
   - Tailnet Egress Bridge: selected service or namespace egress to tailnet resources or SaaS targets.
 - **Prior art to reference:** Tailscale subnet routers let a tailnet reach devices or networks that do not run the Tailscale client; Kubernetes Operator Connector resources can act as subnet routers, exit nodes, or app connectors; Kubernetes ingress/egress proxies expose selected resources rather than making every pod address public by default.
-- **Verification:** Docs state that Tailnet Integration is not a Dataplane Provider, is not selectable in this refactor, and does not alter `DataplanePrepareRequest`.
+- **Verification:** Docs state that Tailnet Integration is not a Dataplane Provider, is not selectable in this refactor, and does not alter `DataplanePrepareRequest`. Docs also state that Tailnet Subnet Access has no implicit exposure before cluster-level enablement, and after enablement active Machine Endpoint Subnets are synced with visible integration evidence.
 
 ### U10. Deferred Closed Public Ingress And Tunnel Ingress TODO
 
@@ -333,6 +353,7 @@ If the split becomes too mechanical, land it in two passes: first rename the sea
 - AE22. Docs distinguish Tailnet Integration from Tailscale as Dataplane Provider, and no current config, CLI flag, SDK type, operation payload, or prepare request exposes a tailnet integration.
 - AE23. Docs distinguish Closed Public Ingress, Private Control-Plane Path, and Tunnel Ingress from Dataplane Prepare; no current config, CLI flag, SDK type, operation payload, or prepare request exposes Cloudflare Tunnel, NATS-over-tailnet, or firewall closure.
 - AE24. Docs state that Private Control-Plane Path does not grant tailnet user access and Tailnet Access Bridge or Tailnet Subnet Access does not grant NATS control authority.
+- AE25. Docs state that Tailnet Subnet Access is future cluster-level opt-in: no subnet is exposed before enablement, and after enablement active Machine Endpoint Subnets are automatically synced with visible integration evidence.
 
 ## Risks And Mitigations
 
@@ -346,7 +367,7 @@ If the split becomes too mechanical, land it in two passes: first rename the sea
 - **IPv6 surface before IPv6 implementation:** Support IPv6 in generic types while making current adapter rejection explicit and typed. Do not silently drop IPv6 member endpoint subnets.
 - **DNS confusion:** Keep route-binding DNS, Ployz DNS process behavior, and MagicDNS documented as separate planes.
 - **Traffic observation creep:** Keep analytics and flow attribution in a future passive observation track. Do not use flow data as deploy success, access control, or routing authority.
-- **Tailnet exposure creep:** Keep Tailnet Integration out of Dataplane Prepare. Do not accidentally turn a future integration into default all-machine or all-subnet exposure.
+- **Tailnet exposure creep:** Keep Tailnet Integration out of Dataplane Prepare. Automatic Tailnet Subnet Access begins only after explicit cluster-level enablement and should keep visible evidence for advertised or withdrawn Machine Endpoint Subnets.
 
 ## Verification Plan
 

@@ -1,15 +1,13 @@
 use async_nats::jetstream;
-use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
+use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, operation_id, revision_id, service_id, step_id};
-use ployzd::deploy_worker::{MachineContainerRuntime, WireGuardEbpfPreparer};
+use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
-};
+use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineContainerRunSpec,
     MachineRunContainerOutcome,
@@ -118,22 +116,16 @@ async fn machine_runtime_serves_wireguard_ebpf_prepare() {
     )
     .await
     .expect("machine runtime starts");
-    let mut preparer = NatsMachineWireGuardEbpfPreparer::new(nats.client.clone());
+    let mut preparer =
+        NatsMachineDataplanePreparer::new(nats.client.clone(), nats.observations.clone());
 
     preparer
-        .prepare_wireguard_ebpf(WireGuardEbpfPrepareRequest {
-            operation_id: operation_id("op_123"),
-            machines: vec![machine_id("machine_a")],
-            endpoint_routes: vec![
-                ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(
-                    &machine_id("machine_a"),
-                ),
-            ],
-            peer_endpoints: Vec::new(),
-            peers: Vec::new(),
-        })
+        .prepare_dataplane(DataplanePrepareRequest::for_machines(
+            operation_id("op_123"),
+            vec![machine_id("machine_a")],
+        ))
         .await
-        .expect("wireguard ebpf prepare succeeds");
+        .expect("dataplane prepare succeeds");
 
     runtime
         .shutdown()

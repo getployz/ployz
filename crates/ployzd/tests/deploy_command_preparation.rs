@@ -33,7 +33,6 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             )
             .expect("valid machine observation snapshot"),
         ],
-        wireguard_peer_endpoints: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -70,7 +69,6 @@ async fn uses_active_service_revision_and_target_replicas() {
             )
             .expect("valid machine observation snapshot"),
         ],
-        wireguard_peer_endpoints: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -106,7 +104,6 @@ async fn rejects_active_state_for_a_different_service() {
             eligible_machines: vec![machine_id("machine_a")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
-            wireguard_peer_endpoints: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
