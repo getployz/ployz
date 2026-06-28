@@ -56,13 +56,41 @@ _Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, synchro
 A bounded operation step that asks target machines to make dataplane projection usable for one operation attempt and report evidence. It may use NATS machine calls, but it does not make dataplane state cluster truth.
 _Avoid_: Dataplane Projection Readiness, Dataplane Host Preparation, mesh bootstrap
 
+**Dataplane Provider**:
+The cluster-level data-plane mesh implementation used for dataplane projection. Deploys declare Dataplane Membership; they do not choose providers, and machines do not bring their own provider.
+_Avoid_: Per-deploy mesh, per-machine provider, route backend
+
+**Dataplane Provider Transition**:
+An explicit cluster operation that changes the cluster's Dataplane Provider. It is separate from deploy and must leave evidence about provider preparation, cutover, rollback, and cleanup.
+_Avoid_: Deploy side effect, silent mesh switch, mixed provider rollout
+
+**Tailnet Integration**:
+A family of optional future integrations that use a Tailscale tailnet for selected access, control-plane reachability, subnet routing, or egress without making Tailscale the cluster Dataplane Provider by default.
+_Avoid_: Dataplane Provider, hidden provider migration, MagicDNS route backend
+
+**Tailnet Access Bridge**:
+An optional Tailnet Integration that lets a Tailscale tailnet reach selected Ployz gateway, admin, or machine-access surfaces while the cluster keeps its Dataplane Provider. It is access exposure, not dataplane provider choice, route binding authority, machine membership, or control-plane connectivity.
+_Avoid_: Dataplane Provider, Private Control-Plane Path, Tailscale dataplane adapter, all subnets exposed, MagicDNS route backend
+
+**Tailnet Subnet Access**:
+An optional Tailnet Integration that advertises selected Machine Endpoint Subnets to a Tailscale tailnet for operator or debugging access to machine-local endpoint networks and containers. It is raw subnet reachability and must not be treated as app ingress or route protection.
+_Avoid_: Route Binding, Tunnel Ingress, gateway route, default all-subnet exposure, control-plane authority
+
+**Ployz Native Mesh**:
+The built-in dataplane provider that implements dataplane projection through Ployz-owned WireGuard, eBPF, routes, and local machine dataplane material. It is one implementation behind Dataplane Prepare; WireGuard and eBPF details are provider internals and evidence.
+_Avoid_: ManagedWireGuardEbpf, WireGuard data plane, generic mesh
+
 **Dataplane Membership**:
 A machine's operation-derived participation in the cluster data-plane mesh for service endpoint reachability. It is distinct from durable machine control-plane authority, machine lifecycle, and workload placement eligibility.
 _Avoid_: Machine membership, runtime membership, control-plane authority, placement eligibility, durable membership registry
 
 **Dataplane Route Advertisement**:
-An operation-derived claim that one or more machine endpoint subnets should be reachable through a dataplane member. Route advertisements describe data-plane reachability intent or evidence; they do not own endpoint subnet assignment or route bindings.
+An operation-derived claim or provider evidence that one or more machine endpoint subnets should be reachable through a dataplane member. In the minimum declared dataplane prepare shape, route advertisements are derived from Dataplane Membership and provider facts, not submitted as separate generic request data. They do not own endpoint subnet assignment or route bindings.
 _Avoid_: Route Binding, subnet ownership, gateway route, WireGuard peer, durable route registry
+
+**Dataplane Traffic Observation**:
+A passive view of data-plane traffic movement for diagnostics, analytics, and capacity insight. It does not decide routing, access, placement, deploy success, or cluster truth.
+_Avoid_: Dataplane Prepare, route authority, access authority, billing truth
 
 **Dataplane Host Preparation**:
 A bounded machine-local preparation step that makes a machine eligible for dataplane projection by preparing required host capabilities and local machine-owned dataplane material. It can run during bootstrap or an explicit substrate update; it does not create live WireGuard interfaces, routes, peers, or eBPF attachments.
@@ -95,6 +123,18 @@ _Avoid_: Dashboard grant, Cloud session, auth cookie, user session
 **Gateway Session Key**:
 Secret material shared by gateway replicas in a cluster for creating and verifying route access sessions. It is local authority for gateway request admission, not route state or operation history.
 _Avoid_: Route secret, auth secret, cookie secret
+
+**Closed Public Ingress**:
+A machine network posture where no public inbound service ports are required for normal operation. The machine may still require explicit outbound egress to the control plane, tailnet, tunnel provider, package sources, or operator-approved dependencies.
+_Avoid_: Air gap, no network, firewall disabled, no egress
+
+**Private Control-Plane Path**:
+A future topology where machine control-plane connectivity reaches NATS through an approved private network path such as a tailnet or private mesh, instead of requiring public internet reachability to the NATS endpoint. It changes control-plane reachability, not cluster truth or data-plane provider semantics.
+_Avoid_: Dataplane Provider, Tailnet Access Bridge, public NATS, hidden control channel
+
+**Tunnel Ingress**:
+An optional ingress transport where an outbound tunnel connector carries external route traffic to Ployz gateway surfaces, without opening public 80/443 on a machine. The gateway still applies route bindings and route protection; the tunnel must not bypass the gateway to target service containers directly.
+_Avoid_: Route Binding, gateway replacement, direct service tunnel, public firewall rule, Tailnet Access Bridge
 
 **Embed Access Renewal**:
 An iframe-oriented protected-route presentation where the gateway asks the embedding product surface for fresh access-provider evidence. It preserves route protection while allowing dashboard embeds to recover from expired or invalid route access sessions without a manual sign-in click.
@@ -412,6 +452,14 @@ _Avoid_: Bootstrap invite, bootstrap session, token, machine acceptance, operati
 The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure. Callback failure after local founder success keeps the same claim; rerunning keeper on the same machine resumes the same attempt rather than selecting a new founder.
 _Avoid_: Leader election, automatic founder failover, first healthy server
 
+**Abandon Founder Attempt**:
+A Cloud-side operator action that marks a formed-but-unreachable Cloud Founder Claim terminal so the organization can start a new Founder Bootstrap through a new Cloud Bootstrap Session. It does not clean up, revoke, or mutate the already-formed local machine.
+_Avoid_: Founder failover, automatic promotion, Cloud cleanup, machine removal
+
+**Cloud Connection**:
+Cloud's durable product-side relationship to an Organization Cluster after Cloud has accepted bootstrap evidence and can authenticate as an authorized NATS client. A Cloud Connection exists only after reachability succeeds; a Cloud Bootstrap Redemption may establish one, but they are separate concepts and a connection is not cluster truth, machine membership, or recovery authority.
+_Avoid_: Runtime authority, machine membership, Cloud control plane, recovery authority
+
 **Cloud Link**:
 An explicit operation that authorizes Cloud as an operator client for an existing local cluster and gives Cloud the endpoint and trust material it needs to connect over direct TLS NATS. Cloud link does not bootstrap a machine and does not make Cloud runtime truth.
 _Avoid_: Machine bootstrap, Cloud migration, tunnel setup
@@ -419,6 +467,10 @@ _Avoid_: Machine bootstrap, Cloud migration, tunnel setup
 **Substrate Update**:
 An explicit operation that changes already-installed non-keeper Ployz substrate on one machine to one requested Ployz version. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, not workload service containers or keeper.
 _Avoid_: Update, upgrade, rollout, in-place update
+
+**Substrate Uninstall**:
+An explicit local action that removes Ployz substrate and machine-local Ployz material from one machine. It may be forced despite local evidence that the machine is still part of a cluster, but it does not remove cluster truth, delete user workloads, Docker images, Docker volumes, service containers, arbitrary networks, or runtime data by default.
+_Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
 **Keeper Update**:
 An explicit operation that changes keeper on one machine to one requested Ployz version. It is separate from substrate update because keeper is the local executor for substrate steps.
