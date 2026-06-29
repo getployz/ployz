@@ -5,7 +5,9 @@ pub mod cert;
 use ployz_core::backup::{BackupTarget, BackupTargetValidationError};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::OperationId;
-use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
+use ployz_core::install::{
+    MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery, MachineJoinTemplate,
+};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
 };
@@ -48,15 +50,18 @@ pub struct BackupCreateCommand {
     pub target: BackupTarget,
 }
 
-/// Non-secret material available at submit time: the install line needs
-/// only the join token, bootstrap URL, and join bundle. The per-machine
-/// secret is minted afterwards as bounded operation work.
+/// Bootstrap material available at submit time.
+///
+/// The per-machine secret is still minted afterwards as bounded operation
+/// work. `join_secret_delivery` is the low-privilege Join credential used by
+/// the target keeper to redeem and report this one join token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddBootstrapMaterial {
     pub raw_join_token: RawJoinToken,
     pub join_token: IssuedJoinToken,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_bundle: MachineJoinBundle,
+    pub join_secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +74,13 @@ pub enum MachineAddBootstrapMaterialError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddBootstrapConfig {
     pub bootstrap_url: MachineBootstrapUrl,
-    pub join_template: Option<Box<MachineJoinTemplate>>,
+    pub join_material: Option<Box<MachineAddBootstrapJoinMaterial>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddBootstrapJoinMaterial {
+    pub join_template: MachineJoinTemplate,
+    pub join_secret_delivery: MachineJoinSecretDelivery,
 }
 
 impl MachineAddBootstrapConfig {
@@ -77,13 +88,20 @@ impl MachineAddBootstrapConfig {
     pub fn new(bootstrap_url: MachineBootstrapUrl) -> Self {
         Self {
             bootstrap_url,
-            join_template: None,
+            join_material: None,
         }
     }
 
     #[must_use]
-    pub fn with_join_template(mut self, join_template: MachineJoinTemplate) -> Self {
-        self.join_template = Some(Box::new(join_template));
+    pub fn with_join_material(
+        mut self,
+        join_template: MachineJoinTemplate,
+        join_secret_delivery: MachineJoinSecretDelivery,
+    ) -> Self {
+        self.join_material = Some(Box::new(MachineAddBootstrapJoinMaterial {
+            join_template,
+            join_secret_delivery,
+        }));
         self
     }
 }
@@ -191,7 +209,7 @@ impl OperationControllers {
         &self,
         operation_id: &OperationId,
     ) -> Result<MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError> {
-        let Some(join_template) = self.machine_bootstrap.join_template.clone() else {
+        let Some(join_material) = self.machine_bootstrap.join_material.as_ref() else {
             return Err(MachineAddBootstrapMaterialError::MissingJoinTemplate);
         };
         let now = current_unix_seconds()
@@ -210,7 +228,8 @@ impl OperationControllers {
             raw_join_token,
             join_token: IssuedJoinToken::new(fingerprint, expires_at),
             bootstrap_url: self.machine_bootstrap.bootstrap_url.clone(),
-            join_bundle: join_template.join_bundle.clone(),
+            join_bundle: join_material.join_template.join_bundle.clone(),
+            join_secret_delivery: join_material.join_secret_delivery.clone(),
         })
     }
 
@@ -221,7 +240,7 @@ impl OperationControllers {
 
     #[must_use]
     pub fn has_machine_join_template(&self) -> bool {
-        self.machine_bootstrap.join_template.is_some()
+        self.machine_bootstrap.join_material.is_some()
     }
 
     pub async fn operation_status_snapshot(

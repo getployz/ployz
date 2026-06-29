@@ -3,7 +3,8 @@
 use ployz_core::dataplane::default_endpoint_subnet;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    InstallContractError, MachineBootstrapUrl, MachineJoinTemplate, NatsMachineMaterialPaths,
+    InstallContractError, MachineBootstrapUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    NatsMachineMaterialPaths,
 };
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::security::NatsPrincipal;
@@ -26,6 +27,7 @@ pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
 pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
+pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
 pub const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 pub const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
@@ -394,7 +396,11 @@ fn load_machine_bootstrap(
     let Some(join_template) = load_machine_join_template(env)? else {
         return Ok(MachineAddBootstrapConfig::new(bootstrap_url));
     };
-    Ok(MachineAddBootstrapConfig::new(bootstrap_url).with_join_template(join_template))
+    let Some(join_secret_delivery) = load_machine_join_secret_delivery(env)? else {
+        return Ok(MachineAddBootstrapConfig::new(bootstrap_url));
+    };
+    Ok(MachineAddBootstrapConfig::new(bootstrap_url)
+        .with_join_material(join_template, join_secret_delivery))
 }
 
 fn load_machine_join_template(
@@ -415,6 +421,23 @@ fn load_machine_join_template(
             source: source.to_string(),
         }
     })
+}
+
+fn load_machine_join_secret_delivery(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<MachineJoinSecretDelivery>, DaemonProcessConfigError> {
+    let Some(path) = env_value(env, PLOYZ_JOIN_NKEY_SEED_FILE_ENV) else {
+        return Ok(None);
+    };
+    let raw = fs::read_to_string(&path).map_err(|source| {
+        DaemonProcessConfigError::ReadMachineJoinSeed {
+            path: path.clone(),
+            source: source.to_string(),
+        }
+    })?;
+    let nats_credentials = NatsUserSeed::try_new(raw.trim())
+        .map_err(|_| DaemonProcessConfigError::InvalidMachineJoinSeed { path: path.clone() })?;
+    Ok(Some(MachineJoinSecretDelivery { nats_credentials }))
 }
 
 fn load_gateway_listen_addr(
@@ -482,6 +505,13 @@ pub enum DaemonProcessConfigError {
     InvalidMachineJoinTemplate {
         path: String,
         source: String,
+    },
+    ReadMachineJoinSeed {
+        path: String,
+        source: String,
+    },
+    InvalidMachineJoinSeed {
+        path: String,
     },
     InvalidGatewayListenAddr {
         value: String,
@@ -560,6 +590,20 @@ impl fmt::Display for DaemonProcessConfigError {
                     formatter,
                     "{} file {path:?} is invalid: {source}",
                     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV
+                )
+            }
+            Self::ReadMachineJoinSeed { path, source } => {
+                write!(
+                    formatter,
+                    "{} points to unreadable file {path:?}: {source}",
+                    PLOYZ_JOIN_NKEY_SEED_FILE_ENV
+                )
+            }
+            Self::InvalidMachineJoinSeed { path } => {
+                write!(
+                    formatter,
+                    "{} file {path:?} does not contain an SU-prefixed user seed",
+                    PLOYZ_JOIN_NKEY_SEED_FILE_ENV
                 )
             }
             Self::InvalidGatewayListenAddr { value, .. } => write!(

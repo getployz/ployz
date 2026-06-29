@@ -125,9 +125,10 @@ fn local_effects_install_first_machine_process_units() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
+            join_seed = root.join("nats/join.seed").display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
@@ -187,9 +188,10 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
+            join_seed = root.join("nats/join.seed").display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
@@ -233,9 +235,10 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={template}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={template}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
+            join_seed = root.join("nats/join.seed").display(),
             template = template_path.display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             ctl = root.join("bin/ployz-ebpf-ctl").display()

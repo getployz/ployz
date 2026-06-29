@@ -3,13 +3,11 @@ use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, BackupCreateError, BackupCreateRequest,
     BackupCreateResponse, CertBundleRef, CertId, CertOperationState, CertRunningStage,
-    CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapCallbackAccepted,
-    CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken, CloudBootstrapClientInfo,
-    CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent,
-    CloudBootstrapMachineFacts, CloudBootstrapOutcome, CloudBootstrapRedemptionId,
-    CloudBootstrapReleaseSelection, CloudBootstrapSessionCreateRequest,
-    CloudBootstrapSessionCreated, CloudBootstrapSessionPollRequest, CloudBootstrapToken,
-    CloudBootstrapTokenRedeemRequest, CloudFounderBootstrapResult, DeployOperationState,
+    CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapAttemptId,
+    CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
+    CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
+    CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
+    CloudBootstrapSessionPollRequest, CloudFounderBootstrapResult, DeployOperationState,
     DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
@@ -192,6 +190,7 @@ fn sdk_exports_operation_api_wire_types() {
                 .expect("valid bootstrap url"),
             join_bundle: machine_join_bundle(),
             join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+            join_secret_delivery: machine_join_secret_delivery(),
         },
     };
 
@@ -201,7 +200,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123"}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -242,30 +241,15 @@ fn sdk_exports_operation_api_wire_types() {
 
 #[test]
 fn sdk_exports_cloud_bootstrap_wire_types() {
-    let redeem_request = CloudBootstrapTokenRedeemRequest {
-        cloud_token: CloudBootstrapToken::try_new("pcbs_abc123").expect("valid cloud token"),
-        client: CloudBootstrapClientInfo::current("0.1.0"),
-        machine: CloudBootstrapMachineFacts {
-            hostname: Some("web-01".to_owned()),
-            os: "linux".to_owned(),
-            arch: "x86_64".to_owned(),
-            candidate_runtime_nats_url: Some(
-                MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
-                    .expect("valid nats url"),
-            ),
-        },
-    };
+    let attempt_id = CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id");
     let decision = CloudBootstrapDecision::Ready {
         envelope: Box::new(CloudBootstrapEnvelope {
+            attempt_id: attempt_id.clone(),
             redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
                 .expect("valid redemption id"),
             callback_url: "https://cloud.ployz.com/api/bootstrap/callback".to_owned(),
             callback_token: CloudBootstrapCallbackToken::try_new("pcbc_abc123")
                 .expect("valid callback token"),
-            release: CloudBootstrapReleaseSelection {
-                channel: Some("alpha".to_owned()),
-                version: "0.1.0".to_owned(),
-            },
             intent: CloudBootstrapIntent::Joiner {
                 joiner: Box::new(ployz_sdk_types::CloudJoinerBootstrap {
                     runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
@@ -284,6 +268,7 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
         }),
     };
     let callback = CloudBootstrapCallbackRequest {
+        attempt_id,
         redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
             .expect("valid redemption id"),
         outcome: CloudBootstrapOutcome::FounderSucceeded {
@@ -303,19 +288,12 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
     };
 
     assert_eq!(
-        serde_json::to_string(&redeem_request).expect("request serializes"),
-        r#"{"cloud_token":"pcbs_abc123","client":{"protocol_version":1,"keeper_version":"0.1.0"},"machine":{"hostname":"web-01","os":"linux","arch":"x86_64","candidate_runtime_nats_url":"tls://203.0.113.10:4222"}}"#
-    );
-    assert_eq!(
         serde_json::to_string(&callback).expect("callback serializes"),
-        r#"{"redemption_id":"pcbr_123","outcome":{"outcome":"founder_succeeded","result":{"machine_id":"core_1","runtime_nats_url":"tls://203.0.113.10:4222","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"}}}}"#
+        r#"{"attempt_id":"pcba_123","redemption_id":"pcbr_123","outcome":{"outcome":"founder_succeeded","result":{"machine_id":"core_1","runtime_nats_url":"tls://203.0.113.10:4222","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"}}}}"#
     );
 
-    let request_debug = format!("{redeem_request:?}");
     let decision_debug = format!("{decision:?}");
-    assert!(!request_debug.contains("pcbs_abc123"));
     assert!(!decision_debug.contains("pcbc_abc123"));
-    assert!(request_debug.contains("CloudBootstrapToken([redacted])"));
     assert!(decision_debug.contains("CloudBootstrapCallbackToken([redacted])"));
 }
 
@@ -342,10 +320,6 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     assert_fixture::<CloudBootstrapSessionPollRequest>(
         &fixture,
         "cloud_bootstrap_session_poll_request",
-    );
-    assert_fixture::<CloudBootstrapTokenRedeemRequest>(
-        &fixture,
-        "cloud_bootstrap_token_redeem_request",
     );
     assert_fixture::<CloudBootstrapDecision>(&fixture, "cloud_bootstrap_decision");
     assert_fixture::<CloudBootstrapCallbackRequest>(&fixture, "cloud_bootstrap_callback_request");

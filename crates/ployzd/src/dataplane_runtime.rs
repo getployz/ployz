@@ -17,7 +17,7 @@ mod host_commands;
 mod host_routes;
 
 #[cfg(test)]
-use host_commands::{HostCommandAction, HostCommandPurpose};
+use host_commands::HostCommandAction;
 use host_commands::{
     HostCommandOutcome, HostCommandPlan, HostDataplaneEvidence, default_command_plans,
     run_host_command, unavailable, wireguard_interface_plans,
@@ -481,31 +481,6 @@ mod tests {
             "ip",
             ["link", "set", "up", "dev", "ployz-wg0"]
         )));
-    }
-
-    #[test]
-    fn command_plans_distinguish_provisioning_from_readiness() {
-        let plans = wireguard_interface_plans(
-            "ployz-wg0".to_owned(),
-            "/etc/ployz/wireguard.key".into(),
-            51820,
-        );
-
-        assert!(plans.contains(&HostCommandPlan::readiness_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "wg",
-            ["--version"]
-        )));
-        let key_generation = plans
-            .iter()
-            .find(|plan| {
-                matches!(
-                    &plan.action,
-                    HostCommandAction::CommandSucceeds { program, .. } if program == "sh"
-                )
-            })
-            .expect("key generation plan exists");
-        assert_eq!(key_generation.purpose, HostCommandPurpose::ProvisioningStep);
     }
 
     #[test]

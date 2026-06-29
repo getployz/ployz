@@ -63,6 +63,7 @@ async fn binary_machine_add_calls_nats_service() {
                     join_bundle: machine_join_bundle(),
                     join_token: MachineJoinToken::try_new("join_once_123")
                         .expect("valid join token"),
+                    join_secret_delivery: machine_join_secret_delivery(),
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -208,6 +209,15 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 install_path: absolute_path("/usr/local/bin/ployz-ebpf-ctl"),
             },
         },
+    }
+}
+
+fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
+    ployz_core::install::MachineJoinSecretDelivery {
+        nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("valid nats credentials"),
     }
 }
 

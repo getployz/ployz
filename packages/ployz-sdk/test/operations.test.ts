@@ -781,6 +781,7 @@ function defaultFixture(): OperationFixture {
         bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
         join_bundle: machineJoinBundle(),
         join_token: machineJoinToken("join_once_123"),
+        join_secret_delivery: machineJoinSecretDelivery(),
       },
     },
     machine_snapshots: [

@@ -5,17 +5,15 @@ use crate::machine_runtime::client::{
     MachineCallError, NatsMachineDataplanePreparer, call_machine,
 };
 use crate::machine_runtime::protocol::{
-    MachineDataplanePrepareDomainError, MachineDataplanePrepareRpcOk,
     MachineDataplanePrepareRpcRequest, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember, DataplanePrepareError,
-    DataplanePrepareProviderReport, DataplanePrepareRequest, PloyzNativeMeshComponent,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshPrepareRequest,
-    WireGuardEbpfPrepareError, WireGuardEbpfPrepareReportError, WireGuardPeer,
-    WireGuardPeerEndpoint, WireGuardPublicKey,
+    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember, DataplanePrepareError, DataplanePrepareRequest,
+    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
+    PloyzNativeMeshPrepareRequest, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReportError,
+    WireGuardPeer, WireGuardPeerEndpoint, WireGuardPublicKey,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::state::MachinePublicIpObservation;
@@ -26,7 +24,7 @@ impl DataplanePreparer for NatsMachineDataplanePreparer {
     async fn prepare_dataplane(
         &mut self,
         request: DataplanePrepareRequest,
-    ) -> Result<DataplanePrepareProviderReport, DataplanePrepareError> {
+    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
         let request = self
             .ployz_native_mesh_prepare_request(request)
             .await
@@ -35,7 +33,7 @@ impl DataplanePreparer for NatsMachineDataplanePreparer {
             .prepare_ployz_native_mesh(request)
             .await
             .map_err(DataplanePrepareError::from)?;
-        Ok(DataplanePrepareProviderReport::PloyzNativeMesh(report))
+        Ok(report)
     }
 }
 
@@ -148,34 +146,6 @@ fn validate_ployz_native_mesh_membership(
                 )),
             ));
         }
-        validate_ployz_native_mesh_endpoint_subnet(member)?;
-    }
-    Ok(())
-}
-
-fn validate_ployz_native_mesh_endpoint_subnet(
-    member: &DataplaneMember,
-) -> Result<(), WireGuardEbpfPrepareError> {
-    let subnet = member.endpoint_subnet.ipnet();
-    if !matches!(subnet.addr(), std::net::IpAddr::V4(_)) {
-        return Err(ployz_native_mesh_unavailable(
-            &member.machine_id,
-            PloyzNativeMeshComponent::WireGuard,
-            failure_message(format!(
-                "ployz native mesh endpoint subnet must be IPv4: {}",
-                member.endpoint_subnet.as_string()
-            )),
-        ));
-    }
-    if subnet.prefix_len() != 24 || subnet.addr() != subnet.network() {
-        return Err(ployz_native_mesh_unavailable(
-            &member.machine_id,
-            PloyzNativeMeshComponent::WireGuard,
-            failure_message(format!(
-                "ployz native mesh endpoint subnet must be an IPv4 /24 network: {}",
-                member.endpoint_subnet.as_string()
-            )),
-        ));
     }
     Ok(())
 }
@@ -282,29 +252,22 @@ async fn request_machine_dataplane(
     machine_id: &MachineId,
     request: &MachineDataplanePrepareRpcRequest,
 ) -> Result<MachinePloyzNativeMeshPrepareRpcOk, WireGuardEbpfPrepareError> {
-    let response =
-        call_machine::<MachineDataplanePrepareRpcOk, MachineDataplanePrepareDomainError>(
-            &preparer.client,
-            preparer.request_timeout,
+    call_machine::<MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareDomainError>(
+        &preparer.client,
+        preparer.request_timeout,
+        machine_id,
+        MachineServiceEndpoint::DataplanePrepare,
+        request,
+    )
+    .await
+    .map_err(|error| match error {
+        MachineCallError::Unavailable(reason) => ployz_native_mesh_unavailable(
             machine_id,
-            MachineServiceEndpoint::DataplanePrepare,
-            request,
-        )
-        .await
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => ployz_native_mesh_unavailable(
-                machine_id,
-                PloyzNativeMeshComponent::WireGuard,
-                reason.failure_message(),
-            ),
-            MachineCallError::Domain(MachineDataplanePrepareDomainError::PloyzNativeMesh(
-                error,
-            )) => error.into_prepare_error(machine_id.clone()),
-        })?;
-
-    match response {
-        MachineDataplanePrepareRpcOk::PloyzNativeMesh(response) => Ok(response),
-    }
+            PloyzNativeMeshComponent::WireGuard,
+            reason.failure_message(),
+        ),
+        MachineCallError::Domain(error) => error.into_prepare_error(machine_id.clone()),
+    })
 }
 
 impl MachinePloyzNativeMeshPrepareDomainError {

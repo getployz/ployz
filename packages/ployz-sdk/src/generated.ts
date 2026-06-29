@@ -42,41 +42,37 @@ export type MachineBootstrapUrl = Brand<string, "MachineBootstrapUrl">;
 
 export type MachineJoinToken = Brand<string, "MachineJoinToken">;
 
-export type CloudBootstrapToken = Brand<string, "CloudBootstrapToken">;
-
 export type CloudBootstrapSessionSecret = Brand<string, "CloudBootstrapSessionSecret">;
 
 export type CloudBootstrapCallbackToken = Brand<string, "CloudBootstrapCallbackToken">;
 
 export type CloudBootstrapRedemptionId = Brand<string, "CloudBootstrapRedemptionId">;
 
+export type CloudBootstrapAttemptId = Brand<string, "CloudBootstrapAttemptId">;
+
 export type CloudBootstrapClientInfo = { protocol_version: number, keeper_version: string, };
 
 export type CloudBootstrapMachineFacts = { hostname: string | null, os: string, arch: string, candidate_runtime_nats_url: MachineJoinRuntimeNatsUrl | null, };
 
-export type CloudBootstrapSessionCreateRequest = { client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
+export type CloudBootstrapSessionCreateRequest = { attempt_id: CloudBootstrapAttemptId, client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
 
 export type CloudBootstrapSessionCreated = { browser_url: string, user_code: string, session_secret: CloudBootstrapSessionSecret, poll_after_seconds: number, expires_at_unix_seconds: number, };
 
-export type CloudBootstrapSessionPollRequest = { session_secret: CloudBootstrapSessionSecret, machine: CloudBootstrapMachineFacts, };
+export type CloudBootstrapSessionPollRequest = { attempt_id: CloudBootstrapAttemptId, session_secret: CloudBootstrapSessionSecret, machine: CloudBootstrapMachineFacts, };
 
-export type CloudBootstrapTokenRedeemRequest = { cloud_token: CloudBootstrapToken, client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
+export type CloudBootstrapDecision = { "status": "pending", retry_after_seconds: number, } | { "status": "ready", envelope: CloudBootstrapEnvelope, } | { "status": "expired" } | { "status": "failed", failure: CloudBootstrapDecisionFailure, };
 
-export type CloudBootstrapDecision = { "status": "pending", retry_after_seconds: number, } | { "status": "ready", envelope: CloudBootstrapEnvelope, } | { "status": "rejected", rejection: CloudBootstrapRejection, };
+export type CloudBootstrapDecisionFailure = { "failure": "unsupported_client", message: FailureMessage, minimum_protocol_version: number, } | { "failure": "unauthorized" } | { "failure": "already_consumed_by_policy" } | { "failure": "invalid_machine_facts", message: FailureMessage, };
 
-export type CloudBootstrapRejection = { "rejection": "unsupported_client", message: FailureMessage, minimum_protocol_version: number, } | { "rejection": "expired" } | { "rejection": "unauthorized" } | { "rejection": "already_consumed_by_policy" } | { "rejection": "invalid_machine_facts", message: FailureMessage, };
-
-export type CloudBootstrapEnvelope = { redemption_id: CloudBootstrapRedemptionId, callback_url: string, callback_token: CloudBootstrapCallbackToken, release: CloudBootstrapReleaseSelection, intent: CloudBootstrapIntent, };
-
-export type CloudBootstrapReleaseSelection = { channel: string | null, version: string, };
+export type CloudBootstrapEnvelope = { attempt_id: CloudBootstrapAttemptId, redemption_id: CloudBootstrapRedemptionId, callback_url: string, callback_token: CloudBootstrapCallbackToken, intent: CloudBootstrapIntent, };
 
 export type CloudBootstrapIntent = { "intent": "founder", founder: CloudFounderBootstrap, } | { "intent": "joiner", joiner: CloudJoinerBootstrap, } | { "intent": "wait_for_founder", retry_after_seconds: number, };
 
-export type CloudFounderBootstrap = { install: FirstMachineInstallSpec, cloud_nats_user_public_key: NatsUserPublicKey, };
+export type CloudFounderBootstrap = { runtime_nats_url: MachineJoinRuntimeNatsUrl, cloud_nats_user_public_key: NatsUserPublicKey, };
 
 export type CloudJoinerBootstrap = { runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, join_token: MachineJoinToken, join_secret_delivery: MachineJoinSecretDelivery, };
 
-export type CloudBootstrapCallbackRequest = { redemption_id: CloudBootstrapRedemptionId, outcome: CloudBootstrapOutcome, };
+export type CloudBootstrapCallbackRequest = { attempt_id: CloudBootstrapAttemptId, redemption_id: CloudBootstrapRedemptionId, outcome: CloudBootstrapOutcome, };
 
 export type CloudBootstrapOutcome = { "outcome": "founder_succeeded", result: CloudFounderBootstrapResult, } | { "outcome": "joiner_succeeded", result: CloudJoinerBootstrapResult, } | { "outcome": "failed", failure: CloudBootstrapFailure, };
 
@@ -156,7 +152,7 @@ export type BackupOperationState = { "state": "accepted" } | { "state": "running
 
 export type BackupRunningStage = { "stage": "snapshotting_control_plane" } | { "stage": "writing_manifest", artifact: BackupArtifact, };
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: DataplanePrepareProviderReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, target: BackupTarget, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, target: BackupTarget, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -176,11 +172,7 @@ export type MachineEndpointSubnet = string;
 
 export type DataplaneMember = { machine_id: MachineId, endpoint_subnet: MachineEndpointSubnet, };
 
-export type DataplaneProviderKind = "ployz_native_mesh";
-
 export type DataplaneProviderFailure = { "provider": "ployz_native_mesh", component: PloyzNativeMeshComponent, };
-
-export type DataplanePrepareProviderReport = { "provider": "ployz_native_mesh", "report": PloyzNativeMeshPrepareReport };
 
 export type PloyzNativeMeshComponent = "wireguard" | "ebpf_forwarding";
 
@@ -298,7 +290,7 @@ export type BackupCreateRequest = { operation_id: OperationId, target: BackupTar
 
 export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, };
 
-export type MachineAddAccepted = { accepted: AcceptedOperation, machine_id: MachineId, bootstrap_url: MachineBootstrapUrl, join_bundle: MachineJoinBundle, join_token: MachineJoinToken, };
+export type MachineAddAccepted = { accepted: AcceptedOperation, machine_id: MachineId, bootstrap_url: MachineBootstrapUrl, join_bundle: MachineJoinBundle, join_token: MachineJoinToken, join_secret_delivery: MachineJoinSecretDelivery, };
 
 export type MachineListRequest = Record<symbol, never>;
 
@@ -429,14 +421,6 @@ export type OpsWatchError = { "error": "no_such_operation", operation_id: Operat
 export type OpsWatchUnavailableSource = { "source": "status_store", failure: StatusReadFailure, } | { "source": "event_log", failure: EventReplayFailure, };
 
 export type EventReplayFailure = "decode_event" | "read_event" | "timeout" | "invalid_event_sequence" | "invalid_next_replay_sequence";
-
-export type WireGuardEbpfComponent = PloyzNativeMeshComponent;
-
-export type WireGuardEbpfPrepareReport = PloyzNativeMeshPrepareReport;
-
-export type WireGuardEbpfMachineReady = PloyzNativeMeshMachineReady;
-
-export type WireGuardEbpfReady = PloyzNativeMeshReady;
 
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 

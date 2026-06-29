@@ -82,11 +82,18 @@ pub struct MachineEndpointSubnet(IpNet);
 
 impl MachineEndpointSubnet {
     pub fn try_new(value: impl AsRef<str>) -> Result<Self, MachineEndpointSubnetError> {
-        IpNet::from_str(value.as_ref())
-            .map(Self)
-            .map_err(|_| MachineEndpointSubnetError::Invalid {
-                value: value.as_ref().to_owned(),
-            })
+        let value = value.as_ref();
+        let subnet = IpNet::from_str(value).map_err(|_| MachineEndpointSubnetError::Invalid {
+            value: value.to_owned(),
+        })?;
+        match subnet {
+            IpNet::V4(subnet) if subnet.prefix_len() == 24 && subnet.addr() == subnet.network() => {
+                Ok(Self(IpNet::V4(subnet)))
+            }
+            IpNet::V4(_) | IpNet::V6(_) => Err(MachineEndpointSubnetError::Invalid {
+                value: value.to_owned(),
+            }),
+        }
     }
 
     #[must_use]
@@ -132,17 +139,13 @@ impl fmt::Display for MachineEndpointSubnetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid { value } => {
-                write!(formatter, "machine endpoint subnet {value:?} is not a CIDR")
+                write!(
+                    formatter,
+                    "machine endpoint subnet {value:?} is not an IPv4 /24 network"
+                )
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "provider", content = "report", rename_all = "snake_case")]
-pub enum DataplanePrepareProviderReport {
-    PloyzNativeMesh(PloyzNativeMeshPrepareReport),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,25 +162,9 @@ pub enum DataplanePrepareError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum DataplaneProviderKind {
-    PloyzNativeMesh,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneProviderFailure {
     PloyzNativeMesh { component: PloyzNativeMeshComponent },
-}
-
-impl DataplaneProviderFailure {
-    #[must_use]
-    pub const fn kind(&self) -> DataplaneProviderKind {
-        match self {
-            Self::PloyzNativeMesh { .. } => DataplaneProviderKind::PloyzNativeMesh,
-        }
-    }
 }
 
 impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
@@ -714,19 +701,16 @@ mod tests {
     }
 
     #[test]
-    fn machine_endpoint_subnet_accepts_ipv4_and_ipv6_cidrs() {
+    fn machine_endpoint_subnet_accepts_only_ipv4_24_networks() {
         assert_eq!(
             MachineEndpointSubnet::try_new("10.42.1.0/24")
                 .expect("valid ipv4")
                 .as_string(),
             "10.42.1.0/24"
         );
-        assert_eq!(
-            MachineEndpointSubnet::try_new("fd7a:115c:a1e0::/64")
-                .expect("valid ipv6")
-                .as_string(),
-            "fd7a:115c:a1e0::/64"
-        );
+        assert!(MachineEndpointSubnet::try_new("fd7a:115c:a1e0::/64").is_err());
+        assert!(MachineEndpointSubnet::try_new("10.42.1.0/25").is_err());
+        assert!(MachineEndpointSubnet::try_new("10.42.1.7/24").is_err());
         assert!(MachineEndpointSubnet::try_new("not-a-cidr").is_err());
     }
 

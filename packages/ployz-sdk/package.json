@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./generated": "./src/generated.ts"
   },
   "scripts": {
     "generate:types": "cargo run -p ployz-sdk-types --bin export-typescript > src/generated.ts",

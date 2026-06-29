@@ -93,7 +93,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     reload: impl NatsReloadRunner,
     backup_adapters: BackupAdapterRegistry,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
-    if config.machine_bootstrap.join_template.is_none() {
+    if config.machine_bootstrap.join_material.is_none() {
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
     }
     let plan = BootstrapPlan::for_single_server_client(&client)

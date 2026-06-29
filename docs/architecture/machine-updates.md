@@ -45,6 +45,10 @@ A machine has one configured release source from machine bootstrap. Update
 operations read that release source to resolve the requested exact Ployz version
 into artifact metadata. Updates do not change the release source.
 
+Machines that join an existing cluster inherit the cluster/runtime release
+authority. Cloud bootstrap must not choose a separate install version for a
+joiner or attach artifact URLs/checksums to the joiner envelope.
+
 The public installer may use a mutable channel during Bootstrap Delivery, but
 that channel is resolved before artifact download. The channel is not a Release
 Source, and it is not authority for keeper or substrate updates.

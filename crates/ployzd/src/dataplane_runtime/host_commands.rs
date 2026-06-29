@@ -16,19 +16,9 @@ pub(super) enum HostDataplaneEvidence {
     EbpfForwarding(EbpfForwardingReadyEvidence),
 }
 
-/// Why a host command runs: to mutate the host toward the required
-/// dataplane shape (idempotently), or to observe it without changing
-/// anything. Both produce readiness evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HostCommandPurpose {
-    ProvisioningStep,
-    ReadinessCheck,
-}
-
-/// One planned host action with an explicit purpose.
+/// One planned host action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HostCommandPlan {
-    pub(super) purpose: HostCommandPurpose,
     pub(super) action: HostCommandAction,
 }
 
@@ -55,7 +45,6 @@ impl HostCommandPlan {
         path: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            purpose: HostCommandPurpose::ReadinessCheck,
             action: HostCommandAction::ExistingPath {
                 component,
                 path: path.into(),
@@ -70,7 +59,6 @@ impl HostCommandPlan {
         args: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         Self {
-            purpose: HostCommandPurpose::ReadinessCheck,
             action: command_action(component, program, args),
         }
     }
@@ -82,7 +70,6 @@ impl HostCommandPlan {
         args: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         Self {
-            purpose: HostCommandPurpose::ProvisioningStep,
             action: command_action(component, program, args),
         }
     }
@@ -90,7 +77,6 @@ impl HostCommandPlan {
     #[must_use]
     pub(super) fn readiness_ployz_tc_bytecode(path: impl Into<PathBuf>) -> Self {
         Self {
-            purpose: HostCommandPurpose::ReadinessCheck,
             action: HostCommandAction::PloyzTcBytecode { path: path.into() },
         }
     }
@@ -100,10 +86,7 @@ impl HostCommandPlan {
         machine_id: &MachineId,
         command_timeout: Duration,
     ) -> Result<HostDataplaneEvidence, WireGuardEbpfPrepareError> {
-        let Self {
-            purpose: HostCommandPurpose::ProvisioningStep | HostCommandPurpose::ReadinessCheck,
-            action,
-        } = self;
+        let Self { action } = self;
         match action {
             HostCommandAction::ExistingPath { component, path } => {
                 if !path.exists() {

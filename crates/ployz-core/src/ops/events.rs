@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backup::{BackupManifest, BackupTarget};
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
-use crate::dataplane::DataplanePrepareProviderReport;
+use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
 use crate::machine::{
@@ -51,7 +51,7 @@ pub enum OperationEvent {
     },
     DeployDataplanePrepared {
         operation_id: OperationId,
-        report: DataplanePrepareProviderReport,
+        report: PloyzNativeMeshPrepareReport,
     },
     DeployContainerStarted {
         operation_id: OperationId,

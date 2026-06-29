@@ -12,22 +12,21 @@ use crate::{
     BackupTargetValidationFailure, BackupTargetValidationField, BootstrapMaterialFailure,
     CLOUD_BOOTSTRAP_PROTOCOL_VERSION, CancellationReason, CertBundleRef, CertId,
     CertOperationFailure, CertOperationState, CertRunningStage, CertValidAt, CertValidityWindow,
-    CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
-    CloudBootstrapClientInfo, CloudBootstrapDecision, CloudBootstrapEnvelope,
-    CloudBootstrapFailure, CloudBootstrapIntent, CloudBootstrapMachineFacts, CloudBootstrapOutcome,
-    CloudBootstrapRedemptionId, CloudBootstrapRejection, CloudBootstrapReleaseSelection,
-    CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
-    CloudBootstrapSessionPollRequest, CloudBootstrapSessionSecret, CloudBootstrapToken,
-    CloudBootstrapTokenRedeemRequest, CloudFounderBootstrap, CloudFounderBootstrapResult,
-    CloudJoinerBootstrap, CloudJoinerBootstrapResult, ContainerId, ControlPlaneKvSnapshot,
-    DataplaneMember, DataplanePrepareProviderReport, DataplaneProviderFailure,
-    DataplaneProviderKind, DeployCleanupContainer, DeployCleanupFailure, DeployCompletionOutcome,
-    DeployOperationFailure, DeployOperationState, DeployPlan, DeployPlanStep, DeployRequest,
-    DeployRoute, DeployRunningStage, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    DnsRole, EbpfForwardingReady, EbpfForwardingReadyEvidence, EventReplayFailure, EventSequence,
-    ExpectedActiveService, FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
-    GatewayRole, GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure,
-    ImageReference, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    CloudBootstrapAttemptId, CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest,
+    CloudBootstrapCallbackToken, CloudBootstrapClientInfo, CloudBootstrapDecision,
+    CloudBootstrapDecisionFailure, CloudBootstrapEnvelope, CloudBootstrapFailure,
+    CloudBootstrapIntent, CloudBootstrapMachineFacts, CloudBootstrapOutcome,
+    CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
+    CloudBootstrapSessionPollRequest, CloudBootstrapSessionSecret, CloudFounderBootstrap,
+    CloudFounderBootstrapResult, CloudJoinerBootstrap, CloudJoinerBootstrapResult, ContainerId,
+    ControlPlaneKvSnapshot, DataplaneMember, DataplaneProviderFailure, DeployCleanupContainer,
+    DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
+    DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, DeployRunningStage, DeploySubmitError,
+    DeploySubmitRequest, DeploySubmitResponse, DnsRole, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, EventReplayFailure, EventSequence, ExpectedActiveService,
+    FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayRole,
+    GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure, ImageReference,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest,
     InitFirstMachineActivateResponse, InitFirstMachineActivated, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy, InstallSha256Digest,
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
@@ -86,10 +85,18 @@ pub fn generated_typescript() -> String {
     ));
 
     push_contract_decls(&mut output, &config);
-    push_compatibility_aliases(&mut output);
     push_operation_api_contracts(&mut output, &config);
 
-    output
+    strip_trailing_whitespace(&output)
+}
+
+fn strip_trailing_whitespace(value: &str) -> String {
+    let mut stripped = String::with_capacity(value.len());
+    for line in value.lines() {
+        stripped.push_str(line.trim_end());
+        stripped.push('\n');
+    }
+    stripped
 }
 
 macro_rules! exported_types {
@@ -111,20 +118,18 @@ macro_rules! exported_types {
             IssuedJoinToken,
             MachineBootstrapUrl,
             MachineJoinToken,
-            CloudBootstrapToken,
             CloudBootstrapSessionSecret,
             CloudBootstrapCallbackToken,
             CloudBootstrapRedemptionId,
+            CloudBootstrapAttemptId,
             CloudBootstrapClientInfo,
             CloudBootstrapMachineFacts,
             CloudBootstrapSessionCreateRequest,
             CloudBootstrapSessionCreated,
             CloudBootstrapSessionPollRequest,
-            CloudBootstrapTokenRedeemRequest,
             CloudBootstrapDecision,
-            CloudBootstrapRejection,
+            CloudBootstrapDecisionFailure,
             CloudBootstrapEnvelope,
-            CloudBootstrapReleaseSelection,
             CloudBootstrapIntent,
             CloudFounderBootstrap,
             CloudJoinerBootstrap,
@@ -178,9 +183,7 @@ macro_rules! exported_types {
             HealthCheckFailure,
             MachineEndpointSubnet,
             DataplaneMember,
-            DataplaneProviderKind,
             DataplaneProviderFailure,
-            DataplanePrepareProviderReport,
             PloyzNativeMeshComponent,
             PloyzNativeMeshPrepareReport,
             PloyzNativeMeshMachineReady,
@@ -323,13 +326,6 @@ fn push_decl<T: TS>(output: &mut String, config: &Config) {
     output.push_str("export ");
     output.push_str(&T::decl(config));
     output.push_str("\n\n");
-}
-
-fn push_compatibility_aliases(output: &mut String) {
-    output.push_str("export type WireGuardEbpfComponent = PloyzNativeMeshComponent;\n\n");
-    output.push_str("export type WireGuardEbpfPrepareReport = PloyzNativeMeshPrepareReport;\n\n");
-    output.push_str("export type WireGuardEbpfMachineReady = PloyzNativeMeshMachineReady;\n\n");
-    output.push_str("export type WireGuardEbpfReady = PloyzNativeMeshReady;\n\n");
 }
 
 fn push_operation_api_contracts(output: &mut String, config: &Config) {
@@ -479,6 +475,7 @@ pub fn operation_contract_fixture() -> Value {
             next_start_sequence: event_sequence(2),
         },
     };
+    let attempt_id = CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id");
     let machine = cloud_machine_facts();
     let trusted_nats = trusted_nats();
     let join_secret_delivery = machine_join_secret_delivery();
@@ -532,6 +529,7 @@ pub fn operation_contract_fixture() -> Value {
                     .expect("valid bootstrap url"),
                 join_bundle: machine_join_bundle(),
                 join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+                join_secret_delivery: machine_join_secret_delivery(),
             },
         }),
         "machine_join_redeem_request": value(MachineJoinRedeemRequest {
@@ -551,6 +549,7 @@ pub fn operation_contract_fixture() -> Value {
             },
         }),
         "cloud_bootstrap_session_create_request": value(CloudBootstrapSessionCreateRequest {
+            attempt_id: attempt_id.clone(),
             client: CloudBootstrapClientInfo::current("0.1.0"),
             machine: machine.clone(),
         }),
@@ -563,26 +562,19 @@ pub fn operation_contract_fixture() -> Value {
             expires_at_unix_seconds: 1_893_456_000,
         }),
         "cloud_bootstrap_session_poll_request": value(CloudBootstrapSessionPollRequest {
+            attempt_id: attempt_id.clone(),
             session_secret: CloudBootstrapSessionSecret::try_new("pcbsess_secret_123")
                 .expect("valid session secret"),
             machine: machine.clone(),
         }),
-        "cloud_bootstrap_token_redeem_request": value(CloudBootstrapTokenRedeemRequest {
-            cloud_token: CloudBootstrapToken::try_new("pcbs_abc123").expect("valid cloud token"),
-            client: CloudBootstrapClientInfo::current("0.1.0"),
-            machine,
-        }),
         "cloud_bootstrap_decision": value(CloudBootstrapDecision::Ready {
             envelope: Box::new(CloudBootstrapEnvelope {
+                attempt_id: attempt_id.clone(),
                 redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
                     .expect("valid redemption id"),
                 callback_url: "https://cloud.ployz.com/api/bootstrap/callback".to_owned(),
                 callback_token: CloudBootstrapCallbackToken::try_new("pcbc_abc123")
                     .expect("valid callback token"),
-                release: CloudBootstrapReleaseSelection {
-                    channel: Some("alpha".to_owned()),
-                    version: "0.1.0".to_owned(),
-                },
                 intent: CloudBootstrapIntent::Joiner {
                     joiner: Box::new(CloudJoinerBootstrap {
                         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
@@ -598,6 +590,7 @@ pub fn operation_contract_fixture() -> Value {
             }),
         }),
         "cloud_bootstrap_callback_request": value(CloudBootstrapCallbackRequest {
+            attempt_id,
             redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
                 .expect("valid redemption id"),
             outcome: CloudBootstrapOutcome::FounderSucceeded {

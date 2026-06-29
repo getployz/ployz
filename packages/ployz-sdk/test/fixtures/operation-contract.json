@@ -27,6 +27,7 @@
     "accepted_at_unix_seconds": 1893456060
   },
   "cloud_bootstrap_callback_request": {
+    "attempt_id": "pcba_123",
     "outcome": {
       "outcome": "founder_succeeded",
       "result": {
@@ -41,6 +42,7 @@
   },
   "cloud_bootstrap_decision": {
     "envelope": {
+      "attempt_id": "pcba_123",
       "callback_token": "pcbc_abc123",
       "callback_url": "https://cloud.ployz.com/api/bootstrap/callback",
       "intent": {
@@ -56,15 +58,12 @@
           }
         }
       },
-      "redemption_id": "pcbr_123",
-      "release": {
-        "channel": "alpha",
-        "version": "0.1.0"
-      }
+      "redemption_id": "pcbr_123"
     },
     "status": "ready"
   },
   "cloud_bootstrap_session_create_request": {
+    "attempt_id": "pcba_123",
     "client": {
       "keeper_version": "0.1.0",
       "protocol_version": 1
@@ -84,6 +83,7 @@
     "user_code": "PLOZ-1234"
   },
   "cloud_bootstrap_session_poll_request": {
+    "attempt_id": "pcba_123",
     "machine": {
       "arch": "x86_64",
       "candidate_runtime_nats_url": "tls://203.0.113.10:4222",
@@ -91,19 +91,6 @@
       "os": "linux"
     },
     "session_secret": "pcbsess_secret_123"
-  },
-  "cloud_bootstrap_token_redeem_request": {
-    "client": {
-      "keeper_version": "0.1.0",
-      "protocol_version": 1
-    },
-    "cloud_token": "pcbs_abc123",
-    "machine": {
-      "arch": "x86_64",
-      "candidate_runtime_nats_url": "tls://203.0.113.10:4222",
-      "hostname": "web-01",
-      "os": "linux"
-    }
   },
   "deploy_submit_request": {
     "operation_id": "op_123",
@@ -181,6 +168,9 @@
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
           }
         }
+      },
+      "join_secret_delivery": {
+        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
       },
       "join_token": "join_once_123",
       "machine_id": "machine_2"

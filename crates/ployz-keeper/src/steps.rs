@@ -33,6 +33,7 @@ use nats_material::{DEFAULT_NATS_PORT, first_machine_listener, tls_loopback_nats
 const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
+const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -665,6 +666,14 @@ impl PloyzdRoleEnvironmentTarget {
         output.push('=');
         output.push_str(self.machine_id.as_str());
         output.push('\n');
+        if matches!(role, DaemonProcessRole::Control) {
+            if let Some(path) = self.nats_credentials.join_seed_file() {
+                output.push_str(PLOYZ_JOIN_NKEY_SEED_FILE_ENV);
+                output.push('=');
+                output.push_str(&path.display().to_string());
+                output.push('\n');
+            }
+        }
         if let Some(public_ip) = self.machine_public_ip {
             output.push_str(PLOYZ_MACHINE_PUBLIC_IP_ENV);
             output.push('=');
