@@ -142,15 +142,14 @@ impl fmt::Display for MachineEndpointSubnetError {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "provider", content = "report", rename_all = "snake_case")]
 pub enum DataplanePrepareProviderReport {
-    PloyzNativeMesh(WireGuardEbpfPrepareReport),
+    PloyzNativeMesh(PloyzNativeMeshPrepareReport),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataplanePrepareError {
     Unavailable {
         machine_id: MachineId,
-        provider: DataplaneProviderKind,
-        component: WireGuardEbpfComponent,
+        provider: DataplaneProviderFailure,
         message: FailureMessage,
     },
     InvalidReport {
@@ -165,6 +164,22 @@ pub enum DataplaneProviderKind {
     PloyzNativeMesh,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneProviderFailure {
+    PloyzNativeMesh { component: PloyzNativeMeshComponent },
+}
+
+impl DataplaneProviderFailure {
+    #[must_use]
+    pub const fn kind(&self) -> DataplaneProviderKind {
+        match self {
+            Self::PloyzNativeMesh { .. } => DataplaneProviderKind::PloyzNativeMesh,
+        }
+    }
+}
+
 impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
     fn from(value: WireGuardEbpfPrepareError) -> Self {
         match value {
@@ -174,8 +189,7 @@ impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
                 message,
             } => Self::Unavailable {
                 machine_id,
-                provider: DataplaneProviderKind::PloyzNativeMesh,
-                component,
+                provider: DataplaneProviderFailure::PloyzNativeMesh { component },
                 message,
             },
             WireGuardEbpfPrepareError::InvalidReport { message } => Self::InvalidReport { message },
@@ -184,7 +198,7 @@ impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireGuardEbpfPrepareRequest {
+pub struct PloyzNativeMeshPrepareRequest {
     pub operation_id: OperationId,
     pub machines: Vec<MachineId>,
     pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
@@ -192,7 +206,7 @@ pub struct WireGuardEbpfPrepareRequest {
     pub peers: Vec<WireGuardPeer>,
 }
 
-impl WireGuardEbpfPrepareRequest {
+impl PloyzNativeMeshPrepareRequest {
     #[must_use]
     pub fn for_deploy_plan(
         operation_id: OperationId,
@@ -440,7 +454,7 @@ fn stable_machine_octet(value: &str) -> u8 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum WireGuardEbpfComponent {
+pub enum PloyzNativeMeshComponent {
     #[serde(rename = "wireguard")]
     WireGuard,
     EbpfForwarding,
@@ -449,14 +463,14 @@ pub enum WireGuardEbpfComponent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct WireGuardEbpfPrepareReport {
-    pub machines: Vec<WireGuardEbpfMachineReady>,
+pub struct PloyzNativeMeshPrepareReport {
+    pub machines: Vec<PloyzNativeMeshMachineReady>,
 }
 
-impl WireGuardEbpfPrepareReport {
+impl PloyzNativeMeshPrepareReport {
     pub fn for_request(
-        request: &WireGuardEbpfPrepareRequest,
-        machines: impl IntoIterator<Item = WireGuardEbpfMachineReady>,
+        request: &PloyzNativeMeshPrepareRequest,
+        machines: impl IntoIterator<Item = PloyzNativeMeshMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
         let machines = machines.into_iter().collect::<Vec<_>>();
         if request.machines.is_empty() || machines.is_empty() {
@@ -481,7 +495,7 @@ impl WireGuardEbpfPrepareReport {
     }
 
     pub fn from_machines(
-        machines: impl IntoIterator<Item = WireGuardEbpfMachineReady>,
+        machines: impl IntoIterator<Item = PloyzNativeMeshMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
         let machines = machines.into_iter().collect::<Vec<_>>();
         if machines.is_empty() {
@@ -502,33 +516,33 @@ impl WireGuardEbpfPrepareReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(
-    from = "WireGuardEbpfMachineReadyWire",
-    into = "WireGuardEbpfMachineReadyWire"
+    from = "PloyzNativeMeshMachineReadyWire",
+    into = "PloyzNativeMeshMachineReadyWire"
 )]
-pub struct WireGuardEbpfMachineReady {
+pub struct PloyzNativeMeshMachineReady {
     pub machine_id: MachineId,
     #[cfg_attr(feature = "typescript", ts(flatten))]
-    pub ready: WireGuardEbpfReady,
+    pub ready: PloyzNativeMeshReady,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireGuardEbpfMachineReadyWire {
+struct PloyzNativeMeshMachineReadyWire {
     machine_id: MachineId,
     wireguard: WireGuardReady,
     ebpf_forwarding: EbpfForwardingReady,
 }
 
-impl From<WireGuardEbpfMachineReadyWire> for WireGuardEbpfMachineReady {
-    fn from(value: WireGuardEbpfMachineReadyWire) -> Self {
-        let WireGuardEbpfMachineReadyWire {
+impl From<PloyzNativeMeshMachineReadyWire> for PloyzNativeMeshMachineReady {
+    fn from(value: PloyzNativeMeshMachineReadyWire) -> Self {
+        let PloyzNativeMeshMachineReadyWire {
             machine_id,
             wireguard,
             ebpf_forwarding,
         } = value;
         Self {
             machine_id,
-            ready: WireGuardEbpfReady {
+            ready: PloyzNativeMeshReady {
                 wireguard,
                 ebpf_forwarding,
             },
@@ -536,10 +550,10 @@ impl From<WireGuardEbpfMachineReadyWire> for WireGuardEbpfMachineReady {
     }
 }
 
-impl From<WireGuardEbpfMachineReady> for WireGuardEbpfMachineReadyWire {
-    fn from(value: WireGuardEbpfMachineReady) -> Self {
-        let WireGuardEbpfMachineReady { machine_id, ready } = value;
-        let WireGuardEbpfReady {
+impl From<PloyzNativeMeshMachineReady> for PloyzNativeMeshMachineReadyWire {
+    fn from(value: PloyzNativeMeshMachineReady) -> Self {
+        let PloyzNativeMeshMachineReady { machine_id, ready } = value;
+        let PloyzNativeMeshReady {
             wireguard,
             ebpf_forwarding,
         } = ready;
@@ -554,7 +568,7 @@ impl From<WireGuardEbpfMachineReady> for WireGuardEbpfMachineReadyWire {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct WireGuardEbpfReady {
+pub struct PloyzNativeMeshReady {
     pub wireguard: WireGuardReady,
     pub ebpf_forwarding: EbpfForwardingReady,
 }
@@ -602,7 +616,7 @@ pub enum WireGuardEbpfPrepareReportError {
 pub enum WireGuardEbpfPrepareError {
     Unavailable {
         machine_id: MachineId,
-        component: WireGuardEbpfComponent,
+        component: PloyzNativeMeshComponent,
         message: FailureMessage,
     },
     InvalidReport {
@@ -645,7 +659,7 @@ mod tests {
         };
 
         let request =
-            WireGuardEbpfPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[], &[]);
+            PloyzNativeMeshPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[], &[]);
 
         assert_eq!(
             request.endpoint_routes,

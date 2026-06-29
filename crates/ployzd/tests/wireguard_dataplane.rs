@@ -1,6 +1,6 @@
 use ployz_core::dataplane::{
     DataplanePrepareProviderReport, DataplanePrepareRequest, EbpfForwardingReadyEvidence,
-    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
+    PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
     WireGuardPublicKey, WireGuardReadyEvidence,
 };
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -12,7 +12,7 @@ use ployzd::docker::runner::DockerManagedContainerRunner;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use ployzd::machine_runtime::runner::MachineContainerRunner;
-use ployzd::machine_runtime::service::MachineWireGuardEbpfPreparer;
+use ployzd::machine_runtime::service::MachinePloyzNativeMeshPreparer;
 use ployzd::machine_runtime::service::start_machine_runtime_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -68,7 +68,7 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
         .with_command_timeout(Duration::from_secs(20));
 
     let ready = preparer
-        .prepare_wireguard_ebpf(&endpoint_routes(), &[edge_peer_with_public_key(peer_key)])
+        .prepare_ployz_native_mesh(&endpoint_routes(), &[edge_peer_with_public_key(peer_key)])
         .await
         .expect("host dataplane prepares through real commands");
 
@@ -178,7 +178,7 @@ async fn local_privileged_dataplane_reports_missing_bridge_as_domain_failure() {
         .with_command_timeout(Duration::from_secs(20));
 
     let error = preparer
-        .prepare_wireguard_ebpf(&endpoint_routes(), &[])
+        .prepare_ployz_native_mesh(&endpoint_routes(), &[])
         .await
         .expect_err("missing bridge is a typed dataplane failure");
 
@@ -186,7 +186,7 @@ async fn local_privileged_dataplane_reports_missing_bridge_as_domain_failure() {
         error,
         WireGuardEbpfPrepareError::Unavailable {
             machine_id,
-            component: WireGuardEbpfComponent::EbpfForwarding,
+            component: PloyzNativeMeshComponent::EbpfForwarding,
             ..
         } if machine_id == self::machine_id("core_1")
     ));

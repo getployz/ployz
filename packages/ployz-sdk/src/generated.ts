@@ -178,15 +178,17 @@ export type DataplaneMember = { machine_id: MachineId, endpoint_subnet: MachineE
 
 export type DataplaneProviderKind = "ployz_native_mesh";
 
-export type DataplanePrepareProviderReport = { "provider": "ployz_native_mesh", "report": WireGuardEbpfPrepareReport };
+export type DataplaneProviderFailure = { "provider": "ployz_native_mesh", component: PloyzNativeMeshComponent, };
 
-export type WireGuardEbpfComponent = "wireguard" | "ebpf_forwarding";
+export type DataplanePrepareProviderReport = { "provider": "ployz_native_mesh", "report": PloyzNativeMeshPrepareReport };
 
-export type WireGuardEbpfPrepareReport = { machines: Array<WireGuardEbpfMachineReady>, };
+export type PloyzNativeMeshComponent = "wireguard" | "ebpf_forwarding";
 
-export type WireGuardEbpfMachineReady = { machine_id: MachineId, wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
+export type PloyzNativeMeshPrepareReport = { machines: Array<PloyzNativeMeshMachineReady>, };
 
-export type WireGuardEbpfReady = { wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
+export type PloyzNativeMeshMachineReady = { machine_id: MachineId, wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
+
+export type PloyzNativeMeshReady = { wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
 
 export type WireGuardPublicKey = string;
 
@@ -204,7 +206,7 @@ export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reas
 
 export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
-export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider: DataplaneProviderKind, component: WireGuardEbpfComponent, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
@@ -428,6 +430,14 @@ export type OpsWatchUnavailableSource = { "source": "status_store", failure: Sta
 
 export type EventReplayFailure = "decode_event" | "read_event" | "timeout" | "invalid_event_sequence" | "invalid_next_replay_sequence";
 
+export type WireGuardEbpfComponent = PloyzNativeMeshComponent;
+
+export type WireGuardEbpfPrepareReport = PloyzNativeMeshPrepareReport;
+
+export type WireGuardEbpfMachineReady = PloyzNativeMeshMachineReady;
+
+export type WireGuardEbpfReady = PloyzNativeMeshReady;
+
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
 export type InitFirstMachineActivateResponse = OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>;
@@ -471,3 +481,37 @@ export const OPERATION_API_CONTRACTS = [
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
   { name: "backup.create", subject: "plz.v1.svc.api.backup.create", execution: "accepts_operation", request: "BackupCreateRequest", success: "AcceptedOperation", error: "BackupCreateError", response: "BackupCreateResponse" },
 ] as const;
+
+export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
+
+export type OperationApiRequestByEndpoint = {
+  "deploy.submit": DeploySubmitRequest;
+  "init.first_machine.activate": InitFirstMachineActivateRequest;
+  "machine.add": MachineAddRequest;
+  "machine.list": MachineListRequest;
+  "machine.inspect": MachineInspectRequest;
+  "machine.join.redeem": MachineJoinRedeemRequest;
+  "machine.join.report": MachineJoinReportRequest;
+  "service.list": ServiceListRequest;
+  "service.inspect": ServiceInspectRequest;
+  "logs.tail": LogsTailRequest;
+  "ops.status": OpsStatusRequest;
+  "ops.watch": OpsWatchRequest;
+  "backup.create": BackupCreateRequest;
+};
+
+export type OperationApiResponseByEndpoint = {
+  "deploy.submit": DeploySubmitResponse;
+  "init.first_machine.activate": InitFirstMachineActivateResponse;
+  "machine.add": MachineAddResponse;
+  "machine.list": MachineListResponse;
+  "machine.inspect": MachineInspectResponse;
+  "machine.join.redeem": MachineJoinRedeemResponse;
+  "machine.join.report": MachineJoinReportResponse;
+  "service.list": ServiceListResponse;
+  "service.inspect": ServiceInspectResponse;
+  "logs.tail": LogsTailResponse;
+  "ops.status": OpsStatusResponse;
+  "ops.watch": OpsWatchResponse;
+  "backup.create": BackupCreateResponse;
+};

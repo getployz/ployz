@@ -26,10 +26,10 @@ pub use ployz_core::cert::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplanePrepareProviderReport, DataplaneProviderKind, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, MachineEndpointSubnet, WireGuardEbpfComponent,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    DataplaneMember, DataplanePrepareProviderReport, DataplaneProviderFailure,
+    DataplaneProviderKind, EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineEndpointSubnet,
+    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
+    PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference,

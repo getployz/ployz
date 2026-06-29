@@ -329,12 +329,10 @@ fn dataplane_deploy_failure(
         DataplanePrepareError::Unavailable {
             machine_id,
             provider,
-            component,
             message,
         } => DeployOperationFailure::DataplaneUnavailable {
             machine_id: machine_id.clone(),
-            provider: *provider,
-            component: *component,
+            provider_failure: *provider,
             message: message.clone(),
             retained_artifacts,
         },

@@ -2,7 +2,6 @@
 members = [
     "crates/ployz-core",
     "crates/ployz-nats",
-    "crates/ployz-transport",
     "crates/ployz-ebpf-common",
     "crates/ployz-ebpf-ctl",
     "crates/ployz-keeper",
@@ -25,7 +24,6 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 ployz-core = { path = "crates/ployz-core" }
 ployz-nats = { path = "crates/ployz-nats" }
-ployz-transport = { path = "crates/ployz-transport" }
 ployz-sdk-types = { path = "crates/ployz-sdk-types" }
 ployz-test-support = { path = "crates/ployz-test-support" }
 serde = { version = "1", features = ["derive"] }

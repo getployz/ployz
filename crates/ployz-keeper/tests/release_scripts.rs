@@ -15,10 +15,14 @@ fn release_workflow_and_packager_reject_non_version_tags() {
 
     let package_script = fs::read_to_string(repo_path("scripts/package-release.sh"))
         .expect("package script is readable");
-    assert!(package_script.contains("release version must include a version after v"));
-    assert!(package_script.contains("release version must look like vX.Y.Z or vX.Y.Z-suffix"));
+    assert!(package_script.contains("validate_release_semver \"release version\""));
     assert!(package_script.contains("PLOYZ_RELEASE_CARGO_TARGET_DIR"));
     assert!(package_script.contains("export CARGO_TARGET_DIR=\"${release_cargo_target_dir}\""));
+
+    let script_lib =
+        fs::read_to_string(repo_path("scripts/lib.sh")).expect("script lib is readable");
+    assert!(script_lib.contains("${label} must include a version after v"));
+    assert!(script_lib.contains("${label} must look like vX.Y.Z or vX.Y.Z-suffix"));
 }
 
 #[cfg(unix)]

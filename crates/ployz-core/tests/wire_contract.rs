@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
-    DataplanePrepareProviderReport, DataplaneProviderKind, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, WireGuardEbpfComponent, WireGuardEbpfMachineReady,
-    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
+    DataplanePrepareProviderReport, DataplaneProviderFailure, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::DeployRequest;
@@ -46,9 +46,9 @@ fn dataplane_prepared_event_has_stable_wire_shape() {
     let event = OperationEvent::DeployDataplanePrepared {
         operation_id: operation_id("op_123"),
         report: DataplanePrepareProviderReport::PloyzNativeMesh(
-            WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
+            PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
                 machine_id: machine_id("machine_7"),
-                ready: WireGuardEbpfReady {
+                ready: PloyzNativeMeshReady {
                     wireguard: WireGuardReady {
                         public_key: wireguard_public_key("test-public-key"),
                         evidence: vec![WireGuardReadyEvidence::Command {
@@ -162,15 +162,16 @@ fn retained_artifact_carries_variant_specific_failure_data() {
 fn dataplane_failures_are_distinct_from_runtime_failures() {
     let failure = DeployOperationFailure::DataplaneUnavailable {
         machine_id: machine_id("machine_7"),
-        provider: DataplaneProviderKind::PloyzNativeMesh,
-        component: WireGuardEbpfComponent::EbpfForwarding,
+        provider_failure: DataplaneProviderFailure::PloyzNativeMesh {
+            component: PloyzNativeMeshComponent::EbpfForwarding,
+        },
         message: failure_message("bpf route install failed"),
         retained_artifacts: Vec::new(),
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"dataplane_unavailable","machine_id":"machine_7","provider":"ployz_native_mesh","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
+        r#"{"kind":"dataplane_unavailable","machine_id":"machine_7","provider_failure":{"provider":"ployz_native_mesh","component":"ebpf_forwarding"},"message":"bpf route install failed","retained_artifacts":[]}"#
     );
 }
 

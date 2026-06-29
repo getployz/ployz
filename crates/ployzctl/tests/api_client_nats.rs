@@ -123,8 +123,10 @@ async fn operation_api_client_routes_machine_add_success() {
                         start_sequence: event_sequence(2),
                     },
                     machine_id: machine_id("machine_2"),
-                    bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
-                        .expect("valid bootstrap url"),
+                    bootstrap_url: MachineBootstrapUrl::try_new(
+                        ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL,
+                    )
+                    .expect("valid bootstrap url"),
                     join_bundle: machine_join_bundle(),
                     join_token: MachineJoinToken::try_new("join_token").expect("valid join token"),
                 },

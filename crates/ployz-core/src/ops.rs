@@ -3,9 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
-use crate::dataplane::{
-    DataplanePrepareProviderReport, DataplaneProviderKind, WireGuardEbpfComponent,
-};
+use crate::dataplane::{DataplanePrepareProviderReport, DataplaneProviderFailure};
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
     CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, SubjectToken,
@@ -160,8 +158,7 @@ pub enum DeployOperationFailure {
     },
     DataplaneUnavailable {
         machine_id: MachineId,
-        provider: DataplaneProviderKind,
-        component: WireGuardEbpfComponent,
+        provider_failure: DataplaneProviderFailure,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },

@@ -2165,10 +2165,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-transport"
-version = "0.1.0"
-
-[[package]]
 name = "ployzctl"
 version = "0.1.0"
 dependencies = [
