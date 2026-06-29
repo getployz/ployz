@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the Docker-in-Docker machine image for the ployz e2e harness
-# (docs/plans/2026-06-10-001-feat-direct-nats-v1-auth-iroh-removal-dind-e2e.md, C1).
+# Builds the Docker-in-Docker machine image for the ployz e2e harness.
 #
 # 1. Builds linux release binaries for the HOST docker architecture inside
 #    rust:1.91-bookworm with cached target/registry dirs. The binaries are

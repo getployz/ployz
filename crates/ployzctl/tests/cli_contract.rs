@@ -4,8 +4,8 @@ use std::process::{Command, Output};
 
 use ployz_core::dataplane::{
     DataplanePrepareProviderReport, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
+    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, MachineId, RevisionId, ServiceId};
@@ -856,9 +856,9 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
         ployz_core::ops::OperationEvent::DeployDataplanePrepared {
             operation_id: operation_id("op_123"),
             report: DataplanePrepareProviderReport::PloyzNativeMesh(
-                WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
+                PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
                     machine_id: machine_id("machine_1"),
-                    ready: WireGuardEbpfReady {
+                    ready: PloyzNativeMeshReady {
                         wireguard: WireGuardReady {
                             public_key: WireGuardPublicKey::try_new("public-key-1")
                                 .expect("valid wireguard public key"),

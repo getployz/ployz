@@ -19,6 +19,7 @@ use std::time::Duration;
 use crate::controllers::MachineAddBootstrapConfig;
 use crate::nats_process::NatsServerRuntime;
 use crate::role::DaemonProcessRole;
+pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
@@ -32,7 +33,6 @@ pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 pub const PLOYZ_DEPLOY_MACHINES_ENV: &str = "PLOYZ_DEPLOY_MACHINES";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
 pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
-pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
 pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
 pub const PLOYZ_EBPF_CTL_ENV: &str = "PLOYZ_EBPF_CTL";

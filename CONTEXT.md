@@ -441,7 +441,7 @@ A time-limited Cloud permission that can issue one or more single-redemption Clo
 _Avoid_: One-time bootstrap token, machine join token, org flag
 
 **Cloud Bootstrap Session**:
-A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. A session that expires or is rejected before approval creates no Cloud Bootstrap Redemption. The session is not an org, cluster, machine identity, join token, or operator credential.
+A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose a Cloud organization; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. A session that expires before approval creates no Cloud Bootstrap Redemption. The session is not an org, cluster, machine identity, join token, or operator credential.
 _Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
 
 **Cloud Bootstrap Token**:
@@ -457,7 +457,7 @@ The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap for
 _Avoid_: Leader election, automatic founder failover, first healthy server
 
 **Waiting Cloud Bootstrap Redemption**:
-A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Cloud Founder Claim but no Cloud Connection. It waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire; it does not perform local machine mutation and does not become founder automatically.
+A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Cloud Founder Claim but no Cloud Connection. It has its own post-approval expiry separate from Cloud Bootstrap Session expiry, waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire, and does not preissue runtime join authority, perform local machine mutation, or become founder automatically. Once expired, it is terminal and cannot later receive join material.
 _Avoid_: Founder candidate, standby founder, pending machine join
 
 **Abandon Founder Attempt**:

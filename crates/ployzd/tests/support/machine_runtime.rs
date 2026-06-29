@@ -1,6 +1,6 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
-    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
+    WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine_runtime::{
@@ -15,7 +15,7 @@ use ployzd::machine_runtime::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::machine_runtime::service::MachineWireGuardEbpfPreparer;
+use ployzd::machine_runtime::service::MachinePloyzNativeMeshPreparer;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -333,19 +333,19 @@ impl ObservingContainerRunnerState {
 #[derive(Debug, Clone)]
 pub struct ReadyWireGuardEbpf;
 
-impl MachineWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
         Ok(WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"))
     }
 
-    async fn prepare_wireguard_ebpf(
+    async fn prepare_ployz_native_mesh(
         &self,
         _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
         _peers: &[ployz_core::dataplane::WireGuardPeer],
-    ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
-        Ok(WireGuardEbpfReady {
+    ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
+        Ok(PloyzNativeMeshReady {
             wireguard: WireGuardReady {
                 public_key: WireGuardPublicKey::try_new("test-public-key")
                     .expect("test public key is valid"),

@@ -4,8 +4,8 @@ use std::time::Duration;
 use async_nats::jetstream;
 use ployz_core::dataplane::{
     DataplanePrepareProviderReport, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
+    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -278,10 +278,10 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             OperationEvent::DeployDataplanePrepared {
                 operation_id: operation_id("op_e2e_run"),
                 report: DataplanePrepareProviderReport::PloyzNativeMesh(
-                    WireGuardEbpfPrepareReport {
-                        machines: vec![WireGuardEbpfMachineReady {
+                    PloyzNativeMeshPrepareReport {
+                        machines: vec![PloyzNativeMeshMachineReady {
                             machine_id: machine_id("machine_a"),
-                            ready: WireGuardEbpfReady {
+                            ready: PloyzNativeMeshReady {
                                 wireguard: WireGuardReady {
                                     public_key: wireguard_public_key("test-public-key"),
                                     evidence: vec![WireGuardReadyEvidence::Command {
@@ -1023,7 +1023,7 @@ fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
 
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
     MachineAddBootstrapConfig::new(
-        MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
+        MachineBootstrapUrl::try_new(ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL)
             .expect("valid bootstrap url"),
     )
     .with_join_template(ployz_test_support::fixtures::machine_join_template())

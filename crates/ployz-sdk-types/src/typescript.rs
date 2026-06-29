@@ -6,9 +6,9 @@ use crate::{
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, ActiveMachineState,
     ActiveServiceCommitFailure, ActiveServiceCommitRequest, ActiveServiceState,
     ArtifactUnavailableReason, BackupArtifact, BackupArtifactKind, BackupArtifactLocation,
-    BackupBundle, BackupCreateError, BackupCreateRequest, BackupItem, BackupManifest,
-    BackupManifestVersion, BackupOperationFailure, BackupOperationState, BackupPolicy,
-    BackupRestoreSource, BackupRunningStage, BackupScopeEntry, BackupTarget,
+    BackupBundle, BackupCreateError, BackupCreateRequest, BackupCreateResponse, BackupItem,
+    BackupManifest, BackupManifestVersion, BackupOperationFailure, BackupOperationState,
+    BackupPolicy, BackupRestoreSource, BackupRunningStage, BackupScopeEntry, BackupTarget,
     BackupTargetValidationFailure, BackupTargetValidationField, BootstrapMaterialFailure,
     CLOUD_BOOTSTRAP_PROTOCOL_VERSION, CancellationReason, CertBundleRef, CertId,
     CertOperationFailure, CertOperationState, CertRunningStage, CertValidAt, CertValidityWindow,
@@ -20,46 +20,50 @@ use crate::{
     CloudBootstrapSessionPollRequest, CloudBootstrapSessionSecret, CloudBootstrapToken,
     CloudBootstrapTokenRedeemRequest, CloudFounderBootstrap, CloudFounderBootstrapResult,
     CloudJoinerBootstrap, CloudJoinerBootstrapResult, ContainerId, ControlPlaneKvSnapshot,
-    DataplaneMember, DataplanePrepareProviderReport, DataplaneProviderKind, DeployCleanupContainer,
-    DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
-    DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, DeployRunningStage, DeploySubmitError,
-    DeploySubmitRequest, DnsRole, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    EventReplayFailure, EventSequence, ExpectedActiveService, FailureMessage,
-    FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayRole, GatewayServingStatus,
-    GatewayStatusObservation, HealthCheckFailure, ImageReference, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallArtifactSource,
+    DataplaneMember, DataplanePrepareProviderReport, DataplaneProviderFailure,
+    DataplaneProviderKind, DeployCleanupContainer, DeployCleanupFailure, DeployCompletionOutcome,
+    DeployOperationFailure, DeployOperationState, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployRoute, DeployRunningStage, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
+    DnsRole, EbpfForwardingReady, EbpfForwardingReadyEvidence, EventReplayFailure, EventSequence,
+    ExpectedActiveService, FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
+    GatewayRole, GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure,
+    ImageReference, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    InitFirstMachineActivateResponse, InitFirstMachineActivated, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy, InstallSha256Digest,
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     KvBucketSnapshot, KvEntrySnapshot, LogsTailError, LogsTailLines, LogsTailRequest,
     LogsTailResult, LogsTailUnavailableSource, MAX_LOGS_TAIL_LINES,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddFailure,
-    MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest,
+    MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest, MachineAddResponse,
     MachineAddUnavailableSource, MachineBootstrapUrl, MachineCredentialProvisioningStep,
     MachineEndpointSubnet, MachineId, MachineInspectError, MachineInspectRequest,
     MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineListError, MachineListRequest,
-    MachineListResult, MachineName, MachinePublicIpObservation, MachineQueryUnavailableSource,
-    MachineReadinessCheck, MachineReadinessEvidence, MachineSnapshot, ManagedContainerKind,
-    NatsServerInstallSpec, NatsUserPublicKey, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationId, OperationIdempotencyKey, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OperationSubmitClockFailure,
-    OperationSubmitEventFailure, OperationSubmitStatusFailure, OperationSubmitUnavailableSource,
-    OperatorHint, OpsStatusError, OpsStatusRequest, OpsStatusUnavailableSource, OpsWatchError,
-    OpsWatchUnavailableSource, ReplayedOperationEvent, ReplicaCount, ReplicaSlot, RestoreStep,
-    RetainedArtifact, RevisionId, RouteCutoverFailureReason, RouteHostname, RoutePort, RouteTarget,
-    S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget, ServiceId, ServiceInspectError,
-    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
-    ServiceQueryUnavailableSource, ServiceSnapshot, StatusReadFailure, StepId,
-    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport,
-    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+    MachineJoinRedeemUnavailableSource, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportFailure, MachineJoinReportOutcome, MachineJoinReportRequest,
+    MachineJoinReportUnavailableSource, MachineJoinReported, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken, MachineJoinTrustedNats,
+    MachineListError, MachineListRequest, MachineListResult, MachineName,
+    MachinePublicIpObservation, MachineQueryUnavailableSource, MachineReadinessCheck,
+    MachineReadinessEvidence, MachineSnapshot, ManagedContainerKind, NatsServerInstallSpec,
+    NatsUserPublicKey, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest, OperationId,
+    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
+    OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
+    OperationSubmitUnavailableSource, OperatorHint, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsStatusUnavailableSource, OpsWatchError, OpsWatchResponse,
+    OpsWatchUnavailableSource, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, ReplayedOperationEvent, ReplicaCount,
+    ReplicaSlot, RestoreStep, RetainedArtifact, RevisionId, RouteCutoverFailureReason,
+    RouteHostname, RoutePort, RouteTarget, S3AddressingStyle, S3BackupRestoreSource,
+    S3BackupTarget, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot,
+    StatusReadFailure, StepId, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::subjects::OperationApiEndpointExecution;
+use serde::Serialize;
+use serde_json::{Value, json};
 use ts_rs::{Config, TS};
 
 #[must_use]
@@ -82,6 +86,7 @@ pub fn generated_typescript() -> String {
     ));
 
     push_contract_decls(&mut output, &config);
+    push_compatibility_aliases(&mut output);
     push_operation_api_contracts(&mut output, &config);
 
     output
@@ -174,11 +179,12 @@ macro_rules! exported_types {
             MachineEndpointSubnet,
             DataplaneMember,
             DataplaneProviderKind,
+            DataplaneProviderFailure,
             DataplanePrepareProviderReport,
-            WireGuardEbpfComponent,
-            WireGuardEbpfPrepareReport,
-            WireGuardEbpfMachineReady,
-            WireGuardEbpfReady,
+            PloyzNativeMeshComponent,
+            PloyzNativeMeshPrepareReport,
+            PloyzNativeMeshMachineReady,
+            PloyzNativeMeshReady,
             WireGuardPublicKey,
             WireGuardReady,
             WireGuardReadyEvidence,
@@ -319,6 +325,13 @@ fn push_decl<T: TS>(output: &mut String, config: &Config) {
     output.push_str("\n\n");
 }
 
+fn push_compatibility_aliases(output: &mut String) {
+    output.push_str("export type WireGuardEbpfComponent = PloyzNativeMeshComponent;\n\n");
+    output.push_str("export type WireGuardEbpfPrepareReport = PloyzNativeMeshPrepareReport;\n\n");
+    output.push_str("export type WireGuardEbpfMachineReady = PloyzNativeMeshMachineReady;\n\n");
+    output.push_str("export type WireGuardEbpfReady = PloyzNativeMeshReady;\n\n");
+}
+
 fn push_operation_api_contracts(output: &mut String, config: &Config) {
     macro_rules! push_aliases {
         ($($contract:ty),+ $(,)?) => {
@@ -335,6 +348,26 @@ fn push_operation_api_contracts(output: &mut String, config: &Config) {
     }
     crate::operation_api_contracts!(push_rows);
     output.push_str("] as const;\n");
+    output.push('\n');
+    output.push_str(
+        "export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number][\"name\"];\n\n",
+    );
+    output.push_str("export type OperationApiRequestByEndpoint = {\n");
+    macro_rules! push_request_map {
+        ($($contract:ty),+ $(,)?) => {
+            $(push_operation_api_request_map_row_for::<$contract>(output, config);)+
+        };
+    }
+    crate::operation_api_contracts!(push_request_map);
+    output.push_str("};\n\n");
+    output.push_str("export type OperationApiResponseByEndpoint = {\n");
+    macro_rules! push_response_map {
+        ($($contract:ty),+ $(,)?) => {
+            $(push_operation_api_response_map_row_for::<$contract>(output);)+
+        };
+    }
+    crate::operation_api_contracts!(push_response_map);
+    output.push_str("};\n");
 }
 
 fn push_operation_api_aliases_for<C>(output: &mut String, config: &Config)
@@ -378,6 +411,29 @@ where
     ));
 }
 
+fn push_operation_api_request_map_row_for<C>(output: &mut String, config: &Config)
+where
+    C: OperationApiContract,
+    C::Request: TS,
+{
+    output.push_str(&format!(
+        "  \"{}\": {};\n",
+        C::ENDPOINT.name(),
+        operation_api_request_name_for::<C>(config),
+    ));
+}
+
+fn push_operation_api_response_map_row_for<C>(output: &mut String)
+where
+    C: OperationApiContract,
+{
+    output.push_str(&format!(
+        "  \"{}\": {};\n",
+        C::ENDPOINT.name(),
+        C::RESPONSE_ALIAS,
+    ));
+}
+
 fn operation_api_request_name_for<C>(config: &Config) -> String
 where
     C: OperationApiContract,
@@ -391,5 +447,272 @@ const fn operation_api_execution_name(execution: OperationApiEndpointExecution) 
         OperationApiEndpointExecution::AcceptsOperation => "accepts_operation",
         OperationApiEndpointExecution::MutatesOperation => "mutates_operation",
         OperationApiEndpointExecution::Query => "query",
+    }
+}
+
+#[must_use]
+pub fn operation_contract_fixture() -> Value {
+    let deploy_target = DeployRequest {
+        service_id: service_id("svc_api"),
+        target_revision: revision_id("rev_2"),
+        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+        replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+        route: None,
+    };
+    let accepted = accepted_operation("op_123", 1);
+    let backup_accepted = accepted_operation("op_backup", 3);
+    let machine_accepted = accepted_operation("op_machine", 7);
+    let status = OperationStatusSnapshot::new(OperationStatus::deploy_accepted(
+        operation_id("op_123"),
+        service_id("svc_api"),
+        event_sequence(1),
+    ));
+    let replay_page = OperationEventReplayPage {
+        events: vec![ReplayedOperationEvent {
+            sequence: event_sequence(1),
+            event: OperationEvent::DeploySubmitted {
+                operation_id: operation_id("op_123"),
+                target: deploy_target.clone(),
+            },
+        }],
+        cursor: OperationEventReplayCursor::More {
+            next_start_sequence: event_sequence(2),
+        },
+    };
+    let machine = cloud_machine_facts();
+    let trusted_nats = trusted_nats();
+    let join_secret_delivery = machine_join_secret_delivery();
+
+    json!({
+        "deploy_submit_request": value(DeploySubmitRequest {
+            operation_id: operation_id("op_123"),
+            target: deploy_target,
+        }),
+        "ops_watch_request": value(OperationEventReplayRequest {
+            operation_id: operation_id("op_123"),
+            start_sequence: event_sequence(1),
+            limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
+        }),
+        "accepted_operation": value(accepted.clone()),
+        "deploy_submit_response": value(DeploySubmitResponse::Ok { value: accepted }),
+        "backup_create_request": value(BackupCreateRequest {
+            operation_id: operation_id("op_backup"),
+            target: BackupTarget::s3(S3BackupTarget::new(
+                "ployz-backups",
+                "clusters/dev",
+                "us-east-1",
+                None,
+                S3AddressingStyle::VirtualHosted,
+            )),
+        }),
+        "backup_create_response": value(BackupCreateResponse::Ok { value: backup_accepted }),
+        "init_first_machine_activate_request": value(InitFirstMachineActivateRequest {
+            machine_id: machine_id("core_1"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        }),
+        "init_first_machine_activate_response": value(InitFirstMachineActivateResponse::Ok {
+            value: InitFirstMachineActivated {
+                operation_id: operation_id("op_init_core_1"),
+                machine_id: machine_id("core_1"),
+            },
+        }),
+        "machine_add_request": value(MachineAddRequest {
+            operation_id: operation_id("op_machine"),
+            idempotency_key: OperationIdempotencyKey::try_new("idem_machine")
+                .expect("valid idempotency key"),
+            machine_id: machine_id("machine_2"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        }),
+        "machine_add_response": value(MachineAddResponse::Ok {
+            value: MachineAddAccepted {
+                accepted: machine_accepted,
+                machine_id: machine_id("machine_2"),
+                bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+                    .expect("valid bootstrap url"),
+                join_bundle: machine_join_bundle(),
+                join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+            },
+        }),
+        "machine_join_redeem_request": value(MachineJoinRedeemRequest {
+            join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+        }),
+        "machine_join_redeem_response": value(MachineJoinRedeemResponse::Ok {
+            value: MachineJoinRedeemed {
+                operation_id: operation_id("op_machine"),
+                machine_id: machine_id("machine_2"),
+                name: MachineName::try_new("edge_2").expect("valid machine name"),
+                roles: InstallRolePolicy::install_all().without_gateway(),
+                join_bundle: machine_join_bundle(),
+                secret_delivery: machine_join_secret_delivery(),
+                joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),
+                last_event_sequence: event_sequence(8),
+                result: MachineJoinRedeemResult::Joined,
+            },
+        }),
+        "cloud_bootstrap_session_create_request": value(CloudBootstrapSessionCreateRequest {
+            client: CloudBootstrapClientInfo::current("0.1.0"),
+            machine: machine.clone(),
+        }),
+        "cloud_bootstrap_session_created": value(CloudBootstrapSessionCreated {
+            browser_url: "https://cloud.ployz.com/bootstrap/pcbsess_123".to_owned(),
+            user_code: "PLOZ-1234".to_owned(),
+            session_secret: CloudBootstrapSessionSecret::try_new("pcbsess_secret_123")
+                .expect("valid session secret"),
+            poll_after_seconds: 2,
+            expires_at_unix_seconds: 1_893_456_000,
+        }),
+        "cloud_bootstrap_session_poll_request": value(CloudBootstrapSessionPollRequest {
+            session_secret: CloudBootstrapSessionSecret::try_new("pcbsess_secret_123")
+                .expect("valid session secret"),
+            machine: machine.clone(),
+        }),
+        "cloud_bootstrap_token_redeem_request": value(CloudBootstrapTokenRedeemRequest {
+            cloud_token: CloudBootstrapToken::try_new("pcbs_abc123").expect("valid cloud token"),
+            client: CloudBootstrapClientInfo::current("0.1.0"),
+            machine,
+        }),
+        "cloud_bootstrap_decision": value(CloudBootstrapDecision::Ready {
+            envelope: Box::new(CloudBootstrapEnvelope {
+                redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
+                    .expect("valid redemption id"),
+                callback_url: "https://cloud.ployz.com/api/bootstrap/callback".to_owned(),
+                callback_token: CloudBootstrapCallbackToken::try_new("pcbc_abc123")
+                    .expect("valid callback token"),
+                release: CloudBootstrapReleaseSelection {
+                    channel: Some("alpha".to_owned()),
+                    version: "0.1.0".to_owned(),
+                },
+                intent: CloudBootstrapIntent::Joiner {
+                    joiner: Box::new(CloudJoinerBootstrap {
+                        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
+                            "tls://203.0.113.10:4222",
+                        )
+                        .expect("valid nats url"),
+                        trusted_nats: trusted_nats.clone(),
+                        join_token: MachineJoinToken::try_new("join_once_123")
+                            .expect("valid join token"),
+                        join_secret_delivery,
+                    }),
+                },
+            }),
+        }),
+        "cloud_bootstrap_callback_request": value(CloudBootstrapCallbackRequest {
+            redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
+                .expect("valid redemption id"),
+            outcome: CloudBootstrapOutcome::FounderSucceeded {
+                result: CloudFounderBootstrapResult {
+                    machine_id: machine_id("core_1"),
+                    runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
+                        "tls://203.0.113.10:4222",
+                    )
+                    .expect("valid nats url"),
+                    trusted_nats,
+                },
+            },
+        }),
+        "cloud_bootstrap_callback_accepted": value(CloudBootstrapCallbackAccepted {
+            accepted_at_unix_seconds: 1_893_456_060,
+        }),
+        "operation_status_snapshot": value(status.clone()),
+        "ops_status_response": value(OpsStatusResponse::Ok { value: status }),
+        "operation_event_replay_page": value(replay_page.clone()),
+        "ops_watch_response": value(OpsWatchResponse::Ok { value: replay_page }),
+        "ops_status_error_response": value(OpsStatusResponse::DomainError {
+            error: OpsStatusError::NoSuchOperation {
+                operation_id: operation_id("op_missing"),
+            },
+        }),
+    })
+}
+
+fn value<T: Serialize>(value: T) -> Value {
+    serde_json::to_value(value).expect("operation contract fixture value serializes")
+}
+
+fn operation_id(value: &str) -> OperationId {
+    OperationId::try_new(value).expect("valid operation id")
+}
+
+fn service_id(value: &str) -> ServiceId {
+    ServiceId::try_new(value).expect("valid service id")
+}
+
+fn revision_id(value: &str) -> RevisionId {
+    RevisionId::try_new(value).expect("valid revision id")
+}
+
+fn machine_id(value: &str) -> MachineId {
+    MachineId::try_new(value).expect("valid machine id")
+}
+
+fn event_sequence(value: u64) -> EventSequence {
+    EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn accepted_operation(id: &str, start_sequence: u64) -> AcceptedOperation {
+    AcceptedOperation {
+        operation_id: operation_id(id),
+        watch_subject: format!("plz.v1.op.{id}.>"),
+        start_sequence: event_sequence(start_sequence),
+    }
+}
+
+fn trusted_nats() -> MachineJoinTrustedNats {
+    MachineJoinTrustedNats {
+        ca_pem: NatsCaCertificatePem::try_new(
+            "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
+        )
+        .expect("valid ca pem"),
+    }
+}
+
+fn cloud_machine_facts() -> CloudBootstrapMachineFacts {
+    CloudBootstrapMachineFacts {
+        hostname: Some("web-01".to_owned()),
+        os: "linux".to_owned(),
+        arch: "x86_64".to_owned(),
+        candidate_runtime_nats_url: Some(
+            MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").expect("valid nats url"),
+        ),
+    }
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        material: MachineJoinMaterial {
+            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                .expect("valid runtime nats url"),
+            trusted_nats: trusted_nats(),
+            ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
+            ebpf_bytecode: machine_join_artifact(
+                "/tmp/ployz-ebpf-tc",
+                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            ),
+            ebpf_ctl: machine_join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+        },
+    }
+}
+
+fn machine_join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
+    InstallArtifactSpec {
+        version: InstallArtifactVersion::try_new("0.1.0").expect("valid artifact version"),
+        source: InstallArtifactSource::try_new(source).expect("valid artifact source"),
+        sha256: InstallSha256Digest::try_new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("valid artifact digest"),
+        install_path: AbsoluteInstallPath::try_new(install_path)
+            .expect("valid artifact install path"),
+    }
+}
+
+fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
+    MachineJoinSecretDelivery {
+        nats_credentials: NatsUserSeed::try_new(
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("valid nats credentials"),
     }
 }

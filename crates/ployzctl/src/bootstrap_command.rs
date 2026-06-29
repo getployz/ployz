@@ -18,7 +18,7 @@ use crate::shell::shell_quote;
 /// Must match the `default_channel` in `scripts/ployz.sh`.
 pub const DEFAULT_RELEASE_CHANNEL: &str = "alpha";
 /// The default installer the remote machine pipes through `sh`.
-pub const DEFAULT_BOOTSTRAP_URL: &str = "https://ployz.sh";
+pub const DEFAULT_BOOTSTRAP_URL: &str = ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 /// Default cluster name recorded in the machine-join template.
 pub const DEFAULT_CLUSTER_NAME: &str = "ployz";
 /// The cluster control-plane NATS port on every machine.
