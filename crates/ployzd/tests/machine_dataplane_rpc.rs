@@ -1,8 +1,7 @@
 use async_nats::jetstream;
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember, DataplanePrepareError,
-    DataplanePrepareProviderReport, DataplanePrepareRequest, DataplaneProviderFailure,
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineEndpointSubnet,
+    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember, DataplanePrepareError, DataplanePrepareRequest,
+    DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshReady,
     WireGuardPeerEndpoint, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
@@ -15,10 +14,9 @@ use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use ployzd::deploy_worker::DataplanePreparer;
 use ployzd::machine_runtime::client::NatsMachineDataplanePreparer;
 use ployzd::machine_runtime::protocol::{
-    MachineDataplanePrepareDomainError, MachineDataplanePrepareProviderRequest,
-    MachineDataplanePrepareRpcOk, MachineDataplanePrepareRpcRequest,
-    MachineDataplanePrepareRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
-    MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
+    MachineDataplanePrepareRpcRequest, MachineDataplanePrepareRpcResponse,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
+    MachinePloyzNativeMeshPrepareRpcRequest,
 };
 use ployzd::services::machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -36,7 +34,6 @@ async fn nats_machine_preparer_calls_wireguard_ebpf_prepare_service() {
                     .lock()
                     .expect("received request lock is not poisoned")
                     .push(request);
-                WireGuardEbpfPrepareResult::Ok
             }
         })
         .await;
@@ -46,7 +43,6 @@ async fn nats_machine_preparer_calls_wireguard_ebpf_prepare_service() {
         .prepare_dataplane(dataplane_request(&["machine_a"]))
         .await
         .expect("dataplane prepare succeeds");
-    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
     assert_eq!(report.machines, vec![ready_machine("machine_a")]);
 
     assert_eq!(
@@ -83,7 +79,6 @@ async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
                         .lock()
                         .expect("received request lock is not poisoned")
                         .push(request);
-                    WireGuardEbpfPrepareResult::Ok
                 },
             )
             .await,
@@ -105,8 +100,6 @@ async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
         .prepare_dataplane(dataplane_request(&["machine_a", "machine_b"]))
         .await
         .expect("dataplane prepare succeeds");
-    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
-
     assert_eq!(
         report.machines,
         vec![ready_machine("machine_a"), ready_machine("machine_b")]
@@ -205,68 +198,6 @@ async fn nats_machine_preparer_requires_public_ip_observations_for_multi_machine
 }
 
 #[tokio::test]
-async fn nats_machine_preparer_rejects_ipv6_subnet_before_native_mesh_rpc() {
-    let nats = test_nats().await;
-    let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
-
-    let error = preparer
-        .prepare_dataplane(DataplanePrepareRequest {
-            operation_id: operation_id("op_123"),
-            membership: vec![DataplaneMember {
-                machine_id: machine_id("machine_a"),
-                endpoint_subnet: MachineEndpointSubnet::try_new("fd7a:115c:a1e0::/64")
-                    .expect("valid ipv6 subnet"),
-            }],
-        })
-        .await
-        .expect_err("native mesh does not support ipv6 endpoint subnets yet");
-
-    assert_eq!(
-        error,
-        DataplanePrepareError::Unavailable {
-            machine_id: machine_id("machine_a"),
-            provider: DataplaneProviderFailure::PloyzNativeMesh {
-                component: PloyzNativeMeshComponent::WireGuard,
-            },
-            message: failure_message(
-                "ployz native mesh endpoint subnet must be IPv4: fd7a:115c:a1e0::/64"
-            ),
-        }
-    );
-}
-
-#[tokio::test]
-async fn nats_machine_preparer_rejects_non_24_ipv4_subnet_before_native_mesh_rpc() {
-    let nats = test_nats().await;
-    let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
-
-    let error = preparer
-        .prepare_dataplane(DataplanePrepareRequest {
-            operation_id: operation_id("op_123"),
-            membership: vec![DataplaneMember {
-                machine_id: machine_id("machine_a"),
-                endpoint_subnet: MachineEndpointSubnet::try_new("10.42.1.0/25")
-                    .expect("valid ipv4 subnet"),
-            }],
-        })
-        .await
-        .expect_err("native mesh only supports ipv4 /24 endpoint subnets yet");
-
-    assert_eq!(
-        error,
-        DataplanePrepareError::Unavailable {
-            machine_id: machine_id("machine_a"),
-            provider: DataplaneProviderFailure::PloyzNativeMesh {
-                component: PloyzNativeMeshComponent::WireGuard,
-            },
-            message: failure_message(
-                "ployz native mesh endpoint subnet must be an IPv4 /24 network: 10.42.1.0/25"
-            ),
-        }
-    );
-}
-
-#[tokio::test]
 async fn nats_machine_preparer_rejects_duplicate_native_mesh_subnets_before_rpc() {
     let nats = test_nats().await;
     let mut preparer = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
@@ -306,11 +237,9 @@ async fn nats_machine_preparer_rejects_dataplane_readiness_during_public_key_pha
             move |_request| {
                 NatsServiceResponse::ok(encode_wireguard_ebpf_response(
                     MachineDataplanePrepareRpcResponse::Ok(
-                        MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                            MachinePloyzNativeMeshPrepareRpcOk::Ready {
-                                readiness: ready_machine("machine_a"),
-                            },
-                        ),
+                        MachinePloyzNativeMeshPrepareRpcOk::Ready {
+                            readiness: ready_machine("machine_a"),
+                        },
                     ),
                 ))
             }
@@ -319,7 +248,7 @@ async fn nats_machine_preparer_rejects_dataplane_readiness_during_public_key_pha
     .await;
     let _machine_b =
         start_wireguard_ebpf_prepare_service(nats.machine_b.clone(), &machine_id("machine_b"), {
-            move |_request| WireGuardEbpfPrepareResult::Ok
+            move |_request| {}
         })
         .await;
     nats.machine_observations("machine_a")
@@ -359,12 +288,10 @@ async fn nats_machine_preparer_rejects_public_key_during_prepare_phase() {
             move |_request| {
                 NatsServiceResponse::ok(encode_wireguard_ebpf_response(
                     MachineDataplanePrepareRpcResponse::Ok(
-                        MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                            MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
-                                machine_id: machine_id("machine_a"),
-                                public_key: wireguard_public_key("public-machine_a"),
-                            },
-                        ),
+                        MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
+                            machine_id: machine_id("machine_a"),
+                            public_key: wireguard_public_key("public-machine_a"),
+                        },
                     ),
                 ))
             }
@@ -398,11 +325,9 @@ async fn nats_machine_preparer_rejects_native_mesh_response_for_wrong_machine() 
             move |_request| {
                 NatsServiceResponse::ok(encode_wireguard_ebpf_response(
                     MachineDataplanePrepareRpcResponse::Ok(
-                        MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                            MachinePloyzNativeMeshPrepareRpcOk::Ready {
-                                readiness: ready_machine("machine_b"),
-                            },
-                        ),
+                        MachinePloyzNativeMeshPrepareRpcOk::Ready {
+                            readiness: ready_machine("machine_b"),
+                        },
                     ),
                 ))
             }
@@ -439,11 +364,9 @@ async fn nats_machine_preparer_preserves_native_mesh_invalid_report_domain_error
                 NatsServiceResponse::domain_error(encode_wireguard_ebpf_response(
                     MachineDataplanePrepareRpcResponse::DomainError {
                         machine_id: machine_id("machine_a"),
-                        error: MachineDataplanePrepareDomainError::PloyzNativeMesh(
-                            MachinePloyzNativeMeshPrepareDomainError::InvalidReport {
-                                message: failure_message("host report was malformed"),
-                            },
-                        ),
+                        error: MachinePloyzNativeMeshPrepareDomainError::InvalidReport {
+                            message: failure_message("host report was malformed"),
+                        },
                     },
                 ))
             }
@@ -468,16 +391,14 @@ async fn nats_machine_preparer_preserves_native_mesh_invalid_report_domain_error
 async fn start_wireguard_ebpf_prepare_service(
     client: async_nats::Client,
     machine_id: &MachineId,
-    handler: impl Fn(MachineDataplanePrepareRpcRequest) -> WireGuardEbpfPrepareResult
-    + Send
-    + Sync
-    + 'static,
+    handler: impl Fn(MachineDataplanePrepareRpcRequest) + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
     let machine_id = machine_id.clone();
     start_wireguard_ebpf_prepare_raw_service(client, machine_id.clone(), move |request| {
         let response = decode_wireguard_ebpf_request(request).map(|request| {
             let provider_request = native_mesh_request(&request).clone();
-            handler(request).into_nats_response(machine_id.clone(), provider_request)
+            handler(request);
+            wireguard_ebpf_prepare_ok_response(machine_id.clone(), provider_request)
         });
         match response {
             Ok(response) => response,
@@ -528,43 +449,25 @@ fn encode_wireguard_ebpf_response(response: MachineDataplanePrepareRpcResponse) 
     serde_json::to_vec(&response).expect("machine wireguard ebpf response encodes")
 }
 
-enum WireGuardEbpfPrepareResult {
-    Ok,
-}
-
-impl WireGuardEbpfPrepareResult {
-    fn into_nats_response(
-        self,
-        machine_id: MachineId,
-        request: MachinePloyzNativeMeshPrepareRpcRequest,
-    ) -> NatsServiceResponse {
-        match (self, request) {
-            (Self::Ok, MachinePloyzNativeMeshPrepareRpcRequest::ReadPublicKey) => {
-                NatsServiceResponse::ok(encode_wireguard_ebpf_response(
-                    MachineDataplanePrepareRpcResponse::Ok(
-                        MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                            MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
-                                public_key: wireguard_public_key(format!(
-                                    "public-{}",
-                                    machine_id.as_str()
-                                )),
-                                machine_id,
-                            },
-                        ),
-                    ),
-                ))
-            }
-            (Self::Ok, MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane { .. }) => {
-                NatsServiceResponse::ok(encode_wireguard_ebpf_response(
-                    MachineDataplanePrepareRpcResponse::Ok(
-                        MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                            MachinePloyzNativeMeshPrepareRpcOk::Ready {
-                                readiness: ready_machine_for_id(machine_id),
-                            },
-                        ),
-                    ),
-                ))
-            }
+fn wireguard_ebpf_prepare_ok_response(
+    machine_id: MachineId,
+    request: MachinePloyzNativeMeshPrepareRpcRequest,
+) -> NatsServiceResponse {
+    match request {
+        MachinePloyzNativeMeshPrepareRpcRequest::ReadPublicKey => NatsServiceResponse::ok(
+            encode_wireguard_ebpf_response(MachineDataplanePrepareRpcResponse::Ok(
+                MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
+                    public_key: wireguard_public_key(format!("public-{}", machine_id.as_str())),
+                    machine_id,
+                },
+            )),
+        ),
+        MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane { .. } => {
+            NatsServiceResponse::ok(encode_wireguard_ebpf_response(
+                MachineDataplanePrepareRpcResponse::Ok(MachinePloyzNativeMeshPrepareRpcOk::Ready {
+                    readiness: ready_machine_for_id(machine_id),
+                }),
+            ))
         }
     }
 }
@@ -583,9 +486,7 @@ fn native_mesh_rpc_request(
 fn native_mesh_request(
     request: &MachineDataplanePrepareRpcRequest,
 ) -> &MachinePloyzNativeMeshPrepareRpcRequest {
-    match &request.provider {
-        MachineDataplanePrepareProviderRequest::PloyzNativeMesh(request) => request,
-    }
+    &request.request
 }
 
 fn ready_machine(machine_id: &str) -> PloyzNativeMeshMachineReady {

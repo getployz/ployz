@@ -66,7 +66,12 @@ impl TestNats {
                     )
                     .expect("valid bootstrap url"),
                 )
-                .with_join_template(machine_join_template(self)),
+                .with_join_material(
+                    machine_join_template(self),
+                    ployz_core::install::MachineJoinSecretDelivery {
+                        nats_credentials: self.server().join_seed().clone(),
+                    },
+                ),
             )
     }
 

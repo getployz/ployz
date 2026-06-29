@@ -5,13 +5,11 @@ use crate::machine_runtime::protocol::{
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineDataplanePrepareDomainError,
-    MachineDataplanePrepareProviderRequest, MachineDataplanePrepareRpcOk,
-    MachineDataplanePrepareRpcRequest, MachineDataplanePrepareRpcResponse,
-    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineEnsureEndpointNetworkRpcResponse,
-    MachineLogsTailDomainError, MachineLogsTailResult, MachineLogsTailRpcOk,
-    MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
+    MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
+    MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkDomainError,
+    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
+    MachineEnsureEndpointNetworkRpcResponse, MachineLogsTailDomainError, MachineLogsTailResult,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
     MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
     MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
 };
@@ -517,9 +515,6 @@ where
         Ok(request) => request,
         Err(response) => return response,
     };
-    let MachineDataplanePrepareProviderRequest::PloyzNativeMesh(provider_request) =
-        request.provider;
-
     if !request
         .machines
         .iter()
@@ -527,32 +522,28 @@ where
     {
         return machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
             machine_id: machine_id.clone(),
-            error: MachineDataplanePrepareDomainError::PloyzNativeMesh(
-                MachinePloyzNativeMeshPrepareDomainError::Unavailable {
-                    component: ployz_core::dataplane::PloyzNativeMeshComponent::WireGuard,
-                    message: failure_message(
-                        "ployz native mesh prepare request did not target this machine",
-                    ),
-                },
-            ),
+            error: MachinePloyzNativeMeshPrepareDomainError::Unavailable {
+                component: ployz_core::dataplane::PloyzNativeMeshComponent::WireGuard,
+                message: failure_message(
+                    "ployz native mesh prepare request did not target this machine",
+                ),
+            },
         });
     }
 
-    match provider_request {
+    match request.request {
         MachinePloyzNativeMeshPrepareRpcRequest::ReadPublicKey => {
             match preparer.read_wireguard_public_key().await {
                 Ok(public_key) => machine_success(MachineDataplanePrepareRpcResponse::Ok(
-                    MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                        MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
-                            machine_id,
-                            public_key,
-                        },
-                    ),
+                    MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
+                        machine_id,
+                        public_key,
+                    },
                 )),
                 Err(error) => {
                     machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
                         machine_id,
-                        error: MachineDataplanePrepareDomainError::PloyzNativeMesh(error.into()),
+                        error: error.into(),
                     })
                 }
             }
@@ -566,16 +557,14 @@ where
                 .await
             {
                 Ok(ready) => machine_success(MachineDataplanePrepareRpcResponse::Ok(
-                    MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                        MachinePloyzNativeMeshPrepareRpcOk::Ready {
-                            readiness: PloyzNativeMeshMachineReady { machine_id, ready },
-                        },
-                    ),
+                    MachinePloyzNativeMeshPrepareRpcOk::Ready {
+                        readiness: PloyzNativeMeshMachineReady { machine_id, ready },
+                    },
                 )),
                 Err(error) => {
                     machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
                         machine_id,
-                        error: MachineDataplanePrepareDomainError::PloyzNativeMesh(error.into()),
+                        error: error.into(),
                     })
                 }
             }

@@ -292,7 +292,7 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
                 matches!(
                     event,
                     OperationEvent::DeployDataplanePrepared {
-                        report: ployz_core::dataplane::DataplanePrepareProviderReport::PloyzNativeMesh(report),
+                        report,
                         ..
                     }
                         if report

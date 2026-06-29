@@ -338,7 +338,15 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
             .expect("default bootstrap URL is valid"),
     )
-    .with_join_template(ployz_test_support::fixtures::machine_join_template())
+    .with_join_material(
+        ployz_test_support::fixtures::machine_join_template(),
+        ployz_core::install::MachineJoinSecretDelivery {
+            nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
+                "SUAFKRGZQV3CDWR46WYP6WR43T34AL5BN4BAGVGIP34YFSBESCD6FU4HHA",
+            )
+            .expect("valid seed"),
+        },
+    )
 }
 
 struct TestNats {

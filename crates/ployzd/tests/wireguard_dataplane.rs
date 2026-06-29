@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
-    DataplanePrepareProviderReport, DataplanePrepareRequest, EbpfForwardingReadyEvidence,
-    PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
-    WireGuardPublicKey, WireGuardReadyEvidence,
+    DataplanePrepareRequest, EbpfForwardingReadyEvidence, PloyzNativeMeshComponent,
+    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
+    WireGuardReadyEvidence,
 };
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, operation_id};
@@ -147,7 +147,6 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
         ))
         .await
         .expect("real dataplane prepares through machine-scoped NATS service");
-    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
     let [ready] = report.machines.as_slice() else {
         panic!("expected one machine readiness report");
     };

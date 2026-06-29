@@ -1,8 +1,8 @@
 use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
-    DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshReady,
-    WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshReady, WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
@@ -23,11 +23,11 @@ use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
     MachineContainerRunSpec, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineDataplanePrepareDomainError,
-    MachineDataplanePrepareRpcRequest, MachineDataplanePrepareRpcResponse,
-    MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailRpcOk, MachineLogsTailRpcRequest,
-    MachineLogsTailRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
-    MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
+    MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
+    MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
+    MachineRunContainerOutcome,
 };
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -567,8 +567,6 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
         .prepare_dataplane(dataplane_request(&["machine_a"]))
         .await
         .expect("dataplane prepare succeeds");
-    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
-
     assert_eq!(state.prepare_count(), 1);
     assert_eq!(state.endpoint_routes(), endpoint_routes(&["machine_a"]));
     assert_eq!(state.peers(), Vec::new());
@@ -615,12 +613,10 @@ async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machi
         response,
         MachineDataplanePrepareRpcResponse::DomainError {
             machine_id,
-            error: MachineDataplanePrepareDomainError::PloyzNativeMesh(
-                MachinePloyzNativeMeshPrepareDomainError::Unavailable {
-                    component: PloyzNativeMeshComponent::WireGuard,
-                    ..
-                }
-            ),
+            error: MachinePloyzNativeMeshPrepareDomainError::Unavailable {
+                component: PloyzNativeMeshComponent::WireGuard,
+                ..
+            },
         } if machine_id == self::machine_id("machine_a")
     ));
     assert_eq!(state.prepare_count(), 0);

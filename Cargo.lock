@@ -2120,6 +2120,7 @@ dependencies = [
  "ployz-sdk-types",
  "ployz-test-support",
  "rcgen",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",

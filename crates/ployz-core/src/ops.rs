@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
-use crate::dataplane::{DataplanePrepareProviderReport, DataplaneProviderFailure};
+use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
     CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, SubjectToken,
@@ -422,7 +422,7 @@ pub enum DeployEvidence {
         plan: DeployPlan,
     },
     DataplanePrepared {
-        report: DataplanePrepareProviderReport,
+        report: PloyzNativeMeshPrepareReport,
     },
     ContainerStarted {
         machine_id: MachineId,

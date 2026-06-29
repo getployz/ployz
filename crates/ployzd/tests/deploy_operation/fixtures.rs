@@ -1,8 +1,8 @@
 use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
-    DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
-    PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -118,7 +118,6 @@ impl DeployOperationRecorder for RecordingOperations {
                 });
             }
             DeployEvidence::DataplanePrepared { report } => {
-                let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
                 self.records.push(RecordedOperation::DataplanePrepared {
                     machine_count: report.machines.len(),
                 });
@@ -194,7 +193,7 @@ impl DataplanePreparer for RecordingWireGuardEbpf {
     async fn prepare_dataplane(
         &mut self,
         request: DataplanePrepareRequest,
-    ) -> Result<DataplanePrepareProviderReport, DataplanePrepareError> {
+    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
         let ready_machines = request
             .membership
             .iter()
@@ -203,10 +202,8 @@ impl DataplanePreparer for RecordingWireGuardEbpf {
         self.requests.push(request);
         match &self.failure {
             Some(error) => Err(error.clone()),
-            None => Ok(DataplanePrepareProviderReport::PloyzNativeMesh(
-                PloyzNativeMeshPrepareReport::from_machines(ready_machines)
-                    .expect("recording report has unique machines"),
-            )),
+            None => Ok(PloyzNativeMeshPrepareReport::from_machines(ready_machines)
+                .expect("recording report has unique machines")),
         }
     }
 }

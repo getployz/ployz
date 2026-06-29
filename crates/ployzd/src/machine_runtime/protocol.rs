@@ -253,7 +253,7 @@ pub enum MachineLogsTailDomainError {
 pub struct MachineDataplanePrepareRpcRequest {
     pub operation_id: OperationId,
     pub machines: Vec<MachineId>,
-    pub provider: MachineDataplanePrepareProviderRequest,
+    pub request: MachinePloyzNativeMeshPrepareRpcRequest,
 }
 
 impl MachineDataplanePrepareRpcRequest {
@@ -266,15 +266,9 @@ impl MachineDataplanePrepareRpcRequest {
         Self {
             operation_id,
             machines,
-            provider: MachineDataplanePrepareProviderRequest::PloyzNativeMesh(request),
+            request,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "provider", content = "request", rename_all = "snake_case")]
-pub enum MachineDataplanePrepareProviderRequest {
-    PloyzNativeMesh(MachinePloyzNativeMeshPrepareRpcRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,22 +301,10 @@ impl From<PloyzNativeMeshPrepareRequest> for MachineDataplanePrepareRpcRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "provider", content = "response", rename_all = "snake_case")]
-pub enum MachineDataplanePrepareRpcOk {
-    PloyzNativeMesh(MachinePloyzNativeMeshPrepareRpcOk),
-}
-
-impl MachineRpcResponder for MachineDataplanePrepareRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        match self {
-            Self::PloyzNativeMesh(ok) => ok.responder_machine_id(),
-        }
-    }
-}
-
-pub type MachineDataplanePrepareRpcResponse =
-    MachineRpcResponse<MachineDataplanePrepareRpcOk, MachineDataplanePrepareDomainError>;
+pub type MachineDataplanePrepareRpcResponse = MachineRpcResponse<
+    MachinePloyzNativeMeshPrepareRpcOk,
+    MachinePloyzNativeMeshPrepareDomainError,
+>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case", deny_unknown_fields)]
@@ -346,10 +328,13 @@ impl MachinePloyzNativeMeshPrepareRpcOk {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "provider", content = "error", rename_all = "snake_case")]
-pub enum MachineDataplanePrepareDomainError {
-    PloyzNativeMesh(MachinePloyzNativeMeshPrepareDomainError),
+impl MachineRpcResponder for MachinePloyzNativeMeshPrepareRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        match self {
+            Self::PublicKey { machine_id, .. } => machine_id,
+            Self::Ready { readiness } => &readiness.machine_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,22 +410,19 @@ mod tests {
         let request_json = json!({
             "operation_id": "op_123",
             "machines": ["machine_a"],
-            "provider": {
-                "provider": "ployz_native_mesh",
-                "request": {
-                    "phase": "prepare_dataplane",
-                    "endpoint_routes": [
-                        { "machine_id": "machine_a", "endpoint_subnet": "10.42.1.0/24" },
-                    ],
-                    "peers": [
-                        {
-                            "machine_id": "machine_a",
-                            "endpoint_subnet": "10.42.1.0/24",
-                            "public_endpoint": "203.0.113.1:51820",
-                            "public_key": "public-key",
-                        },
-                    ],
-                },
+            "request": {
+                "phase": "prepare_dataplane",
+                "endpoint_routes": [
+                    { "machine_id": "machine_a", "endpoint_subnet": "10.42.1.0/24" },
+                ],
+                "peers": [
+                    {
+                        "machine_id": "machine_a",
+                        "endpoint_subnet": "10.42.1.0/24",
+                        "public_endpoint": "203.0.113.1:51820",
+                        "public_key": "public-key",
+                    },
+                ],
             },
         });
 
@@ -458,20 +440,15 @@ mod tests {
     #[test]
     fn dataplane_prepare_response_wire_shape_is_pinned() {
         let public_key =
-            MachineDataplanePrepareRpcResponse::Ok(MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
-                    machine_id: machine_id("machine_a"),
-                    public_key: wireguard_public_key("public-key"),
-                },
-            ));
+            MachineDataplanePrepareRpcResponse::Ok(MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
+                machine_id: machine_id("machine_a"),
+                public_key: wireguard_public_key("public-key"),
+            });
         let public_key_json = json!({
             "status": "ok",
-            "provider": "ployz_native_mesh",
-            "response": {
-                "response": "public_key",
-                "machine_id": "machine_a",
-                "public_key": "public-key",
-            },
+            "response": "public_key",
+            "machine_id": "machine_a",
+            "public_key": "public-key",
         });
         assert_eq!(
             serde_json::to_value(&public_key).expect("response serializes"),
@@ -484,41 +461,36 @@ mod tests {
         );
 
         let ok =
-            MachineDataplanePrepareRpcResponse::Ok(MachineDataplanePrepareRpcOk::PloyzNativeMesh(
-                MachinePloyzNativeMeshPrepareRpcOk::Ready {
-                    readiness: PloyzNativeMeshMachineReady {
-                        machine_id: machine_id("machine_a"),
-                        ready: PloyzNativeMeshReady {
-                            wireguard: WireGuardReady {
-                                public_key: wireguard_public_key("public-key"),
-                                evidence: vec![WireGuardReadyEvidence::HostPath {
-                                    path: "/dev/net/tun".to_owned(),
-                                }],
-                            },
-                            ebpf_forwarding: EbpfForwardingReady {
-                                evidence: vec![EbpfForwardingReadyEvidence::Command {
-                                    program: "tc".to_owned(),
-                                    args: vec!["-V".to_owned()],
-                                }],
-                            },
+            MachineDataplanePrepareRpcResponse::Ok(MachinePloyzNativeMeshPrepareRpcOk::Ready {
+                readiness: PloyzNativeMeshMachineReady {
+                    machine_id: machine_id("machine_a"),
+                    ready: PloyzNativeMeshReady {
+                        wireguard: WireGuardReady {
+                            public_key: wireguard_public_key("public-key"),
+                            evidence: vec![WireGuardReadyEvidence::HostPath {
+                                path: "/dev/net/tun".to_owned(),
+                            }],
+                        },
+                        ebpf_forwarding: EbpfForwardingReady {
+                            evidence: vec![EbpfForwardingReadyEvidence::Command {
+                                program: "tc".to_owned(),
+                                args: vec!["-V".to_owned()],
+                            }],
                         },
                     },
                 },
-            ));
+            });
         let ok_json = json!({
             "status": "ok",
-            "provider": "ployz_native_mesh",
-            "response": {
-                "response": "ready",
-                "readiness": {
-                    "machine_id": "machine_a",
-                    "wireguard": {
-                        "public_key": "public-key",
-                        "evidence": [{ "kind": "host_path", "path": "/dev/net/tun" }],
-                    },
-                    "ebpf_forwarding": {
-                        "evidence": [{ "kind": "command", "program": "tc", "args": ["-V"] }],
-                    },
+            "response": "ready",
+            "readiness": {
+                "machine_id": "machine_a",
+                "wireguard": {
+                    "public_key": "public-key",
+                    "evidence": [{ "kind": "host_path", "path": "/dev/net/tun" }],
+                },
+                "ebpf_forwarding": {
+                    "evidence": [{ "kind": "command", "program": "tc", "args": ["-V"] }],
                 },
             },
         });
@@ -534,19 +506,14 @@ mod tests {
 
         let invalid_report = MachineDataplanePrepareRpcResponse::DomainError {
             machine_id: machine_id("machine_a"),
-            error: MachineDataplanePrepareDomainError::PloyzNativeMesh(
-                MachinePloyzNativeMeshPrepareDomainError::InvalidReport {
-                    message: failure_message("invalid report"),
-                },
-            ),
+            error: MachinePloyzNativeMeshPrepareDomainError::InvalidReport {
+                message: failure_message("invalid report"),
+            },
         };
         let invalid_report_json = json!({
             "status": "domain_error",
             "machine_id": "machine_a",
-            "error": {
-                "provider": "ployz_native_mesh",
-                "error": { "error": "invalid_report", "message": "invalid report" },
-            },
+            "error": { "error": "invalid_report", "message": "invalid report" },
         });
         assert_eq!(
             serde_json::to_value(&invalid_report).expect("response serializes"),

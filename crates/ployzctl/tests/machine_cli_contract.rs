@@ -11,7 +11,6 @@ use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
 };
-use ployz_sdk_types::CloudBootstrapToken;
 use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
@@ -791,7 +790,6 @@ fn cloud_bootstrap_command_renders_tokenless_interactive_command() {
         installer: BootstrapInstaller::BootstrapUrl(
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
-        cloud_token: None,
         cloud_host: None,
     };
 
@@ -802,12 +800,11 @@ fn cloud_bootstrap_command_renders_tokenless_interactive_command() {
 }
 
 #[test]
-fn cloud_bootstrap_command_renders_explicit_token_after_installer_pipe() {
+fn cloud_bootstrap_command_renders_custom_cloud_host_after_installer_pipe() {
     let command = CloudBootstrapCommand {
         installer: BootstrapInstaller::BootstrapUrl(
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
-        cloud_token: Some(CloudBootstrapToken::try_new("pcbs_abc123").expect("valid token")),
         cloud_host: Some("cloud.example.com".to_owned()),
     };
 
@@ -815,53 +812,21 @@ fn cloud_bootstrap_command_renders_explicit_token_after_installer_pipe() {
 
     assert_eq!(
         rendered,
-        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz-keeper bootstrap --cloud-token 'pcbs_abc123' --cloud-host 'cloud.example.com'"
-    );
-    assert!(
-        rendered
-            .split("&&")
-            .nth(1)
-            .expect("bootstrap command has post-install half")
-            .contains("pcbs_abc123")
-    );
-    assert!(
-        !rendered
-            .split('|')
-            .next()
-            .unwrap_or_default()
-            .contains("pcbs_abc123")
+        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz-keeper bootstrap --cloud-host 'cloud.example.com'"
     );
 }
 
 #[test]
-fn cloud_bootstrap_command_shell_quotes_remote_script_token_and_host() {
+fn cloud_bootstrap_command_shell_quotes_remote_script_and_host() {
     let command = CloudBootstrapCommand {
         installer: BootstrapInstaller::RemoteScript("/tmp/ployz install.sh".to_owned()),
-        cloud_token: Some(CloudBootstrapToken::try_new("pcbs_quote'ok").expect("valid token")),
         cloud_host: Some("cloud.example.com/path?x='quoted'".to_owned()),
     };
 
     let rendered = command.render();
 
     assert!(rendered.starts_with("sh '/tmp/ployz install.sh' && sudo ployz-keeper bootstrap"));
-    assert!(rendered.contains("--cloud-token 'pcbs_quote'\\''ok'"));
     assert!(rendered.contains("--cloud-host 'cloud.example.com/path?x='\\''quoted'\\'''"));
-}
-
-#[test]
-fn cloud_bootstrap_command_debug_redacts_token() {
-    let command = CloudBootstrapCommand {
-        installer: BootstrapInstaller::BootstrapUrl(
-            MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
-        ),
-        cloud_token: Some(CloudBootstrapToken::try_new("pcbs_abc123").expect("valid token")),
-        cloud_host: None,
-    };
-
-    let debug = format!("{command:?}");
-
-    assert!(debug.contains("[redacted]"));
-    assert!(!debug.contains("pcbs_abc123"));
 }
 
 #[test]

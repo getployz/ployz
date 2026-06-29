@@ -14,10 +14,10 @@ use ployzd::config::{
     GatewayProcessConfig, MachinePloyzNativeMeshConfig, MachineProcessArtifacts,
     MachineProcessConfig, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
     PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_MACHINES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
-    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
-    PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_MACHINE_PUBLIC_IP_ENV,
-    PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, RoleNatsConnect,
-    load_daemon_process_config,
+    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_JOIN_NKEY_SEED_FILE_ENV,
+    PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV,
+    PLOYZ_MACHINE_PUBLIC_IP_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
+    PLOYZ_NATS_URL_ENV, RoleNatsConnect, load_daemon_process_config,
 };
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::role::{DaemonProcessRole, parse_role_args};
@@ -371,10 +371,44 @@ fn control_role_loads_optional_machine_join_template() {
     let DaemonProcessConfig::Control(config) = config else {
         panic!("control role should produce control config");
     };
-    let Some(template) = config.machine_bootstrap.join_template else {
-        panic!("machine join template should load");
+    assert!(config.machine_bootstrap.join_material.is_none());
+}
+
+#[test]
+fn control_role_loads_optional_machine_join_secret_delivery() {
+    let template_path = temp_join_template_file();
+    let seed_file = temp_seed_file("controller.seed");
+    let join_seed_file = temp_seed_file("join.seed");
+    let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_MACHINE_ID_ENV => Some("core_a".to_owned()),
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+        PLOYZ_NATS_CA_FILE_ENV => Some("/tmp/ployz-test-ca.pem".to_owned()),
+        PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some(seed_file.clone()),
+        PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV => Some(template_path.clone()),
+        PLOYZ_JOIN_NKEY_SEED_FILE_ENV => Some(join_seed_file.clone()),
+        _ => None,
+    })
+    .expect("control role config loads");
+
+    let DaemonProcessConfig::Control(config) = config else {
+        panic!("control role should produce control config");
     };
-    assert_eq!(template.join_bundle.material.cluster_name.as_str(), "prod");
+    let Some(material) = config.machine_bootstrap.join_material else {
+        panic!("machine join material should load");
+    };
+    assert_eq!(
+        material
+            .join_template
+            .join_bundle
+            .material
+            .cluster_name
+            .as_str(),
+        "prod"
+    );
+    assert_eq!(
+        material.join_secret_delivery.nats_credentials.secret(),
+        TEST_SEED
+    );
 }
 
 #[test]
@@ -601,7 +635,11 @@ fn binary_machine_role_requires_nats_url() {
 }
 
 fn temp_join_template_file() -> String {
-    let dir = std::env::temp_dir().join(format!("ployzd-join-template-{}", std::process::id()));
+    let index = TEMP_SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "ployzd-join-template-{}-{index}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("join template dir can be created");
     let path = dir.join("join-template.json");

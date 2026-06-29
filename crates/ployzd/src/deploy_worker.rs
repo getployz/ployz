@@ -579,7 +579,7 @@ async fn prepare_dataplane<D>(
     command: &DeployExecutionCommand,
     plan: &DeployPlan,
     dataplane: &mut D,
-) -> Result<ployz_core::dataplane::DataplanePrepareProviderReport, DeployExecutionError>
+) -> Result<ployz_core::dataplane::PloyzNativeMeshPrepareReport, DeployExecutionError>
 where
     D: DataplanePreparer,
 {

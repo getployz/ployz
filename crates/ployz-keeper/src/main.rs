@@ -33,6 +33,7 @@ use ployz_sdk_types::{
     MachineJoinRedeemed, MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
     MachineJoinTrustedNats, NatsCaCertificatePem,
 };
+mod cloud_bootstrap_runner;
 
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
@@ -46,6 +47,7 @@ const REDEEM_MATERIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
+const CLOUD_BOOTSTRAP_MAX_POLLS: u16 = 900;
 
 fn main() -> ExitCode {
     match load_command(std::env::args_os().skip(1)) {
@@ -112,21 +114,53 @@ fn main() -> ExitCode {
 fn run_bootstrap_command(bootstrap: KeeperBootstrap) -> ExitCode {
     match bootstrap.mode {
         KeeperBootstrapMode::Interactive { cloud_host } => {
-            println!("Ployz bootstrap");
-            println!("1. Connect to Ployz Cloud");
-            println!("2. Connect to custom Cloud");
-            println!("3. Continue without Cloud");
-            if let Some(cloud_host) = cloud_host {
-                println!("cloud host: {}", cloud_host.as_str());
-            }
-            ExitCode::SUCCESS
+            let host = match choose_cloud_host(cloud_host) {
+                Ok(Some(host)) => host,
+                Ok(None) => {
+                    eprintln!("Use local CLI setup from your workstation:");
+                    eprintln!("  ployzctl machine init USER@HOST");
+                    return ExitCode::FAILURE;
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            cloud_bootstrap_runner::run_interactive_cloud_bootstrap(host.as_str())
         }
-        KeeperBootstrapMode::CloudToken { cloud_host, .. } => {
-            println!("Ployz Cloud bootstrap");
-            println!("cloud host: {}", cloud_host.as_str());
-            eprintln!("cloud token redemption is not available in this build");
-            ExitCode::FAILURE
+    }
+}
+
+fn choose_cloud_host(
+    cloud_host: Option<ployz_keeper::cli::CloudHost>,
+) -> Result<Option<ployz_keeper::cli::CloudHost>, String> {
+    if let Some(host) = cloud_host {
+        return Ok(Some(host));
+    }
+
+    println!("Ployz bootstrap");
+    println!("1. Connect to Ployz Cloud");
+    println!("2. Connect to custom Cloud");
+    println!("3. Use local CLI setup");
+    let mut choice = String::new();
+    std::io::stdin()
+        .read_line(&mut choice)
+        .map_err(|error| format!("failed to read bootstrap choice: {error}"))?;
+    match choice.trim() {
+        "" | "1" => Ok(Some(Default::default())),
+        "2" => {
+            println!("Cloud host:");
+            let mut host = String::new();
+            std::io::stdin()
+                .read_line(&mut host)
+                .map_err(|error| format!("failed to read cloud host: {error}"))?;
+            host.trim()
+                .parse()
+                .map(Some)
+                .map_err(|error| format!("{error}"))
         }
+        "3" => Ok(None),
+        other => Err(format!("unknown bootstrap choice: {other}")),
     }
 }
 
@@ -183,8 +217,8 @@ fn run_join(
     join_token_file: std::path::PathBuf,
     recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
 ) -> ployz_keeper::executor::KeeperPlanExecution {
-    let mut redeemer = SystemJoinRedeemer::from_env();
-    let mut reporter = SystemJoinReporter::from_env(token.clone());
+    let mut redeemer = JoinRedeemer::from_env();
+    let mut reporter = JoinReporter::from_env(token.clone());
     let mut token_consumer = StartupJoinTokenConsumer { join_token_file };
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
@@ -225,33 +259,37 @@ fn failure_summary(failure: &KeeperPlanFailure) -> &str {
     }
 }
 
-struct SystemJoinRedeemer {
-    connect: Result<NatsConnectConfig, KeeperNatsConnectError>,
-    machine_public_ip: Result<Option<std::net::IpAddr>, KeeperMachinePublicIpError>,
+struct JoinRedeemer {
+    connect: Result<NatsConnectConfig, FailureMessage>,
+    machine_public_ip: Result<Option<std::net::IpAddr>, FailureMessage>,
 }
 
-impl SystemJoinRedeemer {
-    fn from_env() -> Self {
+impl JoinRedeemer {
+    fn new(
+        connect: Result<NatsConnectConfig, FailureMessage>,
+        machine_public_ip: Result<Option<std::net::IpAddr>, FailureMessage>,
+    ) -> Self {
         Self {
-            connect: load_join_connect_from_env(),
-            machine_public_ip: load_machine_public_ip_from_env(),
+            connect,
+            machine_public_ip,
         }
+    }
+
+    fn from_env() -> Self {
+        Self::new(
+            load_join_connect_from_env().map_err(|error| failure_message(&format!("{error}"))),
+            load_machine_public_ip_from_env().map_err(|error| failure_message(&format!("{error}"))),
+        )
     }
 }
 
-impl KeeperJoinRedeemer for SystemJoinRedeemer {
+impl KeeperJoinRedeemer for JoinRedeemer {
     fn redeem_join_token(
         &mut self,
         token: &JoinToken,
     ) -> Result<RedeemedKeeperJoin, FailureMessage> {
-        let connect = self
-            .connect
-            .clone()
-            .map_err(|error| failure_message(&format!("{error}")))?;
-        let machine_public_ip = self
-            .machine_public_ip
-            .clone()
-            .map_err(|error| failure_message(&format!("{error}")))?;
+        let connect = self.connect.clone()?;
+        let machine_public_ip = self.machine_public_ip.clone()?;
         let join_token = MachineJoinToken::try_new(token.as_str())
             .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))?;
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -308,21 +346,28 @@ async fn redeem_until_material_ready(
     )))
 }
 
-struct SystemJoinReporter {
-    connect: Result<NatsConnectConfig, KeeperNatsConnectError>,
+struct JoinReporter {
+    connect: Result<NatsConnectConfig, FailureMessage>,
     join_token: JoinToken,
 }
 
-impl SystemJoinReporter {
-    fn from_env(join_token: JoinToken) -> Self {
+impl JoinReporter {
+    fn new(connect: Result<NatsConnectConfig, FailureMessage>, join_token: JoinToken) -> Self {
         Self {
-            connect: load_join_connect_from_env(),
+            connect,
             join_token,
         }
     }
+
+    fn from_env(join_token: JoinToken) -> Self {
+        Self::new(
+            load_join_connect_from_env().map_err(|error| failure_message(&format!("{error}"))),
+            join_token,
+        )
+    }
 }
 
-impl KeeperJoinReporter for SystemJoinReporter {
+impl KeeperJoinReporter for JoinReporter {
     fn report_join_completed(&mut self) -> Result<(), FailureMessage> {
         self.report_join_result(MachineJoinReportRequest {
             join_token: self.machine_join_token()?,
@@ -341,12 +386,9 @@ impl KeeperJoinReporter for SystemJoinReporter {
     }
 }
 
-impl SystemJoinReporter {
+impl JoinReporter {
     fn report_join_result(&self, request: MachineJoinReportRequest) -> Result<(), FailureMessage> {
-        let connect = self
-            .connect
-            .clone()
-            .map_err(|error| failure_message(&format!("{error}")))?;
+        let connect = self.connect.clone()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -365,8 +407,17 @@ impl SystemJoinReporter {
     }
 
     fn machine_join_token(&self) -> Result<MachineJoinToken, FailureMessage> {
-        MachineJoinToken::try_new(self.join_token.as_str())
+        let token = self.join_token.clone();
+        MachineJoinToken::try_new(token.as_str())
             .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))
+    }
+}
+
+struct CloudJoinTokenConsumer;
+
+impl KeeperJoinTokenConsumer for CloudJoinTokenConsumer {
+    fn consume_join_token(&mut self) -> Result<(), FailureMessage> {
+        Ok(())
     }
 }
 
@@ -467,6 +518,7 @@ fn keeper_join_target_with_public_ip(
     redeemed: MachineJoinRedeemed,
     machine_public_ip: Option<std::net::IpAddr>,
 ) -> Result<RedeemedKeeperJoin, FailureMessage> {
+    let callback_result = redeemed.clone();
     let machine_id = redeemed.machine_id.clone();
     let material = KeeperJoinMaterial::from_join_payload(
         machine_id.clone(),
@@ -516,7 +568,8 @@ fn keeper_join_target_with_public_ip(
             roles,
             role_environment,
         ),
-    ))
+    )
+    .with_callback_result(callback_result))
 }
 
 fn failure_message(message: &str) -> FailureMessage {

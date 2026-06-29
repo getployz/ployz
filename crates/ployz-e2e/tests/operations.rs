@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use async_nats::jetstream;
 use ployz_core::dataplane::{
-    DataplanePrepareProviderReport, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -277,31 +277,29 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployDataplanePrepared {
                 operation_id: operation_id("op_e2e_run"),
-                report: DataplanePrepareProviderReport::PloyzNativeMesh(
-                    PloyzNativeMeshPrepareReport {
-                        machines: vec![PloyzNativeMeshMachineReady {
-                            machine_id: machine_id("machine_a"),
-                            ready: PloyzNativeMeshReady {
-                                wireguard: WireGuardReady {
-                                    public_key: wireguard_public_key("test-public-key"),
-                                    evidence: vec![WireGuardReadyEvidence::Command {
-                                        program: "wg".to_owned(),
-                                        args: vec!["--version".to_owned()],
-                                    }],
-                                },
-                                ebpf_forwarding: EbpfForwardingReady {
-                                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                        symbols: vec![
-                                            "ployz_egress".to_owned(),
-                                            "ployz_ingress".to_owned(),
-                                        ],
-                                    }],
-                                },
+                report: PloyzNativeMeshPrepareReport {
+                    machines: vec![PloyzNativeMeshMachineReady {
+                        machine_id: machine_id("machine_a"),
+                        ready: PloyzNativeMeshReady {
+                            wireguard: WireGuardReady {
+                                public_key: wireguard_public_key("test-public-key"),
+                                evidence: vec![WireGuardReadyEvidence::Command {
+                                    program: "wg".to_owned(),
+                                    args: vec!["--version".to_owned()],
+                                }],
                             },
-                        }],
-                    }
-                ),
+                            ebpf_forwarding: EbpfForwardingReady {
+                                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                                    symbols: vec![
+                                        "ployz_egress".to_owned(),
+                                        "ployz_ingress".to_owned(),
+                                    ],
+                                }],
+                            },
+                        },
+                    }],
+                },
             },
             OperationEvent::DeployRunning {
                 operation_id: operation_id("op_e2e_run"),
@@ -811,11 +809,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         .await?
         .into_iter()
         .filter_map(|event| {
-            let OperationEvent::DeployDataplanePrepared {
-                report: DataplanePrepareProviderReport::PloyzNativeMesh(report),
-                ..
-            } = event
-            else {
+            let OperationEvent::DeployDataplanePrepared { report, .. } = event else {
                 return None;
             };
             Some(
@@ -1026,5 +1020,13 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         MachineBootstrapUrl::try_new(ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL)
             .expect("valid bootstrap url"),
     )
-    .with_join_template(ployz_test_support::fixtures::machine_join_template())
+    .with_join_material(
+        ployz_test_support::fixtures::machine_join_template(),
+        ployz_core::install::MachineJoinSecretDelivery {
+            nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
+                "SUAFKRGZQV3CDWR46WYP6WR43T34AL5BN4BAGVGIP34YFSBESCD6FU4HHA",
+            )
+            .expect("valid seed"),
+        },
+    )
 }

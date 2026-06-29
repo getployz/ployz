@@ -123,7 +123,12 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             MachineBootstrapUrl::try_new("https://example.test/ployz.sh")
                 .expect("valid bootstrap url"),
         )
-        .with_join_template(machine_join_template(&nats)),
+        .with_join_material(
+            machine_join_template(&nats),
+            ployz_core::install::MachineJoinSecretDelivery {
+                nats_credentials: nats.server().join_seed().clone(),
+            },
+        ),
     );
     let runtime = nats.start_control(&config).await;
     let api = nats.api();

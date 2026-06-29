@@ -18,6 +18,9 @@ fn release_workflow_and_packager_reject_non_version_tags() {
     assert!(package_script.contains("validate_release_semver \"release version\""));
     assert!(package_script.contains("PLOYZ_RELEASE_CARGO_TARGET_DIR"));
     assert!(package_script.contains("export CARGO_TARGET_DIR=\"${release_cargo_target_dir}\""));
+    assert!(package_script.contains("PLOYZ_NATS_SERVER_VERSION is required"));
+    assert!(package_script.contains("PLOYZ_NATS_SERVER_URL is required"));
+    assert!(package_script.contains("PLOYZ_NATS_SERVER_SHA256 is required"));
 
     let script_lib =
         fs::read_to_string(repo_path("scripts/lib.sh")).expect("script lib is readable");
