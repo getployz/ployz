@@ -65,6 +65,63 @@ async fn dumb_http_proxy_forwards_one_request_to_selected_upstream() {
 }
 
 #[tokio::test]
+async fn dumb_http_proxy_finds_host_when_not_the_first_header() {
+    // Regression: a colon-bearing header before `Host` must not hide it. The
+    // HTTP/1.1 spec allows any header order, and many clients do not send Host
+    // first.
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream_listener.accept().await.expect("accept upstream");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .await
+            .expect("read upstream request");
+        assert_eq!(
+            String::from_utf8(request).expect("request is utf8"),
+            "GET /smoke HTTP/1.1\r\nAccept: */*\r\nHost: api.example.com\r\n\r\n"
+        );
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
+            .await
+            .expect("write upstream response");
+    });
+    let table = route_table([projected_route_to_endpoint(
+        "api.example.com",
+        443,
+        "127.0.0.1",
+        upstream_addr.port(),
+    )]);
+    let (mut client, mut gateway) = tokio::io::duplex(1024);
+    let gateway_task = tokio::spawn(async move {
+        proxy_connection_by_first_http_host(&table, &mut gateway, route_port(443))
+            .await
+            .expect("proxy request succeeds");
+    });
+
+    client
+        .write_all(b"GET /smoke HTTP/1.1\r\nAccept: */*\r\nHost: api.example.com\r\n\r\n")
+        .await
+        .expect("write client request");
+    client.shutdown().await.expect("finish client request");
+    let mut response = String::new();
+    client
+        .read_to_string(&mut response)
+        .await
+        .expect("read client response");
+
+    assert_eq!(
+        response,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    gateway_task.await.expect("gateway task completes");
+    upstream_task.await.expect("upstream task completes");
+}
+
+#[tokio::test]
 async fn dumb_http_proxy_reports_missing_host_header() {
     let table = route_table([projected_route("api.example.com", 443)]);
     let (mut client, mut gateway) = tokio::io::duplex(1024);

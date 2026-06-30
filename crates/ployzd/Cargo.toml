@@ -15,6 +15,7 @@ aws-sdk-s3 = "1"
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 clap.workspace = true
 futures-util.workspace = true
+httparse = "1"
 ipnet = "2"
 ployz-core.workspace = true
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }

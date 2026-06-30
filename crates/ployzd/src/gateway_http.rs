@@ -10,6 +10,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const MAX_HTTP_REQUEST_HEAD_BYTES: usize = 64 * 1024;
+const MAX_HTTP_REQUEST_HEADERS: usize = 100;
 const GATEWAY_HTTP_PROXY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn proxy_connection_by_first_http_host<S>(
@@ -332,11 +333,19 @@ fn request_head_len(request: &[u8]) -> Option<usize> {
 }
 
 fn request_host_authority(request: &[u8]) -> Option<&str> {
-    let headers = std::str::from_utf8(request).ok()?;
-    headers
-        .lines()
-        .find_map(|line| line.split_once(':'))
-        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-        .map(|(_, value)| value.trim())
+    // `request` is the complete head (terminated by CRLFCRLF, see
+    // `request_head_len`), so `httparse` parses it to `Complete`. We only need
+    // its case-insensitive, order-independent header lookup; the ad-hoc
+    // `lines()`/`split_once` scan it replaces matched the *first* colon-bearing
+    // line before checking the name, so any header preceding `Host` hid it.
+    let mut headers = [httparse::EMPTY_HEADER; MAX_HTTP_REQUEST_HEADERS];
+    let mut parsed = httparse::Request::new(&mut headers);
+    parsed.parse(request).ok()?;
+    parsed
+        .headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case("host"))
+        .and_then(|header| std::str::from_utf8(header.value).ok())
+        .map(str::trim)
         .filter(|value| !value.is_empty())
 }
