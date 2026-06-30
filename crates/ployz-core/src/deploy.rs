@@ -32,6 +32,14 @@ impl DeployRequest {
     }
 
     #[must_use]
+    pub fn status_service_id(&self) -> ServiceId {
+        self.primary_service_id().cloned().unwrap_or_else(|| {
+            ServiceId::try_new(self.namespace_id.as_str().to_owned())
+                .expect("namespace id is a valid service id fallback")
+        })
+    }
+
+    #[must_use]
     pub fn service_requests(&self) -> Vec<DeployServiceRequest> {
         self.services
             .iter()
@@ -374,6 +382,7 @@ fn active_route_commit_request(
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
     let service_plan = plan_deploy_service(input)?;
     let target_revision = service_plan.target_revision;
+    let cleanup_containers = service_plan.cleanup_containers;
     Ok(DeployPlan {
         namespace_id: NamespaceId::try_new(service_plan.service_id.as_str().to_owned())
             .expect("service id is a valid namespace id"),
@@ -382,7 +391,7 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
             service_id: service_plan.service_id,
             steps: service_plan.steps,
         }],
-        cleanup_containers: service_plan.cleanup_containers,
+        cleanup_containers,
     })
 }
 
@@ -390,9 +399,10 @@ pub fn plan_namespace_deploy(
     namespace_id: NamespaceId,
     target_revision: RevisionId,
     services: Vec<DeployPlanningInput>,
+    cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> Result<DeployPlan, DeployPlanError> {
     let mut service_plans = Vec::new();
-    let mut cleanup_containers = Vec::new();
+    let mut cleanup_containers = cleanup_containers;
     for input in services {
         let plan = plan_deploy_service(input)?;
         service_plans.push(DeployServicePlan {

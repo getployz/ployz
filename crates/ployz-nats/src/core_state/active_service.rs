@@ -102,6 +102,28 @@ impl AsyncNatsCoreStateStore {
         decode_active_service_state(service_id, &key, &payload).map(Some)
     }
 
+    pub async fn remove_active_service(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<(), CoreStateStoreError> {
+        if self.active_service(service_id).await?.is_none() {
+            return Ok(());
+        }
+
+        let key = ActiveServiceStateKey::from_service_id(service_id);
+        with_io_timeout(
+            "active service state delete",
+            self.bucket.delete(key.as_str()),
+        )
+        .await?
+        .map_err(|error| CoreStateStoreError::Delete {
+            key: key.as_str().to_owned(),
+            message: error.to_string(),
+        })?;
+
+        Ok(())
+    }
+
     pub async fn active_services(&self) -> Result<Vec<ActiveServiceState>, CoreStateStoreError> {
         list_current(
             &self.bucket,

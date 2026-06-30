@@ -8,7 +8,7 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
     ReplicaCount,
 };
-use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, ServiceId, StepId};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
@@ -237,6 +237,7 @@ fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
 
 pub(super) struct RecordingActiveState {
     pub(super) requests: Vec<ActiveServiceCommitRequest>,
+    pub(super) removals: Vec<ServiceId>,
     outcome: ActiveServiceCommit,
 }
 
@@ -292,6 +293,7 @@ impl RecordingActiveState {
     pub(super) fn stored() -> Self {
         Self {
             requests: Vec::new(),
+            removals: Vec::new(),
             outcome: ActiveServiceCommit::Stored {
                 revision: CoreStateRevision::new(1),
             },
@@ -301,6 +303,7 @@ impl RecordingActiveState {
     pub(super) fn stale_mismatch() -> Self {
         Self {
             requests: Vec::new(),
+            removals: Vec::new(),
             outcome: ActiveServiceCommit::ActiveServiceChanged {
                 expected_current: ExpectedActiveService::Revision(revision_id("rev_old")),
                 current_revision: Some(revision_id("rev_other")),
@@ -318,6 +321,14 @@ impl ActiveServiceCommitter for RecordingActiveState {
         self.requests.push(request);
         Ok(self.outcome.clone())
     }
+
+    async fn remove_active_service(
+        &mut self,
+        service_id: ServiceId,
+    ) -> Result<(), ActiveServiceCommitError> {
+        self.removals.push(service_id);
+        Ok(())
+    }
 }
 
 pub(super) struct HangingActiveState;
@@ -331,6 +342,14 @@ impl ActiveServiceCommitter for HangingActiveState {
         Ok(ActiveServiceCommit::Stored {
             revision: CoreStateRevision::new(1),
         })
+    }
+
+    async fn remove_active_service(
+        &mut self,
+        _service_id: ServiceId,
+    ) -> Result<(), ActiveServiceCommitError> {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        Ok(())
     }
 }
 
@@ -653,6 +672,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -729,11 +749,51 @@ fn prepared_deploy_command(
             }],
             dataplane_machines: Vec::new(),
             eligible_machines,
+            namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
             observed_machines,
             step_timeout: Duration::from_secs(5),
         },
     )
     .expect("deploy command preparation succeeds")
+}
+
+pub(super) fn empty_deploy_command_with_running_container(
+    machine_id: &str,
+    container_id: &str,
+) -> DeployExecutionCommand {
+    let snapshot = MachineContainerObservationSnapshot::try_new(
+        self::machine_id(machine_id),
+        [observed_service_container(
+            machine_id,
+            container_id,
+            "rev_old",
+        )],
+    )
+    .expect("valid machine observation snapshot");
+    let namespace_cleanup_candidates = namespace_cleanup_candidates(&[snapshot.clone()]);
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        DeployRequest {
+            namespace_id: namespace_id("default"),
+            target_revision: revision_id("rev_3"),
+            services: Vec::new(),
+        },
+        DeployExecutionFacts {
+            services: Vec::new(),
+            dataplane_machines: Vec::new(),
+            eligible_machines: vec![self::machine_id("machine_a")],
+            namespace_cleanup_candidates,
+            observed_machines: vec![snapshot],
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+    .expect("empty deploy command preparation succeeds")
+}
+
+fn namespace_cleanup_candidates(
+    observed_machines: &[MachineContainerObservationSnapshot],
+) -> Vec<DeployCleanupContainer> {
+    ployzd::deploy_worker::namespace_cleanup_candidates(observed_machines)
 }
 
 fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {

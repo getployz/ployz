@@ -1,10 +1,11 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployPreparationError, DeployPreparationInput, DeployRequest, prepare_deploy,
+    DeployCleanupContainer, DeployPreparationError, DeployPreparationInput, DeployRequest,
+    prepare_deploy,
 };
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ pub struct DeployExecutionFacts {
     pub eligible_machines: Vec<MachineId>,
     pub dataplane_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
+    pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub step_timeout: Duration,
 }
 
@@ -54,10 +56,17 @@ pub fn prepare_deploy_execution_command(
         });
     }
 
+    let namespace_cleanup_candidates = if request.services.is_empty() {
+        facts.namespace_cleanup_candidates
+    } else {
+        Vec::new()
+    };
+
     Ok(DeployExecutionCommand {
         operation_id,
         request,
         services,
+        namespace_cleanup_candidates,
         dataplane_machines: facts.dataplane_machines,
         step_timeout: facts.step_timeout,
     })
@@ -69,4 +78,28 @@ pub enum DeployCommandPreparationError {
     Service(#[from] DeployPreparationError),
     #[error("deploy service facts are missing")]
     ServiceFactsMissing,
+}
+
+pub fn namespace_cleanup_candidates(
+    observed_machines: &[MachineContainerObservationSnapshot],
+) -> Vec<DeployCleanupContainer> {
+    observed_machines
+        .iter()
+        .flat_map(MachineContainerObservationSnapshot::containers)
+        .filter(|container| {
+            container.kind == ManagedContainerKind::Service && container.state.is_running()
+        })
+        .map(|container| DeployCleanupContainer {
+            machine_id: container.machine_id.clone(),
+            container_id: container.container_id.clone(),
+            service_id: container.service_id.clone(),
+            revision_id: container.revision_id.clone(),
+            operation_id: container.operation_id.clone(),
+            step_id: container.step_id.clone(),
+            kind: container.kind,
+            endpoint_port: container
+                .running_service_endpoint()
+                .map(|endpoint| endpoint.port),
+        })
+        .collect()
 }
