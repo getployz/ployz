@@ -12,6 +12,8 @@ use std::time::Duration;
 use ployz_core::ops::FailureMessage;
 use wait_timeout::ChildExt;
 
+const DOCKER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+
 pub trait KeeperCommandRunner {
     fn is_linux(&mut self) -> bool;
     fn current_uid(&mut self) -> Result<u32, FailureMessage>;
@@ -115,7 +117,7 @@ impl KeeperCommandRunner for SystemKeeperCommandRunner {
             "sh",
             &[script.as_os_str().to_os_string()],
             "sh <docker-install-script>".to_owned(),
-            self.timeout,
+            DOCKER_INSTALL_TIMEOUT,
         )?;
         if output.status.success() {
             return Ok(());
@@ -243,14 +245,14 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::run_os_command_with_display;
+    use super::DOCKER_INSTALL_TIMEOUT;
     use std::ffi::OsString;
     use std::time::Duration;
 
     #[test]
     fn command_failure_summary_uses_redacted_display_command() {
         let secret_url = "https://example.invalid/artifact?token=secret";
-        let output = run_os_command_with_display(
+        let output = super::run_os_command_with_display(
             "false",
             &[OsString::from(secret_url)],
             "download <redacted-url>".to_owned(),
@@ -263,5 +265,10 @@ mod tests {
         assert!(summary.contains("download <redacted-url>"));
         assert!(!summary.contains(secret_url));
         assert!(!summary.contains("secret"));
+    }
+
+    #[test]
+    fn docker_install_timeout_allows_first_bootstrap_package_install() {
+        assert_eq!(DOCKER_INSTALL_TIMEOUT, Duration::from_secs(300));
     }
 }
