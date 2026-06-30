@@ -28,6 +28,7 @@ export {
   machineJoinToken,
   machineName,
   machineId,
+  namespaceId,
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
@@ -40,15 +41,13 @@ export {
 } from "./primitives.ts";
 
 import {
-  OPERATION_API_CONTRACTS,
-} from "./generated.ts";
-import {
   containerId,
   imageReference,
   logsTailLines,
   machineName,
   machineJoinToken,
   machineId,
+  namespaceId,
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
@@ -62,39 +61,27 @@ import type {
   AcceptedOperation,
   BackupCreateError,
   BackupCreateRequest,
-  BackupCreateResponse,
   DeploySubmitError,
   DeploySubmitRequest,
-  DeploySubmitResponse,
   EventSequence,
   InitFirstMachineActivateError,
   InitFirstMachineActivateRequest,
-  InitFirstMachineActivateResponse,
   InitFirstMachineActivated,
   LogsTailError,
   LogsTailLines,
   LogsTailRequest,
-  LogsTailResponse,
   LogsTailResult,
   MachineAddAccepted,
   MachineAddError,
   MachineAddRequest,
-  MachineAddResponse,
   InstallRolePolicy,
-  MachineJoinBundle,
-  MachineJoinSecretDelivery,
   MachineJoinRedeemError,
   MachineJoinRedeemRequest,
-  MachineJoinRedeemResponse,
   MachineJoinRedeemed,
-  MachineJoinReportRequest,
-  MachineJoinReportResponse,
   MachineInspectError,
   MachineInspectRequest,
-  MachineInspectResponse,
   MachineListError,
   MachineListRequest,
-  MachineListResponse,
   MachineSnapshot,
   OperationApiResponse,
   OperationApiRequestByEndpoint,
@@ -105,17 +92,11 @@ import type {
   OperationId,
   OperationStatusSnapshot,
   OpsStatusError,
-  OpsStatusRequest,
-  OpsStatusResponse,
   OpsWatchError,
-  OpsWatchRequest,
-  OpsWatchResponse,
   ServiceInspectError,
   ServiceInspectRequest,
-  ServiceInspectResponse,
   ServiceListError,
   ServiceListRequest,
-  ServiceListResponse,
   ServiceSnapshot,
   PloyzApiEndpoint,
 } from "./generated.ts";
@@ -141,6 +122,7 @@ export class PloyzApiError<E> extends Error {
 
 export interface PloyzDeployInput {
   operationId: string;
+  namespaceId?: string;
   serviceId: string;
   targetRevision: string;
   image: string;
@@ -352,21 +334,26 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
   return {
     operation_id: operationId(input.operationId),
     target: {
-      service_id: serviceId(input.serviceId),
+      namespace_id: namespaceId(input.namespaceId ?? "default"),
       target_revision: revisionId(input.targetRevision),
-      image: imageReference(input.image),
-      replicas: replicaCount(input.replicas),
-      ...(input.route
-        ? {
-            route: {
-              target: {
-                hostname: routeHostname(input.route.hostname),
-                port: routePort(input.route.port),
-              },
-              endpoint_port: routePort(input.route.endpointPort),
-            },
-          }
-        : {}),
+      services: [
+        {
+          service_id: serviceId(input.serviceId),
+          image: imageReference(input.image),
+          replicas: replicaCount(input.replicas),
+          ...(input.route
+            ? {
+                route: {
+                  target: {
+                    hostname: routeHostname(input.route.hostname),
+                    port: routePort(input.route.port),
+                  },
+                  endpoint_port: routePort(input.route.endpointPort),
+                },
+              }
+            : {}),
+        },
+      ],
     },
   };
 }

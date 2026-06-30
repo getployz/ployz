@@ -7,7 +7,9 @@
 
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
-use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationStatus, RouteTarget,
@@ -41,8 +43,8 @@ use tokio::net::TcpStream;
 mod support;
 
 use ployz_test_support::ids::{
-    event_sequence, idempotency_key, machine_id, operation_id, revision_id, route_hostname,
-    route_port, service_id,
+    event_sequence, idempotency_key, machine_id, namespace_id, operation_id, revision_id,
+    route_hostname, route_port, service_id,
 };
 use support::control::{TestNats, machine_join_template, redeem_when_ready};
 
@@ -600,11 +602,14 @@ fn active_machine(value: &str) -> ActiveMachineState {
 
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
-        service_id: self::service_id(service_id),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: image("ghcr.io/acme/api:rev-2"),
-        replicas: replicas(1),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: self::service_id(service_id),
+            image: image("ghcr.io/acme/api:rev-2"),
+            replicas: replicas(1),
+            route: None,
+        }],
     }
 }
 
@@ -613,11 +618,10 @@ fn deploy_target_with_route(
     gateway_port: u16,
     endpoint_port: u16,
 ) -> DeployRequest {
-    DeployRequest {
-        route: Some(DeployRoute {
-            target: RouteTarget::new(route_hostname("api.example.com"), route_port(gateway_port)),
-            endpoint_port: route_port(endpoint_port),
-        }),
-        ..deploy_target(service_id)
-    }
+    let mut target = deploy_target(service_id);
+    target.services[0].route = Some(DeployRoute {
+        target: RouteTarget::new(route_hostname("api.example.com"), route_port(gateway_port)),
+        endpoint_port: route_port(endpoint_port),
+    });
+    target
 }

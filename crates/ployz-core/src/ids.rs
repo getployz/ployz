@@ -38,6 +38,7 @@ macro_rules! subject_token_id {
 }
 
 subject_token_id! { pub struct OperationId; ts_brand: "Brand<string, \"OperationId\">"; }
+subject_token_id! { pub struct NamespaceId; ts_brand: "Brand<string, \"NamespaceId\">"; }
 subject_token_id! { pub struct MachineId; ts_brand: "Brand<string, \"MachineId\">"; }
 subject_token_id! { pub struct ServiceId; ts_brand: "Brand<string, \"ServiceId\">"; }
 subject_token_id! { pub struct RevisionId; ts_brand: "Brand<string, \"RevisionId\">"; }

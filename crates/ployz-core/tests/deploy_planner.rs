@@ -1,8 +1,8 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
-    DeployPreparationError, DeployPreparationInput, DeployRequest, DeployRoute,
-    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, plan_service_deploy,
-    prepare_deploy,
+    DeployPreparationError, DeployPreparationInput, DeployRoute, DeployServicePlan,
+    DeployServiceRequest, ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot,
+    plan_service_deploy, prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -14,7 +14,7 @@ use ployz_core::state::{
     ActiveRouteState, ActiveServiceState, ExpectedActiveRoute, ExpectedActiveService,
 };
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, service_id, step_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, service_id, step_id,
 };
 
 #[test]
@@ -25,16 +25,14 @@ fn new_service_plan_runs_replicas_across_eligible_machines() {
             [machine_id("machine_a"), machine_id("machine_b")]
         ))
         .expect("plan succeeds"),
-        DeployPlan {
-            service_id: service_id("svc_api"),
-            target_revision: revision_id("rev_1"),
-            steps: vec![
+        deploy_plan(
+            vec![
                 run_step("machine_a", 1),
                 run_step("machine_b", 2),
                 run_step("machine_a", 3),
             ],
-            cleanup_containers: Vec::new(),
-        }
+            Vec::new()
+        )
     );
 }
 
@@ -45,16 +43,14 @@ fn service_plan_reuses_running_target_revision_containers() {
 
     assert_eq!(
         plan_service_deploy(input).expect("plan succeeds"),
-        DeployPlan {
-            service_id: service_id("svc_api"),
-            target_revision: revision_id("rev_1"),
-            steps: vec![
+        deploy_plan(
+            vec![
                 use_existing_step("machine_b", "ctr_existing", 1),
                 run_step("machine_a", 2),
                 run_step("machine_b", 3),
             ],
-            cleanup_containers: Vec::new(),
-        }
+            Vec::new()
+        )
     );
 }
 
@@ -68,15 +64,13 @@ fn service_plan_counts_duplicate_observations_once() {
 
     assert_eq!(
         plan_service_deploy(input).expect("plan succeeds"),
-        DeployPlan {
-            service_id: service_id("svc_api"),
-            target_revision: revision_id("rev_1"),
-            steps: vec![
+        deploy_plan(
+            vec![
                 use_existing_step("machine_b", "ctr_existing", 1),
                 run_step("machine_a", 2),
             ],
-            cleanup_containers: Vec::new(),
-        }
+            Vec::new()
+        )
     );
 }
 
@@ -87,12 +81,10 @@ fn service_plan_does_not_require_eligible_machines_when_reality_already_satisfie
 
     assert_eq!(
         plan_service_deploy(input).expect("existing reality satisfies target"),
-        DeployPlan {
-            service_id: service_id("svc_api"),
-            target_revision: revision_id("rev_1"),
-            steps: vec![use_existing_step("machine_b", "ctr_existing", 1)],
-            cleanup_containers: Vec::new(),
-        }
+        deploy_plan(
+            vec![use_existing_step("machine_b", "ctr_existing", 1)],
+            Vec::new()
+        )
     );
 }
 
@@ -111,15 +103,13 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
 
     assert_eq!(
         plan_service_deploy(input).expect("plan succeeds"),
-        DeployPlan {
-            service_id: service_id("svc_api"),
-            target_revision: revision_id("rev_1"),
-            steps: vec![use_existing_step("machine_b", "ctr_target_extra", 1)],
-            cleanup_containers: vec![
+        deploy_plan(
+            vec![use_existing_step("machine_b", "ctr_target_extra", 1)],
+            vec![
                 cleanup_container("machine_b", "ctr_old"),
                 cleanup_container("machine_b", "ctr_target_keep"),
             ],
-        }
+        )
     );
 }
 
@@ -336,13 +326,28 @@ fn planning_input(
     }
 }
 
-fn deploy_request(replicas: u16) -> DeployRequest {
-    DeployRequest {
+fn deploy_request(replicas: u16) -> DeployServiceRequest {
+    DeployServiceRequest {
         service_id: service_id("svc_api"),
         target_revision: revision_id("rev_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         route: None,
+    }
+}
+
+fn deploy_plan(
+    steps: Vec<DeployPlanStep>,
+    cleanup_containers: Vec<DeployCleanupContainer>,
+) -> DeployPlan {
+    DeployPlan {
+        namespace_id: namespace_id("svc_api"),
+        target_revision: revision_id("rev_1"),
+        services: vec![DeployServicePlan {
+            service_id: service_id("svc_api"),
+            steps,
+        }],
+        cleanup_containers,
     }
 }
 

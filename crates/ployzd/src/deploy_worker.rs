@@ -8,7 +8,7 @@ mod types;
 
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployPlanningInput, ReplicaSlot,
-    plan_service_deploy,
+    plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerKind;
@@ -31,7 +31,8 @@ pub use ports::{
     DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
 };
 pub use preparation::{
-    DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
+    DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
+    prepare_deploy_execution_command,
 };
 
 use crate::docker::labels::ManagedContainerIdentity;
@@ -42,7 +43,7 @@ use crate::machine_runtime::protocol::{
 };
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
-    DeployExecutionPorts, DeployTerminalEvent,
+    DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, C, A>(
@@ -98,15 +99,12 @@ impl<'a> DeployRun<'a> {
 
     fn fail_run_container(
         &self,
+        service: &DeployServiceExecutionCommand,
         slot: ReplicaSlot,
         source: DeployExecutionError,
     ) -> DeployExecutionFailure {
-        let retained = retained_containers_after_run_error(
-            self.command,
-            &self.started_containers,
-            slot,
-            &source,
-        );
+        let retained =
+            retained_containers_after_run_error(service, &self.started_containers, slot, &source);
         DeployExecutionFailure::with_stop_targets(
             self.command,
             source,
@@ -133,12 +131,20 @@ where
     record_stage(command, &mut *ports.recorder, DeployTransition::Planning)
         .await
         .map_err(|source| run.fail(source))?;
-    let plan = plan_service_deploy(DeployPlanningInput {
-        request: command.request.clone(),
-        eligible_machines: command.eligible_machines.clone(),
-        existing_replicas: command.existing_replicas.clone(),
-        cleanup_candidates: command.cleanup_candidates.clone(),
-    })
+    let plan = plan_namespace_deploy(
+        command.request.namespace_id.clone(),
+        command.request.target_revision.clone(),
+        command
+            .services()
+            .iter()
+            .map(|service| DeployPlanningInput {
+                request: service.request.clone(),
+                eligible_machines: service.eligible_machines.clone(),
+                existing_replicas: service.existing_replicas.clone(),
+                cleanup_candidates: service.cleanup_candidates.clone(),
+            })
+            .collect(),
+    )
     .map_err(|source| run.fail(source.into()))?;
     record_evidence(
         command,
@@ -175,44 +181,61 @@ where
     .await
     .map_err(|source| run.fail(source))?;
 
-    for step in &plan.steps {
-        match step {
-            DeployPlanStep::UseExistingContainer {
-                machine_id,
-                container_id,
-                slot,
-            } => containers.push(DeployContainer {
-                machine_id: machine_id.clone(),
-                container_id: container_id.clone(),
-                step_id: deploy_step_id(*slot)
-                    .map_err(|source| run.fail(DeployExecutionError::StepId(source)))?,
-                required_endpoint_port: required_endpoint_port(command),
-            }),
-            DeployPlanStep::RunContainer { machine_id, slot } => {
-                let run_result = with_step_timeout(
-                    command,
-                    DeployExecutionStep::RunContainer {
-                        machine_id: machine_id.clone(),
-                    },
-                    run_deploy_step(&mut *ports.machine_runtime, command, machine_id, *slot),
-                )
-                .await;
-                let started = match run_result {
-                    Ok(started) => started,
-                    Err(source) => return Err(run.fail_run_container(*slot, source)),
-                };
-                containers.push(started.clone());
-                run.container_started(started.clone());
-                record_evidence(
-                    command,
-                    &mut *ports.recorder,
-                    DeployEvidence::ContainerStarted {
-                        machine_id: started.machine_id.clone(),
-                        container_id: started.container_id.clone(),
-                    },
-                )
-                .await
-                .map_err(|source| run.fail(source))?;
+    for service_plan in &plan.services {
+        let Some(service) = command
+            .services()
+            .iter()
+            .find(|service| service.request.service_id == service_plan.service_id)
+        else {
+            continue;
+        };
+        for step in &service_plan.steps {
+            match step {
+                DeployPlanStep::UseExistingContainer {
+                    machine_id,
+                    container_id,
+                    slot,
+                } => containers.push(DeployContainer {
+                    service_id: service.request.service_id.clone(),
+                    revision_id: service.request.target_revision.clone(),
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    step_id: deploy_step_id(*slot)
+                        .map_err(|source| run.fail(DeployExecutionError::StepId(source)))?,
+                    required_endpoint_port: required_endpoint_port(service),
+                }),
+                DeployPlanStep::RunContainer { machine_id, slot } => {
+                    let run_result = with_step_timeout(
+                        command,
+                        DeployExecutionStep::RunContainer {
+                            machine_id: machine_id.clone(),
+                        },
+                        run_deploy_step(
+                            &mut *ports.machine_runtime,
+                            command,
+                            service,
+                            machine_id,
+                            *slot,
+                        ),
+                    )
+                    .await;
+                    let started = match run_result {
+                        Ok(started) => started,
+                        Err(source) => return Err(run.fail_run_container(service, *slot, source)),
+                    };
+                    containers.push(started.clone());
+                    run.container_started(started.clone());
+                    record_evidence(
+                        command,
+                        &mut *ports.recorder,
+                        DeployEvidence::ContainerStarted {
+                            machine_id: started.machine_id.clone(),
+                            container_id: started.container_id.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|source| run.fail(source))?;
+                }
             }
         }
     }
@@ -243,7 +266,11 @@ where
         return Err(run.fail(source));
     }
 
-    if command.active_route_commit_request().is_some() {
+    if command
+        .services()
+        .iter()
+        .any(|service| service.active_route_commit_request().is_some())
+    {
         record_running_stage(
             command,
             &mut *ports.recorder,
@@ -252,9 +279,11 @@ where
         .await
         .map_err(|source| run.fail(source))?;
 
-        cutover_route(command, &mut *ports.route_state)
-            .await
-            .map_err(|source| run.fail(source))?;
+        for service in command.services() {
+            cutover_route(command, service, &mut *ports.route_state)
+                .await
+                .map_err(|source| run.fail(source))?;
+        }
     }
     record_running_stage(
         command,
@@ -264,9 +293,11 @@ where
     .await
     .map_err(|source| run.fail(source))?;
 
-    commit_active_service(command, &mut *ports.active_state)
-        .await
-        .map_err(|source| run.fail(source))?;
+    for service in command.services() {
+        commit_active_service(command, service, &mut *ports.active_state)
+            .await
+            .map_err(|source| run.fail(source))?;
+    }
     if !plan.cleanup_containers.is_empty() {
         let _ = record_running_stage(
             command,
@@ -279,7 +310,13 @@ where
     let terminal_event = record_terminal_state(command, &mut *ports.recorder, &cleanup).await;
 
     let outcome = DeployExecutionOutcome {
-        service_id: plan.service_id,
+        namespace_id: plan.namespace_id,
+        service_id: plan
+            .services
+            .first()
+            .expect("planned deploy has at least one service")
+            .service_id
+            .clone(),
         target_revision: plan.target_revision,
         containers,
         cleanup,
@@ -386,13 +423,13 @@ fn container_stop_failed_artifact(
 }
 
 fn retained_containers_after_run_error(
-    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
     started_containers: &[DeployContainer],
     slot: ReplicaSlot,
     source: &DeployExecutionError,
 ) -> Vec<DeployContainer> {
     let mut retained = started_containers.to_vec();
-    if let Some(container) = retained_created_container(command, slot, source)
+    if let Some(container) = retained_created_container(service, slot, source)
         && !retained.contains(&container)
     {
         retained.push(container);
@@ -401,7 +438,7 @@ fn retained_containers_after_run_error(
 }
 
 fn retained_created_container(
-    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
     slot: ReplicaSlot,
     source: &DeployExecutionError,
 ) -> Option<DeployContainer> {
@@ -417,10 +454,12 @@ fn retained_created_container(
     };
     let step_id = deploy_step_id(slot).ok()?;
     Some(DeployContainer {
+        service_id: service.request.service_id.clone(),
+        revision_id: service.request.target_revision.clone(),
         machine_id: machine_id.clone(),
         container_id: container_id.clone(),
         step_id,
-        required_endpoint_port: required_endpoint_port(command),
+        required_endpoint_port: required_endpoint_port(service),
     })
 }
 
@@ -429,8 +468,8 @@ fn retained_container_identity(
     container: &DeployContainer,
 ) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
-        service_id: command.request.service_id.clone(),
-        revision_id: command.request.target_revision.clone(),
+        service_id: container.service_id.clone(),
+        revision_id: container.revision_id.clone(),
         operation_id: command.operation_id.clone(),
         step_id: container.step_id.clone(),
         kind: ManagedContainerKind::Service,
@@ -513,6 +552,7 @@ where
 
 async fn commit_active_service<A>(
     command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
     active_state: &mut A,
 ) -> Result<(), DeployExecutionError>
 where
@@ -521,7 +561,7 @@ where
     let outcome = with_step_timeout(
         command,
         DeployExecutionStep::CommitActiveService,
-        active_state.commit_active_service(command.active_service_commit_request()),
+        active_state.commit_active_service(service.active_service_commit_request()),
     )
     .await?;
 
@@ -542,12 +582,13 @@ where
 
 pub(super) async fn cutover_route<C>(
     command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
     route_state: &mut C,
 ) -> Result<(), DeployExecutionError>
 where
     C: ActiveRouteCommitter,
 {
-    let Some(request) = command.active_route_commit_request() else {
+    let Some(request) = service.active_route_commit_request() else {
         return Ok(());
     };
 
@@ -695,6 +736,7 @@ where
 async fn run_deploy_step<N>(
     machine_runtime: &mut N,
     command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
 ) -> Result<DeployContainer, DeployExecutionError>
@@ -702,7 +744,7 @@ where
     N: MachineContainerRuntime,
 {
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
-    let endpoint = command
+    let endpoint = service
         .request
         .route
         .as_ref()
@@ -710,11 +752,11 @@ where
             port: route.endpoint_port,
         });
     let request = MachineContainerRunRpcRequest {
-        image: command.request.image.clone(),
+        image: service.request.image.clone(),
         endpoint,
         container: MachineContainerRunSpec {
-            service_id: command.request.service_id.clone(),
-            revision_id: command.request.target_revision.clone(),
+            service_id: service.request.service_id.clone(),
+            revision_id: service.request.target_revision.clone(),
             operation_id: command.operation_id.clone(),
             step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
@@ -725,16 +767,18 @@ where
         .run_container(machine_id, request)
         .await
         .map(|outcome| DeployContainer {
+            service_id: service.request.service_id.clone(),
+            revision_id: service.request.target_revision.clone(),
             machine_id: machine_id.clone(),
             container_id: outcome.container_id().clone(),
             step_id,
-            required_endpoint_port: required_endpoint_port(command),
+            required_endpoint_port: required_endpoint_port(service),
         })
         .map_err(DeployExecutionError::RunContainer)
 }
 
-fn required_endpoint_port(command: &DeployExecutionCommand) -> Option<RoutePort> {
-    command
+fn required_endpoint_port(service: &DeployServiceExecutionCommand) -> Option<RoutePort> {
+    service
         .request
         .route
         .as_ref()

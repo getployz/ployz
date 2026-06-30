@@ -1,6 +1,8 @@
 use clap::Args;
-use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, RevisionId, ServiceId};
+use ployz_core::deploy::{
+    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+};
+use ployz_core::ids::{NamespaceId, OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
@@ -29,11 +31,14 @@ impl DeployCommand {
         DeploySubmitRequest {
             operation_id: self.operation_id,
             target: DeployRequest {
-                service_id: self.service_id,
+                namespace_id: NamespaceId::try_new("default").expect("default namespace is valid"),
                 target_revision: self.revision_id,
-                image: self.image,
-                replicas: self.replicas,
-                route: self.route,
+                services: vec![DeployServiceSpec {
+                    service_id: self.service_id,
+                    image: self.image,
+                    replicas: self.replicas,
+                    route: self.route,
+                }],
             },
         }
     }

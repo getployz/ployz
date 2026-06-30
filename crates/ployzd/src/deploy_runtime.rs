@@ -124,8 +124,11 @@ fn fact_load_failure(
     request: &ployz_core::deploy::DeployRequest,
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
+    let service = request
+        .primary_service()
+        .expect("accepted deploy request has at least one service");
     DeployOperationFailure::PlanningFailed {
-        service_id: request.service_id.clone(),
+        service_id: service.service_id.clone(),
         revision_id: request.target_revision.clone(),
         message: FailureMessage::try_new(source.to_string())
             .expect("rendered fact load failure message is non-empty"),
@@ -133,8 +136,11 @@ fn fact_load_failure(
 }
 
 fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOperationFailure {
+    let service = request
+        .primary_service()
+        .expect("accepted deploy request has at least one service");
     DeployOperationFailure::PlanningFailed {
-        service_id: request.service_id.clone(),
+        service_id: service.service_id.clone(),
         revision_id: request.target_revision.clone(),
         message: FailureMessage::try_new("deploy command could not be prepared")
             .expect("static operation failure message is non-empty"),

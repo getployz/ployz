@@ -7,8 +7,8 @@ use ployz_core::dataplane::{
     PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
 };
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, MachineId, RevisionId, ServiceId};
+use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
@@ -1017,11 +1017,14 @@ fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
 
 fn deploy_request() -> DeployRequest {
     DeployRequest {
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
-        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
+        }],
     }
 }
 
