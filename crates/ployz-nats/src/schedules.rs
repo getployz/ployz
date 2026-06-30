@@ -1,5 +1,7 @@
 //! NATS server version parsing for bootstrap checks.
 
+use semver::Version;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NatsServerVersion {
     pub major: u16,
@@ -18,55 +20,50 @@ impl NatsServerVersion {
     }
 
     pub fn parse(value: &str) -> Result<Self, NatsServerVersionParseError> {
-        let version = value
-            .split(['-', '+'])
-            .next()
-            .ok_or(NatsServerVersionParseError::Empty)?;
-        if version.is_empty() {
+        if value.is_empty() {
             return Err(NatsServerVersionParseError::Empty);
         }
-
-        let mut parts = version.split('.');
-        let Some(major) = parts.next() else {
-            return Err(NatsServerVersionParseError::MissingPart {
-                value: value.to_owned(),
-            });
-        };
-        let Some(minor) = parts.next() else {
-            return Err(NatsServerVersionParseError::MissingPart {
-                value: value.to_owned(),
-            });
-        };
-        let Some(patch) = parts.next() else {
-            return Err(NatsServerVersionParseError::MissingPart {
-                value: value.to_owned(),
-            });
-        };
-        if parts.next().is_some() {
-            return Err(NatsServerVersionParseError::TooManyParts {
-                value: value.to_owned(),
-            });
-        }
-
+        let version = Version::parse(value).map_err(|_| NatsServerVersionParseError::Invalid {
+            value: value.to_owned(),
+        })?;
         Ok(Self {
-            major: parse_version_part(major, value)?,
-            minor: parse_version_part(minor, value)?,
-            patch: parse_version_part(patch, value)?,
+            major: u16::try_from(version.major).map_err(|_| {
+                NatsServerVersionParseError::Invalid {
+                    value: value.to_owned(),
+                }
+            })?,
+            minor: u16::try_from(version.minor).map_err(|_| {
+                NatsServerVersionParseError::Invalid {
+                    value: value.to_owned(),
+                }
+            })?,
+            patch: u16::try_from(version.patch).map_err(|_| {
+                NatsServerVersionParseError::Invalid {
+                    value: value.to_owned(),
+                }
+            })?,
         })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsServerVersionParseError {
+    #[error("NATS server version is empty")]
     Empty,
-    MissingPart { value: String },
-    TooManyParts { value: String },
-    InvalidPart { value: String },
+    #[error("NATS server version {value:?} is invalid")]
+    Invalid { value: String },
 }
 
-fn parse_version_part(part: &str, full_value: &str) -> Result<u16, NatsServerVersionParseError> {
-    part.parse::<u16>()
-        .map_err(|_| NatsServerVersionParseError::InvalidPart {
-            value: full_value.to_owned(),
-        })
+#[cfg(test)]
+mod tests {
+    use super::NatsServerVersion;
+
+    #[test]
+    fn nats_server_version_keeps_core_semver_numbers() {
+        assert_eq!(
+            NatsServerVersion::parse("2.14.1-beta.1+build.7").expect("version parses"),
+            NatsServerVersion::new(2, 14, 1)
+        );
+        assert!(NatsServerVersion::parse("2.14").is_err());
+    }
 }

@@ -556,8 +556,8 @@ mod tests {
 
     #[test]
     fn founder_public_ipv6_comes_from_runtime_nats_url() {
-        let url = MachineJoinRuntimeNatsUrl::try_new("tls://[2001:db8::1]:4222")
-            .expect("valid nats URL");
+        let url =
+            MachineJoinRuntimeNatsUrl::try_new("tls://[2001:db8::1]:4222").expect("valid nats URL");
 
         assert_eq!(
             public_ip_from_runtime_nats_url(&url)

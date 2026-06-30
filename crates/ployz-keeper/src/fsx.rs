@@ -1,8 +1,9 @@
 //! Staged, durable file-system writes.
 //!
-//! Every keeper file lands the same way: write to a uniquely named staged
-//! sibling, sync, rename into place, then sync the containing directory.
+//! Keeper files land through atomic same-directory replacements. Directory
+//! staging remains hand-rolled because join material needs rollback semantics.
 
+use atomic_write_file::AtomicWriteFile;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ pub enum FileMode {
 }
 
 impl FileMode {
-    fn open(self, path: &Path) -> std::io::Result<File> {
+    fn open_staged(self, path: &Path) -> std::io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         match self {
@@ -29,6 +30,23 @@ impl FileMode {
                     use std::os::unix::fs::OpenOptionsExt;
 
                     options.mode(0o600);
+                }
+            }
+        }
+        options.open(path)
+    }
+
+    fn open_atomic(self, path: &Path) -> std::io::Result<AtomicWriteFile> {
+        let mut options = AtomicWriteFile::options();
+        match self {
+            Self::Plain => {}
+            Self::Secret0600 => {
+                #[cfg(unix)]
+                {
+                    use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
+                    use std::os::unix::fs::OpenOptionsExt as _;
+
+                    options.mode(0o600).preserve_mode(false);
                 }
             }
         }
@@ -68,7 +86,7 @@ impl StagedFile {
         for attempt in 0..16 {
             let staged_path = unique_staged_path(directory, file_name, staged_tag, attempt)
                 .map_err(|message| StagedFileError::ClockWentBackwards { message })?;
-            match mode.open(&staged_path) {
+            match mode.open_staged(&staged_path) {
                 Ok(file) => {
                     return Ok(Self {
                         path: staged_path,
@@ -120,58 +138,29 @@ impl Drop for StagedFile {
 pub fn write_durable_file(
     directory: &Path,
     file_name: &str,
-    staged_tag: &str,
+    _staged_tag: &str,
     mode: FileMode,
     contents: &[u8],
 ) -> Result<(), FailureMessage> {
     let path = directory.join(file_name);
-    let mut staged =
-        StagedFile::create(directory, file_name, staged_tag, mode).map_err(staged_file_failure)?;
-    staged.file().write_all(contents).map_err(|error| {
+    let mut file = mode.open_atomic(&path).map_err(|error| {
         failure_message(format!(
-            "failed to write staged file {}: {error}",
-            staged.path().display()
-        ))
-    })?;
-    staged.file().sync_all().map_err(|error| {
-        failure_message(format!(
-            "failed to sync staged file {}: {error}",
-            staged.path().display()
-        ))
-    })?;
-    staged.commit_to(&path).map_err(|error| {
-        failure_message(format!(
-            "failed to commit staged file {} to {}: {error}",
-            staged.path().display(),
+            "failed to create atomic file {}: {error}",
             path.display()
         ))
     })?;
-    sync_directory(directory).map_err(|error| {
+    file.write_all(contents).map_err(|error| {
         failure_message(format!(
-            "file {} was installed but directory sync failed for {}: {error}",
-            path.display(),
-            directory.display()
+            "failed to write atomic file {}: {error}",
+            path.display()
+        ))
+    })?;
+    file.commit().map_err(|error| {
+        failure_message(format!(
+            "failed to commit atomic file {}: {error}",
+            path.display()
         ))
     })
-}
-
-fn staged_file_failure(error: StagedFileError) -> FailureMessage {
-    match error {
-        StagedFileError::ClockWentBackwards { message } => {
-            failure_message(format!("failed to create staged file name: {message}"))
-        }
-        StagedFileError::CreateFailed {
-            staged_path,
-            message,
-        } => failure_message(format!(
-            "failed to create staged file {}: {message}",
-            staged_path.display()
-        )),
-        StagedFileError::Exhausted { directory } => failure_message(format!(
-            "failed to create a unique staged file in {}",
-            directory.display()
-        )),
-    }
 }
 
 /// A created-but-not-yet-committed directory. Dropping it before `commit_to`
@@ -323,4 +312,31 @@ pub(crate) fn sync_directory(_path: &Path) -> std::io::Result<()> {
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message).expect("keeper generated a non-empty failure message")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{FileMode, write_durable_file};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn secret_durable_file_is_written_0600() {
+        let directory = tempfile::tempdir().expect("temp dir");
+
+        write_durable_file(
+            directory.path(),
+            "seed",
+            "test",
+            FileMode::Secret0600,
+            b"secret",
+        )
+        .expect("secret writes");
+
+        let mode = std::fs::metadata(directory.path().join("seed"))
+            .expect("secret metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }

@@ -1,7 +1,6 @@
 //! Certificate state and ACME challenge models.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 use crate::ids::CertId;
 use crate::ops::RouteHostname;
@@ -103,22 +102,13 @@ impl From<AcmeHttp01Challenge> for AcmeHttp01ChallengeWire {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AcmeChallengeError {
+    #[error("ACME challenge value does not start with its token")]
     TokenValueMismatch {
         token: AcmeChallengeToken,
         value: AcmeChallengeValue,
     },
-}
-
-impl fmt::Display for AcmeChallengeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TokenValueMismatch { .. } => {
-                formatter.write_str("ACME challenge value does not start with its token")
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,22 +150,13 @@ positive_u64_wire_error! {
     noun: "certificate validity timestamp";
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CertValidityError {
+    #[error("certificate validity window must end after it starts")]
     EmptyOrInverted {
         not_before: CertValidAt,
         not_after: CertValidAt,
     },
-}
-
-impl fmt::Display for CertValidityError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyOrInverted { .. } => {
-                formatter.write_str("certificate validity window must end after it starts")
-            }
-        }
-    }
 }
 
 positive_u64_wire_newtype! {
@@ -314,37 +295,20 @@ impl From<CertBundleRef> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CertTextError {
+    #[error("{field} is empty")]
     Empty { field: &'static str },
+    #[error("{field} contains whitespace: {value}")]
     ContainsWhitespace { field: &'static str, value: String },
+    #[error("{field} contains non-visible ASCII: {value}")]
     ContainsNonVisibleAscii { field: &'static str, value: String },
+    #[error("ACME challenge token is invalid: {value}")]
     InvalidAcmeToken { value: String },
+    #[error("ACME challenge value is invalid: {value}")]
     InvalidAcmeChallengeValue { value: String },
+    #[error("cert bundle reference is invalid: {value}")]
     InvalidBundleRef { value: String },
-}
-
-impl fmt::Display for CertTextError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty { field } => write!(formatter, "{field} is empty"),
-            Self::ContainsWhitespace { field, value } => {
-                write!(formatter, "{field} contains whitespace: {value}")
-            }
-            Self::ContainsNonVisibleAscii { field, value } => {
-                write!(formatter, "{field} contains non-visible ASCII: {value}")
-            }
-            Self::InvalidAcmeToken { value } => {
-                write!(formatter, "ACME challenge token is invalid: {value}")
-            }
-            Self::InvalidAcmeChallengeValue { value } => {
-                write!(formatter, "ACME challenge value is invalid: {value}")
-            }
-            Self::InvalidBundleRef { value } => {
-                write!(formatter, "cert bundle reference is invalid: {value}")
-            }
-        }
-    }
 }
 
 fn validated_visible_ascii(value: String, field: &'static str) -> Result<String, CertTextError> {

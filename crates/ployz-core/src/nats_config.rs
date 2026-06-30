@@ -246,41 +246,19 @@ pub fn parse_authorized_users(
     Ok(users)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthorizedUsersParseError {
+    #[error("authorized-users line {line_number}: principal marker is not followed by an nkey")]
     MarkerWithoutNkey { line_number: usize },
+    #[error("authorized-users line {line_number}: nkey entry has no preceding principal marker")]
     NkeyWithoutMarker { line_number: usize },
+    #[error("authorized-users file ends with a principal marker and no nkey")]
     TrailingMarker,
+    #[error("authorized-users line {line_number}: {value:?} is not a principal authority key")]
     InvalidPrincipal { line_number: usize, value: String },
+    #[error("authorized-users line {line_number}: {value:?} is not an NKey user public key")]
     InvalidPublicKey { line_number: usize, value: String },
 }
-
-impl fmt::Display for AuthorizedUsersParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MarkerWithoutNkey { line_number } => write!(
-                formatter,
-                "authorized-users line {line_number}: principal marker is not followed by an nkey"
-            ),
-            Self::NkeyWithoutMarker { line_number } => write!(
-                formatter,
-                "authorized-users line {line_number}: nkey entry has no preceding principal marker"
-            ),
-            Self::TrailingMarker => formatter
-                .write_str("authorized-users file ends with a principal marker and no nkey"),
-            Self::InvalidPrincipal { line_number, value } => write!(
-                formatter,
-                "authorized-users line {line_number}: {value:?} is not a principal authority key"
-            ),
-            Self::InvalidPublicKey { line_number, value } => write!(
-                formatter,
-                "authorized-users line {line_number}: {value:?} is not an NKey user public key"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for AuthorizedUsersParseError {}
 
 fn render_subject_list(label: &str, subjects: &[String]) -> String {
     let quoted: Vec<String> = subjects
@@ -512,55 +490,23 @@ impl NatsServerCertificatePem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsServerConfigError {
+    #[error("NATS config path {field} {} is not a valid path", value.display())]
     InvalidPath { field: &'static str, value: PathBuf },
+    #[error("NATS advertised host {value:?} must be a hostname, IPv4, or bracketed IPv6 address")]
     InvalidAdvertisedHost { value: String },
+    #[error("NATS user public key {value:?} must be a 56-character U-prefixed base32 NKey")]
     InvalidUserPublicKey { value: String },
+    #[error("NATS user seed must be a 58-character SU-prefixed base32 NKey seed")]
     InvalidUserSeed,
+    #[error("failed to generate NKey user seed: {message}")]
     NkeySeedGeneration { message: String },
+    #[error("NATS cluster CA must be a PEM CERTIFICATE block")]
     InvalidCaCertificatePem,
+    #[error("NATS server certificate must be a PEM CERTIFICATE block")]
     InvalidServerCertificatePem,
 }
-
-impl fmt::Display for NatsServerConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidPath { field, value } => {
-                write!(
-                    formatter,
-                    "NATS config path {field} {} is not a valid path",
-                    value.display()
-                )
-            }
-            Self::InvalidAdvertisedHost { value } => {
-                write!(
-                    formatter,
-                    "NATS advertised host {value:?} must be a hostname, IPv4, or bracketed IPv6 address"
-                )
-            }
-            Self::InvalidUserPublicKey { value } => {
-                write!(
-                    formatter,
-                    "NATS user public key {value:?} must be a 56-character U-prefixed base32 NKey"
-                )
-            }
-            Self::InvalidUserSeed => formatter
-                .write_str("NATS user seed must be a 58-character SU-prefixed base32 NKey seed"),
-            Self::NkeySeedGeneration { message } => {
-                write!(formatter, "failed to generate NKey user seed: {message}")
-            }
-            Self::InvalidCaCertificatePem => {
-                formatter.write_str("NATS cluster CA must be a PEM CERTIFICATE block")
-            }
-            Self::InvalidServerCertificatePem => {
-                formatter.write_str("NATS server certificate must be a PEM CERTIFICATE block")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NatsServerConfigError {}
 
 fn validate_config_path(field: &'static str, value: &Path) -> Result<(), NatsServerConfigError> {
     let rendered = value.to_string_lossy();

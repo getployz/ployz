@@ -27,6 +27,7 @@ sha2.workspace = true
 nkeys = "0.4"
 nuid.workspace = true
 tempfile = "3"
+thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]

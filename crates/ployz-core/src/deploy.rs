@@ -1,7 +1,6 @@
 //! Deploy policy and planning models.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::num::NonZeroU16;
 
 use crate::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
@@ -158,17 +157,10 @@ impl From<ReplicaSlot> for u16 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReplicaSlotError {
+    #[error("replica slot must be greater than zero")]
     Zero,
-}
-
-impl fmt::Display for ReplicaSlotError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("replica slot must be greater than zero"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,40 +168,22 @@ pub enum DeployPlanError {
     NoEligibleMachines,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployPreparationError {
+    #[error(
+        "active service state belongs to {}, not {}",
+        actual_service_id.as_str(),
+        expected_service_id.as_str()
+    )]
     ActiveServiceMismatch {
         expected_service_id: ServiceId,
         actual_service_id: ServiceId,
     },
+    #[error("active route state belongs to {actual_route:?}, not {expected_route:?}")]
     ActiveRouteMismatch {
         expected_route: RouteTarget,
         actual_route: RouteTarget,
     },
-}
-
-impl fmt::Display for DeployPreparationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ActiveServiceMismatch {
-                expected_service_id,
-                actual_service_id,
-            } => write!(
-                formatter,
-                "active service state belongs to {}, not {}",
-                actual_service_id.as_str(),
-                expected_service_id.as_str()
-            ),
-            Self::ActiveRouteMismatch {
-                expected_route,
-                actual_route,
-            } => write!(
-                formatter,
-                "active route state belongs to {:?}, not {:?}",
-                actual_route, expected_route
-            ),
-        }
-    }
 }
 
 pub fn prepare_deploy(
@@ -453,24 +427,12 @@ impl From<ImageReference> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ImageReferenceError {
+    #[error("image reference is empty")]
     Empty,
+    #[error("image reference contains invalid characters: {value}")]
     InvalidCharacter { value: String },
-}
-
-impl fmt::Display for ImageReferenceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("image reference is empty"),
-            Self::InvalidCharacter { value } => {
-                write!(
-                    formatter,
-                    "image reference contains invalid characters: {value}"
-                )
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,15 +470,8 @@ impl From<ReplicaCount> for u16 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReplicaCountError {
+    #[error("replica count must be greater than zero")]
     Zero,
-}
-
-impl fmt::Display for ReplicaCountError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("replica count must be greater than zero"),
-        }
-    }
 }

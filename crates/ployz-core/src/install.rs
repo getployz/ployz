@@ -1,4 +1,3 @@
-use std::fmt;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
@@ -511,67 +510,36 @@ impl From<AbsoluteInstallPath> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InstallContractError {
+    #[error("cluster name is empty")]
     EmptyClusterName,
+    #[error("cluster name {value:?} contains unsupported characters")]
     InvalidClusterName { value: String },
+    #[error("machine bootstrap URL is empty")]
     EmptyBootstrapUrl,
+    #[error("machine bootstrap URL {value:?} must be an HTTPS URL without whitespace")]
     InvalidBootstrapUrl { value: String },
+    #[error("runtime NATS URL is empty")]
     EmptyRuntimeNatsUrl,
+    #[error("runtime NATS URL {value:?} must be a nats:// or tls:// URL with host and port")]
     InvalidRuntimeNatsUrl { value: String },
+    #[error("artifact version is empty")]
     EmptyArtifactVersion,
+    #[error("artifact source is empty")]
     EmptyArtifactSource,
+    #[error("artifact source path {value} must be absolute")]
     RelativeArtifactSource { value: String },
+    #[error("sha256 digest is empty")]
     EmptySha256Digest,
+    #[error("sha256 digest {value:?} must be 64 hex characters")]
     InvalidSha256Digest { value: String },
+    #[error("install path is empty")]
     EmptyInstallPath,
+    #[error("install path {value} must be absolute")]
     RelativeInstallPath { value: String },
+    #[error("install path {value} must include a parent")]
     MissingInstallParent { value: String },
+    #[error("install path {value} must include a file name")]
     MissingInstallFileName { value: String },
 }
-
-impl fmt::Display for InstallContractError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyClusterName => formatter.write_str("cluster name is empty"),
-            Self::InvalidClusterName { value } => {
-                write!(
-                    formatter,
-                    "cluster name {value:?} contains unsupported characters"
-                )
-            }
-            Self::EmptyBootstrapUrl => formatter.write_str("machine bootstrap URL is empty"),
-            Self::InvalidBootstrapUrl { value } => write!(
-                formatter,
-                "machine bootstrap URL {value:?} must be an HTTPS URL without whitespace"
-            ),
-            Self::EmptyRuntimeNatsUrl => formatter.write_str("runtime NATS URL is empty"),
-            Self::InvalidRuntimeNatsUrl { value } => write!(
-                formatter,
-                "runtime NATS URL {value:?} must be a nats:// or tls:// URL with host and port"
-            ),
-            Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
-            Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
-            Self::RelativeArtifactSource { value } => {
-                write!(formatter, "artifact source path {value} must be absolute")
-            }
-            Self::EmptySha256Digest => formatter.write_str("sha256 digest is empty"),
-            Self::InvalidSha256Digest { value } => write!(
-                formatter,
-                "sha256 digest {value:?} must be 64 hex characters"
-            ),
-            Self::EmptyInstallPath => formatter.write_str("install path is empty"),
-            Self::RelativeInstallPath { value } => {
-                write!(formatter, "install path {value} must be absolute")
-            }
-            Self::MissingInstallParent { value } => {
-                write!(formatter, "install path {value} must include a parent")
-            }
-            Self::MissingInstallFileName { value } => {
-                write!(formatter, "install path {value} must include a file name")
-            }
-        }
-    }
-}
-
-impl std::error::Error for InstallContractError {}

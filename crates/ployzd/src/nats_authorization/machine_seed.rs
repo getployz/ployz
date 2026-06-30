@@ -1,4 +1,3 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ployz_core::nats_config::NatsUserSeed;
@@ -27,21 +26,8 @@ pub fn write_machine_seed_file(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum MachineSeedWriteError {
+    #[error("failed to write machine seed file {}: {message}", path.display())]
     Write { path: PathBuf, message: String },
 }
-
-impl fmt::Display for MachineSeedWriteError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Write { path, message } => write!(
-                formatter,
-                "failed to write machine seed file {}: {message}",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MachineSeedWriteError {}

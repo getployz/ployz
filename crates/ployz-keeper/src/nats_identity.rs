@@ -143,36 +143,15 @@ fn certificate_error(error: rcgen::Error) -> NatsIdentityError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsIdentityError {
+    #[error("machine hostname {value:?} is not a valid certificate host name")]
     InvalidHostname { value: String },
+    #[error("failed to generate cluster TLS material: {message}")]
     CertificateGeneration { message: String },
+    #[error("generated NATS material is invalid: {0}")]
     InvalidGeneratedMaterial(NatsServerConfigError),
 }
-
-impl fmt::Display for NatsIdentityError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidHostname { value } => {
-                write!(
-                    formatter,
-                    "machine hostname {value:?} is not a valid certificate host name"
-                )
-            }
-            Self::CertificateGeneration { message } => {
-                write!(
-                    formatter,
-                    "failed to generate cluster TLS material: {message}"
-                )
-            }
-            Self::InvalidGeneratedMaterial(error) => {
-                write!(formatter, "generated NATS material is invalid: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NatsIdentityError {}
 
 #[cfg(test)]
 mod tests {

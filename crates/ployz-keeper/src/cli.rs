@@ -106,10 +106,13 @@ impl Default for CloudHost {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CloudHostError {
+    #[error("cloud host is empty")]
     Empty,
+    #[error("cloud host must use https, got {value:?}")]
     Insecure { value: String },
+    #[error("cloud host is invalid: {value:?}")]
     Invalid { value: String },
 }
 
@@ -395,20 +398,6 @@ impl fmt::Display for SpecSource {
         }
     }
 }
-
-impl fmt::Display for CloudHostError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("cloud host is empty"),
-            Self::Insecure { value } => {
-                write!(formatter, "cloud host must use https, got {value:?}")
-            }
-            Self::Invalid { value } => write!(formatter, "cloud host is invalid: {value:?}"),
-        }
-    }
-}
-
-impl std::error::Error for CloudHostError {}
 
 impl std::error::Error for KeeperCliError {}
 

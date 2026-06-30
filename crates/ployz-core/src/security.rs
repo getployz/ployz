@@ -1,7 +1,5 @@
 //! Role and authority models for NATS subject permissions.
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
 use crate::ids::MachineId;
@@ -51,19 +49,8 @@ impl NatsPrincipal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsPrincipalKeyError {
+    #[error("{key:?} is not a NATS principal authority key")]
     Invalid { key: String },
 }
-
-impl fmt::Display for NatsPrincipalKeyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid { key } => {
-                write!(formatter, "{key:?} is not a NATS principal authority key")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NatsPrincipalKeyError {}
