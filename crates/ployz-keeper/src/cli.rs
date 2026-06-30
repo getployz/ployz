@@ -12,6 +12,7 @@ use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
     NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
 };
+use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use crate::steps::{FirstMachineInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 use clap::{Parser, Subcommand};
@@ -25,6 +26,7 @@ pub enum KeeperCommand {
     Start(KeeperStartup),
     Bootstrap(KeeperBootstrap),
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
+    SubstrateUpdate(KeeperSubstrateUpdate),
 }
 
 pub const DEFAULT_CLOUD_HOST: &str = "https://ployz.dev";
@@ -122,6 +124,11 @@ pub struct KeeperStartup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperSubstrateUpdate {
+    pub version: ExactPloyzVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupJoinToken {
     pub token: JoinToken,
     pub file: PathBuf,
@@ -145,6 +152,11 @@ pub fn load_command(
             Ok(KeeperCommand::FirstMachineInstall(Box::new(
                 first_machine_install_target_from_spec(spec)?,
             )))
+        }
+        Some(KeeperSubcommand::SubstrateUpdate { version }) => {
+            Ok(KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
+                version,
+            }))
         }
     }
 }
@@ -185,6 +197,10 @@ enum KeeperSubcommand {
     FirstMachineInstall {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
+    },
+    SubstrateUpdate {
+        #[arg(long, value_name = "version")]
+        version: ExactPloyzVersion,
     },
 }
 
@@ -326,6 +342,7 @@ pub enum KeeperCliError {
     },
     JoinTokenFile(JoinTokenFileError),
     CloudHost(CloudHostError),
+    ExactPloyzVersion(ExactPloyzVersionError),
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
     NatsIdentity(NatsIdentityError),
@@ -365,6 +382,12 @@ impl From<NatsIdentityError> for KeeperCliError {
     }
 }
 
+impl From<ExactPloyzVersionError> for KeeperCliError {
+    fn from(value: ExactPloyzVersionError) -> Self {
+        Self::ExactPloyzVersion(value)
+    }
+}
+
 impl fmt::Display for KeeperCliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -383,6 +406,7 @@ impl fmt::Display for KeeperCliError {
             }
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
             Self::CloudHost(error) => write!(formatter, "{error}"),
+            Self::ExactPloyzVersion(error) => write!(formatter, "{error}"),
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
             Self::NatsIdentity(error) => write!(formatter, "{error}"),
@@ -411,7 +435,7 @@ mod tests {
 
     use super::{
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
-        KeeperStartup, SpecSource, load_command,
+        KeeperStartup, KeeperSubstrateUpdate, SpecSource, load_command,
     };
 
     fn load_startup(
@@ -542,6 +566,36 @@ mod tests {
             load_command(["first-machine-install".into()]),
             Err(KeeperCliError::Clap(error))
                 if error.kind() == clap::error::ErrorKind::MissingRequiredArgument
+        ));
+    }
+
+    #[test]
+    fn parser_loads_substrate_update_exact_version() {
+        let command = load_command([
+            "substrate-update".into(),
+            "--version".into(),
+            "v0.0.2-alpha.16".into(),
+        ])
+        .expect("substrate update command loads");
+
+        assert_eq!(
+            command,
+            KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
+                version: "v0.0.2-alpha.16".parse().expect("exact version parses"),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_rejects_substrate_update_channel() {
+        assert!(matches!(
+            load_command([
+                "substrate-update".into(),
+                "--version".into(),
+                "alpha".into(),
+            ]),
+            Err(KeeperCliError::Clap(error))
+                if error.kind() == clap::error::ErrorKind::ValueValidation
         ));
     }
 

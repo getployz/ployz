@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -9,8 +9,11 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::plan_joined_machine_process_set;
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
-use ployz_keeper::cli::{KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, load_command};
-use ployz_keeper::command::SystemKeeperCommandRunner;
+use ployz_keeper::cli::{
+    KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperSubstrateUpdate, load_command,
+};
+use ployz_keeper::cloud_client::get_text_url;
+use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::join::JOIN_MATERIAL_DIR;
 use ployz_keeper::join_executor::{
@@ -18,10 +21,12 @@ use ployz_keeper::join_executor::{
     execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
+use ployz_keeper::release_manifest::{ReleaseManifest, release_manifest_url};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
-    FirstMachineInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_machine_install_plan,
+    FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
+    KeeperStep, KeeperStepPlan, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
+    first_machine_install_plan,
 };
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
@@ -69,6 +74,7 @@ fn main() -> ExitCode {
             }
         }
         Ok(KeeperCommand::Bootstrap(bootstrap)) => run_bootstrap_command(bootstrap),
+        Ok(KeeperCommand::SubstrateUpdate(update)) => run_substrate_update_command(update),
         Ok(KeeperCommand::FirstMachineInstall(target)) => {
             let machine_id = target.machine_id.clone();
             let nats_material = target.nats_material.clone();
@@ -109,6 +115,169 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
+    let units = match installed_update_units(Path::new("/etc/systemd/system")) {
+        Ok(units) if !units.is_empty() => units,
+        Ok(_) => {
+            eprintln!("no installed Ployz substrate units found");
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("failed to inspect installed Ployz substrate units: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest_url = release_manifest_url(&update.version);
+    let manifest = match load_versioned_release_manifest(&manifest_url) {
+        Ok(manifest) => manifest,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let artifacts = match manifest.install_artifacts() {
+        Ok(artifacts) => artifacts,
+        Err(message) => {
+            eprintln!("release manifest is invalid: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let ployzd = match artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest ployzd artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let ebpf_bytecode = match artifact_target(ArtifactKind::EbpfBytecode, &artifacts.ebpf_bytecode)
+    {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest eBPF bytecode artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let ebpf_ctl = match artifact_target(ArtifactKind::EbpfCtl, &artifacts.ebpf_ctl) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest eBPF controller artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let nats_server_spec = ployz_core::install::InstallArtifactSpec {
+        version: artifacts.nats_server.version,
+        source: artifacts.nats_server.source,
+        sha256: artifacts.nats_server.sha256,
+        install_path: artifacts.nats_server.binary,
+    };
+    let nats_server = match artifact_target(ArtifactKind::NatsServer, &nats_server_spec) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest NATS artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut steps = vec![
+        KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        KeeperStep::InstallArtifact(ployzd),
+        KeeperStep::InstallArtifact(ebpf_bytecode),
+        KeeperStep::InstallArtifact(ebpf_ctl),
+    ];
+    if units
+        .iter()
+        .any(|unit| matches!(unit, InstalledUpdateUnit::Nats))
+    {
+        steps.push(KeeperStep::InstallArtifact(nats_server));
+    }
+    let plan = KeeperStepPlan::from_steps(steps);
+    let stdout = std::io::stdout();
+    let mut recorder = KeeperTextRecorder::new(stdout.lock());
+    let mut effects = KeeperLocalEffects::new(
+        KeeperLocalConfig {
+            systemd_dir: "/etc/systemd/system".into(),
+            state_dir: KEEPER_STATE_DIR.into(),
+        },
+        SystemKeeperCommandRunner::default(),
+    );
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    match execution.terminal {
+        KeeperPlanTerminal::Completed => {}
+        KeeperPlanTerminal::Failed(failure) => {
+            eprintln!(
+                "ployz-keeper substrate-update failed: {}",
+                failure_summary(&failure)
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    let mut runner = SystemKeeperCommandRunner::default();
+    if let Err(message) = restart_installed_update_units(&units, &mut runner) {
+        eprintln!(
+            "ployz-keeper substrate-update restart failed: {}",
+            message.as_str()
+        );
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "substrate updated to {} and restarted {} unit(s)",
+        update.version.as_str(),
+        units.len()
+    );
+    ExitCode::SUCCESS
+}
+
+fn load_versioned_release_manifest(url: &str) -> Result<ReleaseManifest, String> {
+    let contents = get_text_url(url)
+        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    ReleaseManifest::parse(&contents)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstalledUpdateUnit {
+    Nats,
+    Ployzd(String),
+}
+
+impl InstalledUpdateUnit {
+    fn unit_name(&self) -> &str {
+        match self {
+            Self::Nats => "nats-server.service",
+            Self::Ployzd(unit) => unit,
+        }
+    }
+}
+
+fn installed_update_units(systemd_dir: &Path) -> Result<Vec<InstalledUpdateUnit>, std::io::Error> {
+    let mut units = Vec::new();
+    if systemd_dir.join("nats-server.service").is_file() {
+        units.push(InstalledUpdateUnit::Nats);
+    }
+    for entry in std::fs::read_dir(systemd_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if file_name.starts_with("ployzd-") && file_name.ends_with(".service") {
+            units.push(InstalledUpdateUnit::Ployzd(file_name.to_owned()));
+        }
+    }
+    units.sort_by(|left, right| left.unit_name().cmp(right.unit_name()));
+    units.dedup();
+    Ok(units)
+}
+
+fn restart_installed_update_units(
+    units: &[InstalledUpdateUnit],
+    runner: &mut impl KeeperCommandRunner,
+) -> Result<(), FailureMessage> {
+    runner.systemctl(&["daemon-reload"])?;
+    for unit in units {
+        runner.systemctl(&["restart", unit.unit_name()])?;
+    }
+    Ok(())
 }
 
 fn run_bootstrap_command(bootstrap: KeeperBootstrap) -> ExitCode {
@@ -566,7 +735,12 @@ impl KeeperJoinTokenConsumer for StartupJoinTokenConsumer {
 
 #[cfg(test)]
 mod tests {
-    use super::{keeper_join_target_with_public_ip, read_cloud_founder_bootstrap_result};
+    use std::fs;
+
+    use super::{
+        InstalledUpdateUnit, installed_update_units, keeper_join_target_with_public_ip,
+        read_cloud_founder_bootstrap_result,
+    };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
@@ -578,6 +752,25 @@ mod tests {
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
     use ployz_core::roles::InstallRolePolicy;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
+
+    #[test]
+    fn installed_update_units_discovers_nats_and_ployzd_units() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("nats-server.service"), "").expect("write nats unit");
+        fs::write(root.path().join("ployzd-gateway.service"), "").expect("write gateway unit");
+        fs::write(root.path().join("ployzd-machine-machine_1.service"), "")
+            .expect("write machine unit");
+        fs::write(root.path().join("docker.service"), "").expect("write unrelated unit");
+
+        assert_eq!(
+            installed_update_units(root.path()).expect("units load"),
+            vec![
+                InstalledUpdateUnit::Nats,
+                InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
+                InstalledUpdateUnit::Ployzd("ployzd-machine-machine_1.service".to_owned()),
+            ]
+        );
+    }
 
     #[test]
     fn keeper_join_target_uses_runtime_nats_url_from_redeemed_bundle() {

@@ -4,10 +4,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use ployz_core::install::{
-    AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallArtifacts,
-    FirstMachineInstallSpec, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallSha256Digest, MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
-    NatsServerInstallSpec,
+    AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec,
+    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
 };
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::{DnsRole, GatewayRole};
@@ -23,6 +21,9 @@ use ployz_keeper::command::SystemKeeperCommandRunner;
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal};
 use ployz_keeper::join_executor::execute_keeper_join_with_redeemed;
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
+use ployz_keeper::release_manifest::{
+    ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
+};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{JoinToken, KeeperStepFailureReason};
 use ployz_nats::connect::{
@@ -454,87 +455,6 @@ fn public_ip_from_runtime_nats_url(
         .map_err(|_| "Cloud founder runtime NATS URL must use a public IP host for v1".to_owned())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReleaseManifest {
-    version: String,
-    ployzd_url: String,
-    ployzd_sha256: String,
-    ebpf_tc_url: String,
-    ebpf_tc_sha256: String,
-    ebpf_ctl_url: String,
-    ebpf_ctl_sha256: String,
-    nats_server_version: String,
-    nats_server_url: String,
-    nats_server_sha256: String,
-}
-
-impl ReleaseManifest {
-    fn parse(contents: &str) -> Result<Self, String> {
-        Ok(Self {
-            version: manifest_value(contents, "PLOYZ_VERSION")?,
-            ployzd_url: manifest_value(contents, "PLOYZD_URL")?,
-            ployzd_sha256: manifest_value(contents, "PLOYZD_SHA256")?,
-            ebpf_tc_url: manifest_value(contents, "PLOYZ_EBPF_TC_URL")?,
-            ebpf_tc_sha256: manifest_value(contents, "PLOYZ_EBPF_TC_SHA256")?,
-            ebpf_ctl_url: manifest_value(contents, "PLOYZ_EBPF_CTL_URL")?,
-            ebpf_ctl_sha256: manifest_value(contents, "PLOYZ_EBPF_CTL_SHA256")?,
-            nats_server_version: manifest_value(contents, "PLOYZ_NATS_SERVER_VERSION")?,
-            nats_server_url: manifest_value(contents, "PLOYZ_NATS_SERVER_URL")?,
-            nats_server_sha256: manifest_value(contents, "PLOYZ_NATS_SERVER_SHA256")?,
-        })
-    }
-
-    fn install_artifacts(&self) -> Result<FirstMachineInstallArtifacts, String> {
-        Ok(FirstMachineInstallArtifacts {
-            ployzd: artifact_spec(
-                &self.version,
-                &self.ployzd_url,
-                &self.ployzd_sha256,
-                "/usr/local/bin/ployzd",
-            )?,
-            ebpf_bytecode: artifact_spec(
-                &self.version,
-                &self.ebpf_tc_url,
-                &self.ebpf_tc_sha256,
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            )?,
-            ebpf_ctl: artifact_spec(
-                &self.version,
-                &self.ebpf_ctl_url,
-                &self.ebpf_ctl_sha256,
-                "/usr/local/bin/ployz-ebpf-ctl",
-            )?,
-            nats_server: NatsServerInstallSpec {
-                version: InstallArtifactVersion::try_new(&self.nats_server_version)
-                    .map_err(|error| error.to_string())?,
-                source: InstallArtifactSource::try_new(&self.nats_server_url)
-                    .map_err(|error| error.to_string())?,
-                sha256: InstallSha256Digest::try_new(&self.nats_server_sha256)
-                    .map_err(|error| error.to_string())?,
-                binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
-                    .map_err(|error| error.to_string())?,
-                config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
-                    .map_err(|error| error.to_string())?,
-            },
-        })
-    }
-}
-
-fn artifact_spec(
-    version: &str,
-    source: &str,
-    sha256: &str,
-    install_path: &str,
-) -> Result<InstallArtifactSpec, String> {
-    Ok(InstallArtifactSpec {
-        version: InstallArtifactVersion::try_new(version).map_err(|error| error.to_string())?,
-        source: InstallArtifactSource::try_new(source).map_err(|error| error.to_string())?,
-        sha256: InstallSha256Digest::try_new(sha256).map_err(|error| error.to_string())?,
-        install_path: AbsoluteInstallPath::try_new(install_path)
-            .map_err(|error| error.to_string())?,
-    })
-}
-
 fn load_release_manifest() -> Result<ReleaseManifest, String> {
     let url = release_manifest_url();
     let contents = get_text_url(&url)
@@ -549,42 +469,14 @@ fn release_manifest_url() -> String {
         .or_else(|| {
             persisted_release_manifest_url(std::path::Path::new("/etc/ployz/release.env")).ok()
         })
-        .unwrap_or_else(|| {
-            format!(
-                "https://github.com/getployz/ployz/releases/download/v{}/ployz-release-{}.env",
-                env!("CARGO_PKG_VERSION"),
-                release_platform()
-            )
-        })
-}
-
-fn persisted_release_manifest_url(path: &std::path::Path) -> Result<String, String> {
-    let contents = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    manifest_value(&contents, "PLOYZ_RELEASE_MANIFEST_URL")
-}
-
-fn release_platform() -> &'static str {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "linux-amd64",
-        ("linux", "aarch64") => "linux-arm64",
-        ("linux", "arm") => "linux-arm64",
-        _ => "unsupported",
-    }
-}
-
-fn manifest_value(contents: &str, key: &str) -> Result<String, String> {
-    contents
-        .lines()
-        .find_map(|line| line.strip_prefix(&format!("{key}=")).map(str::to_owned))
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("release manifest is missing {key}"))
+        .unwrap_or_else(default_release_manifest_url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ReleaseManifest, cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
-        public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
+        cloud_joiner_failed_terminal_callback, public_ip_from_runtime_nats_url,
+        update_poll_delay_from_pending,
     };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;
     use ployz_core::ops::FailureMessage;
@@ -595,58 +487,6 @@ mod tests {
         CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
         CloudBootstrapRedemptionId,
     };
-
-    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-    #[test]
-    fn release_manifest_builds_founder_artifacts_in_keeper() {
-        let manifest = ReleaseManifest::parse(&format!(
-            "PLOYZ_VERSION=0.1.0\n\
-             PLOYZD_URL=https://example.test/ployzd\n\
-             PLOYZD_SHA256={SHA}\n\
-             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
-             PLOYZ_EBPF_TC_SHA256={SHA}\n\
-             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
-             PLOYZ_NATS_SERVER_VERSION=2.14.2\n\
-             PLOYZ_NATS_SERVER_URL=https://example.test/nats-server\n\
-             PLOYZ_NATS_SERVER_SHA256={SHA}\n"
-        ))
-        .expect("manifest parses");
-        let artifacts = manifest.install_artifacts().expect("artifacts build");
-
-        assert_eq!(
-            artifacts.ployzd.install_path.as_str(),
-            "/usr/local/bin/ployzd"
-        );
-        assert_eq!(
-            artifacts.nats_server.binary.as_str(),
-            "/usr/local/bin/nats-server"
-        );
-    }
-
-    #[test]
-    fn persisted_release_env_supplies_manifest_url() {
-        let path = std::env::temp_dir().join(format!(
-            "ployz-release-env-{}-{}.env",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock is after unix epoch")
-                .as_nanos()
-        ));
-        std::fs::write(
-            &path,
-            "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env\n",
-        )
-        .expect("release env can be written");
-
-        assert_eq!(
-            persisted_release_manifest_url(&path).expect("manifest URL loads"),
-            "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env"
-        );
-        let _ = std::fs::remove_file(path);
-    }
 
     #[test]
     fn founder_public_ip_comes_from_runtime_nats_url() {
