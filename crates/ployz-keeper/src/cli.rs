@@ -27,7 +27,7 @@ pub enum KeeperCommand {
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
 }
 
-pub const DEFAULT_CLOUD_HOST: &str = "https://cloud.ployz.com";
+pub const DEFAULT_CLOUD_HOST: &str = "https://ployz.dev";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperBootstrap {
