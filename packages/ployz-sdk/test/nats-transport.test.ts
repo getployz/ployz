@@ -32,10 +32,15 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   assert.deepEqual(JSON.parse(new TextDecoder().decode(payload)), {
     operation_id: "op_123",
     target: {
-      service_id: "svc_api",
+      namespace_id: "default",
       target_revision: "rev_2",
-      image: "ghcr.io/acme/api:rev-2",
-      replicas: 1,
+      services: [
+        {
+          service_id: "svc_api",
+          image: "ghcr.io/acme/api:rev-2",
+          replicas: 1,
+        },
+      ],
     },
   });
   assert.deepEqual(nats.requests[0].options, { timeout: 1234 });

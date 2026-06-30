@@ -606,18 +606,21 @@ mod tests {
     #[test]
     fn deploy_prepare_request_carries_endpoint_routes_for_target_machines() {
         let plan = DeployPlan {
-            service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+            namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
             target_revision: crate::ids::RevisionId::try_new("rev_1").expect("valid revision id"),
-            steps: vec![
-                crate::deploy::DeployPlanStep::RunContainer {
-                    machine_id: machine_id("edge_2"),
-                    slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
-                },
-                crate::deploy::DeployPlanStep::RunContainer {
-                    machine_id: machine_id("core_1"),
-                    slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
-                },
-            ],
+            services: vec![crate::deploy::DeployServicePlan {
+                service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+                steps: vec![
+                    crate::deploy::DeployPlanStep::RunContainer {
+                        machine_id: machine_id("edge_2"),
+                        slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+                    },
+                    crate::deploy::DeployPlanStep::RunContainer {
+                        machine_id: machine_id("core_1"),
+                        slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
+                    },
+                ],
+            }],
             cleanup_containers: Vec::new(),
         };
 
@@ -642,18 +645,21 @@ mod tests {
     #[test]
     fn dataplane_prepare_request_declares_membership_only() {
         let plan = DeployPlan {
-            service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+            namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
             target_revision: crate::ids::RevisionId::try_new("rev_1").expect("valid revision id"),
-            steps: vec![
-                crate::deploy::DeployPlanStep::RunContainer {
-                    machine_id: machine_id("edge_2"),
-                    slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
-                },
-                crate::deploy::DeployPlanStep::RunContainer {
-                    machine_id: machine_id("core_1"),
-                    slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
-                },
-            ],
+            services: vec![crate::deploy::DeployServicePlan {
+                service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+                steps: vec![
+                    crate::deploy::DeployPlanStep::RunContainer {
+                        machine_id: machine_id("edge_2"),
+                        slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+                    },
+                    crate::deploy::DeployPlanStep::RunContainer {
+                        machine_id: machine_id("core_1"),
+                        slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
+                    },
+                ],
+            }],
             cleanup_containers: Vec::new(),
         };
 

@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, ImageReference,
-    ReplicaCount, ReplicaSlot,
+    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan,
+    DeployServiceSpec, ImageReference, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::machine::JoinTokenRedeemedAt;
@@ -9,7 +9,7 @@ use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, Oper
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
 use ployz_test_support::ids::{
-    cert_id, container_id, machine_id, operation_id, revision_id, service_id, step_id,
+    cert_id, container_id, machine_id, namespace_id, operation_id, revision_id, service_id, step_id,
 };
 
 #[test]
@@ -198,11 +198,14 @@ fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
 
 fn deploy_plan() -> DeployPlan {
     DeployPlan {
-        service_id: service_id("svc_api"),
+        namespace_id: namespace_id("default"),
         target_revision: ployz_core::ids::RevisionId::try_new("rev_2").expect("valid revision id"),
-        steps: vec![DeployPlanStep::RunContainer {
-            machine_id: machine_id("machine_a"),
-            slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+        services: vec![DeployServicePlan {
+            service_id: service_id("svc_api"),
+            steps: vec![DeployPlanStep::RunContainer {
+                machine_id: machine_id("machine_a"),
+                slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+            }],
         }],
         cleanup_containers: Vec::new(),
     }
@@ -222,10 +225,13 @@ fn replicas(value: u16) -> ReplicaCount {
 
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
-        service_id: self::service_id(service_id),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: image("ghcr.io/acme/api:rev-2"),
-        replicas: replicas(1),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: self::service_id(service_id),
+            image: image("ghcr.io/acme/api:rev-2"),
+            replicas: replicas(1),
+            route: None,
+        }],
     }
 }

@@ -63,7 +63,14 @@ impl SubmitKind for DeployOperationSubmission {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::deploy_accepted(operation_id, payload.service_id.clone(), sequence)
+        OperationStatus::deploy_accepted(
+            operation_id,
+            payload
+                .primary_service_id()
+                .expect("validated deploy request has a service")
+                .clone(),
+            sequence,
+        )
     }
 }
 
@@ -132,6 +139,9 @@ impl AsyncNatsOperationRepository {
             operation_id,
             target,
         } = submission;
+        if target.primary_service_id().is_none() {
+            return Err(SubmitOperationError::InvalidDeployTarget);
+        }
         let submitted = self
             .submit_operation::<DeployOperationSubmission>(operation_id, target)
             .await?;
@@ -559,6 +569,7 @@ pub struct AcceptedBackupSubmission {
 /// How a deploy, cert, or backup submission fails inside the repository.
 #[derive(Debug)]
 pub enum SubmitOperationError {
+    InvalidDeployTarget,
     AppendEvent(OperationEventLogError),
     StoreStatus(OperationStatusStoreError),
     DuplicateSequenceMismatch { sequence: EventSequence },

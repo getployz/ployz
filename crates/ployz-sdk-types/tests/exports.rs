@@ -8,7 +8,7 @@ use ployz_sdk_types::{
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudFounderBootstrapResult, DeployOperationState,
-    DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
+    DeployRequest, DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
     InstallContractError, InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
@@ -19,8 +19,8 @@ use ployz_sdk_types::{
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
-    MachineSnapshot, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    MachineSnapshot, NamespaceId, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError,
+    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
     OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount,
@@ -44,11 +44,14 @@ fn sdk_exports_core_wire_types() {
     let state = DeployOperationState::Accepted;
     let running = DeployRunningStage::ActiveServiceCommit;
     let _deploy = DeployRequest {
-        service_id: service_id.clone(),
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
-        image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id.clone(),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
+        }],
     };
     let status = OperationStatus::deploy_accepted(
         ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id"),
@@ -134,11 +137,14 @@ fn sdk_exports_operation_api_wire_types() {
     let request = DeploySubmitRequest {
         operation_id: operation_id.clone(),
         target: DeployRequest {
-            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
-            image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            services: vec![DeployServiceSpec {
+                service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+                image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                route: None,
+            }],
         },
     };
     let response: DeploySubmitResponse = OperationApiResponse::Ok {
@@ -151,7 +157,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"operation_id":"op_123","target":{"service_id":"svc_api","target_revision":"rev_1","image":"ghcr.io/acme/api:rev-1","replicas":1}}"#
+        r#"{"operation_id":"op_123","target":{"namespace_id":"default","target_revision":"rev_1","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1}]}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),

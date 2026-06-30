@@ -33,7 +33,7 @@ async fn binary_deploy_calls_nats_service() {
                 serde_json::from_slice(&request.payload).expect("deploy request decodes");
             assert_eq!(request.operation_id, operation_id("op_deploy"));
             assert_eq!(
-                request.target.service_id,
+                request.target.services[0].service_id,
                 ServiceId::try_new("svc_api").expect("valid service id")
             );
             assert_eq!(
@@ -41,11 +41,11 @@ async fn binary_deploy_calls_nats_service() {
                 RevisionId::try_new("rev_2").expect("valid revision id")
             );
             assert_eq!(
-                request.target.image,
+                request.target.services[0].image,
                 ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image")
             );
             assert_eq!(
-                request.target.replicas,
+                request.target.services[0].replicas,
                 ReplicaCount::try_new(1).expect("valid replicas")
             );
 

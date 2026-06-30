@@ -84,17 +84,23 @@ export type CloudBootstrapFailure = { "failure": "already_bootstrapped" } | { "f
 
 export type CloudBootstrapCallbackAccepted = { accepted_at_unix_seconds: number, };
 
+export type NamespaceId = Brand<string, "NamespaceId">;
+
 export type ImageReference = Brand<string, "ImageReference">;
 
 export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
 export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
 
-export type DeployRequest = { service_id: ServiceId, target_revision: RevisionId, image: ImageReference, replicas: ReplicaCount, route?: DeployRoute | null, };
+export type DeployRequest = { namespace_id: NamespaceId, target_revision: RevisionId, services: Array<DeployServiceSpec>, };
+
+export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, route?: DeployRoute | null, };
 
 export type DeployRoute = { target: RouteTarget, endpoint_port: RoutePort, };
 
-export type DeployPlan = { service_id: ServiceId, target_revision: RevisionId, steps: Array<DeployPlanStep>, cleanup_containers?: Array<DeployCleanupContainer>, };
+export type DeployPlan = { namespace_id: NamespaceId, target_revision: RevisionId, services: Array<DeployServicePlan>, cleanup_containers?: Array<DeployCleanupContainer>, };
+
+export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
 
 export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
 
@@ -392,7 +398,7 @@ export type AcceptedOperation = { operation_id: OperationId, watch_subject: stri
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
-export type DeploySubmitError = { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type DeploySubmitError = { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type BackupCreateError = { "error": "invalid_target", operation_id: OperationId, field: BackupTargetValidationField, failure: BackupTargetValidationFailure, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 

@@ -5,7 +5,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
+    DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
+    ReplicaCount,
 };
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::machine_runtime::{
@@ -21,14 +22,14 @@ use ployz_core::state::{
     ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveRoute, ExpectedActiveService,
 };
 pub(crate) use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, service_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, service_id,
 };
 use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    prepare_deploy_execution_command,
+    DeployServiceExecutionFacts, MachineContainerRuntime, MachineContainerRuntimeError,
+    MachineRuntimeUnavailableReason, prepare_deploy_execution_command,
 };
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
@@ -114,7 +115,11 @@ impl DeployOperationRecorder for RecordingOperations {
         match evidence {
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {
-                    replica_count: plan.steps.len(),
+                    replica_count: plan
+                        .services
+                        .iter()
+                        .map(|service| service.steps.len())
+                        .sum(),
                 });
             }
             DeployEvidence::DataplanePrepared { report } => {
@@ -628,18 +633,23 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
     prepare_deploy_execution_command(
         operation_id("op_123"),
         DeployRequest {
-            service_id: service_id("svc_api"),
+            namespace_id: namespace_id("default"),
             target_revision: revision_id("rev_2"),
-            image: image("registry.example/api:rev_2"),
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-            route: Some(DeployRoute {
-                target: route_target("api.example.com", 443),
-                endpoint_port: route_port(8080),
-            }),
+            services: vec![DeployServiceSpec {
+                service_id: service_id("svc_api"),
+                image: image("registry.example/api:rev_2"),
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+                route: Some(DeployRoute {
+                    target: route_target("api.example.com", 443),
+                    endpoint_port: route_port(8080),
+                }),
+            }],
         },
         DeployExecutionFacts {
-            active_service: None,
-            active_route: None,
+            services: vec![DeployServiceExecutionFacts {
+                active_service: None,
+                active_route: None,
+            }],
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
@@ -703,15 +713,20 @@ fn prepared_deploy_command(
     prepare_deploy_execution_command(
         operation_id("op_123"),
         DeployRequest {
-            service_id: service_id("svc_api"),
+            namespace_id: namespace_id("default"),
             target_revision: revision_id("rev_2"),
-            image: image("registry.example/api:rev_2"),
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-            route: None,
+            services: vec![DeployServiceSpec {
+                service_id: service_id("svc_api"),
+                image: image("registry.example/api:rev_2"),
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+                route: None,
+            }],
         },
         DeployExecutionFacts {
-            active_service: None,
-            active_route: None,
+            services: vec![DeployServiceExecutionFacts {
+                active_service: None,
+                active_route: None,
+            }],
             dataplane_machines: Vec::new(),
             eligible_machines,
             observed_machines,
