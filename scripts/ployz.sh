@@ -102,6 +102,7 @@ fi
 
 install_dir="/usr/local/bin"
 keeper_bin="${install_dir}/ployz-keeper"
+release_env_file="${PLOYZ_RELEASE_ENV_FILE:-/etc/ployz/release.env}"
 manifest_file="$(mktemp)"
 channel_file="$(mktemp)"
 tmp_file="$(mktemp)"
@@ -302,12 +303,25 @@ install_checked() {
   fi
 }
 
+persist_release_env() {
+  release_env_dir="${release_env_file%/*}"
+  {
+    printf 'PLOYZ_RELEASE_MANIFEST_URL=%s\n' "$manifest_url"
+    printf 'PLOYZ_VERSION=%s\n' "${PLOYZ_VERSION:-}"
+    printf 'PLOYZ_RELEASE_TAG=%s\n' "${release_tag:-}"
+    printf 'PLOYZ_RELEASE_PLATFORM=%s\n' "$release_platform"
+  } > "$tmp_file"
+  install_checked -d -m 0755 "$release_env_dir"
+  install_checked -m 0644 "$tmp_file" "$release_env_file"
+}
+
 PLOYZ_KEEPER_URL="$(resolve_release_value PLOYZ_KEEPER_URL "${PLOYZ_KEEPER_URL:-}")"
 PLOYZ_KEEPER_SHA256="$(resolve_release_value PLOYZ_KEEPER_SHA256 "${PLOYZ_KEEPER_SHA256:-}")"
 
 download_verified "$PLOYZ_KEEPER_URL" "$PLOYZ_KEEPER_SHA256" "$tmp_file"
 install_checked -d -m 0755 "$install_dir"
 install_checked -m 0755 "$tmp_file" "$keeper_bin"
+persist_release_env
 
 echo "installed $keeper_bin"
 echo "run: sudo ployz-keeper bootstrap"
