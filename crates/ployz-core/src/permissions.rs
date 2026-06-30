@@ -134,7 +134,8 @@ impl NatsPermissionProfile {
                 // Gateway and DNS authenticate as the machine's Machine user in
                 // v1, so this profile carries their read-only route-state
                 // access (KV_CORE reads stay read-only via the publish deny).
-                let mut publish_allow = vec![machine_observation_scope(machine_id)];
+                let mut publish_allow = request_reply_publications(&principal);
+                publish_allow.push(machine_observation_scope(machine_id));
                 publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
                 publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
                 publish_allow.extend(kv_read_js_api_subjects(KV_CORE_BUCKET));
@@ -213,7 +214,8 @@ fn machine_service_server_subscriptions(
 
 #[must_use]
 fn controller_publications() -> SubjectPermissions {
-    let mut allow = api_service_client_publications().into_allowed_subjects();
+    let mut allow = request_reply_publications(&NatsPrincipal::Controller);
+    allow.extend(api_service_client_publications().into_allowed_subjects());
     allow.extend(machine_service_client_publications().into_allowed_subjects());
     allow.extend([
         OPS_STREAM_SUBJECT.to_owned(),
@@ -226,6 +228,11 @@ fn controller_publications() -> SubjectPermissions {
         operation_status_kv_write_scope(),
     ]);
     SubjectPermissions::allowing_all(allow)
+}
+
+#[must_use]
+fn request_reply_publications(principal: &NatsPrincipal) -> Vec<String> {
+    vec![inbox_subscribe_scope(principal)]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

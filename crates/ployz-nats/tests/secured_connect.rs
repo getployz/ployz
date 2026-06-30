@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
+use ployz_core::nats_config::MintedNatsUser;
 use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{MachinePublicIpObservation, MachinePublicIpObservationKey};
@@ -58,6 +59,24 @@ async fn wrong_seed_is_rejected() {
 }
 
 #[tokio::test]
+async fn extra_cloud_user_public_key_can_connect_as_user() {
+    let cloud_user = MintedNatsUser::generate().expect("cloud nkey mints");
+    let fixture =
+        SecuredTestNats::start_with_machines_and_extra_users(&[], &[cloud_user.public.clone()])
+            .await
+            .expect("secured fixture");
+
+    let client = connect_authenticated(
+        &fixture.config_with_seed(NatsPrincipal::User, cloud_user.seed),
+        CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("external cloud user key connects as User principal");
+
+    client.flush().await.expect("cloud user round-trips");
+}
+
+#[tokio::test]
 async fn plaintext_connect_to_tls_port_fails() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let plaintext_url = NatsClientUrl::try_new(format!("nats://127.0.0.1:{}", fixture.port()))
@@ -69,6 +88,23 @@ async fn plaintext_connect_to_tls_port_fails() {
         result.is_err(),
         "an anonymous plaintext client must not reach the secured port"
     );
+}
+
+#[tokio::test]
+async fn controller_can_publish_to_its_own_inbox_without_permission_violation() {
+    let fixture = SecuredTestNats::start().await.expect("secured fixture");
+    let (controller, mut events) = connect_with_event_capture(&fixture.controller_config()).await;
+
+    controller
+        .publish(
+            format!("{}.test", inbox_prefix(&NatsPrincipal::Controller)),
+            "service reply".into(),
+        )
+        .await
+        .expect("publish accepted client-side");
+    controller.flush().await.expect("flush");
+
+    assert_no_permission_violation(&mut events).await;
 }
 
 #[tokio::test]
@@ -96,6 +132,34 @@ async fn machine_publish_outside_allow_list_gets_permission_violation() {
         violation.contains("Publish"),
         "expected a publish violation, got: {violation}"
     );
+}
+
+#[tokio::test]
+async fn machine_can_publish_to_its_own_inbox_without_permission_violation() {
+    let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
+    let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
+        .await
+        .expect("secured fixture");
+    let Some(config) = fixture.machine_config(&machine_id) else {
+        panic!("fixture mints a user for every requested machine");
+    };
+    let (machine, mut events) = connect_with_event_capture(&config).await;
+
+    machine
+        .publish(
+            format!(
+                "{}.test",
+                inbox_prefix(&NatsPrincipal::Machine {
+                    machine_id: machine_id.clone(),
+                })
+            ),
+            "service reply".into(),
+        )
+        .await
+        .expect("publish accepted client-side");
+    machine.flush().await.expect("flush");
+
+    assert_no_permission_violation(&mut events).await;
 }
 
 #[tokio::test]
