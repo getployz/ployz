@@ -111,8 +111,9 @@ pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
     println!("{}", created.browser_url);
     println!("Waiting for approval...");
 
+    let mut poll_after_seconds = created.poll_after_seconds;
     for _ in 0..CLOUD_BOOTSTRAP_MAX_POLLS {
-        std::thread::sleep(Duration::from_secs(created.poll_after_seconds.into()));
+        std::thread::sleep(Duration::from_secs(poll_after_seconds.into()));
         let decision = match client.post_json::<_, CloudBootstrapDecision>(
             "/api/bootstrap/sessions/poll",
             None,
@@ -129,8 +130,10 @@ pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
             }
         };
 
+        if update_poll_delay_from_pending(&decision, &mut poll_after_seconds) {
+            continue;
+        }
         match decision {
-            CloudBootstrapDecision::Pending { .. } => continue,
             CloudBootstrapDecision::Expired => {
                 if let Err(error) = reset_cloud_attempt(std::path::Path::new(KEEPER_STATE_DIR)) {
                     eprintln!(
@@ -161,6 +164,23 @@ pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
 
     eprintln!("Cloud bootstrap approval timed out; rerun sudo ployz-keeper bootstrap");
     ExitCode::FAILURE
+}
+
+fn update_poll_delay_from_pending(
+    decision: &CloudBootstrapDecision,
+    poll_after_seconds: &mut u16,
+) -> bool {
+    match decision {
+        CloudBootstrapDecision::Pending {
+            retry_after_seconds,
+        } => {
+            *poll_after_seconds = *retry_after_seconds;
+            true
+        }
+        CloudBootstrapDecision::Ready { .. }
+        | CloudBootstrapDecision::Expired
+        | CloudBootstrapDecision::Failed { .. } => false,
+    }
 }
 
 fn run_cloud_bootstrap_envelope(
@@ -332,7 +352,7 @@ fn build_cloud_founder_install_spec(
             .map_err(|error| error.to_string())?,
         gateway: GatewayRole::Install,
         dns: DnsRole::Install,
-        machine_public_ip: public_ip_from_runtime_nats_url(&founder.runtime_nats_url),
+        machine_public_ip: Some(public_ip_from_runtime_nats_url(&founder.runtime_nats_url)?),
         machine_bootstrap_url: Some(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .map_err(|error| error.to_string())?,
@@ -348,13 +368,19 @@ fn build_cloud_founder_install_spec(
     })
 }
 
-fn public_ip_from_runtime_nats_url(runtime_nats_url: &MachineJoinRuntimeNatsUrl) -> Option<IpAddr> {
+fn public_ip_from_runtime_nats_url(
+    runtime_nats_url: &MachineJoinRuntimeNatsUrl,
+) -> Result<IpAddr, String> {
     let authority = runtime_nats_url
         .as_str()
         .strip_prefix("tls://")
-        .or_else(|| runtime_nats_url.as_str().strip_prefix("nats://"))?;
-    let (host, _) = authority.rsplit_once(':')?;
-    host.parse().ok()
+        .or_else(|| runtime_nats_url.as_str().strip_prefix("nats://"))
+        .ok_or_else(|| "runtime NATS URL must start with tls:// or nats://".to_owned())?;
+    let (host, _) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| "runtime NATS URL must include a host and port".to_owned())?;
+    host.parse()
+        .map_err(|_| "Cloud founder runtime NATS URL must use a public IP host for v1".to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,8 +496,19 @@ fn manifest_value(contents: &str, key: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReleaseManifest, public_ip_from_runtime_nats_url};
+    use super::{
+        ReleaseManifest, cloud_joiner_failed_terminal_callback, public_ip_from_runtime_nats_url,
+        update_poll_delay_from_pending,
+    };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;
+    use ployz_core::ops::FailureMessage;
+    use ployz_keeper::executor::KeeperPlanFailure;
+    use ployz_keeper::steps::{KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel};
+    use ployz_sdk_types::{
+        CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
+        CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
+        CloudBootstrapRedemptionId,
+    };
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -508,9 +545,80 @@ mod tests {
             MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").expect("valid nats URL");
 
         assert_eq!(
-            public_ip_from_runtime_nats_url(&url).map(|ip| ip.to_string()),
-            Some("203.0.113.10".to_owned())
+            public_ip_from_runtime_nats_url(&url)
+                .expect("public IP parses")
+                .to_string(),
+            "203.0.113.10"
         );
+    }
+
+    #[test]
+    fn founder_runtime_nats_url_rejects_hostname_for_v1() {
+        let url =
+            MachineJoinRuntimeNatsUrl::try_new("tls://core.example.com:4222").expect("valid URL");
+
+        assert!(public_ip_from_runtime_nats_url(&url).is_err());
+    }
+
+    #[test]
+    fn pending_decision_updates_next_poll_delay() {
+        let mut poll_after_seconds = 2;
+        let decision = ployz_sdk_types::CloudBootstrapDecision::Pending {
+            retry_after_seconds: 9,
+        };
+
+        assert!(update_poll_delay_from_pending(
+            &decision,
+            &mut poll_after_seconds
+        ));
+        assert_eq!(poll_after_seconds, 9);
+    }
+
+    #[test]
+    fn join_report_failure_preserves_success_callback_when_join_was_installed() {
+        let envelope = CloudBootstrapEnvelope {
+            attempt_id: CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id"),
+            redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
+                .expect("valid redemption id"),
+            callback_url: "https://cloud.example.com/api/bootstrap/redemptions/pcbr_123/callback"
+                .to_owned(),
+            callback_token: CloudBootstrapCallbackToken::try_new("pcbc_123")
+                .expect("valid callback token"),
+            intent: CloudBootstrapIntent::WaitForFounder {
+                retry_after_seconds: 1,
+            },
+        };
+        let failure = KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::ReportJoinResult,
+            reason: KeeperStepFailureReason::JoinReportFailed,
+            message: FailureMessage::try_new("report failed").expect("valid message"),
+        });
+
+        let success_callback = CloudBootstrapCallbackRequest {
+            attempt_id: envelope.attempt_id.clone(),
+            redemption_id: envelope.redemption_id.clone(),
+            outcome: CloudBootstrapOutcome::JoinerSucceeded {
+                result: ployz_sdk_types::CloudJoinerBootstrapResult {
+                    operation_id: ployz_core::ids::OperationId::try_new("op_machine")
+                        .expect("valid operation id"),
+                    machine_id: ployz_core::ids::MachineId::try_new("machine_2")
+                        .expect("valid machine id"),
+                    name: ployz_core::machine::MachineName::try_new("edge_2")
+                        .expect("valid machine name"),
+                    last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+                        .expect("valid sequence"),
+                    result: ployz_sdk_types::MachineJoinRedeemResult::Joined,
+                },
+            },
+        };
+
+        let callback =
+            cloud_joiner_failed_terminal_callback(&envelope, &failure, Some(success_callback));
+
+        assert!(matches!(
+            callback.outcome,
+            CloudBootstrapOutcome::JoinerSucceeded { .. }
+        ));
     }
 }
 
@@ -617,20 +725,19 @@ fn run_cloud_joiner_bootstrap(
                 },
             );
         }
-        (KeeperPlanTerminal::Failed(failure), _) => {
-            if is_join_report_failure(failure) {
-                eprintln!(
-                    "ployz-keeper cloud joiner bootstrap could not report the join result: {}",
-                    failure_summary(failure)
-                );
-                return ExitCode::FAILURE;
-            }
-            failed_callback(
-                envelope,
-                CloudBootstrapFailure::BootstrapFailed {
-                    message: failure_message(failure_summary(failure)),
-                },
-            )
+        (KeeperPlanTerminal::Failed(failure), Some(redeemed)) => {
+            let installed_success_callback =
+                redeemed.callback_result.as_ref().map(|callback_result| {
+                    cloud_joiner_success_callback(
+                        envelope.attempt_id.clone(),
+                        envelope.redemption_id.clone(),
+                        callback_result,
+                    )
+                });
+            cloud_joiner_failed_terminal_callback(envelope, failure, installed_success_callback)
+        }
+        (KeeperPlanTerminal::Failed(failure), None) => {
+            cloud_joiner_failed_terminal_callback(envelope, failure, None)
         }
     };
 
@@ -663,6 +770,24 @@ fn is_join_report_failure(failure: &KeeperPlanFailure) -> bool {
         failure,
         KeeperPlanFailure::Step(step)
             if step.reason == KeeperStepFailureReason::JoinReportFailed
+    )
+}
+
+fn cloud_joiner_failed_terminal_callback(
+    envelope: &CloudBootstrapEnvelope,
+    failure: &KeeperPlanFailure,
+    installed_success_callback: Option<CloudBootstrapCallbackRequest>,
+) -> CloudBootstrapCallbackRequest {
+    if is_join_report_failure(failure) {
+        if let Some(callback) = installed_success_callback {
+            return callback;
+        }
+    }
+    failed_callback(
+        envelope,
+        CloudBootstrapFailure::BootstrapFailed {
+            message: failure_message(failure_summary(failure)),
+        },
     )
 }
 
