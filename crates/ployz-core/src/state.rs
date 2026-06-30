@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use crate::ids::{MachineId, OperationId, RevisionId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
+use crate::wire::id_prefixed_state_key;
 use std::net::{IpAddr, SocketAddr};
 
 pub const KV_CORE_BUCKET: &str = "KV_CORE";
@@ -76,23 +77,7 @@ pub enum GatewayServingStatus {
     Unavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveServiceStateKey(String);
-
-impl ActiveServiceStateKey {
-    #[must_use]
-    pub fn from_service_id(service_id: &ServiceId) -> Self {
-        Self(format!(
-            "{ACTIVE_SERVICE_STATE_PREFIX}.{}",
-            service_id.as_str()
-        ))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+id_prefixed_state_key! { pub struct ActiveServiceStateKey; prefix: ACTIVE_SERVICE_STATE_PREFIX; fn from_service_id(&ServiceId); }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRouteStateKey(String);
@@ -122,23 +107,7 @@ fn route_hostname_key_token(target: &RouteTarget) -> String {
     token
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveMachineStateKey(String);
-
-impl ActiveMachineStateKey {
-    #[must_use]
-    pub fn from_machine_id(machine_id: &MachineId) -> Self {
-        Self(format!(
-            "{ACTIVE_MACHINE_STATE_PREFIX}.{}",
-            machine_id.as_str()
-        ))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+id_prefixed_state_key! { pub struct ActiveMachineStateKey; prefix: ACTIVE_MACHINE_STATE_PREFIX; fn from_machine_id(&MachineId); }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreStateRevision(u64);
