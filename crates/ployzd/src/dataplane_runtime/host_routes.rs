@@ -1,3 +1,4 @@
+use ipnet::Ipv4Net;
 use ployz_core::dataplane::{
     PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
 };
@@ -159,25 +160,20 @@ impl HostDataplaneRouteProgramming {
 }
 
 fn wireguard_host_cidr(endpoint_subnet: &str) -> Result<String, String> {
-    let Some((network, prefix)) = endpoint_subnet.split_once('/') else {
-        return Err(format!(
-            "endpoint subnet has no CIDR prefix: {endpoint_subnet}"
-        ));
-    };
-    if prefix != "24" {
+    let subnet = endpoint_subnet.parse::<Ipv4Net>().map_err(|source| {
+        format!("endpoint subnet is not IPv4 CIDR: {endpoint_subnet}: {source}")
+    })?;
+    if subnet.prefix_len() != 24 {
         return Err(format!(
             "endpoint subnet must be an IPv4 /24 for host WireGuard addressing: {endpoint_subnet}"
         ));
     }
-    let network = network.parse::<Ipv4Addr>().map_err(|source| {
-        format!("endpoint subnet network is not IPv4: {endpoint_subnet}: {source}")
-    })?;
-    let mut octets = network.octets();
-    if octets[3] != 0 {
+    if subnet.network() != subnet.addr() {
         return Err(format!(
             "endpoint subnet must start at the network address: {endpoint_subnet}"
         ));
     }
+    let mut octets = subnet.network().octets();
     octets[3] = 254;
     Ok(format!("{}/32", Ipv4Addr::from(octets)))
 }

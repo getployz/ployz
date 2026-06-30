@@ -6,6 +6,7 @@ use crate::ids::MachineId;
 use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
 use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
 use serde::{Deserialize, Serialize};
+use url::{Host, Url};
 
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://ployz.sh";
 
@@ -90,11 +91,10 @@ impl MachineBootstrapUrl {
         if value.is_empty() {
             return Err(InstallContractError::EmptyBootstrapUrl);
         }
-        if !value.starts_with("https://")
-            || value
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
+        let Ok(url) = Url::parse(&value) else {
+            return Err(InstallContractError::InvalidBootstrapUrl { value });
+        };
+        if url.scheme() != "https" || url.host().is_none() || has_invisible_characters(&value) {
             return Err(InstallContractError::InvalidBootstrapUrl { value });
         }
         Ok(Self(value))
@@ -255,11 +255,7 @@ impl MachineJoinRuntimeNatsUrl {
         if value.is_empty() {
             return Err(InstallContractError::EmptyRuntimeNatsUrl);
         }
-        if value
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control())
-            || !nats_url_has_host_and_port(&value)
-        {
+        if has_invisible_characters(&value) || !nats_url_has_host_and_port(&value) {
             return Err(InstallContractError::InvalidRuntimeNatsUrl { value });
         }
         Ok(Self(value))
@@ -272,16 +268,35 @@ impl MachineJoinRuntimeNatsUrl {
 }
 
 fn nats_url_has_host_and_port(value: &str) -> bool {
-    let Some(authority) = value
-        .strip_prefix("nats://")
-        .or_else(|| value.strip_prefix("tls://"))
-    else {
+    let Ok(url) = Url::parse(value) else {
         return false;
     };
-    let Some((host, port)) = authority.rsplit_once(':') else {
+    if !matches!(url.scheme(), "nats" | "tls")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !url.path().is_empty()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let Some(host) = url.host() else {
         return false;
     };
-    is_valid_host_syntax(host) && port.parse::<u16>().is_ok_and(|port| port > 0)
+    let Some(port) = url.port() else {
+        return false;
+    };
+    port > 0
+        && match host {
+            Host::Domain(host) => is_valid_host_syntax(host),
+            Host::Ipv4(_) | Host::Ipv6(_) => true,
+        }
+}
+
+fn has_invisible_characters(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
 }
 
 impl TryFrom<String> for MachineJoinRuntimeNatsUrl {

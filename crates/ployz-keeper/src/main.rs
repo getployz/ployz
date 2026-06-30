@@ -676,12 +676,12 @@ mod tests {
         .expect("ca can be written");
         std::fs::write(
             material.operator_seed_file(),
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM\n",
         )
         .expect("operator seed can be written");
         std::fs::write(
             material.join_seed_file(),
-            "SUBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
+            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM\n",
         )
         .expect("join seed can be written");
 
@@ -736,7 +736,7 @@ mod tests {
     fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
         MachineJoinSecretDelivery {
             nats_credentials: NatsUserSeed::try_new(
-                "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
             )
             .expect("valid nats credentials"),
         }

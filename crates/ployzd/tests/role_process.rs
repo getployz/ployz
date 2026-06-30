@@ -23,7 +23,7 @@ use ployzd::nats_process::NatsServerRuntime;
 use ployzd::role::{DaemonProcessRole, parse_role_args};
 
 /// Syntactically valid NKey user seed for config tests (not a real key).
-const TEST_SEED: &str = "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 static TEMP_SEED_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn test_connect_config(url: NatsClientUrl) -> NatsConnectConfig {

@@ -657,7 +657,7 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
 fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
     ployz_core::install::MachineJoinSecretDelivery {
         nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
         )
         .expect("valid nats credentials"),
     }
