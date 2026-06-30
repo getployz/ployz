@@ -91,7 +91,7 @@ pub(super) fn machine_add_submission(
 
 /// A syntactically seed-shaped minted credential (not a real key).
 pub(super) const TEST_MINTED_SEED: &str =
-    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 
 pub(super) fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
     ployz_core::install::MachineJoinSecretDelivery {

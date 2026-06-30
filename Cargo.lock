@@ -2112,6 +2112,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ts-rs",
+ "url",
 ]
 
 [[package]]
@@ -2240,6 +2241,7 @@ dependencies = [
  "bollard",
  "clap",
  "futures-util",
+ "ipnet",
  "nkeys",
  "nuid",
  "ployz-core",

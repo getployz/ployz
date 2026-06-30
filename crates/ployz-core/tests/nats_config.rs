@@ -195,7 +195,7 @@ fn tls_files() -> NatsServerTlsFiles {
     }
 }
 
-fn user_public_key(fill: char) -> NatsUserPublicKey {
-    NatsUserPublicKey::try_new(format!("U{}", fill.to_string().repeat(55)))
+fn user_public_key(_fill: char) -> NatsUserPublicKey {
+    NatsUserPublicKey::try_new("UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4")
         .expect("valid user public key")
 }

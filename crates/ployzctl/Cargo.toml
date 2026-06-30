@@ -18,11 +18,11 @@ ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [dev-dependencies]
 ployz-test-support = { path = "../ployz-test-support" }
-tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 [[bin]]

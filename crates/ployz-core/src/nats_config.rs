@@ -349,7 +349,10 @@ pub struct NatsUserPublicKey(String);
 impl NatsUserPublicKey {
     pub fn try_new(value: impl Into<String>) -> Result<Self, NatsServerConfigError> {
         let value = value.into();
-        if value.len() != 56 || !value.starts_with('U') || !is_nkey_base32(&value) {
+        let Ok(pair) = nkeys::KeyPair::from_public_key(&value) else {
+            return Err(NatsServerConfigError::InvalidUserPublicKey { value });
+        };
+        if pair.key_pair_type() != nkeys::KeyPairType::User {
             return Err(NatsServerConfigError::InvalidUserPublicKey { value });
         }
         Ok(Self(value))
@@ -386,7 +389,10 @@ pub struct NatsUserSeed(String);
 impl NatsUserSeed {
     pub fn try_new(value: impl Into<String>) -> Result<Self, NatsServerConfigError> {
         let value = value.into();
-        if value.len() != 58 || !value.starts_with("SU") || !is_nkey_base32(&value) {
+        let Ok(pair) = nkeys::KeyPair::from_seed(&value) else {
+            return Err(NatsServerConfigError::InvalidUserSeed);
+        };
+        if pair.key_pair_type() != nkeys::KeyPairType::User {
             return Err(NatsServerConfigError::InvalidUserSeed);
         }
         Ok(Self(value))
@@ -439,12 +445,6 @@ impl MintedNatsUser {
             seed: NatsUserSeed::try_new(seed)?,
         })
     }
-}
-
-fn is_nkey_base32(value: &str) -> bool {
-    value
-        .bytes()
-        .all(|byte| byte.is_ascii_uppercase() || (b'2'..=b'7').contains(&byte))
 }
 
 /// The cluster CA certificate in PEM form. Public material distributed in

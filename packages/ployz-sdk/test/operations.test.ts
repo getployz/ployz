@@ -914,7 +914,7 @@ function machineJoinArtifact(source: string, installPath: string) {
 
 function machineJoinSecretDelivery(): MachineJoinSecretDelivery {
   return {
-    nats_credentials: "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    nats_credentials: "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
   };
 }
 

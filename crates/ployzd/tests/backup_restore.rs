@@ -322,7 +322,7 @@ fn config() -> ControlProcessConfig {
             url: NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid nats url"),
             auth: ployz_nats::connect::NatsClientAuth::NkeySeed(
                 ployz_core::nats_config::NatsUserSeed::try_new(
-                    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
                 )
                 .expect("test seed is valid"),
             ),
