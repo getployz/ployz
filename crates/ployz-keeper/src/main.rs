@@ -462,56 +462,32 @@ fn load_machine_public_ip_from_env() -> Result<Option<std::net::IpAddr>, KeeperM
         .map_err(|source| KeeperMachinePublicIpError::Invalid { value, source })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 enum KeeperNatsConnectError {
+    #[error("{PLOYZ_NATS_URL_ENV} is required")]
     MissingUrl,
+    #[error("{PLOYZ_NATS_URL_ENV}={value:?} is invalid")]
     InvalidUrl {
         value: String,
+        #[source]
         source: NatsClientUrlError,
     },
+    #[error("{PLOYZ_NATS_CA_FILE_ENV} is required")]
     MissingCaFile,
+    #[error("{PLOYZ_JOIN_NKEY_SEED_ENV} is required")]
     MissingJoinSeed,
+    #[error("{PLOYZ_JOIN_NKEY_SEED_ENV} must be an SU-prefixed user seed")]
     InvalidJoinSeed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 enum KeeperMachinePublicIpError {
+    #[error("{PLOYZ_MACHINE_PUBLIC_IP_ENV}={value:?} is invalid")]
     Invalid {
         value: String,
+        #[source]
         source: std::net::AddrParseError,
     },
-}
-
-impl std::fmt::Display for KeeperNatsConnectError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingUrl => write!(formatter, "{PLOYZ_NATS_URL_ENV} is required"),
-            Self::InvalidUrl { value, .. } => {
-                write!(formatter, "{PLOYZ_NATS_URL_ENV}={value:?} is invalid")
-            }
-            Self::MissingCaFile => write!(formatter, "{PLOYZ_NATS_CA_FILE_ENV} is required"),
-            Self::MissingJoinSeed => {
-                write!(formatter, "{PLOYZ_JOIN_NKEY_SEED_ENV} is required")
-            }
-            Self::InvalidJoinSeed => write!(
-                formatter,
-                "{PLOYZ_JOIN_NKEY_SEED_ENV} must be an SU-prefixed user seed"
-            ),
-        }
-    }
-}
-
-impl std::fmt::Display for KeeperMachinePublicIpError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Invalid { value, .. } => {
-                write!(
-                    formatter,
-                    "{PLOYZ_MACHINE_PUBLIC_IP_ENV}={value:?} is invalid"
-                )
-            }
-        }
-    }
 }
 
 fn keeper_join_target_with_public_ip(

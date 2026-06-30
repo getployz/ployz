@@ -11,12 +11,13 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use wait_timeout::ChildExt;
 
 pub const DEFAULT_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub const SSH_CONNECT_TIMEOUT_SECS: u32 = 10;
 const MAX_SSH_OUTPUT_BYTES: usize = 64 * 1024;
-const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A validated `user@host` SSH destination.
 ///
@@ -233,31 +234,27 @@ impl SshClient {
         let stdout_reader = spawn_bounded_reader(stdout_pipe);
         let stderr_reader = spawn_bounded_reader(stderr_pipe);
 
-        let started_at = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(Box::new(SshCommandError::Wait {
-                        phase,
-                        command: rendered,
-                        message: error.to_string(),
-                    }));
-                }
-                Ok(Some(status)) => break status,
-                Ok(None) if started_at.elapsed() >= self.command_timeout => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(Box::new(SshCommandError::Timeout {
-                        phase,
-                        command: rendered,
-                        timeout: self.command_timeout,
-                        stdout: join_bounded_reader(stdout_reader),
-                        stderr: join_bounded_reader(stderr_reader),
-                    }));
-                }
-                Ok(None) => thread::sleep(WAIT_POLL_INTERVAL),
+        let status = match child.wait_timeout(self.command_timeout) {
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Box::new(SshCommandError::Wait {
+                    phase,
+                    command: rendered,
+                    message: error.to_string(),
+                }));
+            }
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Box::new(SshCommandError::Timeout {
+                    phase,
+                    command: rendered,
+                    timeout: self.command_timeout,
+                    stdout: join_bounded_reader(stdout_reader),
+                    stderr: join_bounded_reader(stderr_reader),
+                }));
             }
         };
 

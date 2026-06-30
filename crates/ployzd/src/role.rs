@@ -6,16 +6,9 @@ use ployz_core::ids::MachineId;
 
 pub use ployz_core::roles::DaemonProcessRole;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub struct DaemonRoleParseError(clap::Error);
-
-impl std::fmt::Display for DaemonRoleParseError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}", self.0)
-    }
-}
-
-impl std::error::Error for DaemonRoleParseError {}
 
 pub fn parse_role_args(
     args: impl IntoIterator<Item = String>,

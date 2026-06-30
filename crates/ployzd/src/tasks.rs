@@ -2,11 +2,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 
 #[derive(Debug, Clone, Default)]
 pub struct TaskRegistry {
-    handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    handles: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl TaskRegistry {
@@ -15,8 +15,7 @@ impl TaskRegistry {
             .handles
             .lock()
             .expect("task registry lock is not poisoned");
-        handles.retain(|handle| !handle.is_finished());
-        handles.push(tokio::spawn(future));
+        handles.spawn(future);
     }
 
     pub fn abort_all(&self) {
@@ -24,8 +23,6 @@ impl TaskRegistry {
             .handles
             .lock()
             .expect("task registry lock is not poisoned");
-        for handle in handles.drain(..) {
-            handle.abort();
-        }
+        handles.abort_all();
     }
 }

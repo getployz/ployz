@@ -1,26 +1,13 @@
 //! Typed identifiers used in storage keys, subjects, operations, and routing.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubjectTokenError {
+    #[error("subject token is empty")]
     Empty,
+    #[error("subject token contains invalid characters: {value}")]
     InvalidCharacter { value: String },
-}
-
-impl fmt::Display for SubjectTokenError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("subject token is empty"),
-            Self::InvalidCharacter { value } => {
-                write!(
-                    formatter,
-                    "subject token contains invalid characters: {value}"
-                )
-            }
-        }
-    }
 }
 
 /// Defines a typed identifier that wraps a [`SubjectToken`]. Every ID has the

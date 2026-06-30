@@ -19,7 +19,9 @@ ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+wait-timeout.workspace = true
 
 [dev-dependencies]
 ployz-test-support = { path = "../ployz-test-support" }

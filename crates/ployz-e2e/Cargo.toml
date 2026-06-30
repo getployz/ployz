@@ -18,6 +18,7 @@ bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 futures-util.workspace = true
 nuid.workspace = true
 ployz-test-support.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]

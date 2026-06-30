@@ -1,7 +1,6 @@
 //! Product-level control-plane backup scope.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -253,26 +252,14 @@ fn validate_backup_target_text(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
+#[error("{} {}", field.wire_name(), failure.message())]
 pub struct BackupTargetValidationError {
     pub field: BackupTargetValidationField,
     pub failure: BackupTargetValidationFailure,
 }
-
-impl fmt::Display for BackupTargetValidationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} {}",
-            self.field.wire_name(),
-            self.failure.message()
-        )
-    }
-}
-
-impl std::error::Error for BackupTargetValidationError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

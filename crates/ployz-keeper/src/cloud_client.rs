@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub struct CloudClient {
@@ -101,30 +102,40 @@ fn cloud_agent() -> ureq::Agent {
 }
 
 pub fn endpoint_url(host: &str, path: &str) -> Result<String, CloudClientError> {
-    if !host.starts_with("https://") || path.is_empty() || !path.starts_with('/') {
+    let host = parse_https_url(host)?;
+    if path.is_empty() || !path.starts_with('/') {
         return Err(CloudClientError::InvalidEndpoint);
     }
-    Ok(format!("{host}{path}"))
+    let url = host
+        .join(path)
+        .map_err(|_| CloudClientError::InvalidEndpoint)?;
+    Ok(url.to_string())
 }
 
 fn validate_https_url(url: &str) -> Result<(), CloudClientError> {
-    if !url.starts_with("https://") {
-        return Err(CloudClientError::InvalidEndpoint);
-    }
+    parse_https_url(url)?;
     Ok(())
 }
 
 pub fn validate_same_origin_url(host: &str, url: &str) -> Result<(), CloudClientError> {
-    if !host.starts_with("https://") || !url.starts_with("https://") {
-        return Err(CloudClientError::InvalidEndpoint);
-    }
-    let Some(path) = url.strip_prefix(host) else {
-        return Err(CloudClientError::InvalidEndpoint);
-    };
-    if !path.starts_with('/') || path.contains('?') || path.contains('#') {
+    let host = parse_https_url(host)?;
+    let url = parse_https_url(url)?;
+    if host.origin() != url.origin()
+        || !url.path().starts_with('/')
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err(CloudClientError::InvalidEndpoint);
     }
     Ok(())
+}
+
+fn parse_https_url(raw: &str) -> Result<Url, CloudClientError> {
+    let url = Url::parse(raw).map_err(|_| CloudClientError::InvalidEndpoint)?;
+    if url.scheme() != "https" || url.host().is_none() {
+        return Err(CloudClientError::InvalidEndpoint);
+    }
+    Ok(url)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +206,13 @@ mod tests {
         assert!(
             validate_same_origin_url(
                 "https://cloud.example.com",
+                "https://cloud.example.com/api/bootstrap/redemptions/pcbr_1/callback"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_same_origin_url(
+                "https://CLOUD.example.com",
                 "https://cloud.example.com/api/bootstrap/redemptions/pcbr_1/callback"
             )
             .is_ok()

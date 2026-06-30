@@ -5,9 +5,10 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ployz_core::install::FirstMachineInstallSpec;
+use wait_timeout::ChildExt;
 
 const MAX_KEEPER_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -69,29 +70,24 @@ pub(crate) fn run_keeper_first_machine_install(
         })
     })?;
     drop(stdin);
-    let started_at = Instant::now();
-
-    let status = loop {
-        match child.try_wait().map_err(|error| {
-            Box::new(LocalKeeperInstallError::Wait {
-                command: command.clone(),
-                message: error.to_string(),
-            })
-        })? {
-            Some(status) => break status,
-            None if started_at.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let stdout = join_output(stdout_reader);
-                let stderr = join_output(stderr_reader);
-                return Err(Box::new(LocalKeeperInstallError::Timeout {
-                    command,
-                    timeout,
-                    stdout,
-                    stderr,
-                }));
-            }
-            None => thread::sleep(Duration::from_millis(50)),
+    let status = match child.wait_timeout(timeout).map_err(|error| {
+        Box::new(LocalKeeperInstallError::Wait {
+            command: command.clone(),
+            message: error.to_string(),
+        })
+    })? {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stdout = join_output(stdout_reader);
+            let stderr = join_output(stderr_reader);
+            return Err(Box::new(LocalKeeperInstallError::Timeout {
+                command,
+                timeout,
+                stdout,
+                stderr,
+            }));
         }
     };
 

@@ -1,7 +1,6 @@
 //! Machine-facing domain models.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::net::IpAddr;
 
 use crate::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
@@ -189,31 +188,19 @@ impl MachineContainerObservationSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineContainerObservationSnapshotError {
+    #[error(
+        "container {} belongs to machine {}, not snapshot machine {}",
+        container_id.as_str(),
+        actual.as_str(),
+        expected.as_str()
+    )]
     MachineMismatch {
         expected: MachineId,
         actual: MachineId,
         container_id: ContainerId,
     },
-}
-
-impl fmt::Display for MachineContainerObservationSnapshotError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MachineMismatch {
-                expected,
-                actual,
-                container_id,
-            } => write!(
-                formatter,
-                "container {} belongs to machine {}, not snapshot machine {}",
-                container_id.as_str(),
-                actual.as_str(),
-                expected.as_str()
-            ),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

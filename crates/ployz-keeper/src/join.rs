@@ -1,6 +1,5 @@
 //! Keeper bootstrap join material handling.
 
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,36 +39,15 @@ pub fn remove_join_token_file(path: &Path) -> Result<(), JoinTokenFileError> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum JoinTokenFileError {
+    #[error("failed to read join token file {}: {message}", path.display())]
     ReadFailed { path: PathBuf, message: String },
+    #[error("join token file is empty")]
     EmptyToken,
+    #[error("failed to consume join token file {}: {message}", path.display())]
     ConsumeFailed { path: PathBuf, message: String },
 }
-
-impl fmt::Display for JoinTokenFileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadFailed { path, message } => {
-                write!(
-                    formatter,
-                    "failed to read join token file {}: {message}",
-                    path.display()
-                )
-            }
-            Self::EmptyToken => formatter.write_str("join token file is empty"),
-            Self::ConsumeFailed { path, message } => {
-                write!(
-                    formatter,
-                    "failed to consume join token file {}: {message}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for JoinTokenFileError {}
 
 #[must_use]
 pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
