@@ -35,6 +35,7 @@ fn machine_credential_renders_own_scopes_and_route_state_reads() {
         profile.subscribe.allowed_subjects(),
         &[
             machine_service_scope(&machine_id),
+            "$SRV.>".to_owned(),
             "_INBOX_machine_machine_7.>".to_owned()
         ]
     );
@@ -131,7 +132,7 @@ fn join_credential_can_only_redeem_and_report_with_its_own_inbox() {
         profile.subscribe.allowed_subjects(),
         &["_INBOX_join.>".to_owned()]
     );
-    assert_eq!(profile.allow_responses, ResponsePermission::Allowed);
+    assert_eq!(profile.allow_responses, ResponsePermission::Denied);
 }
 
 #[test]

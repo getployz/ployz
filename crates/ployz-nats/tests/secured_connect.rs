@@ -10,7 +10,9 @@ use ployz_core::ids::MachineId;
 use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{MachinePublicIpObservation, MachinePublicIpObservationKey};
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service, machine_service_scope};
+use ployz_core::subjects::{
+    API_INIT_FIRST_MACHINE_ACTIVATE, MachineServiceEndpoint, machine_service, machine_service_scope,
+};
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
     connect_with_timeout,
@@ -142,6 +144,89 @@ async fn machine_observation_writes_are_fenced_to_its_own_keys() {
         .await
         .expect("publish is accepted client-side");
     machine_client.flush().await.expect("flush");
+
+    let violation = next_permission_violation(&mut events).await;
+    assert!(
+        violation.contains("Publish"),
+        "expected a publish violation, got: {violation}"
+    );
+}
+
+#[tokio::test]
+async fn controller_can_serve_and_call_operation_api_subjects() {
+    let fixture = SecuredTestNats::start().await.expect("secured fixture");
+    let server_config = fixture.controller_config();
+    let caller_config = fixture.controller_config();
+    let server_client = connect_authenticated(&server_config, CONNECT_TIMEOUT)
+        .await
+        .expect("controller service connects");
+    let caller_client = connect_authenticated(&caller_config, CONNECT_TIMEOUT)
+        .await
+        .expect("controller caller connects");
+    let mut requests = server_client
+        .subscribe(API_INIT_FIRST_MACHINE_ACTIVATE)
+        .await
+        .expect("controller subscribes API endpoint subject");
+    server_client.flush().await.expect("flush");
+    let responder = server_client.clone();
+    tokio::spawn(async move {
+        while let Some(message) = requests.next().await {
+            let Some(reply) = message.reply else {
+                continue;
+            };
+            responder.publish(reply, "activated".into()).await.ok();
+            responder.flush().await.ok();
+        }
+    });
+
+    let response = tokio::time::timeout(
+        EVENT_TIMEOUT,
+        caller_client.request(API_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+    )
+    .await
+    .expect("request does not hang")
+    .expect("controller receives the API response");
+
+    assert_eq!(response.payload.as_ref(), b"activated");
+}
+
+#[tokio::test]
+async fn machine_can_serve_machine_rpc_and_service_discovery_subjects() {
+    let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
+    let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
+        .await
+        .expect("secured fixture");
+    let Some(config) = fixture.machine_config(&machine_id) else {
+        panic!("fixture mints a user for every requested machine");
+    };
+    let (machine_client, mut events) = connect_with_event_capture(&config).await;
+
+    let _machine_rpc = machine_client
+        .subscribe(machine_service_scope(&machine_id))
+        .await
+        .expect("machine subscribes its machine service scope");
+    let _service_ping = machine_client
+        .subscribe("$SRV.PING")
+        .await
+        .expect("machine subscribes service ping discovery");
+    let _service_info = machine_client
+        .subscribe("$SRV.INFO.plz-machine")
+        .await
+        .expect("machine subscribes service info discovery");
+    machine_client.flush().await.expect("flush");
+
+    assert_no_permission_violation(&mut events).await;
+}
+
+#[tokio::test]
+async fn join_cannot_publish_general_operation_api_subjects() {
+    let fixture = SecuredTestNats::start().await.expect("secured fixture");
+    let (join_client, mut events) = connect_with_event_capture(&fixture.join_config()).await;
+    join_client
+        .publish(API_INIT_FIRST_MACHINE_ACTIVATE, "activate".into())
+        .await
+        .expect("publish is accepted client-side");
+    join_client.flush().await.expect("flush");
 
     let violation = next_permission_violation(&mut events).await;
     assert!(
@@ -292,4 +377,29 @@ async fn next_permission_violation(
     })
     .await
     .expect("server reports a permission violation")
+}
+
+async fn assert_no_permission_violation(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<async_nats::Event>,
+) {
+    let observed = tokio::time::timeout(NO_DELIVERY_WINDOW, async {
+        loop {
+            let Some(event) = events.recv().await else {
+                return None;
+            };
+            if let async_nats::Event::ServerError(async_nats::ServerError::Other(message)) = event
+                && message
+                    .to_ascii_lowercase()
+                    .contains("permissions violation")
+            {
+                return Some(message);
+            }
+        }
+    })
+    .await;
+
+    match observed {
+        Err(_) | Ok(None) => {}
+        Ok(Some(message)) => panic!("unexpected permission violation: {message}"),
+    }
 }
