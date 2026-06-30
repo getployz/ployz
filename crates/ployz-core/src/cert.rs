@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::ids::CertId;
 use crate::ops::RouteHostname;
-use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
+use crate::wire::{id_prefixed_state_key, positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
@@ -21,50 +21,9 @@ pub struct ActiveCertState {
     pub validity: CertValidityWindow,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertStateKey(String);
-
-impl CertStateKey {
-    #[must_use]
-    pub fn from_cert_id(cert_id: &CertId) -> Self {
-        Self(format!("{CERT_STATE_PREFIX}.{}", cert_id.as_str()))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcmeLockKey(String);
-
-impl AcmeLockKey {
-    #[must_use]
-    pub fn from_cert_id(cert_id: &CertId) -> Self {
-        Self(format!("{ACME_LOCK_PREFIX}.{}", cert_id.as_str()))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcmeChallengeStateKey(String);
-
-impl AcmeChallengeStateKey {
-    #[must_use]
-    pub fn from_cert_id(cert_id: &CertId) -> Self {
-        Self(format!("{ACME_CHALLENGE_PREFIX}.{}", cert_id.as_str()))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+id_prefixed_state_key! { pub struct CertStateKey; prefix: CERT_STATE_PREFIX; fn from_cert_id(&CertId); }
+id_prefixed_state_key! { pub struct AcmeLockKey; prefix: ACME_LOCK_PREFIX; fn from_cert_id(&CertId); }
+id_prefixed_state_key! { pub struct AcmeChallengeStateKey; prefix: ACME_CHALLENGE_PREFIX; fn from_cert_id(&CertId); }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
