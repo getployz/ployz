@@ -48,6 +48,11 @@ impl KeeperStepPlan {
     }
 
     #[must_use]
+    pub fn from_steps(steps: Vec<KeeperStep>) -> Self {
+        Self::new(steps)
+    }
+
+    #[must_use]
     pub fn steps(&self) -> &[KeeperStep] {
         &self.steps
     }
