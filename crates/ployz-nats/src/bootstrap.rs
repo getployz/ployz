@@ -18,7 +18,6 @@ pub use resources::{
     BootstrapResourceRef, BootstrapResourceRefusal,
 };
 use resources::{ExistingResourceView, PlannedResource};
-use std::fmt;
 
 pub const MIN_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion {
     major: 2,
@@ -158,44 +157,29 @@ impl NatsServerCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BootstrapRefusal {
+    #[error("JetStream is disabled")]
     JetStreamDisabled,
+    #[error("invalid NATS server version {value:?}: {source:?}")]
     InvalidServerVersion {
         value: String,
         source: NatsServerVersionParseError,
     },
+    #[error(
+        "NATS server version {}.{}.{} is below required {}.{}.{}",
+        actual.major,
+        actual.minor,
+        actual.patch,
+        minimum.major,
+        minimum.minor,
+        minimum.patch
+    )]
     UnsupportedServerVersion {
         minimum: NatsServerVersion,
         actual: NatsServerVersion,
     },
 }
-
-impl fmt::Display for BootstrapRefusal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::JetStreamDisabled => formatter.write_str("JetStream is disabled"),
-            Self::InvalidServerVersion { value, source } => {
-                write!(
-                    formatter,
-                    "invalid NATS server version {value:?}: {source:?}"
-                )
-            }
-            Self::UnsupportedServerVersion { minimum, actual } => write!(
-                formatter,
-                "NATS server version {}.{}.{} is below required {}.{}.{}",
-                actual.major,
-                actual.minor,
-                actual.patch,
-                minimum.major,
-                minimum.minor,
-                minimum.patch
-            ),
-        }
-    }
-}
-
-impl std::error::Error for BootstrapRefusal {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExistingResources {

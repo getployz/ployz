@@ -209,7 +209,7 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
     }
 }
 
-const TEST_JOIN_SEED: &str = "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const TEST_JOIN_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 
 fn test_join_seed() -> ployz_core::nats_config::NatsUserSeed {
     ployz_core::nats_config::NatsUserSeed::try_new(TEST_JOIN_SEED).expect("test seed is valid")

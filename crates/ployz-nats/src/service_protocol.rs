@@ -13,11 +13,15 @@ pub struct NatsServiceError {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsServiceErrorHeaderDecodeError {
+    #[error("missing service error message header")]
     MissingMessage,
+    #[error("missing service error code header")]
     MissingCode,
+    #[error("invalid service error code header: {value}")]
     InvalidCode { value: String },
+    #[error("unknown service error code: {code}")]
     UnknownCode { code: u16 },
 }
 
@@ -132,18 +136,3 @@ impl NatsServiceErrorCode {
         }
     }
 }
-
-impl std::fmt::Display for NatsServiceErrorHeaderDecodeError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingMessage => write!(formatter, "missing service error message header"),
-            Self::MissingCode => write!(formatter, "missing service error code header"),
-            Self::InvalidCode { value } => {
-                write!(formatter, "invalid service error code header: {value}")
-            }
-            Self::UnknownCode { code } => write!(formatter, "unknown service error code: {code}"),
-        }
-    }
-}
-
-impl std::error::Error for NatsServiceErrorHeaderDecodeError {}

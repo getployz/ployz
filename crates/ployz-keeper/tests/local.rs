@@ -690,7 +690,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         KeeperJoinMaterial::new(
             machine_id("machine_2"),
             "prod",
-            NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
                 .expect("valid nats credentials"),
             test_ca_pem(),
         )
@@ -745,7 +745,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
                 .join(JOIN_NATS_CREDENTIALS_FILE),
         )
         .expect("nats credentials are stored"),
-        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
     );
     assert_secret_file_mode(
         root.join("state")
@@ -820,7 +820,7 @@ fn local_effects_store_redacted_join_material() {
     let material = KeeperJoinMaterial::new(
         machine_id("machine_2"),
         "prod",
-        NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
             .expect("valid nats credentials"),
         test_ca_pem(),
     )
@@ -856,7 +856,7 @@ fn local_effects_store_redacted_join_material() {
                 .join(JOIN_NATS_CREDENTIALS_FILE),
         )
         .expect("nats credentials are stored"),
-        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
     );
     assert_secret_file_mode(
         root.join("state")

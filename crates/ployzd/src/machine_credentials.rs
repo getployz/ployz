@@ -7,7 +7,6 @@
 //! re-reading the path on each bounded backoff tick with visible health —
 //! instead of crash-looping or falling back to controller authority.
 
-use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -106,29 +105,15 @@ pub async fn await_role_credentials(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AwaitSeedFileError {
+    #[error(
+        "NKey seed file {} did not become readable after {attempts} attempts: {last_error}",
+        path.display()
+    )]
     AttemptsExhausted {
         path: PathBuf,
         attempts: u32,
         last_error: SeedFileReadError,
     },
 }
-
-impl fmt::Display for AwaitSeedFileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AttemptsExhausted {
-                path,
-                attempts,
-                last_error,
-            } => write!(
-                formatter,
-                "NKey seed file {} did not become readable after {attempts} attempts: {last_error}",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for AwaitSeedFileError {}

@@ -2,7 +2,6 @@
 
 use async_nats::jetstream;
 use futures_util::TryStreamExt;
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::Duration;
 
@@ -85,21 +84,7 @@ pub async fn bounded_bucket_key_scan_entries_with_prefix(
 
         Ok::<Vec<jetstream::kv::Entry>, KvScanError>(entries)
     };
-    let entries = with_io_timeout("kv prefix scan", scan).await??;
-
-    let mut current: BTreeMap<String, jetstream::kv::Entry> = BTreeMap::new();
-    for entry in entries {
-        match entry.operation {
-            jetstream::kv::Operation::Put => {
-                current.insert(entry.key.clone(), entry);
-            }
-            jetstream::kv::Operation::Delete | jetstream::kv::Operation::Purge => {
-                current.remove(&entry.key);
-            }
-        }
-    }
-
-    Ok(current.into_values().collect())
+    with_io_timeout("kv prefix scan", scan).await?
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

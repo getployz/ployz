@@ -322,7 +322,7 @@ fn config() -> ControlProcessConfig {
             url: NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid nats url"),
             auth: ployz_nats::connect::NatsClientAuth::NkeySeed(
                 ployz_core::nats_config::NatsUserSeed::try_new(
-                    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
                 )
                 .expect("test seed is valid"),
             ),
@@ -342,7 +342,7 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         ployz_test_support::fixtures::machine_join_template(),
         ployz_core::install::MachineJoinSecretDelivery {
             nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
-                "SUAFKRGZQV3CDWR46WYP6WR43T34AL5BN4BAGVGIP34YFSBESCD6FU4HHA",
+                "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
             )
             .expect("valid seed"),
         },

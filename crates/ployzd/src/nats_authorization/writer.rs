@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -365,12 +366,12 @@ fn write_file_atomically(path: &Path, contents: &str) -> Result<(), RenderPrepar
     let Some(parent) = path.parent() else {
         return Err(write_error("path has no parent directory".to_owned()));
     };
-    let temp_path = parent.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "authorized-users.conf".to_owned())
-    ));
-    std::fs::write(&temp_path, contents).map_err(|error| write_error(error.to_string()))?;
-    std::fs::rename(&temp_path, path).map_err(|error| write_error(error.to_string()))
+    let mut file =
+        tempfile::NamedTempFile::new_in(parent).map_err(|error| write_error(error.to_string()))?;
+    file.write_all(contents.as_bytes())
+        .and_then(|()| file.as_file().sync_all())
+        .map_err(|error| write_error(error.to_string()))?;
+    file.persist(path)
+        .map(|_| ())
+        .map_err(|error| write_error(error.error.to_string()))
 }

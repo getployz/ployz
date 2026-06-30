@@ -704,7 +704,7 @@ fn machine_join_artifact(source: &str, install_path: &str) -> InstallArtifactSpe
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
         nats_credentials: NatsUserSeed::try_new(
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
         )
         .expect("valid nats credentials"),
     }

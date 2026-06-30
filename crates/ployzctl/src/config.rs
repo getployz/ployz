@@ -11,7 +11,6 @@ use std::fmt;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ssh::{SshTarget, SshTargetParseError};
 use ployz_core::ids::{MachineId, SubjectTokenError};
@@ -241,13 +240,6 @@ pub fn save_cluster_context(
             message: "context path has no parent directory".to_owned(),
         });
     };
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return Err(ClusterContextError::Write {
-            path: path.to_owned(),
-            message: "context path has no file name".to_owned(),
-        });
-    };
-
     prepare_config_directory(parent)?;
 
     let file = ClusterContextFile {
@@ -260,48 +252,22 @@ pub fn save_cluster_context(
     let mut payload = serde_json::to_vec_pretty(&file).expect("cluster context serializes");
     payload.push(b'\n');
 
-    let temp_path = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
-    // Remove any stale temp file first so the restrictive create mode below
-    // always applies to a fresh file.
-    match fs::remove_file(&temp_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(ClusterContextError::Write {
-                path: temp_path,
-                message: error.to_string(),
-            });
-        }
-    }
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(CLUSTER_CONTEXT_FILE_MODE);
-    }
     let write_error = |error: std::io::Error| ClusterContextError::Write {
-        path: temp_path.clone(),
+        path: path.to_owned(),
         message: error.to_string(),
     };
-    let mut temp_file = options.open(&temp_path).map_err(write_error)?;
-    let written = temp_file
+    let mut temp_file = tempfile::NamedTempFile::new_in(parent).map_err(write_error)?;
+    temp_file
         .write_all(&payload)
-        .and_then(|()| temp_file.sync_all());
-    drop(temp_file);
-    if let Err(error) = written {
-        let _ = fs::remove_file(&temp_path);
-        return Err(write_error(error));
-    }
-
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(ClusterContextError::Write {
+        .and_then(|()| temp_file.as_file().sync_all())
+        .map_err(write_error)?;
+    temp_file
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| ClusterContextError::Write {
             path: path.to_owned(),
-            message: format!("rename from {} failed: {error}", temp_path.display()),
-        });
-    }
+            message: error.error.to_string(),
+        })?;
     Ok(())
 }
 
@@ -332,31 +298,16 @@ fn prepare_config_directory(parent: &Path) -> Result<(), ClusterContextError> {
 fn create_material_generation_dir(parent: &Path) -> Result<PathBuf, ClusterContextError> {
     let root = parent.join("materials");
     prepare_config_directory(&root)?;
-
-    for attempt in 0..100_u8 {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos());
-        let dir = root.join(format!("{:x}-{}-{attempt}", nanos, std::process::id()));
-        match fs::create_dir(&dir) {
-            Ok(()) => {
-                restrict_directory_mode(&dir)?;
-                return Ok(dir);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(ClusterContextError::CreateConfigDirectory {
-                    path: dir,
-                    message: error.to_string(),
-                });
-            }
-        }
-    }
-
-    Err(ClusterContextError::CreateConfigDirectory {
-        path: root,
-        message: "could not allocate a unique material generation directory".to_owned(),
-    })
+    let directory = tempfile::Builder::new()
+        .prefix("material-")
+        .tempdir_in(&root)
+        .map_err(|error| ClusterContextError::CreateConfigDirectory {
+            path: root.clone(),
+            message: error.to_string(),
+        })?;
+    let path = directory.keep();
+    restrict_directory_mode(&path)?;
+    Ok(path)
 }
 
 fn write_new_material_file(path: &Path, contents: &str) -> Result<(), ClusterContextError> {
@@ -376,35 +327,25 @@ fn write_replaced_material_file(path: &Path, contents: &str) -> Result<(), Clust
         });
     };
 
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return Err(ClusterContextError::Write {
+    let mut temp_file =
+        tempfile::NamedTempFile::new_in(parent).map_err(|error| ClusterContextError::Write {
             path: path.to_owned(),
-            message: "material path has no file name".to_owned(),
-        });
-    };
-
-    let temp_path = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
-    match fs::remove_file(&temp_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(ClusterContextError::Write {
-                path: temp_path,
-                message: error.to_string(),
-            });
-        }
-    }
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    write_material_file(&temp_path, contents, options)?;
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(ClusterContextError::Write {
+            message: error.to_string(),
+        })?;
+    temp_file
+        .write_all(contents.as_bytes())
+        .and_then(|()| temp_file.as_file().sync_all())
+        .map_err(|error| ClusterContextError::Write {
             path: path.to_owned(),
-            message: format!("rename from {} failed: {error}", temp_path.display()),
-        });
-    }
+            message: error.to_string(),
+        })?;
+    temp_file
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| ClusterContextError::Write {
+            path: path.to_owned(),
+            message: error.error.to_string(),
+        })?;
     Ok(())
 }
 

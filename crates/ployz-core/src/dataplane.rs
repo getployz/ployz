@@ -130,22 +130,10 @@ impl From<MachineEndpointSubnet> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineEndpointSubnetError {
+    #[error("machine endpoint subnet {value:?} is not an IPv4 /24 network")]
     Invalid { value: String },
-}
-
-impl fmt::Display for MachineEndpointSubnetError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid { value } => {
-                write!(
-                    formatter,
-                    "machine endpoint subnet {value:?} is not an IPv4 /24 network"
-                )
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,24 +379,12 @@ impl From<WireGuardPublicKey> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WireGuardPublicKeyError {
+    #[error("wireguard public key is empty")]
     Empty,
+    #[error("wireguard public key {value:?} must not contain whitespace")]
     Invalid { value: String },
-}
-
-impl fmt::Display for WireGuardPublicKeyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("wireguard public key is empty"),
-            Self::Invalid { value } => {
-                write!(
-                    formatter,
-                    "wireguard public key {value:?} must not contain whitespace"
-                )
-            }
-        }
-    }
 }
 
 #[must_use]

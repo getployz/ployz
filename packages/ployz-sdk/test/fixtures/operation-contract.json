@@ -49,7 +49,7 @@
         "intent": "joiner",
         "joiner": {
           "join_secret_delivery": {
-            "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
           },
           "join_token": "join_once_123",
           "runtime_nats_url": "tls://203.0.113.10:4222",
@@ -170,7 +170,7 @@
         }
       },
       "join_secret_delivery": {
-        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
       },
       "join_token": "join_once_123",
       "machine_id": "machine_2"
@@ -220,7 +220,7 @@
         "gateway": "skip"
       },
       "secret_delivery": {
-        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
       }
     }
   },
