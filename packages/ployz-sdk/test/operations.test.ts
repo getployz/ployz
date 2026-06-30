@@ -68,11 +68,14 @@ import type {
   OpsWatchRequest,
   PloyzBackupCreateInput,
   PloyzOperationTransport,
+  PloyzApiEndpoint,
   ServiceInspectResponse,
   ServiceInspectRequest,
   ServiceListResponse,
   ServiceListRequest,
   ServiceSnapshot,
+  OperationApiRequestByEndpoint,
+  OperationApiResponseByEndpoint,
 } from "../src/index.ts";
 
 const fixturePath = join(
@@ -668,101 +671,81 @@ class RecordingTransport implements PloyzOperationTransport {
     this.replay = fixture.operation_event_replay_page;
   }
 
-  async deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse> {
-    this.deployRequests.push(request);
-    return this.deployResponse ?? { status: "ok", value: this.accepted };
-  }
-
-  async initFirstMachineActivate(
-    request: InitFirstMachineActivateRequest,
-  ): Promise<InitFirstMachineActivateResponse> {
-    this.initFirstMachineActivateRequests.push(request);
-    return this.initFirstMachineActivateResponse ?? {
-      status: "ok",
-      value: this.firstMachineActivated,
-    };
-  }
-
-  async backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse> {
-    this.backupCreateRequests.push(request);
-    return this.backupCreateResponse ?? { status: "ok", value: this.backupAccepted };
-  }
-
-  async machineAdd(request: MachineAddRequest): Promise<MachineAddResponse> {
-    this.machineAddRequests.push(request);
-    return this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted };
-  }
-
-  async machineList(request: MachineListRequest): Promise<MachineListResponse> {
-    this.machineListRequests.push(request);
-    return this.machineListResponse ?? {
-      status: "ok",
-      value: { machines: this.machineSnapshots },
-    };
-  }
-
-  async machineInspect(request: MachineInspectRequest): Promise<MachineInspectResponse> {
-    this.machineInspectRequests.push(request);
-    return this.machineInspectResponse ?? {
-      status: "ok",
-      value: this.machineSnapshots[0],
-    };
-  }
-
-  async machineJoinRedeem(
-    request: MachineJoinRedeemRequest,
-  ): Promise<MachineJoinRedeemResponse> {
-    this.machineJoinRedeemRequests.push(request);
-    return this.machineJoinRedeemResponse ?? { status: "ok", value: this.machineJoinRedeemed };
-  }
-
-  async machineJoinReport(
-    _request: MachineJoinReportRequest,
-  ): Promise<MachineJoinReportResponse> {
-    throw new Error("machine join report is not used by ergonomic client tests");
-  }
-
-  async serviceList(request: ServiceListRequest): Promise<ServiceListResponse> {
-    this.serviceListRequests.push(request);
-    return this.serviceListResponse ?? {
-      status: "ok",
-      value: { services: this.serviceSnapshots },
-    };
-  }
-
-  async serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse> {
-    this.serviceInspectRequests.push(request);
-    return this.serviceInspectResponse ?? {
-      status: "ok",
-      value: this.serviceSnapshots[0],
-    };
-  }
-
-  async logsTail(request: LogsTailRequest): Promise<LogsTailResponse> {
-    this.logsTailRequests.push(request);
-    return this.logsTailResponse ?? {
-      status: "ok",
-      value: {
-        machine_id: machineId("machine_a"),
-        container_id: request.container_id,
-        text: "hello\n",
-        truncated: false,
-      },
-    };
-  }
-
-  async opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse> {
-    this.statusRequests.push(request);
-    return this.statusResponse ?? { status: "ok", value: this.status };
-  }
-
-  async opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse> {
-    this.watchRequests.push(request);
-    if (this.watchResponse) {
-      return this.watchResponse;
+  async request<E extends PloyzApiEndpoint>(
+    endpoint: E,
+    request: OperationApiRequestByEndpoint[E],
+  ): Promise<OperationApiResponseByEndpoint[E]> {
+    switch (endpoint) {
+      case "deploy.submit":
+        this.deployRequests.push(request as DeploySubmitRequest);
+        return (this.deployResponse ?? { status: "ok", value: this.accepted }) as OperationApiResponseByEndpoint[E];
+      case "init.first_machine.activate":
+        this.initFirstMachineActivateRequests.push(request as InitFirstMachineActivateRequest);
+        return (this.initFirstMachineActivateResponse ?? {
+          status: "ok",
+          value: this.firstMachineActivated,
+        }) as OperationApiResponseByEndpoint[E];
+      case "backup.create":
+        this.backupCreateRequests.push(request as BackupCreateRequest);
+        return (this.backupCreateResponse ?? { status: "ok", value: this.backupAccepted }) as OperationApiResponseByEndpoint[E];
+      case "machine.add":
+        this.machineAddRequests.push(request as MachineAddRequest);
+        return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as OperationApiResponseByEndpoint[E];
+      case "machine.list":
+        this.machineListRequests.push(request as MachineListRequest);
+        return (this.machineListResponse ?? {
+          status: "ok",
+          value: { machines: this.machineSnapshots },
+        }) as OperationApiResponseByEndpoint[E];
+      case "machine.inspect":
+        this.machineInspectRequests.push(request as MachineInspectRequest);
+        return (this.machineInspectResponse ?? {
+          status: "ok",
+          value: this.machineSnapshots[0],
+        }) as OperationApiResponseByEndpoint[E];
+      case "machine.join.redeem":
+        this.machineJoinRedeemRequests.push(request as MachineJoinRedeemRequest);
+        return (this.machineJoinRedeemResponse ?? {
+          status: "ok",
+          value: this.machineJoinRedeemed,
+        }) as OperationApiResponseByEndpoint[E];
+      case "machine.join.report":
+        throw new Error("machine join report is not used by ergonomic client tests");
+      case "service.list":
+        this.serviceListRequests.push(request as ServiceListRequest);
+        return (this.serviceListResponse ?? {
+          status: "ok",
+          value: { services: this.serviceSnapshots },
+        }) as OperationApiResponseByEndpoint[E];
+      case "service.inspect":
+        this.serviceInspectRequests.push(request as ServiceInspectRequest);
+        return (this.serviceInspectResponse ?? {
+          status: "ok",
+          value: this.serviceSnapshots[0],
+        }) as OperationApiResponseByEndpoint[E];
+      case "logs.tail": {
+        const logsRequest = request as LogsTailRequest;
+        this.logsTailRequests.push(logsRequest);
+        return (this.logsTailResponse ?? {
+          status: "ok",
+          value: {
+            machine_id: machineId("machine_a"),
+            container_id: logsRequest.container_id,
+            text: "hello\n",
+            truncated: false,
+          },
+        }) as OperationApiResponseByEndpoint[E];
+      }
+      case "ops.status":
+        this.statusRequests.push(request as OpsStatusRequest);
+        return (this.statusResponse ?? { status: "ok", value: this.status }) as OperationApiResponseByEndpoint[E];
+      case "ops.watch":
+        this.watchRequests.push(request as OpsWatchRequest);
+        return (this.watchResponse ?? {
+          status: "ok",
+          value: this.replayPages.shift() ?? this.replay,
+        }) as OperationApiResponseByEndpoint[E];
     }
-
-    return { status: "ok", value: this.replayPages.shift() ?? this.replay };
   }
 }
 
@@ -798,6 +781,7 @@ function defaultFixture(): OperationFixture {
         bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
         join_bundle: machineJoinBundle(),
         join_token: machineJoinToken("join_once_123"),
+        join_secret_delivery: machineJoinSecretDelivery(),
       },
     },
     machine_snapshots: [

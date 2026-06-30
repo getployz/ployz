@@ -82,11 +82,18 @@ pub struct MachineEndpointSubnet(IpNet);
 
 impl MachineEndpointSubnet {
     pub fn try_new(value: impl AsRef<str>) -> Result<Self, MachineEndpointSubnetError> {
-        IpNet::from_str(value.as_ref())
-            .map(Self)
-            .map_err(|_| MachineEndpointSubnetError::Invalid {
-                value: value.as_ref().to_owned(),
-            })
+        let value = value.as_ref();
+        let subnet = IpNet::from_str(value).map_err(|_| MachineEndpointSubnetError::Invalid {
+            value: value.to_owned(),
+        })?;
+        match subnet {
+            IpNet::V4(subnet) if subnet.prefix_len() == 24 && subnet.addr() == subnet.network() => {
+                Ok(Self(IpNet::V4(subnet)))
+            }
+            IpNet::V4(_) | IpNet::V6(_) => Err(MachineEndpointSubnetError::Invalid {
+                value: value.to_owned(),
+            }),
+        }
     }
 
     #[must_use]
@@ -132,25 +139,20 @@ impl fmt::Display for MachineEndpointSubnetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid { value } => {
-                write!(formatter, "machine endpoint subnet {value:?} is not a CIDR")
+                write!(
+                    formatter,
+                    "machine endpoint subnet {value:?} is not an IPv4 /24 network"
+                )
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "provider", content = "report", rename_all = "snake_case")]
-pub enum DataplanePrepareProviderReport {
-    PloyzNativeMesh(WireGuardEbpfPrepareReport),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataplanePrepareError {
     Unavailable {
         machine_id: MachineId,
-        provider: DataplaneProviderKind,
-        component: WireGuardEbpfComponent,
+        provider: DataplaneProviderFailure,
         message: FailureMessage,
     },
     InvalidReport {
@@ -160,9 +162,9 @@ pub enum DataplanePrepareError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum DataplaneProviderKind {
-    PloyzNativeMesh,
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneProviderFailure {
+    PloyzNativeMesh { component: PloyzNativeMeshComponent },
 }
 
 impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
@@ -174,8 +176,7 @@ impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
                 message,
             } => Self::Unavailable {
                 machine_id,
-                provider: DataplaneProviderKind::PloyzNativeMesh,
-                component,
+                provider: DataplaneProviderFailure::PloyzNativeMesh { component },
                 message,
             },
             WireGuardEbpfPrepareError::InvalidReport { message } => Self::InvalidReport { message },
@@ -184,7 +185,7 @@ impl From<WireGuardEbpfPrepareError> for DataplanePrepareError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireGuardEbpfPrepareRequest {
+pub struct PloyzNativeMeshPrepareRequest {
     pub operation_id: OperationId,
     pub machines: Vec<MachineId>,
     pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
@@ -192,7 +193,7 @@ pub struct WireGuardEbpfPrepareRequest {
     pub peers: Vec<WireGuardPeer>,
 }
 
-impl WireGuardEbpfPrepareRequest {
+impl PloyzNativeMeshPrepareRequest {
     #[must_use]
     pub fn for_deploy_plan(
         operation_id: OperationId,
@@ -440,7 +441,7 @@ fn stable_machine_octet(value: &str) -> u8 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum WireGuardEbpfComponent {
+pub enum PloyzNativeMeshComponent {
     #[serde(rename = "wireguard")]
     WireGuard,
     EbpfForwarding,
@@ -449,14 +450,14 @@ pub enum WireGuardEbpfComponent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct WireGuardEbpfPrepareReport {
-    pub machines: Vec<WireGuardEbpfMachineReady>,
+pub struct PloyzNativeMeshPrepareReport {
+    pub machines: Vec<PloyzNativeMeshMachineReady>,
 }
 
-impl WireGuardEbpfPrepareReport {
+impl PloyzNativeMeshPrepareReport {
     pub fn for_request(
-        request: &WireGuardEbpfPrepareRequest,
-        machines: impl IntoIterator<Item = WireGuardEbpfMachineReady>,
+        request: &PloyzNativeMeshPrepareRequest,
+        machines: impl IntoIterator<Item = PloyzNativeMeshMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
         let machines = machines.into_iter().collect::<Vec<_>>();
         if request.machines.is_empty() || machines.is_empty() {
@@ -481,7 +482,7 @@ impl WireGuardEbpfPrepareReport {
     }
 
     pub fn from_machines(
-        machines: impl IntoIterator<Item = WireGuardEbpfMachineReady>,
+        machines: impl IntoIterator<Item = PloyzNativeMeshMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
         let machines = machines.into_iter().collect::<Vec<_>>();
         if machines.is_empty() {
@@ -502,33 +503,33 @@ impl WireGuardEbpfPrepareReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(
-    from = "WireGuardEbpfMachineReadyWire",
-    into = "WireGuardEbpfMachineReadyWire"
+    from = "PloyzNativeMeshMachineReadyWire",
+    into = "PloyzNativeMeshMachineReadyWire"
 )]
-pub struct WireGuardEbpfMachineReady {
+pub struct PloyzNativeMeshMachineReady {
     pub machine_id: MachineId,
     #[cfg_attr(feature = "typescript", ts(flatten))]
-    pub ready: WireGuardEbpfReady,
+    pub ready: PloyzNativeMeshReady,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireGuardEbpfMachineReadyWire {
+struct PloyzNativeMeshMachineReadyWire {
     machine_id: MachineId,
     wireguard: WireGuardReady,
     ebpf_forwarding: EbpfForwardingReady,
 }
 
-impl From<WireGuardEbpfMachineReadyWire> for WireGuardEbpfMachineReady {
-    fn from(value: WireGuardEbpfMachineReadyWire) -> Self {
-        let WireGuardEbpfMachineReadyWire {
+impl From<PloyzNativeMeshMachineReadyWire> for PloyzNativeMeshMachineReady {
+    fn from(value: PloyzNativeMeshMachineReadyWire) -> Self {
+        let PloyzNativeMeshMachineReadyWire {
             machine_id,
             wireguard,
             ebpf_forwarding,
         } = value;
         Self {
             machine_id,
-            ready: WireGuardEbpfReady {
+            ready: PloyzNativeMeshReady {
                 wireguard,
                 ebpf_forwarding,
             },
@@ -536,10 +537,10 @@ impl From<WireGuardEbpfMachineReadyWire> for WireGuardEbpfMachineReady {
     }
 }
 
-impl From<WireGuardEbpfMachineReady> for WireGuardEbpfMachineReadyWire {
-    fn from(value: WireGuardEbpfMachineReady) -> Self {
-        let WireGuardEbpfMachineReady { machine_id, ready } = value;
-        let WireGuardEbpfReady {
+impl From<PloyzNativeMeshMachineReady> for PloyzNativeMeshMachineReadyWire {
+    fn from(value: PloyzNativeMeshMachineReady) -> Self {
+        let PloyzNativeMeshMachineReady { machine_id, ready } = value;
+        let PloyzNativeMeshReady {
             wireguard,
             ebpf_forwarding,
         } = ready;
@@ -554,7 +555,7 @@ impl From<WireGuardEbpfMachineReady> for WireGuardEbpfMachineReadyWire {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct WireGuardEbpfReady {
+pub struct PloyzNativeMeshReady {
     pub wireguard: WireGuardReady,
     pub ebpf_forwarding: EbpfForwardingReady,
 }
@@ -602,7 +603,7 @@ pub enum WireGuardEbpfPrepareReportError {
 pub enum WireGuardEbpfPrepareError {
     Unavailable {
         machine_id: MachineId,
-        component: WireGuardEbpfComponent,
+        component: PloyzNativeMeshComponent,
         message: FailureMessage,
     },
     InvalidReport {
@@ -645,7 +646,7 @@ mod tests {
         };
 
         let request =
-            WireGuardEbpfPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[], &[]);
+            PloyzNativeMeshPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[], &[]);
 
         assert_eq!(
             request.endpoint_routes,
@@ -700,19 +701,16 @@ mod tests {
     }
 
     #[test]
-    fn machine_endpoint_subnet_accepts_ipv4_and_ipv6_cidrs() {
+    fn machine_endpoint_subnet_accepts_only_ipv4_24_networks() {
         assert_eq!(
             MachineEndpointSubnet::try_new("10.42.1.0/24")
                 .expect("valid ipv4")
                 .as_string(),
             "10.42.1.0/24"
         );
-        assert_eq!(
-            MachineEndpointSubnet::try_new("fd7a:115c:a1e0::/64")
-                .expect("valid ipv6")
-                .as_string(),
-            "fd7a:115c:a1e0::/64"
-        );
+        assert!(MachineEndpointSubnet::try_new("fd7a:115c:a1e0::/64").is_err());
+        assert!(MachineEndpointSubnet::try_new("10.42.1.0/25").is_err());
+        assert!(MachineEndpointSubnet::try_new("10.42.1.7/24").is_err());
         assert!(MachineEndpointSubnet::try_new("not-a-cidr").is_err());
     }
 

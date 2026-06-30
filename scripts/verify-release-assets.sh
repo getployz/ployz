@@ -30,30 +30,7 @@ case "${release_tag}" in
     exit 1
     ;;
 esac
-if [ -z "${semver}" ]; then
-  echo "release tag must include a version after v: ${release_tag}" >&2
-  exit 1
-fi
-version_core="${semver%%-*}"
-major="${version_core%%.*}"
-minor_patch="${version_core#*.}"
-if [ "${minor_patch}" = "${version_core}" ]; then
-  echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${release_tag}" >&2
-  exit 1
-fi
-minor="${minor_patch%%.*}"
-patch="${minor_patch#*.}"
-if [ "${patch}" = "${minor_patch}" ]; then
-  echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${release_tag}" >&2
-  exit 1
-fi
-case "${major}:${minor}:${patch}" in
-  *[!0-9:]* | :* | *::*)
-    echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${release_tag}" >&2
-    exit 1
-    ;;
-esac
-
+validate_release_semver "release tag" "${release_tag}" "${semver}"
 case "${release_tag}" in
   *[!A-Za-z0-9._-]*)
     echo "release tag contains unsupported characters: ${release_tag}" >&2

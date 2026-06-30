@@ -5,32 +5,9 @@ import {
 
 import { OPERATION_API_CONTRACTS } from "./generated.ts";
 import type {
-  BackupCreateRequest,
-  BackupCreateResponse,
-  DeploySubmitRequest,
-  DeploySubmitResponse,
-  InitFirstMachineActivateRequest,
-  InitFirstMachineActivateResponse,
-  LogsTailRequest,
-  LogsTailResponse,
-  MachineAddRequest,
-  MachineAddResponse,
-  MachineInspectRequest,
-  MachineInspectResponse,
-  MachineJoinRedeemRequest,
-  MachineJoinRedeemResponse,
-  MachineJoinReportRequest,
-  MachineJoinReportResponse,
-  MachineListRequest,
-  MachineListResponse,
-  OpsStatusRequest,
-  OpsStatusResponse,
-  OpsWatchRequest,
-  OpsWatchResponse,
-  ServiceInspectRequest,
-  ServiceInspectResponse,
-  ServiceListRequest,
-  ServiceListResponse,
+  OperationApiRequestByEndpoint,
+  OperationApiResponseByEndpoint,
+  PloyzApiEndpoint,
 } from "./generated.ts";
 
 const DEFAULT_NATS_REQUEST_TIMEOUT_MS = 10_000;
@@ -39,8 +16,6 @@ const NATS_SERVICE_ERROR_CODE_HEADER = "Nats-Service-Error-Code";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-
-type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
 
 export interface PloyzNatsConnectOptions {
   nats?: NodeConnectionOptions;
@@ -91,58 +66,11 @@ export class PloyzNatsTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_NATS_REQUEST_TIMEOUT_MS;
   }
 
-  deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse> {
-    return this.#request("deploy.submit", request);
-  }
-
-  initFirstMachineActivate(
-    request: InitFirstMachineActivateRequest,
-  ): Promise<InitFirstMachineActivateResponse> {
-    return this.#request("init.first_machine.activate", request);
-  }
-
-  backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse> {
-    return this.#request("backup.create", request);
-  }
-
-  machineAdd(request: MachineAddRequest): Promise<MachineAddResponse> {
-    return this.#request("machine.add", request);
-  }
-
-  machineList(request: MachineListRequest): Promise<MachineListResponse> {
-    return this.#request("machine.list", request);
-  }
-
-  machineInspect(request: MachineInspectRequest): Promise<MachineInspectResponse> {
-    return this.#request("machine.inspect", request);
-  }
-
-  machineJoinRedeem(request: MachineJoinRedeemRequest): Promise<MachineJoinRedeemResponse> {
-    return this.#request("machine.join.redeem", request);
-  }
-
-  machineJoinReport(request: MachineJoinReportRequest): Promise<MachineJoinReportResponse> {
-    return this.#request("machine.join.report", request);
-  }
-
-  serviceList(request: ServiceListRequest): Promise<ServiceListResponse> {
-    return this.#request("service.list", request);
-  }
-
-  serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse> {
-    return this.#request("service.inspect", request);
-  }
-
-  logsTail(request: LogsTailRequest): Promise<LogsTailResponse> {
-    return this.#request("logs.tail", request);
-  }
-
-  opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse> {
-    return this.#request("ops.status", request);
-  }
-
-  opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse> {
-    return this.#request("ops.watch", request);
+  request<E extends PloyzApiEndpoint>(
+    endpoint: E,
+    request: OperationApiRequestByEndpoint[E],
+  ): Promise<OperationApiResponseByEndpoint[E]> {
+    return this.#request(endpoint, request);
   }
 
   async close(): Promise<void> {
@@ -157,10 +85,10 @@ export class PloyzNatsTransport {
     await this.close();
   }
 
-  async #request<TRequest, TResponse>(
-    endpoint: PloyzApiEndpoint,
-    request: TRequest,
-  ): Promise<TResponse> {
+  async #request<E extends PloyzApiEndpoint>(
+    endpoint: E,
+    request: OperationApiRequestByEndpoint[E],
+  ): Promise<OperationApiResponseByEndpoint[E]> {
     const subject = operationApiSubject(endpoint);
     let response: PloyzNatsResponseMessage;
     try {
@@ -179,7 +107,7 @@ export class PloyzNatsTransport {
     }
 
     try {
-      return JSON.parse(textDecoder.decode(response.data)) as TResponse;
+      return JSON.parse(textDecoder.decode(response.data)) as OperationApiResponseByEndpoint[E];
     } catch (error) {
       throw PloyzNatsTransportError.decodeFailed(endpoint, error);
     }

@@ -1,11 +1,11 @@
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
+    PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
 };
 use ployz_core::ids::MachineId;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
-use super::{HostCommandPlan, ebpf_ctl_args, unavailable};
+use super::host_commands::{HostCommandPlan, ebpf_ctl_args, unavailable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HostDataplaneRouteProgramming {
@@ -27,13 +27,13 @@ impl HostDataplaneRouteProgramming {
             .ok_or_else(|| {
                 unavailable(
                     machine_id,
-                    WireGuardEbpfComponent::WireGuard,
+                    PloyzNativeMeshComponent::WireGuard,
                     "local endpoint route is missing".to_owned(),
                 )
             })?;
         let local_host_cidr =
             wireguard_host_cidr(&local_route.endpoint_subnet).map_err(|message| {
-                unavailable(machine_id, WireGuardEbpfComponent::WireGuard, message)
+                unavailable(machine_id, PloyzNativeMeshComponent::WireGuard, message)
             })?;
         let local_host_ip = local_host_cidr
             .split_once('/')
@@ -42,7 +42,7 @@ impl HostDataplaneRouteProgramming {
             .to_owned();
         let mut requirements = vec![
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "ip",
                 [
                     "addr".to_owned(),
@@ -53,22 +53,22 @@ impl HostDataplaneRouteProgramming {
                 ],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sysctl",
                 ["-w", "net.ipv4.ip_forward=1"],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sysctl",
                 ["-w", "net.ipv4.conf.all.rp_filter=0"],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sysctl",
                 ["-w", "net.ipv4.conf.default.rp_filter=0"],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sysctl",
                 [
                     "-w".to_owned(),
@@ -76,7 +76,7 @@ impl HostDataplaneRouteProgramming {
                 ],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sh",
                 [
                     "-c".to_owned(),
@@ -86,7 +86,7 @@ impl HostDataplaneRouteProgramming {
                 ],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sh",
                 [
                     "-c".to_owned(),
@@ -97,7 +97,7 @@ impl HostDataplaneRouteProgramming {
                 ],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sh",
                 [
                     "-c".to_owned(),
@@ -108,7 +108,7 @@ impl HostDataplaneRouteProgramming {
                 ],
             ),
             HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "sh",
                 [
                     "-c".to_owned(),
@@ -126,7 +126,7 @@ impl HostDataplaneRouteProgramming {
                 .flat_map(|route| {
                     [
                         HostCommandPlan::provisioning_command(
-                            WireGuardEbpfComponent::WireGuard,
+                            PloyzNativeMeshComponent::WireGuard,
                             "ip",
                             [
                                 "route".to_owned(),
@@ -139,7 +139,7 @@ impl HostDataplaneRouteProgramming {
                             ],
                         ),
                         HostCommandPlan::provisioning_command(
-                            WireGuardEbpfComponent::EbpfForwarding,
+                            PloyzNativeMeshComponent::EbpfForwarding,
                             self.ebpf_ctl_program.clone(),
                             ebpf_ctl_args(
                                 &self.ebpf_pin_path,
@@ -213,14 +213,14 @@ mod tests {
 
         assert!(
             requirements.contains(&HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "ip",
                 ["addr", "replace", "10.42.1.254/32", "dev", "ployz-wg0"]
             ))
         );
         assert!(
             requirements.contains(&HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::WireGuard,
+                PloyzNativeMeshComponent::WireGuard,
                 "ip",
                 [
                     "route",
@@ -234,7 +234,7 @@ mod tests {
             ))
         );
         assert!(requirements.contains(&HostCommandPlan::provisioning_command(
-            WireGuardEbpfComponent::WireGuard,
+            PloyzNativeMeshComponent::WireGuard,
             "sh",
             [
                 "-c",
@@ -245,7 +245,7 @@ mod tests {
             ]
         )));
         assert!(requirements.contains(&HostCommandPlan::provisioning_command(
-            WireGuardEbpfComponent::WireGuard,
+            PloyzNativeMeshComponent::WireGuard,
             "sh",
             [
                 "-c",
@@ -256,7 +256,7 @@ mod tests {
             ]
         )));
         assert!(requirements.contains(&HostCommandPlan::provisioning_command(
-            WireGuardEbpfComponent::WireGuard,
+            PloyzNativeMeshComponent::WireGuard,
             "sh",
             [
                 "-c",
@@ -268,7 +268,7 @@ mod tests {
         )));
         assert!(
             requirements.contains(&HostCommandPlan::provisioning_command(
-                WireGuardEbpfComponent::EbpfForwarding,
+                PloyzNativeMeshComponent::EbpfForwarding,
                 "/usr/local/bin/ployz-ebpf-ctl",
                 ["route", "add-ifname", "10.42.2.0/24", "ployz-wg0"]
             ))
@@ -277,7 +277,7 @@ mod tests {
             matches!(
                 &plan.action,
                 HostCommandAction::CommandSucceeds {
-                    component: WireGuardEbpfComponent::EbpfForwarding,
+                    component: PloyzNativeMeshComponent::EbpfForwarding,
                     args,
                     ..
                 } if args == &["route", "add-ifname", "10.42.1.0/24", "ployz-wg0"]
@@ -308,7 +308,7 @@ mod tests {
             error,
             WireGuardEbpfPrepareError::Unavailable {
                 machine_id,
-                component: WireGuardEbpfComponent::WireGuard,
+                component: PloyzNativeMeshComponent::WireGuard,
                 ..
             } if machine_id == self::machine_id("machine_a")
         ));

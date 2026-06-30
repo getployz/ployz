@@ -1,230 +1,33 @@
 {
-  "deploy_submit_request": {
-    "operation_id": "op_123",
-    "target": {
-      "service_id": "svc_api",
-      "target_revision": "rev_2",
-      "image": "ghcr.io/acme/api:rev-2",
-      "replicas": 2
-    }
-  },
-  "ops_watch_request": {
-    "operation_id": "op_123",
-    "start_sequence": "1",
-    "limit": 100
-  },
   "accepted_operation": {
     "operation_id": "op_123",
-    "watch_subject": "plz.v1.op.op_123.>",
-    "start_sequence": "1"
-  },
-  "deploy_submit_response": {
-    "status": "ok",
-    "value": {
-      "operation_id": "op_123",
-      "watch_subject": "plz.v1.op.op_123.>",
-      "start_sequence": "1"
-    }
+    "start_sequence": "1",
+    "watch_subject": "plz.v1.op.op_123.>"
   },
   "backup_create_request": {
     "operation_id": "op_backup",
     "target": {
-      "kind": "s3",
+      "addressing_style": "virtual_hosted",
       "bucket": "ployz-backups",
-      "key_prefix": "clusters/dev",
-      "region": "us-east-1",
       "endpoint_url": null,
-      "addressing_style": "virtual_hosted"
+      "key_prefix": "clusters/dev",
+      "kind": "s3",
+      "region": "us-east-1"
     }
   },
   "backup_create_response": {
     "status": "ok",
     "value": {
       "operation_id": "op_backup",
-      "watch_subject": "plz.v1.op.op_backup.>",
-      "start_sequence": "3"
+      "start_sequence": "3",
+      "watch_subject": "plz.v1.op.op_backup.>"
     }
   },
-  "init_first_machine_activate_request": {
-    "machine_id": "core_1",
-    "roles": {
-      "gateway": "skip",
-      "dns": "install"
-    }
-  },
-  "init_first_machine_activate_response": {
-    "status": "ok",
-    "value": {
-      "operation_id": "op_init_core_1",
-      "machine_id": "core_1"
-    }
-  },
-  "machine_add_request": {
-    "operation_id": "op_machine",
-    "idempotency_key": "idem_machine",
-    "machine_id": "machine_2",
-    "name": "edge_2",
-    "roles": {
-      "gateway": "skip",
-      "dns": "install"
-    }
-  },
-  "machine_add_response": {
-    "status": "ok",
-    "value": {
-      "accepted": {
-        "operation_id": "op_machine",
-        "watch_subject": "plz.v1.op.op_machine.>",
-        "start_sequence": "7"
-      },
-      "machine_id": "machine_2",
-      "bootstrap_url": "https://get.ployz.sh",
-      "join_bundle": {
-        "material": {
-          "cluster_name": "prod",
-          "runtime_nats_url": "nats://127.0.0.1:7422",
-          "trusted_nats": {
-            "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-          },
-          "ployzd": {
-            "version": "0.1.0",
-            "source": "/tmp/ployzd",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/bin/ployzd"
-          },
-          "ebpf_bytecode": {
-            "version": "0.1.0",
-            "source": "/tmp/ployz-ebpf-tc",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-          },
-          "ebpf_ctl": {
-            "version": "0.1.0",
-            "source": "/tmp/ployz-ebpf-ctl",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-          }
-        }
-      },
-      "join_token": "join_once_123"
-    }
-  },
-  "machine_join_redeem_request": {
-    "join_token": "join_once_123"
-  },
-  "machine_join_redeem_response": {
-    "status": "ok",
-    "value": {
-      "operation_id": "op_machine",
-      "machine_id": "machine_2",
-      "name": "edge_2",
-      "roles": {
-        "gateway": "skip",
-        "dns": "install"
-      },
-      "join_bundle": {
-        "material": {
-          "cluster_name": "prod",
-          "runtime_nats_url": "nats://127.0.0.1:7422",
-          "trusted_nats": {
-            "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-          },
-          "ployzd": {
-            "version": "0.1.0",
-            "source": "/tmp/ployzd",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/bin/ployzd"
-          },
-          "ebpf_bytecode": {
-            "version": "0.1.0",
-            "source": "/tmp/ployz-ebpf-tc",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-          },
-          "ebpf_ctl": {
-            "version": "0.1.0",
-            "source": "/tmp/ployz-ebpf-ctl",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-          }
-        }
-      },
-      "secret_delivery": {
-        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-      },
-      "joined_at": "60",
-      "last_event_sequence": "8",
-      "result": "joined"
-    }
-  },
-  "cloud_bootstrap_session_create_request": {
-    "client": {
-      "protocol_version": 1,
-      "keeper_version": "0.1.0"
-    },
-    "machine": {
-      "hostname": "web-01",
-      "os": "linux",
-      "arch": "x86_64",
-      "candidate_runtime_nats_url": "tls://203.0.113.10:4222"
-    }
-  },
-  "cloud_bootstrap_session_created": {
-    "browser_url": "https://cloud.ployz.com/bootstrap/pcbsess_123",
-    "user_code": "PLOZ-1234",
-    "session_secret": "pcbsess_secret_123",
-    "poll_after_seconds": 2,
-    "expires_at_unix_seconds": 1893456000
-  },
-  "cloud_bootstrap_session_poll_request": {
-    "session_secret": "pcbsess_secret_123",
-    "machine": {
-      "hostname": "web-01",
-      "os": "linux",
-      "arch": "x86_64",
-      "candidate_runtime_nats_url": "tls://203.0.113.10:4222"
-    }
-  },
-  "cloud_bootstrap_token_redeem_request": {
-    "cloud_token": "pcbs_abc123",
-    "client": {
-      "protocol_version": 1,
-      "keeper_version": "0.1.0"
-    },
-    "machine": {
-      "hostname": "web-01",
-      "os": "linux",
-      "arch": "x86_64",
-      "candidate_runtime_nats_url": "tls://203.0.113.10:4222"
-    }
-  },
-  "cloud_bootstrap_decision": {
-    "status": "ready",
-    "envelope": {
-      "redemption_id": "pcbr_123",
-      "callback_url": "https://cloud.ployz.com/api/bootstrap/callback",
-      "callback_token": "pcbc_abc123",
-      "release": {
-        "channel": "alpha",
-        "version": "0.1.0"
-      },
-      "intent": {
-        "intent": "joiner",
-        "joiner": {
-          "runtime_nats_url": "tls://203.0.113.10:4222",
-          "trusted_nats": {
-            "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-          },
-          "join_token": "join_once_123",
-          "join_secret_delivery": {
-            "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-          }
-        }
-      }
-    }
+  "cloud_bootstrap_callback_accepted": {
+    "accepted_at_unix_seconds": 1893456060
   },
   "cloud_bootstrap_callback_request": {
-    "redemption_id": "pcbr_123",
+    "attempt_id": "pcba_123",
     "outcome": {
       "outcome": "founder_succeeded",
       "result": {
@@ -234,86 +37,273 @@
           "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
         }
       }
+    },
+    "redemption_id": "pcbr_123"
+  },
+  "cloud_bootstrap_decision": {
+    "envelope": {
+      "attempt_id": "pcba_123",
+      "callback_token": "pcbc_abc123",
+      "callback_url": "https://cloud.ployz.com/api/bootstrap/callback",
+      "intent": {
+        "intent": "joiner",
+        "joiner": {
+          "join_secret_delivery": {
+            "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          },
+          "join_token": "join_once_123",
+          "runtime_nats_url": "tls://203.0.113.10:4222",
+          "trusted_nats": {
+            "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
+          }
+        }
+      },
+      "redemption_id": "pcbr_123"
+    },
+    "status": "ready"
+  },
+  "cloud_bootstrap_session_create_request": {
+    "attempt_id": "pcba_123",
+    "client": {
+      "keeper_version": "0.1.0",
+      "protocol_version": 1
+    },
+    "machine": {
+      "arch": "x86_64",
+      "candidate_runtime_nats_url": "tls://203.0.113.10:4222",
+      "hostname": "web-01",
+      "os": "linux"
     }
   },
-  "cloud_bootstrap_callback_accepted": {
-    "accepted_at_unix_seconds": 1893456060
+  "cloud_bootstrap_session_created": {
+    "browser_url": "https://cloud.ployz.com/bootstrap/pcbsess_123",
+    "expires_at_unix_seconds": 1893456000,
+    "poll_after_seconds": 2,
+    "session_secret": "pcbsess_secret_123",
+    "user_code": "PLOZ-1234"
+  },
+  "cloud_bootstrap_session_poll_request": {
+    "attempt_id": "pcba_123",
+    "machine": {
+      "arch": "x86_64",
+      "candidate_runtime_nats_url": "tls://203.0.113.10:4222",
+      "hostname": "web-01",
+      "os": "linux"
+    },
+    "session_secret": "pcbsess_secret_123"
+  },
+  "deploy_submit_request": {
+    "operation_id": "op_123",
+    "target": {
+      "image": "ghcr.io/acme/api:rev-2",
+      "replicas": 2,
+      "service_id": "svc_api",
+      "target_revision": "rev_2"
+    }
+  },
+  "deploy_submit_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_123",
+      "start_sequence": "1",
+      "watch_subject": "plz.v1.op.op_123.>"
+    }
+  },
+  "init_first_machine_activate_request": {
+    "machine_id": "core_1",
+    "roles": {
+      "dns": "install",
+      "gateway": "skip"
+    }
+  },
+  "init_first_machine_activate_response": {
+    "status": "ok",
+    "value": {
+      "machine_id": "core_1",
+      "operation_id": "op_init_core_1"
+    }
+  },
+  "machine_add_request": {
+    "idempotency_key": "idem_machine",
+    "machine_id": "machine_2",
+    "name": "edge_2",
+    "operation_id": "op_machine",
+    "roles": {
+      "dns": "install",
+      "gateway": "skip"
+    }
+  },
+  "machine_add_response": {
+    "status": "ok",
+    "value": {
+      "accepted": {
+        "operation_id": "op_machine",
+        "start_sequence": "7",
+        "watch_subject": "plz.v1.op.op_machine.>"
+      },
+      "bootstrap_url": "https://get.ployz.sh",
+      "join_bundle": {
+        "material": {
+          "cluster_name": "prod",
+          "ebpf_bytecode": {
+            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployz-ebpf-tc",
+            "version": "0.1.0"
+          },
+          "ebpf_ctl": {
+            "install_path": "/usr/local/bin/ployz-ebpf-ctl",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployz-ebpf-ctl",
+            "version": "0.1.0"
+          },
+          "ployzd": {
+            "install_path": "/usr/local/bin/ployzd",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployzd",
+            "version": "0.1.0"
+          },
+          "runtime_nats_url": "nats://127.0.0.1:7422",
+          "trusted_nats": {
+            "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
+          }
+        }
+      },
+      "join_secret_delivery": {
+        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "join_token": "join_once_123",
+      "machine_id": "machine_2"
+    }
+  },
+  "machine_join_redeem_request": {
+    "join_token": "join_once_123"
+  },
+  "machine_join_redeem_response": {
+    "status": "ok",
+    "value": {
+      "join_bundle": {
+        "material": {
+          "cluster_name": "prod",
+          "ebpf_bytecode": {
+            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployz-ebpf-tc",
+            "version": "0.1.0"
+          },
+          "ebpf_ctl": {
+            "install_path": "/usr/local/bin/ployz-ebpf-ctl",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployz-ebpf-ctl",
+            "version": "0.1.0"
+          },
+          "ployzd": {
+            "install_path": "/usr/local/bin/ployzd",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployzd",
+            "version": "0.1.0"
+          },
+          "runtime_nats_url": "nats://127.0.0.1:7422",
+          "trusted_nats": {
+            "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
+          }
+        }
+      },
+      "joined_at": "60",
+      "last_event_sequence": "8",
+      "machine_id": "machine_2",
+      "name": "edge_2",
+      "operation_id": "op_machine",
+      "result": "joined",
+      "roles": {
+        "dns": "install",
+        "gateway": "skip"
+      },
+      "secret_delivery": {
+        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    }
+  },
+  "operation_event_replay_page": {
+    "cursor": {
+      "next_start_sequence": "2",
+      "state": "more"
+    },
+    "events": [
+      {
+        "event": {
+          "event": "deploy_submitted",
+          "operation_id": "op_123",
+          "target": {
+            "image": "ghcr.io/acme/api:rev-2",
+            "replicas": 2,
+            "service_id": "svc_api",
+            "target_revision": "rev_2"
+          }
+        },
+        "sequence": "1"
+      }
+    ]
   },
   "operation_status_snapshot": {
     "status": {
-      "kind": "deploy",
       "id": "op_123",
+      "kind": "deploy",
+      "last_event_sequence": "1",
       "service_id": "svc_api",
       "state": {
         "state": "accepted"
-      },
-      "last_event_sequence": "1"
+      }
     }
+  },
+  "ops_status_error_response": {
+    "error": {
+      "error": "no_such_operation",
+      "operation_id": "op_missing"
+    },
+    "status": "domain_error"
   },
   "ops_status_response": {
     "status": "ok",
     "value": {
       "status": {
-        "kind": "deploy",
         "id": "op_123",
+        "kind": "deploy",
+        "last_event_sequence": "1",
         "service_id": "svc_api",
         "state": {
           "state": "accepted"
-        },
-        "last_event_sequence": "1"
+        }
       }
     }
   },
-  "operation_event_replay_page": {
-    "events": [
-      {
-        "sequence": "1",
-        "event": {
-          "event": "deploy_submitted",
-          "operation_id": "op_123",
-          "target": {
-            "service_id": "svc_api",
-            "target_revision": "rev_2",
-            "image": "ghcr.io/acme/api:rev-2",
-            "replicas": 2
-          }
-        }
-      }
-    ],
-    "cursor": {
-      "state": "more",
-      "next_start_sequence": "2"
-    }
+  "ops_watch_request": {
+    "limit": 100,
+    "operation_id": "op_123",
+    "start_sequence": "1"
   },
   "ops_watch_response": {
     "status": "ok",
     "value": {
+      "cursor": {
+        "next_start_sequence": "2",
+        "state": "more"
+      },
       "events": [
         {
-          "sequence": "1",
           "event": {
             "event": "deploy_submitted",
             "operation_id": "op_123",
             "target": {
-              "service_id": "svc_api",
-              "target_revision": "rev_2",
               "image": "ghcr.io/acme/api:rev-2",
-              "replicas": 2
+              "replicas": 2,
+              "service_id": "svc_api",
+              "target_revision": "rev_2"
             }
-          }
+          },
+          "sequence": "1"
         }
-      ],
-      "cursor": {
-        "state": "more",
-        "next_start_sequence": "2"
-      }
-    }
-  },
-  "ops_status_error_response": {
-    "status": "domain_error",
-    "error": {
-      "error": "no_such_operation",
-      "operation_id": "op_missing"
+      ]
     }
   }
 }

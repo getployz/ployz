@@ -28,7 +28,6 @@ the authority boundary for every caller.
 
 - `ployz-core`: domain models and product policy.
 - `ployz-nats`: NATS resources and API wrappers.
-- `ployz-transport`: future transport adapters if private connectivity returns.
 - `ployzd`: process wiring, service handlers, controllers, machine services, and
   runtime adapters.
 - `ployzctl`: CLI client.

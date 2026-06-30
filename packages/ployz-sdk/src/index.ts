@@ -97,6 +97,8 @@ import type {
   MachineListResponse,
   MachineSnapshot,
   OperationApiResponse,
+  OperationApiRequestByEndpoint,
+  OperationApiResponseByEndpoint,
   OperationEventReplayCursor,
   OperationEventReplayLimit,
   OperationEventReplayPage,
@@ -115,24 +117,14 @@ import type {
   ServiceListRequest,
   ServiceListResponse,
   ServiceSnapshot,
+  PloyzApiEndpoint,
 } from "./generated.ts";
 
 export interface PloyzOperationTransport {
-  deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse>;
-  initFirstMachineActivate(
-    request: InitFirstMachineActivateRequest,
-  ): Promise<InitFirstMachineActivateResponse>;
-  backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse>;
-  machineAdd(request: MachineAddRequest): Promise<MachineAddResponse>;
-  machineList(request: MachineListRequest): Promise<MachineListResponse>;
-  machineInspect(request: MachineInspectRequest): Promise<MachineInspectResponse>;
-  machineJoinRedeem(request: MachineJoinRedeemRequest): Promise<MachineJoinRedeemResponse>;
-  machineJoinReport(request: MachineJoinReportRequest): Promise<MachineJoinReportResponse>;
-  serviceList(request: ServiceListRequest): Promise<ServiceListResponse>;
-  serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse>;
-  opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse>;
-  opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse>;
-  logsTail(request: LogsTailRequest): Promise<LogsTailResponse>;
+  request<E extends PloyzApiEndpoint>(
+    endpoint: E,
+    request: OperationApiRequestByEndpoint[E],
+  ): Promise<OperationApiResponseByEndpoint[E]>;
 }
 
 export class PloyzApiError<E> extends Error {
@@ -146,8 +138,6 @@ export class PloyzApiError<E> extends Error {
     this.error = error;
   }
 }
-
-export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
 
 export interface PloyzDeployInput {
   operationId: string;
@@ -220,7 +210,7 @@ export class PloyzClient {
     const request = deploySubmitRequest(input);
     const accepted = unwrapApiResponse(
       "deploy.submit",
-      await this.#transport.deploySubmit(request),
+      await this.#transport.request("deploy.submit", request),
     );
     return new OperationHandle(this.#transport, accepted);
   }
@@ -228,7 +218,7 @@ export class PloyzClient {
   async backupCreate(input: PloyzBackupCreateInput): Promise<OperationHandle> {
     const accepted = unwrapApiResponse(
       "backup.create",
-      await this.#transport.backupCreate(backupCreateRequest(input)),
+      await this.#transport.request("backup.create", backupCreateRequest(input)),
     );
     return new OperationHandle(this.#transport, accepted);
   }
@@ -238,7 +228,10 @@ export class PloyzClient {
   ): Promise<FirstMachineActivationHandle> {
     const activated = unwrapApiResponse(
       "init.first_machine.activate",
-      await this.#transport.initFirstMachineActivate(initFirstMachineActivateRequest(input)),
+      await this.#transport.request(
+        "init.first_machine.activate",
+        initFirstMachineActivateRequest(input),
+      ),
     );
     return new FirstMachineActivationHandle(this.#transport, activated);
   }
@@ -246,7 +239,7 @@ export class PloyzClient {
   async machineAdd(input: PloyzMachineAddInput): Promise<MachineAddHandle> {
     const accepted = unwrapApiResponse(
       "machine.add",
-      await this.#transport.machineAdd(machineAddRequest(input)),
+      await this.#transport.request("machine.add", machineAddRequest(input)),
     );
     return new MachineAddHandle(this.#transport, accepted);
   }
@@ -254,42 +247,42 @@ export class PloyzClient {
   async machineList(): Promise<MachineSnapshot[]> {
     return unwrapApiResponse(
       "machine.list",
-      await this.#transport.machineList(machineListRequest()),
+      await this.#transport.request("machine.list", machineListRequest()),
     ).machines;
   }
 
   async machineInspect(input: string | PloyzMachineInspectInput): Promise<MachineSnapshot> {
     return unwrapApiResponse(
       "machine.inspect",
-      await this.#transport.machineInspect(machineInspectRequest(input)),
+      await this.#transport.request("machine.inspect", machineInspectRequest(input)),
     );
   }
 
   async machineJoinRedeem(input: PloyzMachineJoinRedeemInput): Promise<MachineJoinRedeemed> {
     return unwrapApiResponse(
       "machine.join.redeem",
-      await this.#transport.machineJoinRedeem(machineJoinRedeemRequest(input)),
+      await this.#transport.request("machine.join.redeem", machineJoinRedeemRequest(input)),
     );
   }
 
   async serviceList(): Promise<ServiceSnapshot[]> {
     return unwrapApiResponse(
       "service.list",
-      await this.#transport.serviceList(serviceListRequest()),
+      await this.#transport.request("service.list", serviceListRequest()),
     ).services;
   }
 
   async serviceInspect(input: string | PloyzServiceInspectInput): Promise<ServiceSnapshot> {
     return unwrapApiResponse(
       "service.inspect",
-      await this.#transport.serviceInspect(serviceInspectRequest(input)),
+      await this.#transport.request("service.inspect", serviceInspectRequest(input)),
     );
   }
 
   async logsTail(input: string | PloyzLogsTailInput): Promise<LogsTailResult> {
     return unwrapApiResponse(
       "logs.tail",
-      await this.#transport.logsTail(logsTailRequest(input)),
+      await this.#transport.request("logs.tail", logsTailRequest(input)),
     );
   }
 }
@@ -459,7 +452,7 @@ export class OperationHandle {
   async status(): Promise<OperationStatusSnapshot> {
     return unwrapApiResponse(
       "ops.status",
-      await this.#transport.opsStatus({
+      await this.#transport.request("ops.status", {
         operation_id: this.accepted.operation_id,
       }),
     );
@@ -475,7 +468,7 @@ export class OperationHandle {
   ): Promise<OperationEventReplayPage> {
     return unwrapApiResponse(
       "ops.watch",
-      await this.#transport.opsWatch({
+      await this.#transport.request("ops.watch", {
         operation_id: this.accepted.operation_id,
         start_sequence: startSequence,
         limit: operationEventReplayLimit(limit),
@@ -546,7 +539,7 @@ export class FirstMachineActivationHandle {
   async status(): Promise<OperationStatusSnapshot> {
     return unwrapApiResponse(
       "ops.status",
-      await this.#transport.opsStatus({
+      await this.#transport.request("ops.status", {
         operation_id: this.activated.operation_id,
       }),
     );

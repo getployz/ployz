@@ -35,3 +35,35 @@ sha256_of() {
     shasum -a 256 "$1" | cut -d' ' -f1
   fi
 }
+
+validate_release_semver() {
+  local label="$1"
+  local value="$2"
+  local semver="$3"
+
+  if [ -z "${semver}" ]; then
+    echo "${label} must include a version after v: ${value}" >&2
+    exit 1
+  fi
+
+  local version_core major minor minor_patch patch
+  version_core="${semver%%-*}"
+  major="${version_core%%.*}"
+  minor_patch="${version_core#*.}"
+  if [ "${minor_patch}" = "${version_core}" ]; then
+    echo "${label} must look like vX.Y.Z or vX.Y.Z-suffix: ${value}" >&2
+    exit 1
+  fi
+  patch="${minor_patch#*.}"
+  if [ "${patch}" = "${minor_patch}" ]; then
+    echo "${label} must look like vX.Y.Z or vX.Y.Z-suffix: ${value}" >&2
+    exit 1
+  fi
+  minor="${minor_patch%%.*}"
+  case "${major}:${minor}:${patch}" in
+    *[!0-9.:]* | :* | *::*)
+      echo "${label} must look like vX.Y.Z or vX.Y.Z-suffix: ${value}" >&2
+      exit 1
+      ;;
+  esac
+}

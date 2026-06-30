@@ -2,9 +2,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::ops::FailureMessage;
+use tempfile::{Builder, TempDir};
 
 use crate::artifacts::{
     ArtifactInstallDurability, ArtifactSourceView, ArtifactTarget, install_verified_artifact,
@@ -12,9 +12,7 @@ use crate::artifacts::{
 };
 use crate::command::KeeperCommandRunner;
 use crate::executor::KeeperStepEffects;
-use crate::fsx::{
-    FileMode, StagedDirectory, create_private_directory, ensure_directory, write_durable_file,
-};
+use crate::fsx::{FileMode, StagedDirectory, ensure_directory, write_durable_file};
 use crate::join::{
     JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE,
     render_redacted_join_material,
@@ -373,7 +371,7 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         match target.source.view() {
             ArtifactSourceView::LocalPath(path) => Ok(AcquiredArtifact::local(path.to_path_buf())),
             ArtifactSourceView::RemoteUrl(url) => {
-                let artifact = AcquiredArtifact::downloaded(create_download_path(target)?);
+                let artifact = AcquiredArtifact::downloaded()?;
                 self.runner.download(url, artifact.path())?;
                 Ok(artifact)
             }
@@ -453,137 +451,72 @@ fn join_material_write(
 }
 
 struct AcquiredArtifact {
-    path: PathBuf,
-    cleanup: AcquiredArtifactCleanup,
+    source: AcquiredArtifactSource,
 }
 
 impl AcquiredArtifact {
     fn local(path: PathBuf) -> Self {
         Self {
-            path,
-            cleanup: AcquiredArtifactCleanup::Keep,
+            source: AcquiredArtifactSource::Local(path),
         }
     }
 
-    fn downloaded(path: PathBuf) -> Self {
-        Self {
-            path,
-            cleanup: AcquiredArtifactCleanup::Remove,
-        }
+    fn downloaded() -> Result<Self, FailureMessage> {
+        let directory = Builder::new()
+            .prefix("ployz-artifact-")
+            .tempdir()
+            .map_err(|error| {
+                failure_message(format!(
+                    "failed to create artifact download directory: {error}"
+                ))
+            })?;
+        let path = directory.path().join("artifact");
+        Ok(Self {
+            source: AcquiredArtifactSource::Downloaded {
+                _directory: directory,
+                path,
+            },
+        })
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for AcquiredArtifact {
-    fn drop(&mut self) {
-        if self.cleanup == AcquiredArtifactCleanup::Remove {
-            let _ = fs::remove_file(&self.path);
-            if let Some(parent) = self.path.parent() {
-                let _ = fs::remove_dir(parent);
-            }
+        match &self.source {
+            AcquiredArtifactSource::Local(path) => path,
+            AcquiredArtifactSource::Downloaded { path, .. } => path,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcquiredArtifactCleanup {
-    Keep,
-    Remove,
+enum AcquiredArtifactSource {
+    Local(PathBuf),
+    Downloaded { _directory: TempDir, path: PathBuf },
 }
 
 struct DockerInstallScript {
+    _directory: TempDir,
     path: PathBuf,
 }
 
 impl DockerInstallScript {
     fn new() -> Result<Self, FailureMessage> {
-        let directory = create_private_docker_install_dir()?;
+        let directory = Builder::new()
+            .prefix("ployz-docker-install-")
+            .tempdir()
+            .map_err(|error| {
+                failure_message(format!(
+                    "failed to create Docker install directory: {error}"
+                ))
+            })?;
+        let path = directory.path().join("install-docker.sh");
         Ok(Self {
-            path: directory.join("install-docker.sh"),
+            _directory: directory,
+            path,
         })
     }
 
     fn path(&self) -> &Path {
         &self.path
     }
-}
-
-impl Drop for DockerInstallScript {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-        if let Some(parent) = self.path.parent() {
-            let _ = fs::remove_dir(parent);
-        }
-    }
-}
-
-fn create_download_path(target: &ArtifactTarget) -> Result<PathBuf, FailureMessage> {
-    let directory = create_private_download_dir(target)?;
-    Ok(directory.join("artifact"))
-}
-
-fn create_private_docker_install_dir() -> Result<PathBuf, FailureMessage> {
-    for attempt in 0..16 {
-        let entropy = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| {
-                failure_message(format!("failed to create Docker install path: {error}"))
-            })?
-            .as_nanos();
-        let name = format!(
-            "ployz-docker-install-{}-{entropy}-{attempt}",
-            std::process::id()
-        );
-        let directory = std::env::temp_dir().join(name);
-        match create_private_directory(&directory) {
-            Ok(()) => return Ok(directory),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(failure_message(format!(
-                    "failed to create private Docker install directory {}: {error}",
-                    directory.display()
-                )));
-            }
-        }
-    }
-
-    Err(failure_message(format!(
-        "failed to create unique Docker install directory in {}",
-        std::env::temp_dir().display()
-    )))
-}
-
-fn create_private_download_dir(target: &ArtifactTarget) -> Result<PathBuf, FailureMessage> {
-    for attempt in 0..16 {
-        let entropy = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| failure_message(format!("failed to create download path: {error}")))?
-            .as_nanos();
-        let name = format!(
-            "ployz-download-{:?}-{}-{entropy}-{attempt}",
-            target.kind,
-            std::process::id()
-        );
-        let directory = std::env::temp_dir().join(name);
-        match create_private_directory(&directory) {
-            Ok(()) => return Ok(directory),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(failure_message(format!(
-                    "failed to create private artifact download directory {}: {error}",
-                    directory.display()
-                )));
-            }
-        }
-    }
-
-    Err(failure_message(format!(
-        "failed to create unique artifact download directory in {}",
-        std::env::temp_dir().display()
-    )))
 }
 
 fn create_nats_state_dir(state_dir: &Path) -> Result<(), FailureMessage> {

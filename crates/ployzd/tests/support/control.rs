@@ -61,10 +61,17 @@ impl TestNats {
         self.control_config_without_join_template()
             .with_machine_bootstrap(
                 MachineAddBootstrapConfig::new(
-                    MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
-                        .expect("valid bootstrap url"),
+                    MachineBootstrapUrl::try_new(
+                        ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL,
+                    )
+                    .expect("valid bootstrap url"),
                 )
-                .with_join_template(machine_join_template(self)),
+                .with_join_material(
+                    machine_join_template(self),
+                    ployz_core::install::MachineJoinSecretDelivery {
+                        nats_credentials: self.server().join_seed().clone(),
+                    },
+                ),
             )
     }
 

@@ -149,19 +149,14 @@ operation events; Cloud callback rows are product workflow evidence.
 - R8a. If keeper disconnects after browser approval but before receiving the
   poll result, the Cloud Bootstrap Redemption remains durable as an
   approved-but-not-delivered attempt. Later keeper polls for the same session
-  receive the same redemption and intent idempotently until the session or
-  redemption reaches a terminal state.
+  receive the same redemption and intent idempotently until terminal state.
 - R8b. If a Cloud Bootstrap Session expires before browser approval, it becomes
   terminal expired and creates no Cloud Bootstrap Redemption. Keeper polling
-  exits with an approval-expired message and rerun guidance. A later
-  `sudo ployz-keeper bootstrap` creates a fresh session rather than reusing the
-  expired one.
-- R8c. If the browser user rejects or cancels approval before clicking
-  `Connect this machine`, the Cloud Bootstrap Session becomes terminal rejected
-  and creates no Cloud Bootstrap Redemption. Keeper polling exits nonzero with
-  a Cloud-rejected message and rerun guidance. A later
-  `sudo ployz-keeper bootstrap` creates a fresh session rather than reusing the
-  rejected one.
+  exits with approval-expired rerun guidance. A later
+  `sudo ployz-keeper bootstrap` creates a fresh session.
+- R8c. V1 browser approval has no explicit `Reject` action. Closing the page
+  or doing nothing leaves the Cloud Bootstrap Session unapproved until it
+  expires.
 - R9. Session secrets and callback credentials are sent in HTTPS headers or
   JSON bodies, never URL query strings.
 - R9a. The browser URL may include a non-secret user code so the approval page
@@ -181,7 +176,13 @@ operation events; Cloud callback rows are product workflow evidence.
   before the first Cloud request. Cloud uses `(session, attempt_id)` replay
   semantics so retrying after a keeper crash returns the same redemption and
   envelope instead of creating duplicate `machine.add` operations.
-- R12. Cloud exposes revocation/expiry for active sessions and redemptions.
+- R11a. Once `machine.add` produces join material for a Cloud Bootstrap
+  Redemption, Cloud binds that redemption to exactly one Joiner Bootstrap
+  envelope. If the keeper response is interrupted, later polls return the same
+  envelope. If the Cloud-to-runtime call fails before join material exists,
+  Cloud retries that same step.
+- R12. Cloud exposes expiry for active sessions and redemptions. Explicit
+  revocation is post-v1.
 
 ### Typed JSON Protocol
 
@@ -189,11 +190,9 @@ operation events; Cloud callback rows are product workflow evidence.
   truth for machine-facing JSON payloads and generated TypeScript types.
 - R14. The v1 contract includes the protocol version, keeper version, attempt
   id, machine facts, session create/poll requests, typed decisions, typed
-  rejection reasons, typed envelopes, callback requests, and callback accepted
-  responses.
-- R15. Cloud returns `CloudBootstrapDecision::Pending`,
-  `CloudBootstrapDecision::Ready`, or `CloudBootstrapDecision::Rejected`.
-  It does not return text manifests.
+  envelopes, callback requests, and callback accepted responses.
+- R15. Cloud returns pending, ready, expired, or failed decisions. It does not
+  return text manifests and has no user rejection branch in v1.
 - R16. Keeper validates every envelope before mutating local state. Missing,
   malformed, cross-origin, expired, unsupported, or intent-inconsistent
   envelopes fail before bootstrap mutation.
@@ -242,63 +241,10 @@ operation events; Cloud callback rows are product workflow evidence.
 - R23c. Before the Cloud Connection exists, Cloud stores callback-reported
   endpoint, CA, and Cloud client material on the founder redemption or Founder
   Claim, not on a pending Cloud Connection row.
-- R23d. A formed-but-unreachable founder can be recovered by Abandon Founder
-  Attempt. Cloud marks that Founder Claim terminal abandoned, rejects waiting
-  redemptions, creates no Cloud Connection, and allows a new Cloud Bootstrap
-  Session to claim Founder Bootstrap. Cloud does not clean up or mutate the
-  already-formed local machine.
-- R23e. The already-formed local machine can be cleaned up with Substrate
-  Uninstall through `sudo ployz-keeper uninstall`. Substrate Uninstall removes
-  Ployz substrate and machine-local Ployz material only; it does not delete user
-  workloads, Docker images, Docker volumes, service containers, arbitrary
-  networks, or runtime data by default.
-- R23f. `ployz-keeper uninstall` removes the keeper binary as the final step.
-  Failure to remove the keeper binary after substrate removal is a
-  leftover-binary warning, not a reason to treat the machine as still
-  substrate-installed.
-- R23g. `ployz-keeper uninstall` requires interactive confirmation by default
-  after printing the substrate and machine-local material it will remove. The
-  scripted bypass is `--yes`.
-- R23h. `ployz-keeper uninstall` refuses by default when local evidence shows
-  the machine is still accepted in a cluster. `--force` overrides that local
-  refusal and removes local substrate anyway, but it does not perform Force
-  Removed Machine, revoke cluster authority in NATS, release endpoint subnets,
-  or mutate cluster truth.
-- R23i. `--force` and `--yes` are independent uninstall flags. `--force`
-  bypasses accepted-machine local refusal but still requires confirmation;
-  `--yes` skips confirmation but does not bypass accepted-machine local refusal.
-  Automation that wants forced local cleanup must pass both flags. `--yes`
-  only skips waiting for input; it does not suppress removal plans,
-  accepted-machine evidence, or warnings.
-- R23j. Accepted-machine local refusal is based on Accepted Machine Evidence:
-  accepted machine id state, NATS machine credentials, role authority material,
-  or assigned substrate state. Keeper binary presence, generic install residue,
-  failed bootstrap attempt state, abandoned Cloud Bootstrap Session material,
-  and unaccepted bootstrap delivery files do not require `--force`.
-- R23k. Accepted-machine local refusal is a hard stop before the normal
-  uninstall confirmation prompt. Keeper prints the Accepted Machine Evidence it
-  found, tells the user to remove the machine from the cluster first and rerun
-  uninstall, and shows `sudo ployz-keeper uninstall --force` as the local-only
-  escape hatch when cluster removal is impossible.
-- R23l. When `sudo ployz-keeper uninstall --force` sees Accepted Machine
-  Evidence, keeper prints a second warning before confirmation: forced
-  uninstall only removes local substrate, does not remove the machine from
-  cluster truth, and cluster cleanup remains explicit operator work. The
-  warning shows `ployzctl machine remove --force <machine>` as the follow-up
-  cluster cleanup command when the user still has an operator context.
-- R23m. `sudo ployz-keeper uninstall --force --yes` still prints the Accepted
-  Machine Evidence and cluster-cleanup warning before removing local substrate
-  without prompting.
-- R23n. `ployz-keeper uninstall` is idempotent only when no Accepted Machine
-  Evidence exists. If no accepted evidence and no removable Ployz substrate or
-  machine-local Ployz material remain, keeper reports that the machine is
-  already clean and exits 0 without prompting. This no-op path does not bypass
-  accepted-machine refusal.
-- R23o. Partial substrate or machine-local material removal failure makes
-  uninstall exit nonzero with a remaining-items list and rerun guidance. The
-  keeper binary is the only warning-only exception: if all other substrate and
-  machine-local material are gone, keeper self-removal failure exits 0 with a
-  leftover-binary warning.
+- R23d. A formed-but-unreachable founder is terminal action-needed status in
+  v1. Cloud creates no Cloud Connection, does not mutate the already-formed
+  local machine, and does not auto-promote waiters. Recovery workflows are
+  post-v1.
 - R24. Cloud's NATS reachability probe validates public-routable host, allowed
   scheme and port, DNS rebinding protections, TLS trust, and successful auth as
   Cloud's authorized NATS user. Loopback, private, link-local, and metadata IPs
@@ -307,13 +253,18 @@ operation events; Cloud callback rows are product workflow evidence.
   Organization Cluster. The first approved redemption that wins the claim
   receives Founder Bootstrap; later approved redemptions become
   wait-for-founder and poll until the founder establishes a Cloud Connection,
-  the Founder Claim is abandoned, or the waiter expires. Once founder material
-  is issued, Cloud does not auto-promote another waiter to founder after
-  failure.
+  the founder reaches terminal failure, or the waiter expires. Once founder
+  material is issued, Cloud does not auto-promote another waiter to founder
+  after failure.
 - R25a. Wait-for-founder is polling-only from the target machine's perspective.
   Keeper prints that it is waiting for the first machine to finish, respects
   Cloud retry hints, and performs no local mutation until Cloud has a Cloud
   Connection and returns a Joiner Bootstrap envelope.
+- R25aa. Wait-for-founder uses the same bounded keeper polling deadline as the
+  Cloud session flow. A separate post-approval waiter TTL is post-v1.
+- R25b. Cloud does not submit `machine.add`, mint join material, or issue a
+  Joiner Bootstrap envelope when a waiter is approved. Runtime join authority
+  is created only when a waiting keeper polls after Cloud Connection exists.
 - R26. Joiner Bootstrap is still core `machine.add`, Machine Join Redemption,
   and Machine Join Report. Cloud brokers delivery and watches operation events;
   it does not make callback evidence cluster truth.
@@ -334,11 +285,28 @@ operation events; Cloud callback rows are product workflow evidence.
 - R29. Interactive session browser approval enforces organization membership
   and maps the session to that organization's Organization Cluster. Cloud
   derives founder, joiner, or wait behavior from current cluster state.
+- R29b. Fine-grained Cloud bootstrap permissions are post-v1. In v1,
+  authenticated organization membership is sufficient to click
+  `Connect this machine`; keep one authorization boundary for future org-level
+  bootstrap permissions.
 - R29a. Joiner decisions depend on the Organization Cluster having a Cloud
   Connection, not on a founder redemption's status.
 - R30. V1 approval uses one `Connect this machine` action after organization
-  selection. Derived founder, joiner, or wait behavior may be shown as status
-  text, but the user does not choose that behavior in v1.
+  selection. The approval page does not show derived founder, joiner, or wait
+  behavior; that belongs on the post-approval progress surface.
+- R30a. The v1 approval page includes an organization picker when needed,
+  minimal machine context from session facts, optional derived outcome text,
+  and no machine inspection surface, founder-options wizard, or cluster
+  configuration flow.
+- R30b. Session facts on the approval page are display-only context reported by
+  the target machine. Approval binds to the session and attempt id, not to
+  mutable display facts. V1 does not block approval based on stale-looking
+  hostname, reported IP, or platform facts.
+- R30c. V1 does not add a standalone bootstrap-session list. Before approval,
+  a Cloud Bootstrap Session is reached through its approval URL. After
+  approval, the Cloud Bootstrap Redemption appears in the organization's
+  machine-add/progress surface as the machine being added, but it must not be
+  presented as an Accepted Machine Identity until runtime acceptance exists.
 - R31. Cloud UI and public projections redact session secrets, callback tokens,
   join tokens, NATS private seeds, secret hashes, and serialized envelopes while
   showing actionable states.
@@ -357,9 +325,6 @@ operation events; Cloud callback rows are product workflow evidence.
 - KTD5. The Cloud Founder Claim is sticky and serialized by Cloud storage.
   Founder failure requires explicit user action or a new session, not automatic
   promotion.
-- KTD5a. Waiting Cloud Bootstrap Redemptions do not prepare or mutate the local
-  machine. They are Cloud-polling state until a Joiner Bootstrap envelope is
-  available or the waiter reaches a terminal state.
 - KTD6. Cloud callback evidence is product workflow evidence. NATS operations,
   current state, and operation events remain runtime truth.
 - KTD6a. Cloud is optional to Ployz setup, but keeper does not own local
@@ -379,35 +344,9 @@ operation events; Cloud callback rows are product workflow evidence.
 - KTD7a. Cloud Connection is the durable Organization Cluster-level product
   relationship. Redemptions are per-machine bootstrap attempts; they may
   establish a Cloud Connection but do not become the connection themselves.
-- KTD7b. Abandon Founder Attempt is the explicit escape hatch for the wrong
-  first machine. It is Cloud-side founder coordination cleanup, not machine
-  cleanup or waiter promotion.
-- KTD7c. Substrate Uninstall is the local cleanup path for abandoned or
-  unwanted bootstrap material. Keeper owns it as `sudo ployz-keeper uninstall`
-  because keeper owns machine-local substrate mutation. It is substrate-only by
-  default; destructive runtime wiping is a separate future action. Keeper
-  self-removal happens last and can leave a warning-only leftover binary.
-- KTD7d. Uninstall is confirmed by default because it removes local Ployz auth,
-  config, and state. `--yes` exists only for explicit scripting.
-- KTD7e. `--force` on uninstall is local-only. It means "remove local substrate
-  despite accepted-machine evidence"; it does not mean Force Removed Machine.
-- KTD7f. `--force` and `--yes` stay independent because they acknowledge
-  different risks: cluster-membership evidence and interactive confirmation.
-- KTD7g. Accepted-machine uninstall refusal is a hard stop, not an interactive
-  menu. The recovery path is explicit machine removal followed by local
-  uninstall, with `--force` reserved for local cleanup when cluster removal is
-  impossible.
-- KTD7h. Forced local uninstall still warns that cluster cleanup remains
-  required. Keeper may point to `ployzctl machine remove --force <machine>`,
-  but it must not run that command, contact Cloud, or mutate cluster truth.
-- KTD7i. `--yes` skips input only. It must not hide accepted-machine evidence,
-  removal plans, or force warnings from automation logs.
-- KTD7j. Uninstall is idempotent on an already-clean machine only after the
-  accepted-machine evidence check passes. No removable local material means no
-  prompt and exit 0.
-- KTD7k. Uninstall reports partial substrate cleanup failure as nonzero with
-  remaining evidence. Keeper self-removal is warning-only only after every
-  other required item has been removed.
+- KTD7b. Formed-but-unreachable recovery is post-v1. V1 reports terminal
+  action-needed status and stops; it does not add abandon, cleanup, or takeover
+  workflows.
 - KTD8. Provider cloud-init stays on the legacy path for this slice; migrating
   it to Cloud Bootstrap Invites is deferred.
 - KTD9. `ployzctl cloud link` stays out of this implementation because the
@@ -446,10 +385,10 @@ sequenceDiagram
   K->>C: create session (client, attempt id, machine facts)
   C-->>K: browser_url with user_code, session_secret, ttl
   K-->>U: print URL with prefilled code
-  B->>C: authenticated organization approval or rejection
+  B->>C: authenticated organization approval
   loop bounded poll
     K->>C: poll session
-    C-->>K: pending, ready, rejected, or expired
+    C-->>K: pending, ready, expired, or failed
   end
   K->>K: validate envelope before mutation
   alt Founder intent
@@ -470,8 +409,6 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> pending_user_approval: session
   pending_user_approval --> redemption_created: browser approval
-  pending_user_approval --> session_rejected: browser rejection
-  pending_user_approval --> session_expired: ttl elapsed
   redemption_created --> founder_claimed: no Cloud Connection
   redemption_created --> wait_for_founder: founder claim already active
   redemption_created --> join_requested: Cloud Connection exists
@@ -480,13 +417,10 @@ stateDiagram-v2
   founder_callback_received --> cloud_nats_probe
   cloud_nats_probe --> cloud_connection_established
   cloud_nats_probe --> founder_formed_but_unreachable
-  founder_formed_but_unreachable --> founder_abandoned: Abandon Founder Attempt
   cloud_connection_established --> join_requested: waiting redemption retries
-  wait_for_founder --> rejected: founder abandoned
   join_requested --> join_envelope_issued
   join_envelope_issued --> join_callback_received
   join_callback_received --> joined_or_failed_by_core_operation
-  redemption_created --> rejected
   wait_for_founder --> expired
   founder_claimed --> failed
 ```
@@ -511,15 +445,15 @@ stateDiagram-v2
   - `ployz-cloud: src/models/servers/bootstrap-contract.ts` or an equivalent
     generated-type import boundary
 - **Approach:** Add the missing stable attempt id type and fields to session
-  create and poll requests. Tighten callback URL/origin expectations, rejection
-  variants, wait-for-founder retry hints, and failure shapes. Generate
+  create and poll requests. Tighten callback URL/origin expectations,
+  wait-for-founder retry hints, and failure shapes. Generate
   TypeScript from Rust and wire Cloud to consume those DTOs instead of retyping
   the protocol by hand. Leave token DTOs marked as future if they remain in the
   shared type surface.
 - **Test scenarios:**
   - Rust and TypeScript fixtures include session create/poll, pending,
-    rejected, founder, joiner, wait-for-founder, callback success, idempotent
-    replay, and failure examples.
+    founder, joiner, wait-for-founder, callback success, idempotent replay, and
+    failure examples.
   - Unknown JSON fields are rejected where the contract says they should be.
   - Secret wrapper debug output redacts tokens, callback credentials, join
     tokens, and NATS seeds.
@@ -544,8 +478,8 @@ stateDiagram-v2
   non-secret user code prefilled, and polls. The `Use local CLI setup` choice
   skips Cloud client creation, exits nonzero before machine mutation, and prints
   `ployzctl machine init USER@HOST` guidance. The Cloud flow creates or loads a
-  persisted attempt id before Cloud contact, honors pending/wait retry hints
-  with bounded backoff, and surfaces typed rejections.
+  persisted attempt id before Cloud contact, and honors pending/wait retry hints
+  with bounded backoff.
 - **Test scenarios:**
   - Session secrets never appear in request URLs, logs, panic/debug
     output, or user-facing errors.
@@ -592,83 +526,6 @@ stateDiagram-v2
   - Different-cluster material refuses without overwriting credentials.
 - **Verification:** Run keeper local/bootstrap tests.
 
-### U3a. Implement Keeper Substrate Uninstall
-
-- **Goal:** Add `sudo ployz-keeper uninstall` as the local cleanup path for
-  abandoned or unwanted bootstrap material.
-- **Repos and files:**
-  - `ployz-rust: crates/ployz-keeper/src/cli.rs`
-  - `ployz-rust: crates/ployz-keeper/src/main.rs`
-  - `ployz-rust: crates/ployz-keeper/src/local.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_cloud.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/uninstall.rs` (new or equivalent)
-- **Approach:** Add a keeper-owned uninstall command that prints the Ployz
-  substrate units, machine-local Ployz material, and keeper binary path it will
-  remove. Require typing `uninstall` by default and support `--yes` for
-  scripts. Refuse by default when local evidence shows the machine is still an
-  accepted cluster member; support `--force` to override that local refusal
-  without contacting Cloud or mutating cluster truth. Treat accepted machine id
-  state, NATS machine credentials, role authority material, and assigned
-  substrate state as Accepted Machine Evidence. Do not require `--force` for
-  keeper binary presence, generic install residue, failed bootstrap attempt
-  state, abandoned Cloud Bootstrap Session material, or unaccepted bootstrap
-  delivery files. Make accepted-machine refusal a hard stop before the normal
-  confirmation prompt: print the evidence found, tell the user to run
-  `ployzctl machine remove <machine>` followed by
-  `sudo ployz-keeper uninstall`, and show
-  `sudo ployz-keeper uninstall --force` as the local-only escape hatch when
-  cluster removal is impossible. When `--force` is used with Accepted Machine
-  Evidence present, print a second warning before confirmation that local
-  substrate removal does not remove the machine from cluster truth and that
-  cluster cleanup remains explicit operator work; show
-  `ployzctl machine remove --force <machine>` as follow-up guidance when the
-  user still has an operator context. Keep `--force` and `--yes` independent,
-  so forced automation passes `--force --yes`; `--yes` skips waiting for input
-  only and must not suppress the removal plan, accepted-machine evidence, or
-  force warnings. Stop and remove Ployz-owned units and substrate material,
-  remove machine-local Ployz material, then remove the keeper binary last. Do
-  not remove user workloads, Docker images, Docker volumes, service containers,
-  arbitrary networks, or runtime data. Treat final keeper self-removal failure
-  as a warning after substrate uninstall has otherwise completed. If no
-  Accepted Machine Evidence exists and there is no removable Ployz substrate or
-  machine-local Ployz material, report that the machine is already clean and
-  exit 0 without prompting. If any non-keeper substrate or machine-local
-  material removal fails, exit nonzero with a remaining-items list and rerun
-  guidance.
-- **Test scenarios:**
-  - Uninstall without confirmation exits before mutation.
-  - Already-clean machine without accepted-machine evidence exits 0 without
-    prompting.
-  - Already-clean machine with accepted-machine evidence still hard-stops unless
-    `--force` is present.
-  - `--yes` bypasses the prompt and runs the same removal plan.
-  - `--yes` does not bypass accepted-machine refusal without `--force`.
-  - `--force` still requires confirmation unless `--yes` is also present.
-  - Accepted-machine evidence refuses uninstall unless `--force` is present.
-  - Accepted-machine refusal prints the evidence found and exits before the
-    normal uninstall confirmation prompt.
-  - Accepted-machine refusal shows `ployzctl machine remove <machine>` followed
-    by `sudo ployz-keeper uninstall`, plus the `--force` local-only escape
-    hatch.
-  - `--force` with accepted-machine evidence warns that cluster cleanup remains
-    required and shows `ployzctl machine remove --force <machine>` as follow-up
-    guidance.
-  - `--force --yes` still prints accepted-machine evidence and force warnings
-    before removing local substrate without prompting.
-  - Failed or abandoned bootstrap attempt material does not require `--force`.
-  - `--force` does not call Cloud, submit machine removal, revoke cluster NATS
-    authority, release endpoint subnets, or mutate cluster truth.
-  - The removal plan does not include workloads, Docker images, Docker volumes,
-    service containers, arbitrary networks, or runtime data.
-  - Partial non-keeper substrate or machine-local material removal exits
-    nonzero and prints remaining items plus rerun guidance.
-  - Keeper self-removal runs last and failure produces a leftover-binary
-    warning without marking substrate uninstall failed.
-  - After successful substrate uninstall, keeper bootstrap preflight treats the
-    machine as fresh unless unrelated Ployz evidence remains.
-- **Verification:** Run keeper CLI, local/bootstrap, and uninstall tests.
-
 ### U4. Wire Cloud-Mediated Founder Bootstrap and Callback
 
 - **Goal:** Execute a founder envelope locally, authorize Cloud's public NATS
@@ -714,12 +571,8 @@ stateDiagram-v2
 - **Approach:** Validate runtime NATS URL, trusted CA, join token, Join
   credential delivery, release selection, and callback fields before mutation.
   Reuse the existing join executor. Implement wait-for-founder as bounded
-  retry/poll behavior that respects Cloud retry hints and session expiry; while
-  waiting, print that keeper is waiting for the first machine to finish and do
-  not mutate local substrate or machine identity material.
+  retry/poll behavior that respects Cloud retry hints and session expiry.
 - **Test scenarios:**
-  - Wait-for-founder performs no local mutation before a Joiner Bootstrap
-    envelope is returned.
   - Valid joiner envelope writes trusted CA, connects as Join, redeems the join
     token, reports the join result, and posts a Cloud-safe callback.
   - Missing CA, bad URL, bad Join seed, expired join token, and callback failure
@@ -728,7 +581,7 @@ stateDiagram-v2
     callback payload before posting, exits failed, starts no background retry
     worker, and a rerun replays that payload.
   - Joiner callback excludes join token and Join credential.
-  - Wait-for-founder retries until ready, rejected, or expired.
+  - Wait-for-founder retries until ready, expired, or failed.
 - **Verification:** Run keeper join and Cloud bootstrap tests.
 
 ### U6. Add Cloud Session, Redemption, and Secret Handling
@@ -744,7 +597,7 @@ stateDiagram-v2
 - **Approach:** Add tables for sessions, redemptions, founder claims, callback
   credentials, callback outcomes, Cloud Connections, and Cloud NATS client
   material. Enforce organization scoping after browser approval, session secret
-  hash storage, callback token hash storage, expiry, revocation, idempotent
+  hash storage, callback token hash storage, expiry, idempotent
   terminal callback semantics, transactional founder claim uniqueness, and one
   durable Cloud Connection relationship per Organization Cluster created only
   after reachability succeeds. Pre-connection endpoint, CA, and Cloud client
@@ -758,8 +611,6 @@ stateDiagram-v2
     modeled as redemptions.
   - No Cloud Connection row is created before reachability succeeds.
   - Concurrent founder requests produce exactly one founder claim; losers wait.
-  - Abandon Founder Attempt marks the formed-but-unreachable Founder Claim
-    terminal abandoned and permits a later new session to become founder.
   - Replayed identical callbacks are accepted; conflicting callbacks are
     rejected without mutating the original terminal result.
 - **Verification:** Run Cloud model tests for bootstrap sessions, redemptions,
@@ -814,8 +665,6 @@ stateDiagram-v2
     redemption or Founder Claim formed-but-unreachable, not connected.
   - Callback-reported endpoint, CA, and Cloud client material remain on the
     founder redemption or Founder Claim until reachability succeeds.
-  - Abandon Founder Attempt after formed-but-unreachable does not dial NATS,
-    does not create a Cloud Connection, and does not mutate the local machine.
   - Cloud rejects loopback, private, link-local, metadata IP, bad DNS rebinding,
     bad TLS CA, wrong NATS principal, and TCP-only reachability.
   - Successful founder reachability establishes the Organization Cluster's
@@ -840,32 +689,29 @@ stateDiagram-v2
 - **Approach:** Add the browser approval surface for a session URL with the
   non-secret user code prefilled. The user chooses the organization, then Cloud
   turns the session into a redemption for that organization's Organization
-  Cluster when they click `Connect this machine`. The page can show derived
-  founder, joiner, or wait context as status text, but it does not make that
-  behavior a v1 choice.
-  Update public projections and UI statuses for waiting-for-founder, founder
+  Cluster when they click `Connect this machine`. Keep the approval page to an
+  organization picker when needed, minimal machine facts, and the one approval
+  action. After approval, project the redemption into the existing
+  machine-add/progress surface with statuses for waiting-for-founder, founder
   installing, Cloud Connection verifying, founder formed-but-unreachable, join
-  requested, joining, connected, failed, cancelled, and expired. Do not
-  introduce client-side navigation network requests in `beforeLoad`, and
-  project TanStack DB live rows before strict schema parsing.
+  requested, joining, connected, failed, and expired. Do not add a standalone
+  bootstrap-session list/detail surface. Do not introduce client-side
+  navigation network requests in `beforeLoad`, and project TanStack DB live
+  rows before strict schema parsing.
 - **Test scenarios:**
   - Browser approval creates a redemption only after organization selection and
     `Connect this machine`.
-  - Browser rejection or cancellation before `Connect this machine` creates no
-    redemption, marks the session rejected, and makes keeper polling exit with
-    rerun guidance.
   - Approval page opens with the user code prefilled and still rejects missing,
     expired, or unknown session codes.
-  - Formed-but-unreachable founder status offers `Retry reachability` and
-    `Abandon founder attempt` actions with copy that says the original machine
-    remains local/unmanaged unless the user cleans it up.
-  - Derived founder, joiner, or wait context is informational and is not a
-    user-selectable v1 option.
-  - Session detail/list projections show actionable status without exposing the
-    session secret, callback token, join token, NATS private seed, secret hashes,
-    or serialized envelopes.
-  - UI/API list and detail projections do not expose callback tokens, join
-    tokens, NATS private seeds, secret hashes, or serialized envelopes.
+  - Approval UI has no explicit `Reject` action; closing the page leaves the
+    session pending until expiry.
+  - Approval UI stays minimal and does not show derived founder, joiner, or wait
+    behavior.
+  - Approved redemptions appear as machines being added in the existing
+    machine-add/progress surface; unapproved sessions are not listed in a
+    standalone session-management surface.
+  - UI/API projections do not expose callback tokens, join tokens, NATS private
+    seeds, secret hashes, or serialized envelopes.
 - **Verification:** Run Cloud session approval, projection, and UI tests.
   Before PR, run `pnpm pr:check`.
 
@@ -877,8 +723,8 @@ stateDiagram-v2
    contract before either side implements route behavior.
 2. Land U6 and U7 in `ployz-cloud` with fake decision outputs so keeper can
    integration-test against stable routes.
-3. Land U2, U3, and U3a in `ployz-rust` to make keeper session polling real,
-   locally safe, and locally cleanup-capable.
+3. Land U2 and U3 in `ployz-rust` to make keeper session polling real and
+   locally safe.
 4. Land U4 and U5 in `ployz-rust` to execute founder/joiner envelopes.
 5. Land U8 in `ployz-cloud` so founder usability and join requests use direct
    TLS NATS.
@@ -909,10 +755,6 @@ stateDiagram-v2
   its direct TLS NATS endpoint, when the reachability timeout expires, then the
   founder redemption or Founder Claim is formed-but-unreachable and waiting
   redemptions are not promoted to founder.
-- AE4a. Given the founder is formed-but-unreachable because the user chose an
-  internal machine, when the user abandons the founder attempt, then Cloud marks
-  that Founder Claim terminal abandoned, rejects waiting redemptions, creates no
-  Cloud Connection, and a later new Cloud Bootstrap Session can become founder.
 - AE5. Given keeper crashes after session approval but before callback, when it
   restarts on the same machine, then it resumes the same attempt id and Cloud
   returns the same redemption/envelope instead of creating another machine add.
@@ -940,37 +782,6 @@ stateDiagram-v2
   choice, then no Cloud session, redemption, callback token, Cloud Founder
   Claim, local founder bootstrap, or Operator Context is created, keeper exits
   nonzero, and the user sees `ployzctl machine init USER@HOST` guidance.
-- AE9. Given a user runs `sudo ployz-keeper uninstall`, when they do not
-  confirm the prompt, then no local mutation occurs. Given they type the
-  confirmation or pass `--yes`, then keeper removes Ployz substrate and
-  machine-local Ployz material, attempts keeper self-removal last, does not
-  remove workload/runtime data, and reports leftover keeper binary as a warning
-  if self-removal fails.
-- AE9a. Given local evidence says the machine is still an accepted cluster
-  member, when the user runs `sudo ployz-keeper uninstall`, then keeper refuses
-  before mutation or the normal confirmation prompt, prints the evidence found,
-  and shows `ployzctl machine remove <machine>` followed by
-  `sudo ployz-keeper uninstall` as the normal recovery path plus
-  `sudo ployz-keeper uninstall --force` as the local-only escape hatch. Given
-  the user reruns with `--force`, keeper prints a second warning that cluster
-  cleanup remains required, shows `ployzctl machine remove --force <machine>`
-  as follow-up guidance, and still requires confirmation before removing local
-  substrate. Given the user reruns with `--force --yes`, keeper still prints
-  the accepted-machine evidence and cluster-cleanup warning, then removes local
-  substrate without prompting but does not perform Force Removed Machine or
-  mutate cluster truth.
-- AE9b. Given no Accepted Machine Evidence and no removable Ployz substrate or
-  machine-local Ployz material remain, when the user runs
-  `sudo ployz-keeper uninstall`, then keeper reports that the machine is
-  already clean and exits 0 without prompting. Given Accepted Machine Evidence
-  exists, the already-clean no-op path is not used and the accepted-machine
-  refusal rules apply.
-- AE9c. Given uninstall removes some non-keeper substrate or machine-local
-  material but fails to remove other required items, when the command finishes,
-  then it exits nonzero and prints the remaining-items list plus rerun guidance.
-  Given every non-keeper required item is gone but keeper self-removal fails,
-  then it exits 0 with a leftover-binary warning.
-
 ---
 
 ## Risks and Mitigations
@@ -1007,7 +818,7 @@ stateDiagram-v2
 - Tunnels, private overlay transport, or NAT traversal.
 - Automatic public-IP preflight in keeper as proof of Cloud reachability.
 - `ployzctl cloud link` and `ployzctl machine init --link-cloud`.
-- Destructive runtime wipe during uninstall.
+- Substrate Uninstall and destructive runtime wipe.
 - Control-Plane Core recovery UX.
 - Re-adoption, repair, or takeover of already Bootstrapped Machines.
 - Multi-region Cloud reachability probes.

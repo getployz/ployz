@@ -8,6 +8,7 @@
 pub mod artifacts;
 pub mod cli;
 pub mod cloud_bootstrap;
+pub mod cloud_client;
 pub mod command;
 pub mod executor;
 pub mod fsx;

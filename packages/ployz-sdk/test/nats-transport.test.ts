@@ -23,7 +23,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   ]);
   const transport = new PloyzNatsTransport(nats, { requestTimeoutMs: 1234 });
 
-  const response = await transport.deploySubmit(deploySubmitRequest(deployInput()));
+  const response = await transport.request("deploy.submit", deploySubmitRequest(deployInput()));
 
   assert.deepEqual(response, { status: "ok", value: acceptedOperation("op_123") });
   assert.equal(nats.requests[0].subject, "plz.v1.svc.api.deploy.submit");
@@ -54,7 +54,7 @@ test("NATS transport surfaces service error headers before response decoding", a
   const transport = new PloyzNatsTransport(nats);
 
   await assert.rejects(
-    transport.deploySubmit(deploySubmitRequest(deployInput())),
+    transport.request("deploy.submit", deploySubmitRequest(deployInput())),
     (error: unknown) =>
       error instanceof PloyzNatsTransportError &&
       error.endpoint === "deploy.submit" &&
@@ -76,7 +76,7 @@ test("NATS transport rejects invalid service error headers", async () => {
   const transport = new PloyzNatsTransport(nats);
 
   await assert.rejects(
-    transport.opsStatus({ operation_id: operationId("op_123") }),
+    transport.request("ops.status", { operation_id: operationId("op_123") }),
     (error: unknown) =>
       error instanceof PloyzNatsTransportError &&
       error.endpoint === "ops.status" &&
@@ -102,7 +102,7 @@ test("NATS transport covers internal machine join report endpoint", async () => 
     join_token: machineJoinToken("join_once_123"),
     outcome: { outcome: "completed" },
   };
-  const response = await transport.machineJoinReport(request);
+  const response = await transport.request("machine.join.report", request);
 
   assert.deepEqual(response, {
     status: "ok",

@@ -5,13 +5,13 @@ use crate::machine_runtime::protocol::{
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineEnsureEndpointNetworkDomainError,
+    MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
+    MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkDomainError,
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
     MachineEnsureEndpointNetworkRpcResponse, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
-    MachineRunContainerOutcome, MachineWireGuardEbpfPrepareDomainError,
-    MachineWireGuardEbpfPreparePhase, MachineWireGuardEbpfPrepareRpcRequest,
-    MachineWireGuardEbpfPrepareRpcResponse,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
+    MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
 };
 use crate::machine_runtime::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -20,8 +20,8 @@ use crate::machine_runtime::runner::{
 };
 use crate::services::{machine_endpoint_spec, machine_runtime_service_base};
 use ployz_core::dataplane::{
-    WireGuardEbpfEndpointRoute, WireGuardEbpfMachineReady, WireGuardEbpfPrepareError,
-    WireGuardEbpfReady, WireGuardPeer, WireGuardPublicKey,
+    PloyzNativeMeshMachineReady, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
+    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::ops::{FailureMessage, OperatorHint};
@@ -41,7 +41,7 @@ pub async fn start_machine_runtime_service<R, P, L>(
 ) -> Result<RunningNatsService, MachineServiceRuntimeError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
-    P: Clone + MachineWireGuardEbpfPreparer + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
     let spec = machine_runtime_service_base(&machine_id);
@@ -86,7 +86,7 @@ where
         &machine_id,
         MachineServiceEndpoint::DataplanePrepare,
         preparer,
-        handle_wireguard_ebpf_prepare,
+        handle_dataplane_prepare,
     )
     .await?;
     bind_machine_endpoint(
@@ -491,74 +491,78 @@ fn inspect_hint(container_id: &ContainerId) -> OperatorHint {
         .expect("generated inspect hint is non-empty")
 }
 
-pub trait MachineWireGuardEbpfPreparer {
+pub trait MachinePloyzNativeMeshPreparer {
     fn read_wireguard_public_key(
         &self,
     ) -> impl Future<Output = Result<WireGuardPublicKey, WireGuardEbpfPrepareError>> + Send;
 
-    fn prepare_wireguard_ebpf(
+    fn prepare_ployz_native_mesh(
         &self,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
-    ) -> impl Future<Output = Result<WireGuardEbpfReady, WireGuardEbpfPrepareError>> + Send;
+    ) -> impl Future<Output = Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError>> + Send;
 }
 
-async fn handle_wireguard_ebpf_prepare<P>(
+async fn handle_dataplane_prepare<P>(
     machine_id: MachineId,
     preparer: P,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
-    P: MachineWireGuardEbpfPreparer,
+    P: MachinePloyzNativeMeshPreparer,
 {
-    let request = match decode_json_request::<MachineWireGuardEbpfPrepareRpcRequest>(&request) {
+    let request = match decode_json_request::<MachineDataplanePrepareRpcRequest>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
-
     if !request
         .machines
         .iter()
         .any(|candidate| candidate == &machine_id)
     {
-        return machine_domain_error(MachineWireGuardEbpfPrepareRpcResponse::DomainError {
+        return machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
             machine_id: machine_id.clone(),
-            error: MachineWireGuardEbpfPrepareDomainError::Unavailable {
-                component: ployz_core::dataplane::WireGuardEbpfComponent::WireGuard,
+            error: MachinePloyzNativeMeshPrepareDomainError::Unavailable {
+                component: ployz_core::dataplane::PloyzNativeMeshComponent::WireGuard,
                 message: failure_message(
-                    "wireguard/eBPF prepare request did not target this machine",
+                    "ployz native mesh prepare request did not target this machine",
                 ),
             },
         });
     }
 
-    match request.phase {
-        MachineWireGuardEbpfPreparePhase::ReadPublicKey => {
+    match request.request {
+        MachinePloyzNativeMeshPrepareRpcRequest::ReadPublicKey => {
             match preparer.read_wireguard_public_key().await {
-                Ok(public_key) => {
-                    machine_success(MachineWireGuardEbpfPrepareRpcResponse::PublicKey {
+                Ok(public_key) => machine_success(MachineDataplanePrepareRpcResponse::Ok(
+                    MachinePloyzNativeMeshPrepareRpcOk::PublicKey {
                         machine_id,
                         public_key,
-                    })
-                }
+                    },
+                )),
                 Err(error) => {
-                    machine_domain_error(MachineWireGuardEbpfPrepareRpcResponse::DomainError {
+                    machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
                         machine_id,
                         error: error.into(),
                     })
                 }
             }
         }
-        MachineWireGuardEbpfPreparePhase::PrepareDataplane => {
+        MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane {
+            endpoint_routes,
+            peers,
+        } => {
             match preparer
-                .prepare_wireguard_ebpf(&request.endpoint_routes, &request.peers)
+                .prepare_ployz_native_mesh(&endpoint_routes, &peers)
                 .await
             {
-                Ok(ready) => machine_success(MachineWireGuardEbpfPrepareRpcResponse::Ok {
-                    readiness: WireGuardEbpfMachineReady { machine_id, ready },
-                }),
+                Ok(ready) => machine_success(MachineDataplanePrepareRpcResponse::Ok(
+                    MachinePloyzNativeMeshPrepareRpcOk::Ready {
+                        readiness: PloyzNativeMeshMachineReady { machine_id, ready },
+                    },
+                )),
                 Err(error) => {
-                    machine_domain_error(MachineWireGuardEbpfPrepareRpcResponse::DomainError {
+                    machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
                         machine_id,
                         error: error.into(),
                     })

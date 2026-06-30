@@ -278,6 +278,13 @@ fn machine_join_bundle() -> MachineJoinBundle {
     }
 }
 
+fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
+    ployz_core::install::MachineJoinSecretDelivery {
+        nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(TEST_SEED)
+            .expect("valid nats credentials"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // machine init (U4)
 // ---------------------------------------------------------------------------
@@ -556,6 +563,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
                         join_bundle: machine_join_bundle(),
                         join_token: MachineJoinToken::try_new("join_once_123")
                             .expect("valid join token"),
+                        join_secret_delivery: machine_join_secret_delivery(),
                     },
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -691,6 +699,7 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
                         join_bundle: machine_join_bundle(),
                         join_token: MachineJoinToken::try_new("join_once_123")
                             .expect("valid join token"),
+                        join_secret_delivery: machine_join_secret_delivery(),
                     },
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -782,6 +791,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                         join_bundle: machine_join_bundle(),
                         join_token: MachineJoinToken::try_new("join_once_123")
                             .expect("valid join token"),
+                        join_secret_delivery: machine_join_secret_delivery(),
                     },
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))

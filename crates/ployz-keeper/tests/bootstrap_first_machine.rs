@@ -152,6 +152,7 @@ fn first_machine_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
     assert!(
         control_env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/controller.seed\n")
     );
+    assert!(control_env.contains("PLOYZ_JOIN_NKEY_SEED_FILE=/var/lib/ployz/nats/join.seed\n"));
 
     // Machine and gateway point at the fixed machine.seed path, which does not
     // exist at install time — there is no controller-seed fallback.

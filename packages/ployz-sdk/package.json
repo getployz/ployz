@@ -4,10 +4,12 @@
   "type": "module",
   "private": true,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./generated": "./src/generated.ts"
   },
   "scripts": {
     "generate:types": "cargo run -p ployz-sdk-types --bin export-typescript > src/generated.ts",
+    "generate:fixture": "cargo run -p ployz-sdk-types --bin export-operation-contract > test/fixtures/operation-contract.json",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts"
   },

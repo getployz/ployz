@@ -138,6 +138,7 @@ pub async fn machine_add(
         bootstrap_url: material.bootstrap_url,
         join_bundle: accepted.join_bundle,
         join_token: raw_token,
+        join_secret_delivery: material.join_secret_delivery,
     })
 }
 

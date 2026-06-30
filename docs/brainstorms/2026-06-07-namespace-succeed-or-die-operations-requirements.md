@@ -216,6 +216,5 @@ This brainstorm is explicitly optimized for conceptual simplicity and LOC reduct
 
 - `VISION.md`
 - `AGENTS.md`
-- `docs/plans/2026-06-04-001-refactor-nats-greenfield-control-plane-plan.md`
 - `.workflow/jetstream-disposable-audit/final_report.md`
 - External comparison: Uncloud deploy behavior for live-container diffing, ordered container operations, and failed-container retention.
