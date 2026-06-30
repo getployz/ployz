@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
-use crate::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+use crate::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId};
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{
@@ -15,6 +15,52 @@ use crate::state::{
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployRequest {
+    pub namespace_id: NamespaceId,
+    pub target_revision: RevisionId,
+    pub services: Vec<DeployServiceSpec>,
+}
+
+impl DeployRequest {
+    #[must_use]
+    pub fn primary_service(&self) -> Option<&DeployServiceSpec> {
+        self.services.first()
+    }
+
+    #[must_use]
+    pub fn primary_service_id(&self) -> Option<&ServiceId> {
+        self.primary_service().map(|service| &service.service_id)
+    }
+
+    #[must_use]
+    pub fn service_requests(&self) -> Vec<DeployServiceRequest> {
+        self.services
+            .iter()
+            .map(|service| DeployServiceRequest {
+                service_id: service.service_id.clone(),
+                target_revision: self.target_revision.clone(),
+                image: service.image.clone(),
+                replicas: service.replicas,
+                route: service.route.clone(),
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployServiceSpec {
+    pub service_id: ServiceId,
+    pub image: ImageReference,
+    pub replicas: ReplicaCount,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<DeployRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployServiceRequest {
     pub service_id: ServiceId,
     pub target_revision: RevisionId,
     pub image: ImageReference,
@@ -33,7 +79,7 @@ pub struct DeployRoute {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPlanningInput {
-    pub request: DeployRequest,
+    pub request: DeployServiceRequest,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -62,7 +108,7 @@ pub struct DeployCleanupContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput {
-    pub request: DeployRequest,
+    pub request: DeployServiceRequest,
     pub active_service: Option<ActiveServiceState>,
     pub active_route: Option<ActiveRouteState>,
     pub eligible_machines: Vec<MachineId>,
@@ -71,7 +117,7 @@ pub struct DeployPreparationInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeploy {
-    pub request: DeployRequest,
+    pub request: DeployServiceRequest,
     pub expected_active: ExpectedActiveService,
     pub route_commit: Option<ActiveRouteCommitRequest>,
     pub eligible_machines: Vec<MachineId>,
@@ -83,9 +129,9 @@ pub struct PreparedDeploy {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployPlan {
-    pub service_id: ServiceId,
+    pub namespace_id: NamespaceId,
     pub target_revision: RevisionId,
-    pub steps: Vec<DeployPlanStep>,
+    pub services: Vec<DeployServicePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleanup_containers: Vec<DeployCleanupContainer>,
 }
@@ -94,8 +140,9 @@ impl DeployPlan {
     #[must_use]
     pub fn target_machines(&self) -> Vec<MachineId> {
         let mut machines = self
-            .steps
+            .services
             .iter()
+            .flat_map(|service| service.steps.iter())
             .map(|step| match step {
                 DeployPlanStep::UseExistingContainer { machine_id, .. }
                 | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
@@ -105,6 +152,14 @@ impl DeployPlan {
         machines.dedup();
         machines
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployServicePlan {
+    pub service_id: ServiceId,
+    pub steps: Vec<DeployPlanStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,7 +260,7 @@ pub fn prepare_deploy(
 }
 
 fn expected_active_service(
-    request: &DeployRequest,
+    request: &DeployServiceRequest,
     active_service: Option<ActiveServiceState>,
 ) -> Result<ExpectedActiveService, DeployPreparationError> {
     let Some(active_service) = active_service else {
@@ -225,7 +280,7 @@ fn expected_active_service(
 }
 
 fn existing_replicas(
-    request: &DeployRequest,
+    request: &DeployServiceRequest,
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<ExistingServiceReplica> {
     observed_machines
@@ -243,7 +298,7 @@ fn existing_replicas(
 }
 
 fn cleanup_candidates(
-    request: &DeployRequest,
+    request: &DeployServiceRequest,
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
     observed_machines
@@ -281,7 +336,7 @@ fn reusable_for_route(
 }
 
 fn active_route_commit_request(
-    request: &DeployRequest,
+    request: &DeployServiceRequest,
     active_route: Option<ActiveRouteState>,
 ) -> Result<Option<ActiveRouteCommitRequest>, DeployPreparationError> {
     let Some(route) = request.route.clone() else {
@@ -317,6 +372,55 @@ fn active_route_commit_request(
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
+    let service_plan = plan_deploy_service(input)?;
+    let target_revision = service_plan.target_revision;
+    Ok(DeployPlan {
+        namespace_id: NamespaceId::try_new(service_plan.service_id.as_str().to_owned())
+            .expect("service id is a valid namespace id"),
+        target_revision,
+        services: vec![DeployServicePlan {
+            service_id: service_plan.service_id,
+            steps: service_plan.steps,
+        }],
+        cleanup_containers: service_plan.cleanup_containers,
+    })
+}
+
+pub fn plan_namespace_deploy(
+    namespace_id: NamespaceId,
+    target_revision: RevisionId,
+    services: Vec<DeployPlanningInput>,
+) -> Result<DeployPlan, DeployPlanError> {
+    let mut service_plans = Vec::new();
+    let mut cleanup_containers = Vec::new();
+    for input in services {
+        let plan = plan_deploy_service(input)?;
+        service_plans.push(DeployServicePlan {
+            service_id: plan.service_id,
+            steps: plan.steps,
+        });
+        cleanup_containers.extend(plan.cleanup_containers);
+    }
+
+    Ok(DeployPlan {
+        namespace_id,
+        target_revision,
+        services: service_plans,
+        cleanup_containers,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploySingleServicePlan {
+    pub service_id: ServiceId,
+    pub target_revision: RevisionId,
+    pub steps: Vec<DeployPlanStep>,
+    pub cleanup_containers: Vec<DeployCleanupContainer>,
+}
+
+fn plan_deploy_service(
+    input: DeployPlanningInput,
+) -> Result<DeploySingleServicePlan, DeployPlanError> {
     let target_replicas = usize::from(input.request.replicas.get());
     let mut existing_replicas = input.existing_replicas;
     existing_replicas.sort_by(|left, right| {
@@ -376,7 +480,7 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
         left.machine_id == right.machine_id && left.container_id == right.container_id
     });
 
-    Ok(DeployPlan {
+    Ok(DeploySingleServicePlan {
         service_id: input.request.service_id,
         target_revision: input.request.target_revision,
         steps,

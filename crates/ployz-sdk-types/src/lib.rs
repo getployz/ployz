@@ -32,11 +32,13 @@ pub use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference,
-    ImageReferenceError, ReplicaCount, ReplicaCountError, ReplicaSlot,
+    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
+    DeployServicePlan, DeployServiceSpec, ImageReference, ImageReferenceError, ReplicaCount,
+    ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
-    CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
+    CertId, ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId,
+    SubjectTokenError,
 };
 pub use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
@@ -892,6 +894,10 @@ pub struct AcceptedOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploySubmitError {
+    InvalidTarget {
+        operation_id: OperationId,
+        message: FailureMessage,
+    },
     Unavailable {
         operation_id: OperationId,
         source: OperationSubmitUnavailableSource,

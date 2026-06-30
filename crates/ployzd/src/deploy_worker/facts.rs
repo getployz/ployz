@@ -9,7 +9,7 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
 use std::time::Duration;
 
-use super::DeployExecutionFacts;
+use super::{DeployExecutionFacts, DeployServiceExecutionFacts};
 
 const MAX_CONCURRENT_OBSERVATION_READS: usize = 16;
 
@@ -36,15 +36,17 @@ pub async fn load_deploy_execution_facts_from_nats(
     observations: &AsyncNatsObservationStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let active_service = core_state
-        .active_service(&request.service_id)
-        .await
-        .map_err(|source| DeployFactLoadError::ActiveServiceRead {
-            service_id: request.service_id.clone(),
-            message: source.to_string(),
-        })?;
-    let active_route =
-        match &request.route {
+    let service_requests = request.service_requests();
+    let mut service_facts = Vec::new();
+    for service in &service_requests {
+        let active_service = core_state
+            .active_service(&service.service_id)
+            .await
+            .map_err(|source| DeployFactLoadError::ActiveServiceRead {
+                service_id: service.service_id.clone(),
+                message: source.to_string(),
+            })?;
+        let active_route = match &service.route {
             Some(route) => Some(core_state.active_route(&route.target).await.map_err(
                 |source| DeployFactLoadError::ActiveRouteRead {
                     route: route.target.clone(),
@@ -54,14 +56,20 @@ pub async fn load_deploy_execution_facts_from_nats(
             None => None,
         }
         .flatten();
+        service_facts.push(DeployServiceExecutionFacts {
+            active_service,
+            active_route,
+        });
+    }
     let machine_scope = load_active_machine_scope(core_state, machine_scope).await?;
     let observed_machines =
         load_machine_snapshots(observations, &machine_scope.observed_machine_ids).await?;
-    let dataplane_machines =
-        routed_dataplane_machines(request, machine_scope.observed_machine_ids.clone());
+    let dataplane_machines = routed_dataplane_machines(
+        &service_requests,
+        machine_scope.observed_machine_ids.clone(),
+    );
     Ok(DeployExecutionFacts {
-        active_service,
-        active_route,
+        services: service_facts,
         eligible_machines: machine_scope.eligible_machines,
         dataplane_machines,
         observed_machines,
@@ -70,10 +78,10 @@ pub async fn load_deploy_execution_facts_from_nats(
 }
 
 fn routed_dataplane_machines(
-    request: &DeployRequest,
+    services: &[ployz_core::deploy::DeployServiceRequest],
     fallback_machines: Vec<MachineId>,
 ) -> Vec<MachineId> {
-    if request.route.is_none() {
+    if services.iter().all(|service| service.route.is_none()) {
         return Vec::new();
     }
 
