@@ -102,7 +102,7 @@ pub async fn start_machine_process_runtime_with_ports<R, P, L>(
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
     P: Clone
-        + crate::machine_runtime::service::MachineWireGuardEbpfPreparer
+        + crate::machine_runtime::service::MachinePloyzNativeMeshPreparer
         + Send
         + Sync
         + 'static,
@@ -415,8 +415,8 @@ mod tests {
         MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
     };
     use ployz_core::dataplane::{
-        EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
-        WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+        EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
+        WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
     use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
     use ployz_core::machine_runtime::ManagedContainerKind;
@@ -696,7 +696,7 @@ mod tests {
     #[derive(Clone)]
     struct ReadyWireGuardEbpf;
 
-    impl crate::machine_runtime::service::MachineWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+    impl crate::machine_runtime::service::MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
         async fn read_wireguard_public_key(
             &self,
         ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {
@@ -708,12 +708,12 @@ mod tests {
             )
         }
 
-        async fn prepare_wireguard_ebpf(
+        async fn prepare_ployz_native_mesh(
             &self,
             _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
             _peers: &[ployz_core::dataplane::WireGuardPeer],
-        ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
-            Ok(WireGuardEbpfReady {
+        ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
+            Ok(PloyzNativeMeshReady {
                 wireguard: WireGuardReady {
                     public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
                         "test-public-key",

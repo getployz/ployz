@@ -108,6 +108,14 @@ impl RoleNatsCredentials {
             RoleNatsSeedSource::SharedSeedFile(path) => path.clone(),
         }
     }
+
+    #[must_use]
+    pub fn join_seed_file(&self) -> Option<PathBuf> {
+        match &self.seeds {
+            RoleNatsSeedSource::ClusterMaterial(material) => Some(material.join_seed_file()),
+            RoleNatsSeedSource::SharedSeedFile(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

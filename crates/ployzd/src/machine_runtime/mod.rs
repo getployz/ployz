@@ -7,6 +7,7 @@
 //! - `process`: the machine role process runtime and observation loop.
 
 pub mod client;
+mod ployz_native_mesh;
 pub mod process;
 pub mod protocol;
 pub mod runner;

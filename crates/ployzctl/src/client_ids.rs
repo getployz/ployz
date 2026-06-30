@@ -1,8 +1,6 @@
 //! Client-side operation IDs for ergonomic commands.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::ids::{MachineId, OperationId, ServiceId, SubjectTokenError};
 use ployz_core::ops::OperationIdempotencyKey;
@@ -54,12 +52,7 @@ fn generate_client_operation_id(
 }
 
 fn generated_id_suffix() -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{nanos:x}-{sequence}")
+    nuid::next().to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

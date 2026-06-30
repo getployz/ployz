@@ -1,6 +1,8 @@
 //! Keeper subprocess execution.
 
 use std::ffi::OsString;
+use std::fs::File;
+use std::io;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -74,25 +76,22 @@ impl KeeperCommandRunner for SystemKeeperCommandRunner {
     }
 
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
-        let output = run_os_command_with_display(
-            "curl",
-            &[
-                OsString::from("-fsSL"),
-                OsString::from("--output"),
-                destination.as_os_str().to_os_string(),
-                OsString::from("--"),
-                OsString::from(url),
-            ],
-            "curl -fsSL --output <artifact> -- <redacted-url>".to_owned(),
-            self.timeout,
-        )?;
-        if output.status.success() {
-            return Ok(());
-        }
-        Err(failure_message(format!(
-            "artifact download failed: {}",
-            output.failure_summary()
-        )))
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(self.timeout))
+            .timeout_connect(Some(self.timeout.min(Duration::from_secs(5))))
+            .build()
+            .into();
+        let mut response = agent
+            .get(url)
+            .call()
+            .map_err(|error| failure_message(format!("artifact download failed: {error}")))?;
+        let mut destination = File::create(destination).map_err(|error| {
+            failure_message(format!("failed to create downloaded artifact: {error}"))
+        })?;
+        io::copy(&mut response.body_mut().as_reader(), &mut destination).map_err(|error| {
+            failure_message(format!("failed to write downloaded artifact: {error}"))
+        })?;
+        Ok(())
     }
 
     fn docker_info(&mut self) -> Result<(), FailureMessage> {

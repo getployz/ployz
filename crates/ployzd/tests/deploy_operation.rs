@@ -2,7 +2,7 @@
 mod fixtures;
 
 use fixtures::*;
-use ployz_core::dataplane::{DataplaneMember, DataplaneProviderKind};
+use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
@@ -874,8 +874,10 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::DataplaneUnavailable {
                     machine_id: machine_id("machine_b"),
-                    provider: DataplaneProviderKind::PloyzNativeMesh,
-                    component: ployz_core::dataplane::WireGuardEbpfComponent::WireGuard,
+                    provider_failure:
+                        ployz_core::dataplane::DataplaneProviderFailure::PloyzNativeMesh {
+                            component: ployz_core::dataplane::PloyzNativeMeshComponent::WireGuard,
+                        },
                     message: failure_message("wireguard interface failed"),
                     retained_artifacts: Vec::new(),
                 }

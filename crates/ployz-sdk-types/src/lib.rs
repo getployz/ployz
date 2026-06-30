@@ -26,10 +26,10 @@ pub use ployz_core::cert::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplanePrepareProviderReport, DataplaneProviderKind, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, MachineEndpointSubnet, WireGuardEbpfComponent,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    DataplaneMember, DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    MachineEndpointSubnet, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference,
@@ -144,6 +144,7 @@ pub struct MachineAddAccepted {
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_bundle: MachineJoinBundle,
     pub join_token: MachineJoinToken,
+    pub join_secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -581,30 +582,6 @@ impl fmt::Debug for MachineJoinToken {
 pub const CLOUD_BOOTSTRAP_PROTOCOL_VERSION: u16 = 1;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(type = "Brand<string, \"CloudBootstrapToken\">")]
-#[serde(transparent)]
-pub struct CloudBootstrapToken(String);
-
-impl CloudBootstrapToken {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, CloudBootstrapSecretError> {
-        let value = value.into();
-        validate_cloud_bootstrap_secret(&value)?;
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn secret(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for CloudBootstrapToken {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("CloudBootstrapToken([redacted])")
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(type = "Brand<string, \"CloudBootstrapSessionSecret\">")]
 #[serde(transparent)]
 pub struct CloudBootstrapSessionSecret(String);
@@ -679,6 +656,33 @@ impl fmt::Debug for CloudBootstrapRedemptionId {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(type = "Brand<string, \"CloudBootstrapAttemptId\">")]
+#[serde(transparent)]
+pub struct CloudBootstrapAttemptId(String);
+
+impl CloudBootstrapAttemptId {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, CloudBootstrapSecretError> {
+        let value = value.into();
+        validate_cloud_bootstrap_secret(&value)?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CloudBootstrapAttemptId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("CloudBootstrapAttemptId")
+            .field(&self.0)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudBootstrapSecretError {
     Empty,
@@ -727,6 +731,7 @@ pub struct CloudBootstrapMachineFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudBootstrapSessionCreateRequest {
+    pub attempt_id: CloudBootstrapAttemptId,
     pub client: CloudBootstrapClientInfo,
     pub machine: CloudBootstrapMachineFacts,
 }
@@ -744,15 +749,8 @@ pub struct CloudBootstrapSessionCreated {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudBootstrapSessionPollRequest {
+    pub attempt_id: CloudBootstrapAttemptId,
     pub session_secret: CloudBootstrapSessionSecret,
-    pub machine: CloudBootstrapMachineFacts,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct CloudBootstrapTokenRedeemRequest {
-    pub cloud_token: CloudBootstrapToken,
-    pub client: CloudBootstrapClientInfo,
     pub machine: CloudBootstrapMachineFacts,
 }
 
@@ -765,19 +763,19 @@ pub enum CloudBootstrapDecision {
     Ready {
         envelope: Box<CloudBootstrapEnvelope>,
     },
-    Rejected {
-        rejection: CloudBootstrapRejection,
+    Expired,
+    Failed {
+        failure: CloudBootstrapDecisionFailure,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "rejection", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CloudBootstrapRejection {
+#[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CloudBootstrapDecisionFailure {
     UnsupportedClient {
         message: FailureMessage,
         minimum_protocol_version: u16,
     },
-    Expired,
     Unauthorized,
     AlreadyConsumedByPolicy,
     InvalidMachineFacts {
@@ -788,18 +786,11 @@ pub enum CloudBootstrapRejection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudBootstrapEnvelope {
+    pub attempt_id: CloudBootstrapAttemptId,
     pub redemption_id: CloudBootstrapRedemptionId,
     pub callback_url: String,
     pub callback_token: CloudBootstrapCallbackToken,
-    pub release: CloudBootstrapReleaseSelection,
     pub intent: CloudBootstrapIntent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct CloudBootstrapReleaseSelection {
-    pub channel: Option<String>,
-    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -813,7 +804,7 @@ pub enum CloudBootstrapIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudFounderBootstrap {
-    pub install: FirstMachineInstallSpec,
+    pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub cloud_nats_user_public_key: NatsUserPublicKey,
 }
 
@@ -829,6 +820,7 @@ pub struct CloudJoinerBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudBootstrapCallbackRequest {
+    pub attempt_id: CloudBootstrapAttemptId,
     pub redemption_id: CloudBootstrapRedemptionId,
     pub outcome: CloudBootstrapOutcome,
 }

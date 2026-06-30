@@ -8,9 +8,6 @@ invisibility, and auth rejection. It supersedes the two-machine bash recipe
 that used to live in `scripts/local-dataplane-proof.sh`; that script still
 owns the Ployz Native Mesh dataplane proof.
 
-Plan: `docs/plans/2026-06-10-001-feat-direct-nats-v1-auth-iroh-removal-dind-e2e.md`
-(Phase C).
-
 ## Requirements
 
 - Docker with `--privileged` container support: OrbStack or Docker Desktop on

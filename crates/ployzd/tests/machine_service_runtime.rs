@@ -1,8 +1,8 @@
 use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
-    DataplaneProviderKind, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareError,
-    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshReady, WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
@@ -23,10 +23,11 @@ use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
     MachineContainerRunSpec, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailRpcOk,
-    MachineLogsTailRpcRequest, MachineLogsTailRpcResponse, MachineRunContainerOutcome,
-    MachineWireGuardEbpfPreparePhase, MachineWireGuardEbpfPrepareRpcRequest,
-    MachineWireGuardEbpfPrepareRpcResponse,
+    MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
+    MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
+    MachineRunContainerOutcome,
 };
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -34,7 +35,7 @@ use ployzd::machine_runtime::runner::{
     MachineLogTail,
 };
 use ployzd::machine_runtime::service::{
-    MachineWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_machine_runtime_service,
+    MachinePloyzNativeMeshPreparer as LocalWireGuardEbpfPreparer, start_machine_runtime_service,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -566,8 +567,6 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
         .prepare_dataplane(dataplane_request(&["machine_a"]))
         .await
         .expect("dataplane prepare succeeds");
-    let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
-
     assert_eq!(state.prepare_count(), 1);
     assert_eq!(state.endpoint_routes(), endpoint_routes(&["machine_a"]));
     assert_eq!(state.peers(), Vec::new());
@@ -591,20 +590,20 @@ async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machi
         .flush()
         .await
         .expect("flush machine service subscription");
-    let response = request_json::<_, MachineWireGuardEbpfPrepareRpcResponse>(
+    let response = request_json::<_, MachineDataplanePrepareRpcResponse>(
         &nats.client,
         machine_service(
             &machine_id("machine_a"),
             MachineServiceEndpoint::DataplanePrepare,
         ),
-        &MachineWireGuardEbpfPrepareRpcRequest {
-            phase: MachineWireGuardEbpfPreparePhase::PrepareDataplane,
-            operation_id: operation_id("op_123"),
-            machines: vec![machine_id("machine_b")],
-            endpoint_routes: endpoint_routes(&["machine_b"]),
-            peer_endpoints: Vec::new(),
-            peers: Vec::new(),
-        },
+        &MachineDataplanePrepareRpcRequest::ployz_native_mesh(
+            operation_id("op_123"),
+            vec![machine_id("machine_b")],
+            MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane {
+                endpoint_routes: endpoint_routes(&["machine_b"]),
+                peers: Vec::new(),
+            },
+        ),
         Duration::from_secs(1),
     )
     .await
@@ -612,13 +611,12 @@ async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machi
 
     assert!(matches!(
         response,
-        MachineWireGuardEbpfPrepareRpcResponse::DomainError {
+        MachineDataplanePrepareRpcResponse::DomainError {
             machine_id,
-            error: ployzd::machine_runtime::protocol::MachineWireGuardEbpfPrepareDomainError::Unavailable {
-                component: WireGuardEbpfComponent::WireGuard,
+            error: MachinePloyzNativeMeshPrepareDomainError::Unavailable {
+                component: PloyzNativeMeshComponent::WireGuard,
                 ..
             },
-            ..
         } if machine_id == self::machine_id("machine_a")
     ));
     assert_eq!(state.prepare_count(), 0);
@@ -634,7 +632,7 @@ async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
         idle_runner(),
         RecordingWireGuardEbpf::new(state).with_failure(WireGuardEbpfPrepareError::Unavailable {
             machine_id: machine_id("machine_a"),
-            component: WireGuardEbpfComponent::EbpfForwarding,
+            component: PloyzNativeMeshComponent::EbpfForwarding,
             message: failure_message("ebpf program missing"),
         }),
         idle_logs(),
@@ -656,8 +654,9 @@ async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
         error,
         DataplanePrepareError::Unavailable {
             machine_id: machine_id("machine_a"),
-            provider: DataplaneProviderKind::PloyzNativeMesh,
-            component: WireGuardEbpfComponent::EbpfForwarding,
+            provider: DataplaneProviderFailure::PloyzNativeMesh {
+                component: PloyzNativeMeshComponent::EbpfForwarding,
+            },
             message: failure_message("ebpf program missing"),
         }
     );
@@ -954,11 +953,11 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
         Ok(WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"))
     }
 
-    async fn prepare_wireguard_ebpf(
+    async fn prepare_ployz_native_mesh(
         &self,
         endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
         peers: &[ployz_core::dataplane::WireGuardPeer],
-    ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
+    ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
         let mut state = self
             .state
             .inner
@@ -976,15 +975,15 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
     }
 }
 
-fn ready_machine(machine_id: &str) -> WireGuardEbpfMachineReady {
-    WireGuardEbpfMachineReady {
+fn ready_machine(machine_id: &str) -> PloyzNativeMeshMachineReady {
+    PloyzNativeMeshMachineReady {
         machine_id: self::machine_id(machine_id),
         ready: ready_components(),
     }
 }
 
-fn ready_components() -> WireGuardEbpfReady {
-    WireGuardEbpfReady {
+fn ready_components() -> PloyzNativeMeshReady {
+    PloyzNativeMeshReady {
         wireguard: WireGuardReady {
             public_key: WireGuardPublicKey::try_new("test-public-key")
                 .expect("test public key is valid"),

@@ -1,8 +1,8 @@
 use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
-    DataplaneProviderKind, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    WireGuardEbpfComponent, WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport,
-    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -118,7 +118,6 @@ impl DeployOperationRecorder for RecordingOperations {
                 });
             }
             DeployEvidence::DataplanePrepared { report } => {
-                let DataplanePrepareProviderReport::PloyzNativeMesh(report) = report;
                 self.records.push(RecordedOperation::DataplanePrepared {
                     machine_count: report.machines.len(),
                 });
@@ -180,8 +179,9 @@ impl RecordingWireGuardEbpf {
             requests: Vec::new(),
             failure: Some(DataplanePrepareError::Unavailable {
                 machine_id: self::machine_id(machine_id),
-                provider: DataplaneProviderKind::PloyzNativeMesh,
-                component: WireGuardEbpfComponent::WireGuard,
+                provider: DataplaneProviderFailure::PloyzNativeMesh {
+                    component: PloyzNativeMeshComponent::WireGuard,
+                },
                 message: ployz_core::ops::FailureMessage::try_new("wireguard interface failed")
                     .expect("valid failure message"),
             }),
@@ -193,7 +193,7 @@ impl DataplanePreparer for RecordingWireGuardEbpf {
     async fn prepare_dataplane(
         &mut self,
         request: DataplanePrepareRequest,
-    ) -> Result<DataplanePrepareProviderReport, DataplanePrepareError> {
+    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
         let ready_machines = request
             .membership
             .iter()
@@ -202,19 +202,17 @@ impl DataplanePreparer for RecordingWireGuardEbpf {
         self.requests.push(request);
         match &self.failure {
             Some(error) => Err(error.clone()),
-            None => Ok(DataplanePrepareProviderReport::PloyzNativeMesh(
-                WireGuardEbpfPrepareReport::from_machines(ready_machines)
-                    .expect("recording report has unique machines"),
-            )),
+            None => Ok(PloyzNativeMeshPrepareReport::from_machines(ready_machines)
+                .expect("recording report has unique machines")),
         }
     }
 }
 
-fn ready_machine(machine_id: MachineId) -> WireGuardEbpfMachineReady {
+fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
     let public_key = wireguard_public_key(format!("public-{}", machine_id.as_str()));
-    WireGuardEbpfMachineReady {
+    PloyzNativeMeshMachineReady {
         machine_id,
-        ready: WireGuardEbpfReady {
+        ready: PloyzNativeMeshReady {
             wireguard: WireGuardReady {
                 public_key,
                 evidence: vec![WireGuardReadyEvidence::Command {

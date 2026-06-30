@@ -1,8 +1,7 @@
 use ployz_core::dataplane::{
-    DataplanePrepareProviderReport, DataplaneProviderKind, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, WireGuardEbpfComponent, WireGuardEbpfMachineReady,
-    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
+    DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
+    PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ops::{
@@ -45,38 +44,36 @@ fn dataplane_running_stage_has_stable_wire_name() {
 fn dataplane_prepared_event_has_stable_wire_shape() {
     let event = OperationEvent::DeployDataplanePrepared {
         operation_id: operation_id("op_123"),
-        report: DataplanePrepareProviderReport::PloyzNativeMesh(
-            WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
-                machine_id: machine_id("machine_7"),
-                ready: WireGuardEbpfReady {
-                    wireguard: WireGuardReady {
-                        public_key: wireguard_public_key("test-public-key"),
-                        evidence: vec![WireGuardReadyEvidence::Command {
-                            program: "wg".to_owned(),
-                            args: vec!["--version".to_owned()],
-                        }],
-                    },
-                    ebpf_forwarding: EbpfForwardingReady {
-                        evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                            path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                            symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                        }],
-                    },
+        report: PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
+            machine_id: machine_id("machine_7"),
+            ready: PloyzNativeMeshReady {
+                wireguard: WireGuardReady {
+                    public_key: wireguard_public_key("test-public-key"),
+                    evidence: vec![WireGuardReadyEvidence::Command {
+                        program: "wg".to_owned(),
+                        args: vec!["--version".to_owned()],
+                    }],
                 },
-            }])
-            .expect("valid report"),
-        ),
+                ebpf_forwarding: EbpfForwardingReady {
+                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                        symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                    }],
+                },
+            },
+        }])
+        .expect("valid report"),
     };
 
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
         concat!(
             r#"{"event":"deploy_dataplane_prepared","operation_id":"op_123","#,
-            r#""report":{"provider":"ployz_native_mesh","report":{"machines":[{"machine_id":"machine_7","#,
+            r#""report":{"machines":[{"machine_id":"machine_7","#,
             r#""wireguard":{"public_key":"test-public-key","evidence":[{"kind":"command","program":"wg","args":["--version"]}]},"#,
             r#""ebpf_forwarding":{"evidence":[{"kind":"ployz_tc_bytecode","#,
             r#""path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc","#,
-            r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}}"#
+            r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}"#
         )
     );
 }
@@ -162,15 +159,16 @@ fn retained_artifact_carries_variant_specific_failure_data() {
 fn dataplane_failures_are_distinct_from_runtime_failures() {
     let failure = DeployOperationFailure::DataplaneUnavailable {
         machine_id: machine_id("machine_7"),
-        provider: DataplaneProviderKind::PloyzNativeMesh,
-        component: WireGuardEbpfComponent::EbpfForwarding,
+        provider_failure: DataplaneProviderFailure::PloyzNativeMesh {
+            component: PloyzNativeMeshComponent::EbpfForwarding,
+        },
         message: failure_message("bpf route install failed"),
         retained_artifacts: Vec::new(),
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"dataplane_unavailable","machine_id":"machine_7","provider":"ployz_native_mesh","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
+        r#"{"kind":"dataplane_unavailable","machine_id":"machine_7","provider_failure":{"provider":"ployz_native_mesh","component":"ebpf_forwarding"},"message":"bpf route install failed","retained_artifacts":[]}"#
     );
 }
 

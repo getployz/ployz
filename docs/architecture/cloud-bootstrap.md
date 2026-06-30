@@ -36,14 +36,21 @@ approval is one `Connect this machine` action; Cloud derives founder, joiner,
 or wait behavior from that organization's Organization Cluster state. Future
 founder options can be added to the browser approval flow without changing the
 copied command.
+The v1 approval page is intentionally small: organization picker when needed,
+minimal machine context, and the single `Connect this machine` action. It is an
+approval screen, not a machine inspection surface, founder-options wizard, or
+cluster configuration flow.
+V1 does not need a standalone bootstrap-session list. Before approval, the
+session exists only behind the approval URL. After approval, the Cloud
+Bootstrap Redemption appears in the organization's machine-add/progress
+surface as the machine being added; it must not be presented as an Accepted
+Machine Identity until runtime acceptance exists.
 If the session expires before browser approval, no Cloud Bootstrap Redemption
 is created. Keeper polling exits with an approval-expired message and tells the
 user to rerun `sudo ployz-keeper bootstrap`; rerunning creates a fresh Cloud
 Bootstrap Session rather than reusing the expired one.
-If the browser user rejects the approval before clicking `Connect this
-machine`, the session becomes terminal rejected, no Cloud Bootstrap Redemption
-is created, and keeper exits nonzero with a Cloud-rejected message plus the
-same rerun guidance.
+V1 approval has no explicit `Reject` action. Closing the page or doing nothing
+leaves the session unapproved until it expires.
 
 Future token bootstrap may redeem a Cloud Bootstrap Token for cloud-init and
 fleet automation. A token is a single-redemption bearer secret issued by a
@@ -55,8 +62,13 @@ is created when Cloud approves a session or token for one machine use. For
 interactive bootstrap, the browser `Connect this machine` approval creates the
 durable redemption; keeper polling then receives the same redemption and
 intent idempotently. The redemption returns a typed envelope with a callback
-URL, callback token, release selection, and one intent: Founder Bootstrap,
-Joiner Bootstrap, or wait-for-founder.
+URL, callback token, and one intent: Founder Bootstrap, Joiner Bootstrap, or
+wait-for-founder.
+
+Cloud bootstrap does not make Cloud the release artifact authority. Keeper and
+the runtime own release-source resolution, artifact digest verification, and
+the installed component set. Cloud must not carry release selections, artifact
+URLs, or checksums.
 
 ## Continue Without Cloud
 
@@ -79,6 +91,9 @@ secret-handling story, and cleanup behavior.
 Cloud-mediated Founder Bootstrap authorizes Cloud by NATS user public key. The
 founder result callback is Cloud-safe: it returns the machine id, runtime NATS URL,
 and trusted CA material, but not the local operator seed or Join seed.
+Founder Bootstrap receives the runtime NATS URL and Cloud NATS user public key
+from Cloud. Keeper builds the first-machine install spec locally from its
+release source and verifies every artifact locally before activation.
 Fresh-machine approvals for the same Organization Cluster serialize through a
 single sticky Cloud Founder Claim. The first approved redemption that wins the
 claim receives Founder Bootstrap; other approved redemptions wait for the
@@ -88,6 +103,16 @@ Waiting Cloud Bootstrap Redemptions are polling-only from the target machine's
 perspective. Keeper prints that it is waiting for the first machine to finish,
 honors Cloud retry hints, and performs no local mutation until Cloud has a
 Cloud Connection and returns a Joiner Bootstrap envelope.
+Waiting redemptions have a post-approval expiry independent of the pre-approval
+Cloud Bootstrap Session expiry. The default waiting redemption TTL is 1 hour
+from approval. Keeper prints the remaining wait deadline while polling.
+If a waiting redemption expires, it is terminal and cannot later receive a
+Joiner Bootstrap envelope; keeper tells the user to rerun
+`sudo ployz-keeper bootstrap` for a fresh session and approval.
+Cloud does not submit `machine.add`, mint join material, or issue the Joiner
+Bootstrap envelope at waiter approval time. It does that only when the waiting
+keeper polls after Cloud Connection exists, so runtime authority is created
+close to actual join use.
 
 Cloud proves founder usability with an outside-in direct TLS NATS probe. Local
 public-IP checks can be diagnostics, but they are not proof that Cloud can reach
@@ -162,6 +187,15 @@ credential, runtime NATS URL, and trusted CA in the envelope. Keeper redeems the
 join token against the cluster and reports terminal evidence. The Cloud callback
 for success carries operation id, machine id, machine name, last event sequence,
 and redeem result; it omits the join token and Join credential.
+Joiner Bootstrap does not receive artifact URLs, checksums, or a Cloud-chosen
+install version. A joining machine follows the existing cluster's runtime
+authority after redeeming join material; keeper asks the cluster/runtime for the
+version and release source it should use.
+After `machine.add` produces join material for one Cloud Bootstrap Redemption,
+Cloud binds that redemption to the resulting Joiner Bootstrap envelope. If the
+keeper response is lost, later polls return the same envelope rather than
+creating another Machine Reservation or join token. If the Cloud-to-runtime
+call fails before join material exists, Cloud retries that same step.
 
 Joiner callback failure follows the same terminal-payload rule as founder
 callback failure: keeper persists the exact Cloud-safe terminal payload before

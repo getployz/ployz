@@ -2,7 +2,7 @@
 
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::FailureMessage;
-use ployz_sdk_types::MachineJoinReportFailure;
+use ployz_sdk_types::{MachineJoinRedeemed, MachineJoinReportFailure};
 
 use crate::executor::{
     KeeperPlanExecution, KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent,
@@ -38,6 +38,7 @@ pub struct RedeemedKeeperJoin {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
     pub target: KeeperJoinTarget,
+    pub callback_result: Option<MachineJoinRedeemed>,
 }
 
 impl RedeemedKeeperJoin {
@@ -47,8 +48,21 @@ impl RedeemedKeeperJoin {
             operation_id,
             machine_id,
             target,
+            callback_result: None,
         }
     }
+
+    #[must_use]
+    pub fn with_callback_result(mut self, callback_result: MachineJoinRedeemed) -> Self {
+        self.callback_result = Some(callback_result);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperJoinExecution {
+    pub execution: KeeperPlanExecution,
+    pub redeemed: Option<RedeemedKeeperJoin>,
 }
 
 #[must_use]
@@ -60,11 +74,30 @@ pub fn execute_keeper_join(
     effects: &mut impl KeeperStepEffects,
     recorder: &mut impl KeeperStepRecorder,
 ) -> KeeperPlanExecution {
+    execute_keeper_join_with_redeemed(token, redeemer, reporter, token_consumer, effects, recorder)
+        .execution
+}
+
+#[must_use]
+pub fn execute_keeper_join_with_redeemed(
+    token: &JoinToken,
+    redeemer: &mut impl KeeperJoinRedeemer,
+    reporter: &mut impl KeeperJoinReporter,
+    token_consumer: &mut impl KeeperJoinTokenConsumer,
+    effects: &mut impl KeeperStepEffects,
+    recorder: &mut impl KeeperStepRecorder,
+) -> KeeperJoinExecution {
     let mut events = Vec::new();
     let redeemed = match redeem_join_token(token, redeemer, recorder, &mut events) {
         Ok(redeemed) => redeemed,
-        Err(execution) => return *execution,
+        Err(execution) => {
+            return KeeperJoinExecution {
+                execution: *execution,
+                redeemed: None,
+            };
+        }
     };
+    let redeemed_evidence = redeemed.clone();
 
     let mut material_execution = execute_keeper_plan(
         &keeper_join_material_plan(&redeemed.target),
@@ -75,9 +108,12 @@ pub fn execute_keeper_join(
     events.append(&mut material_execution.events);
     if material_terminal != KeeperPlanTerminal::Completed {
         report_join_failure(&material_terminal, reporter, recorder, &mut events);
-        return KeeperPlanExecution {
-            events,
-            terminal: material_terminal,
+        return KeeperJoinExecution {
+            execution: KeeperPlanExecution {
+                events,
+                terminal: material_terminal,
+            },
+            redeemed: Some(redeemed_evidence),
         };
     }
 
@@ -90,9 +126,12 @@ pub fn execute_keeper_join(
     events.append(&mut plan_execution.events);
     if plan_terminal != KeeperPlanTerminal::Completed {
         report_join_failure(&plan_terminal, reporter, recorder, &mut events);
-        return KeeperPlanExecution {
-            events,
-            terminal: plan_terminal,
+        return KeeperJoinExecution {
+            execution: KeeperPlanExecution {
+                events,
+                terminal: plan_terminal,
+            },
+            redeemed: Some(redeemed_evidence),
         };
     }
 
@@ -106,7 +145,10 @@ pub fn execute_keeper_join(
         let terminal = execution.terminal.clone();
         events = execution.events;
         report_join_failure(&terminal, reporter, recorder, &mut events);
-        return KeeperPlanExecution { events, terminal };
+        return KeeperJoinExecution {
+            execution: KeeperPlanExecution { events, terminal },
+            redeemed: Some(redeemed_evidence),
+        };
     }
 
     if let Err(execution) = execute_labeled_action(
@@ -116,12 +158,18 @@ pub fn execute_keeper_join(
         KeeperStepFailureReason::JoinReportFailed,
         || reporter.report_join_completed(),
     ) {
-        return *execution;
+        return KeeperJoinExecution {
+            execution: *execution,
+            redeemed: Some(redeemed_evidence),
+        };
     }
 
-    KeeperPlanExecution {
-        events,
-        terminal: KeeperPlanTerminal::Completed,
+    KeeperJoinExecution {
+        execution: KeeperPlanExecution {
+            events,
+            terminal: KeeperPlanTerminal::Completed,
+        },
+        redeemed: Some(redeemed_evidence),
     }
 }
 

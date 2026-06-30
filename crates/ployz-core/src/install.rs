@@ -7,6 +7,8 @@ use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_synta
 use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://ployz.sh";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]

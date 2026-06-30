@@ -1,5 +1,5 @@
 use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareProviderReport, DataplanePrepareRequest,
+    DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{DeployEvidence, DeployTransition};
@@ -64,7 +64,7 @@ pub trait DataplanePreparer {
     fn prepare_dataplane(
         &mut self,
         request: DataplanePrepareRequest,
-    ) -> impl Future<Output = Result<DataplanePrepareProviderReport, DataplanePrepareError>> + Send;
+    ) -> impl Future<Output = Result<PloyzNativeMeshPrepareReport, DataplanePrepareError>> + Send;
 }
 
 pub trait DeployHealthChecker {

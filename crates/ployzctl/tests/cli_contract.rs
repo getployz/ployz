@@ -3,9 +3,9 @@ use std::fs;
 use std::process::{Command, Output};
 
 use ployz_core::dataplane::{
-    DataplanePrepareProviderReport, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, MachineId, RevisionId, ServiceId};
@@ -855,61 +855,26 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
         3,
         ployz_core::ops::OperationEvent::DeployDataplanePrepared {
             operation_id: operation_id("op_123"),
-            report: DataplanePrepareProviderReport::PloyzNativeMesh(
-                WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
-                    machine_id: machine_id("machine_1"),
-                    ready: WireGuardEbpfReady {
-                        wireguard: WireGuardReady {
-                            public_key: WireGuardPublicKey::try_new("public-key-1")
-                                .expect("valid wireguard public key"),
-                            evidence: vec![
-                                WireGuardReadyEvidence::HostPath {
-                                    path: "/dev/net/tun".to_owned(),
-                                },
-                                WireGuardReadyEvidence::Command {
-                                    program: "wg".to_owned(),
-                                    args: vec![
-                                        "set".to_owned(),
-                                        "ployz-wg0".to_owned(),
-                                        "peer".to_owned(),
-                                        "public-key-2".to_owned(),
-                                    ],
-                                },
-                            ],
-                        },
-                        ebpf_forwarding: EbpfForwardingReady {
-                            evidence: vec![
-                                EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                    symbols: vec![
-                                        "ployz_egress".to_owned(),
-                                        "ployz_ingress".to_owned(),
-                                    ],
-                                },
-                                EbpfForwardingReadyEvidence::Command {
-                                    program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
-                                    args: vec![
-                                        "ensure-attached".to_owned(),
-                                        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                        "docker0".to_owned(),
-                                        "ployz-wg0".to_owned(),
-                                    ],
-                                },
-                                EbpfForwardingReadyEvidence::Command {
-                                    program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
-                                    args: vec![
-                                        "route".to_owned(),
-                                        "add-ifname".to_owned(),
-                                        "10.42.2.0/24".to_owned(),
-                                        "ployz-wg0".to_owned(),
-                                    ],
-                                },
-                            ],
-                        },
+            report: PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
+                machine_id: machine_id("machine_1"),
+                ready: PloyzNativeMeshReady {
+                    wireguard: WireGuardReady {
+                        public_key: WireGuardPublicKey::try_new("public-key-1")
+                            .expect("valid wireguard public key"),
+                        evidence: vec![WireGuardReadyEvidence::Command {
+                            program: "wg".to_owned(),
+                            args: vec!["--version".to_owned()],
+                        }],
                     },
-                }])
-                .expect("dataplane report is valid"),
-            ),
+                    ebpf_forwarding: EbpfForwardingReady {
+                        evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                            path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                            symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                        }],
+                    },
+                },
+            }])
+            .expect("dataplane report is valid"),
         },
     );
 
@@ -942,19 +907,13 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
     );
     assert_eq!(
         value
-            .pointer("/event/report/provider")
-            .and_then(serde_json::Value::as_str),
-        Some("ployz_native_mesh")
-    );
-    assert_eq!(
-        value
-            .pointer("/event/report/report/machines/0/wireguard/public_key")
+            .pointer("/event/report/machines/0/wireguard/public_key")
             .and_then(serde_json::Value::as_str),
         Some("public-key-1")
     );
     assert_eq!(
         value
-            .pointer("/event/report/report/machines/0/ebpf_forwarding/evidence/0/kind")
+            .pointer("/event/report/machines/0/ebpf_forwarding/evidence/0/kind")
             .and_then(serde_json::Value::as_str),
         Some("ployz_tc_bytecode")
     );

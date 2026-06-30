@@ -67,7 +67,6 @@ Expected crate shape:
   security role models.
 - `ployz-nats`: NATS connection, bootstrap, KV, streams, Object Store,
   services, schedules, permissions.
-- `ployz-transport`: future transport adapters if private connectivity returns.
 - `ployzd`: process wiring, service handlers, controllers, machine agent, Docker,
   gateway, DNS, certs.
 - `ployzctl`: CLI client.
