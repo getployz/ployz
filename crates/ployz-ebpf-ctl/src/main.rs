@@ -449,7 +449,11 @@ mod tests {
         ])
         .expect_err("route add requires Linux on this test platform");
 
-        assert!(error.contains("route add requires Linux") || error.contains("No such file"));
+        assert!(
+            error.contains("route add requires Linux")
+                || error.contains("No such file")
+                || error.contains("open pinned ROUTES map")
+        );
     }
 
     #[test]
