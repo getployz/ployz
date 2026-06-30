@@ -68,7 +68,7 @@ pub fn active_machine_state_kv_write_scope() -> String {
 /// Control's writes of the durable authorized-principal set.
 #[must_use]
 pub fn nats_authorized_user_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{NATS_AUTHORIZED_USER_PREFIX}.*")
+    format!("$KV.{KV_CORE_BUCKET}.{NATS_AUTHORIZED_USER_PREFIX}.>")
 }
 
 #[must_use]

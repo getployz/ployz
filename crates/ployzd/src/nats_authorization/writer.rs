@@ -288,11 +288,11 @@ async fn handle_render_request(
 
     let desired_principals: BTreeSet<String> = desired
         .iter()
-        .map(|user| user.principal.authority_key())
+        .map(NatsAuthorizedUser::authority_record_key)
         .collect();
     let missing: Vec<String> = on_disk
         .iter()
-        .map(|user| user.principal.authority_key())
+        .map(NatsAuthorizedUser::authority_record_key)
         .filter(|key| !desired_principals.contains(key))
         .collect();
     if !missing.is_empty() {

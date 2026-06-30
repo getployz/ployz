@@ -136,6 +136,23 @@ pub struct NatsAuthorizedUser {
     pub nkey_public: NatsUserPublicKey,
 }
 
+impl NatsAuthorizedUser {
+    /// Stable identity for one authorization file entry.
+    ///
+    /// Most principals are unique by role or machine id. User credentials are
+    /// intentionally plural: the local operator and Cloud can both hold User
+    /// authority, so the public NKey is part of their durable record key.
+    #[must_use]
+    pub fn authority_record_key(&self) -> String {
+        match self.principal {
+            NatsPrincipal::User => {
+                format!("user.{}", self.nkey_public.as_str())
+            }
+            _ => self.principal.authority_key(),
+        }
+    }
+}
+
 /// The marker comment that precedes each rendered user entry. It names the
 /// entry's principal so the on-disk file works as recovery evidence: after
 /// JetStream loss the authorized principal set is re-adopted from the file.

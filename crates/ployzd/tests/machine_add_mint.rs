@@ -161,6 +161,9 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     let ghost = nkeys::KeyPair::new_user();
     let ghost_public =
         NatsUserPublicKey::try_new(ghost.public_key()).expect("generated public key is valid");
+    let cloud = nkeys::KeyPair::new_user();
+    let cloud_public =
+        NatsUserPublicKey::try_new(cloud.public_key()).expect("generated public key is valid");
     let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     let mut users = parse_authorized_users(&existing).expect("fixture authority file parses");
@@ -169,6 +172,10 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
             machine_id: machine_id("machine_ghost"),
         },
         nkey_public: ghost_public.clone(),
+    });
+    users.push(ployz_core::nats_config::NatsAuthorizedUser {
+        principal: NatsPrincipal::User,
+        nkey_public: cloud_public.clone(),
     });
     std::fs::write(
         nats.server().authorized_users_path(),
@@ -195,6 +202,12 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     assert!(
         rendered_principal_key(&users, "machine_new").is_some(),
         "minted user is rendered alongside the adopted one"
+    );
+    assert!(
+        users.iter().any(|user| {
+            user.principal == NatsPrincipal::User && user.nkey_public == cloud_public
+        }),
+        "adopted extra User credential survives the render"
     );
 
     runtime
