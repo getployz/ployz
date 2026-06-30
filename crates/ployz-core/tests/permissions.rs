@@ -73,6 +73,7 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
     assert_eq!(
         profile.publish.allowed_subjects(),
         &[
+            API_SERVICE_SCOPE.to_owned(),
             MACHINE_SERVICE_SCOPE.to_owned(),
             OPS_STREAM_SUBJECT.to_owned(),
             "$JS.API.>".to_owned(),

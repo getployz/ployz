@@ -152,6 +152,7 @@ impl NatsPermissionProfile {
             NatsPrincipal::Controller => Self {
                 principal: principal.clone(),
                 publish: SubjectPermissions::allowing([
+                    API_SERVICE_SCOPE.to_owned(),
                     MACHINE_SERVICE_SCOPE.to_owned(),
                     OPS_STREAM_SUBJECT.to_owned(),
                     JETSTREAM_API_SCOPE.to_owned(),
