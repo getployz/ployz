@@ -1024,7 +1024,7 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         ployz_test_support::fixtures::machine_join_template(),
         ployz_core::install::MachineJoinSecretDelivery {
             nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
-                "SUAFKRGZQV3CDWR46WYP6WR43T34AL5BN4BAGVGIP34YFSBESCD6FU4HHA",
+                "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
             )
             .expect("valid seed"),
         },

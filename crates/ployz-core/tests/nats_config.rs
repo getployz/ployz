@@ -147,13 +147,13 @@ fn authorized_machine_user_denies_core_kv_writes() {
 
 #[test]
 fn nats_user_key_material_is_validated_and_seed_debug_is_redacted() {
-    let public = format!("U{}", "A".repeat(55));
-    let seed = format!("SU{}", "A".repeat(56));
+    let public = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
+    let seed = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 
-    assert!(NatsUserPublicKey::try_new(public.as_str()).is_ok());
+    assert!(NatsUserPublicKey::try_new(public).is_ok());
     assert!(NatsUserPublicKey::try_new("UABC").is_err());
     assert!(NatsUserPublicKey::try_new(format!("X{}", "A".repeat(55))).is_err());
-    assert!(NatsUserSeed::try_new(seed.as_str()).is_ok());
+    assert!(NatsUserSeed::try_new(seed).is_ok());
     assert!(NatsUserSeed::try_new("SUABC").is_err());
     assert!(NatsUserSeed::try_new(format!("UA{}", "A".repeat(56))).is_err());
 
