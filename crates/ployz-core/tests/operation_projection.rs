@@ -1,4 +1,4 @@
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
+use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure,
     MachineAddOperationState, MachineReadinessCheck, MachineReadinessEvidence,
@@ -11,7 +11,7 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{
-    container_id, event_sequence, machine_id, machine_name, operation_id, service_id,
+    container_id, event_sequence, machine_id, machine_name, namespace_id, operation_id, service_id,
 };
 
 #[test]
@@ -915,12 +915,15 @@ fn plan_created_event() -> OperationEvent {
     OperationEvent::DeployPlanCreated {
         operation_id: operation_id("op_123"),
         plan: DeployPlan {
-            service_id: service_id("svc_api"),
+            namespace_id: namespace_id("default"),
             target_revision: ployz_core::ids::RevisionId::try_new("rev_2")
                 .expect("valid revision id"),
-            steps: vec![DeployPlanStep::RunContainer {
-                machine_id: machine_id("machine_a"),
-                slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+            services: vec![DeployServicePlan {
+                service_id: service_id("svc_api"),
+                steps: vec![DeployPlanStep::RunContainer {
+                    machine_id: machine_id("machine_a"),
+                    slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                }],
             }],
             cleanup_containers: Vec::new(),
         },

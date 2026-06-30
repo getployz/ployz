@@ -5,7 +5,7 @@ mod fixtures;
 use async_nats::jetstream;
 use fixtures::*;
 use futures_util::StreamExt;
-use ployz_core::deploy::{DeployRequest, ReplicaCount};
+use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
@@ -477,10 +477,13 @@ fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
 
 fn deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
-        service_id: service_id("svc_api"),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: image("registry.example/api:rev_2"),
-        replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: image("registry.example/api:rev_2"),
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            route: None,
+        }],
     }
 }

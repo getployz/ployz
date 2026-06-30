@@ -95,9 +95,14 @@
   "deploy_submit_request": {
     "operation_id": "op_123",
     "target": {
-      "image": "ghcr.io/acme/api:rev-2",
-      "replicas": 2,
-      "service_id": "svc_api",
+      "namespace_id": "default",
+      "services": [
+        {
+          "image": "ghcr.io/acme/api:rev-2",
+          "replicas": 2,
+          "service_id": "svc_api"
+        }
+      ],
       "target_revision": "rev_2"
     }
   },
@@ -235,9 +240,14 @@
           "event": "deploy_submitted",
           "operation_id": "op_123",
           "target": {
-            "image": "ghcr.io/acme/api:rev-2",
-            "replicas": 2,
-            "service_id": "svc_api",
+            "namespace_id": "default",
+            "services": [
+              {
+                "image": "ghcr.io/acme/api:rev-2",
+                "replicas": 2,
+                "service_id": "svc_api"
+              }
+            ],
             "target_revision": "rev_2"
           }
         },
@@ -295,9 +305,14 @@
             "event": "deploy_submitted",
             "operation_id": "op_123",
             "target": {
-              "image": "ghcr.io/acme/api:rev-2",
-              "replicas": 2,
-              "service_id": "svc_api",
+              "namespace_id": "default",
+              "services": [
+                {
+                  "image": "ghcr.io/acme/api:rev-2",
+                  "replicas": 2,
+                  "service_id": "svc_api"
+                }
+              ],
               "target_revision": "rev_2"
             }
           },

@@ -17,6 +17,7 @@ import {
   type MachineJoinToken,
   type MachineName,
   type MachineId,
+  type NamespaceId,
   type OperationEventReplayLimit,
   type OperationId,
   type OperationIdempotencyKey,
@@ -32,6 +33,10 @@ type U64WireInput = number | string | bigint;
 
 export function operationId(value: string): OperationId {
   return subjectToken(value, "operation id") as OperationId;
+}
+
+export function namespaceId(value: string): NamespaceId {
+  return subjectToken(value, "namespace id") as NamespaceId;
 }
 
 export function operationIdempotencyKey(value: string): OperationIdempotencyKey {

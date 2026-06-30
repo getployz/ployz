@@ -54,8 +54,6 @@ import type {
   MachineJoinRedeemed,
   MachineJoinRedeemResponse,
   MachineJoinRedeemRequest,
-  MachineJoinReportRequest,
-  MachineJoinReportResponse,
   MachineListResponse,
   MachineListRequest,
   MachineSnapshot,
@@ -311,10 +309,15 @@ test("sdk maps raw deploy input to the wire request", () => {
   assert.deepEqual(deploySubmitRequest(deployInput()), {
     operation_id: "op_123",
     target: {
-      service_id: "svc_api",
+      namespace_id: "default",
       target_revision: "rev_2",
-      image: "ghcr.io/acme/api:rev-2",
-      replicas: 1,
+      services: [
+        {
+          service_id: "svc_api",
+          image: "ghcr.io/acme/api:rev-2",
+          replicas: 1,
+        },
+      ],
     },
   });
   assert.deepEqual(
@@ -325,17 +328,22 @@ test("sdk maps raw deploy input to the wire request", () => {
     {
       operation_id: "op_123",
       target: {
-        service_id: "svc_api",
+        namespace_id: "default",
         target_revision: "rev_2",
-        image: "ghcr.io/acme/api:rev-2",
-        replicas: 1,
-        route: {
-          target: {
-            hostname: "api.example.com",
-            port: 443,
+        services: [
+          {
+            service_id: "svc_api",
+            image: "ghcr.io/acme/api:rev-2",
+            replicas: 1,
+            route: {
+              target: {
+                hostname: "api.example.com",
+                port: 443,
+              },
+              endpoint_port: 8080,
+            },
           },
-          endpoint_port: 8080,
-        },
+        ],
       },
     },
   );

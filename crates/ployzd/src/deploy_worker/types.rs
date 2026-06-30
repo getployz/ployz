@@ -1,8 +1,8 @@
 use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployRequest, ExistingServiceReplica,
+    DeployCleanupContainer, DeployPlan, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
 };
-use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, StepId};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RoutePort,
 };
@@ -17,13 +17,19 @@ const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
+    pub(super) services: Vec<DeployServiceExecutionCommand>,
+    pub(super) dataplane_machines: Vec<MachineId>,
+    pub(super) step_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployServiceExecutionCommand {
+    pub(super) request: DeployServiceRequest,
     pub(super) expected_active: ExpectedActiveService,
     pub(super) route_commit: Option<ActiveRouteCommitRequest>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
-    pub(super) dataplane_machines: Vec<MachineId>,
-    pub(super) step_timeout: Duration,
 }
 
 impl DeployExecutionCommand {
@@ -32,6 +38,37 @@ impl DeployExecutionCommand {
         &self.operation_id
     }
 
+    #[must_use]
+    pub fn services(&self) -> &[DeployServiceExecutionCommand] {
+        &self.services
+    }
+
+    #[must_use]
+    pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
+        self.step_timeout = step_timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn step_timeout(&self) -> Duration {
+        if self.step_timeout.is_zero() {
+            DEFAULT_STEP_TIMEOUT
+        } else {
+            self.step_timeout
+        }
+    }
+
+    #[must_use]
+    pub fn dataplane_prepare_request(&self, plan: &DeployPlan) -> DataplanePrepareRequest {
+        DataplanePrepareRequest::for_deploy_plan(
+            self.operation_id.clone(),
+            plan,
+            &self.dataplane_machines,
+        )
+    }
+}
+
+impl DeployServiceExecutionCommand {
     #[must_use]
     pub fn expected_active(&self) -> &ExpectedActiveService {
         &self.expected_active
@@ -53,26 +90,6 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn dataplane_machines(&self) -> &[MachineId] {
-        &self.dataplane_machines
-    }
-
-    #[must_use]
-    pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
-        self.step_timeout = step_timeout;
-        self
-    }
-
-    #[must_use]
-    pub fn step_timeout(&self) -> Duration {
-        if self.step_timeout.is_zero() {
-            DEFAULT_STEP_TIMEOUT
-        } else {
-            self.step_timeout
-        }
-    }
-
-    #[must_use]
     pub fn active_service_commit_request(&self) -> ActiveServiceCommitRequest {
         ActiveServiceCommitRequest {
             service_id: self.request.service_id.clone(),
@@ -85,20 +102,12 @@ impl DeployExecutionCommand {
     pub fn active_route_commit_request(&self) -> Option<ActiveRouteCommitRequest> {
         self.route_commit.clone()
     }
-
-    #[must_use]
-    pub fn dataplane_prepare_request(&self, plan: &DeployPlan) -> DataplanePrepareRequest {
-        DataplanePrepareRequest::for_deploy_plan(
-            self.operation_id.clone(),
-            plan,
-            &self.dataplane_machines,
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionOutcome {
-    pub service_id: ployz_core::ids::ServiceId,
+    pub namespace_id: ployz_core::ids::NamespaceId,
+    pub service_id: ServiceId,
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
@@ -148,6 +157,8 @@ pub enum DeployTerminalEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployContainer {
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub step_id: StepId,

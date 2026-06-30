@@ -2,7 +2,9 @@
 //! install artifact family, and deploy request builders shared by the
 //! workspace test suites.
 
-use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
@@ -11,7 +13,7 @@ use ployz_core::install::{
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::RouteTarget;
 
-use crate::ids::{revision_id, route_hostname, route_port, service_id};
+use crate::ids::{namespace_id, revision_id, route_hostname, route_port, service_id};
 
 /// A syntactically valid (not real) PEM literal for join-material fixtures.
 pub const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
@@ -71,11 +73,14 @@ pub fn machine_join_template() -> MachineJoinTemplate {
 #[must_use]
 pub fn deploy_target(service: &str) -> DeployRequest {
     DeployRequest {
-        service_id: service_id(service),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id(service),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
+        }],
     }
 }
 
@@ -87,11 +92,10 @@ pub fn deploy_target_with_route(
     gateway_port: u16,
     endpoint_port: u16,
 ) -> DeployRequest {
-    DeployRequest {
-        route: Some(DeployRoute {
-            target: RouteTarget::new(route_hostname(hostname), route_port(gateway_port)),
-            endpoint_port: route_port(endpoint_port),
-        }),
-        ..deploy_target(service)
-    }
+    let mut request = deploy_target(service);
+    request.services[0].route = Some(DeployRoute {
+        target: RouteTarget::new(route_hostname(hostname), route_port(gateway_port)),
+        endpoint_port: route_port(endpoint_port),
+    });
+    request
 }

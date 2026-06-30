@@ -1,6 +1,8 @@
 use ployz_core::dataplane::DataplanePrepareError;
-use ployz_core::deploy::DeployPlanError;
-use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, StepId, SubjectTokenError};
+use ployz_core::deploy::{DeployPlanError, DeployRoute};
+use ployz_core::ids::{
+    ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
+};
 use ployz_core::ops::{
     ActiveServiceCommitFailure, DeployOperationFailure, FailureMessage, HealthCheckFailure,
     OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
@@ -16,6 +18,27 @@ use crate::docker::labels::ManagedContainerLabels;
 use super::{
     ActiveRouteCommitError, DeployContainer, DeployExecutionCommand, DeployOperationRecorder,
 };
+
+fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
+    command
+        .request
+        .primary_service_id()
+        .expect("accepted deploy request has at least one service")
+        .clone()
+}
+
+fn failure_revision_id(command: &DeployExecutionCommand) -> RevisionId {
+    command.request.target_revision.clone()
+}
+
+fn failure_route(command: &DeployExecutionCommand) -> DeployRoute {
+    command
+        .request
+        .services
+        .iter()
+        .find_map(|service| service.route.clone())
+        .expect("route commit errors only occur for routed deploys")
+}
 
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
@@ -228,14 +251,14 @@ impl DeployExecutionStep {
                 retained_artifacts,
             },
             Self::CommitActiveService => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: command.request.service_id.clone(),
-                revision_id: command.request.target_revision.clone(),
+                service_id: failure_service_id(command),
+                revision_id: failure_revision_id(command),
                 message: timeout_failure_message("active service commit", timeout),
                 retained_artifacts,
             },
             Self::RecordOperationEvent => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: command.request.service_id.clone(),
-                revision_id: command.request.target_revision.clone(),
+                service_id: failure_service_id(command),
+                revision_id: failure_revision_id(command),
                 message: timeout_failure_message(self.as_str(), timeout),
                 retained_artifacts,
             },
@@ -249,8 +272,8 @@ impl DeployExecutionError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         DeployOperationFailure::ControlPlaneCommitFailed {
-            service_id: command.request.service_id.clone(),
-            revision_id: command.request.target_revision.clone(),
+            service_id: failure_service_id(command),
+            revision_id: failure_revision_id(command),
             message: failure_message("operation progress could not be recorded"),
             retained_artifacts,
         }
@@ -278,8 +301,8 @@ impl DeployExecutionError {
     ) -> DeployOperationFailure {
         match self {
             Self::Plan(_) | Self::StepId(_) => DeployOperationFailure::PlanningFailed {
-                service_id: command.request.service_id.clone(),
-                revision_id: command.request.target_revision.clone(),
+                service_id: failure_service_id(command),
+                revision_id: failure_revision_id(command),
                 message: failure_message("deploy planning failed"),
             },
             Self::StepTimedOut { step, timeout } => {
@@ -307,8 +330,8 @@ impl DeployExecutionError {
                 current_revision,
                 attempted_revision,
             } => DeployOperationFailure::ActiveServiceCommitRejected {
-                service_id: command.request.service_id.clone(),
-                revision_id: command.request.target_revision.clone(),
+                service_id: failure_service_id(command),
+                revision_id: failure_revision_id(command),
                 reason: ActiveServiceCommitFailure::ActiveServiceChanged {
                     expected_current: expected_current.clone(),
                     current_revision: current_revision.clone(),
@@ -357,11 +380,7 @@ impl ActiveRouteCommitError {
         command: &DeployExecutionCommand,
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
-        let route = command
-            .request
-            .route
-            .clone()
-            .expect("route commit errors only occur for routed deploys");
+        let route = failure_route(command);
         match self {
             Self::Store(error) => DeployOperationFailure::RouteCutoverFailed {
                 route: route.target,
@@ -393,8 +412,8 @@ impl ActiveServiceCommitError {
     ) -> DeployOperationFailure {
         match self {
             Self::Store(_) => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: command.request.service_id.clone(),
-                revision_id: command.request.target_revision.clone(),
+                service_id: failure_service_id(command),
+                revision_id: failure_revision_id(command),
                 message: failure_message("active service state could not be committed"),
                 retained_artifacts,
             },

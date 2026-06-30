@@ -6,7 +6,9 @@ use crate::controllers::{
     SubmitCommandError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{EventSequence, ProjectionOperationState, StatusProjectionError};
+use ployz_core::ops::{
+    EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
+};
 use ployz_nats::operations::{
     OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
     OperationStatusStoreError, RecordMachineAddEventError, RecordMachineJoinReportError,
@@ -24,12 +26,16 @@ use ployz_sdk_types::{
 /// The endpoint-independent core of a submit command failure: either an
 /// unavailable source or the duplicate-sequence collision.
 enum SubmitFailure {
+    InvalidDeployTarget,
     Unavailable(OperationSubmitUnavailableSource),
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
 
 fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     match error {
+        SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
+            SubmitFailure::InvalidDeployTarget
+        }
         SubmitCommandError::Submit(SubmitOperationError::AppendEvent(source)) => {
             SubmitFailure::Unavailable(OperationSubmitUnavailableSource::EventLog {
                 failure: operation_submit_event_failure(&source),
@@ -51,6 +57,11 @@ pub(super) fn deploy_submit_error_from_submit_error(
     error: SubmitCommandError,
 ) -> DeploySubmitError {
     match submit_failure(error) {
+        SubmitFailure::InvalidDeployTarget => DeploySubmitError::InvalidTarget {
+            operation_id,
+            message: FailureMessage::try_new("deploy target must include at least one service")
+                .expect("static deploy target failure message is non-empty"),
+        },
         SubmitFailure::Unavailable(source) => DeploySubmitError::Unavailable {
             operation_id,
             source,
@@ -79,6 +90,7 @@ pub(super) fn backup_create_error_from_submit_error(
         BackupSubmitCommandError::Submit(error) => error,
     };
     match submit_failure(submit) {
+        SubmitFailure::InvalidDeployTarget => unreachable!("backup submit is not deploy target"),
         SubmitFailure::Unavailable(source) => BackupCreateError::Unavailable {
             operation_id,
             source,
@@ -111,6 +123,9 @@ pub(super) fn machine_add_error_from_submit_error(
         MachineAddSubmitCommandError::Submit(error) => error,
     };
     match submit_failure(submit) {
+        SubmitFailure::InvalidDeployTarget => {
+            unreachable!("machine add submit is not deploy target")
+        }
         SubmitFailure::Unavailable(source) => MachineAddError::Unavailable {
             operation_id,
             source: source.into(),
