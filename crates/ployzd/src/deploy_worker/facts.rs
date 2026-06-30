@@ -9,6 +9,7 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
 use std::time::Duration;
 
+use super::preparation::namespace_cleanup_candidates;
 use super::{DeployExecutionFacts, DeployServiceExecutionFacts};
 
 const MAX_CONCURRENT_OBSERVATION_READS: usize = 16;
@@ -68,11 +69,13 @@ pub async fn load_deploy_execution_facts_from_nats(
         &service_requests,
         machine_scope.observed_machine_ids.clone(),
     );
+    let namespace_cleanup_candidates = namespace_cleanup_candidates(&observed_machines);
     Ok(DeployExecutionFacts {
         services: service_facts,
         eligible_machines: machine_scope.eligible_machines,
         dataplane_machines,
         observed_machines,
+        namespace_cleanup_candidates,
         step_timeout,
     })
 }
