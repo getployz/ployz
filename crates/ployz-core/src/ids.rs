@@ -23,124 +23,40 @@ impl fmt::Display for SubjectTokenError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"OperationId\">"))]
-#[serde(transparent)]
-pub struct OperationId(SubjectToken);
+/// Defines a typed identifier that wraps a [`SubjectToken`]. Every ID has the
+/// same shape — the only per-type differences are the name and the TypeScript
+/// brand literal — so the scaffolding lives here once.
+macro_rules! subject_token_id {
+    (
+        pub struct $name:ident;
+        ts_brand: $brand:literal;
+    ) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+        #[cfg_attr(feature = "typescript", ts(type = $brand))]
+        #[serde(transparent)]
+        pub struct $name(SubjectToken);
 
-impl OperationId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
+        impl $name {
+            pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
+                Ok(Self(SubjectToken::try_new(value)?))
+            }
 
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                self.0.as_str()
+            }
+        }
+    };
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"MachineId\">"))]
-#[serde(transparent)]
-pub struct MachineId(SubjectToken);
-
-impl MachineId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ServiceId\">"))]
-#[serde(transparent)]
-pub struct ServiceId(SubjectToken);
-
-impl ServiceId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"RevisionId\">"))]
-#[serde(transparent)]
-pub struct RevisionId(SubjectToken);
-
-impl RevisionId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ContainerId\">"))]
-#[serde(transparent)]
-pub struct ContainerId(SubjectToken);
-
-impl ContainerId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"CertId\">"))]
-#[serde(transparent)]
-pub struct CertId(SubjectToken);
-
-impl CertId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"StepId\">"))]
-#[serde(transparent)]
-pub struct StepId(SubjectToken);
-
-impl StepId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
-        Ok(Self(SubjectToken::try_new(value)?))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
+subject_token_id! { pub struct OperationId; ts_brand: "Brand<string, \"OperationId\">"; }
+subject_token_id! { pub struct MachineId; ts_brand: "Brand<string, \"MachineId\">"; }
+subject_token_id! { pub struct ServiceId; ts_brand: "Brand<string, \"ServiceId\">"; }
+subject_token_id! { pub struct RevisionId; ts_brand: "Brand<string, \"RevisionId\">"; }
+subject_token_id! { pub struct ContainerId; ts_brand: "Brand<string, \"ContainerId\">"; }
+subject_token_id! { pub struct CertId; ts_brand: "Brand<string, \"CertId\">"; }
+subject_token_id! { pub struct StepId; ts_brand: "Brand<string, \"StepId\">"; }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
