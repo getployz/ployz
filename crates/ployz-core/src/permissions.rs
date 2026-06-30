@@ -27,6 +27,7 @@ const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
 const JETSTREAM_ACK_SCOPE: &str = "$JS.ACK.>";
+const NATS_SERVICE_DISCOVERY_SCOPE: &str = "$SRV.>";
 
 /// The request-reply inbox prefix a principal connects with.
 ///
@@ -165,6 +166,7 @@ impl NatsPermissionProfile {
                 // subscribes the API service scope and answers requests.
                 subscribe: SubjectPermissions::allowing([
                     API_SERVICE_SCOPE.to_owned(),
+                    NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
                     inbox_scope,
                 ]),
                 allow_responses: ResponsePermission::Allowed,

@@ -86,7 +86,11 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
-        &[API_SERVICE_SCOPE.to_owned(), "_INBOX_ctl.>".to_owned()]
+        &[
+            API_SERVICE_SCOPE.to_owned(),
+            "$SRV.>".to_owned(),
+            "_INBOX_ctl.>".to_owned()
+        ]
     );
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
 }
