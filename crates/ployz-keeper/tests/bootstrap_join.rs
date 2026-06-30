@@ -40,6 +40,7 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     );
     let [
         store_material,
+        prepare_dataplane_host,
         prepare_runtime,
         verify_runtime,
         install_ployzd,
@@ -49,6 +50,7 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         panic!("join install plan records material and Docker prep before artifacts");
     };
     assert!(matches!(store_material, KeeperStep::StoreJoinMaterial(_)));
+    assert_eq!(*prepare_dataplane_host, KeeperStep::PrepareDataplaneHost);
     assert_eq!(
         *prepare_runtime,
         KeeperStep::PrepareContainerRuntime(ContainerRuntime::Docker)

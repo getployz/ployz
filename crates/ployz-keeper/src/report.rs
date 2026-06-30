@@ -50,6 +50,7 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd) => {
             "verify-host linux-root-systemd".to_owned()
         }
+        KeeperStepLabel::PrepareDataplaneHost => "prepare-dataplane-host".to_owned(),
         KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker) => {
             "prepare-container-runtime docker".to_owned()
         }
@@ -133,6 +134,7 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         KeeperStepFailureReason::ContainerRuntimePrepareFailed => {
             "container-runtime-prepare-failed"
         }
+        KeeperStepFailureReason::DataplaneHostPrepareFailed => "dataplane-host-prepare-failed",
         KeeperStepFailureReason::ContainerRuntimeVerifyFailed => "container-runtime-verify-failed",
     }
 }

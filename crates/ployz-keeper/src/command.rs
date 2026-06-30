@@ -13,6 +13,7 @@ use ployz_core::ops::FailureMessage;
 use wait_timeout::ChildExt;
 
 const DOCKER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+const DATAPLANE_HOST_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub trait KeeperCommandRunner {
     fn is_linux(&mut self) -> bool;
@@ -22,6 +23,7 @@ pub trait KeeperCommandRunner {
     fn docker_info(&mut self) -> Result<(), FailureMessage>;
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage>;
     fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage>;
+    fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,6 +129,58 @@ impl KeeperCommandRunner for SystemKeeperCommandRunner {
             output.failure_summary()
         )))
     }
+
+    fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
+        if dataplane_host_ready(self.timeout) {
+            return Ok(());
+        }
+
+        let output = run_command("apt-get", &["update"], DATAPLANE_HOST_INSTALL_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(failure_message(format!(
+                "apt-get update failed: {}",
+                output.failure_summary()
+            )));
+        }
+
+        let output = run_os_command_with_display(
+            "env",
+            &[
+                OsString::from("DEBIAN_FRONTEND=noninteractive"),
+                OsString::from("apt-get"),
+                OsString::from("install"),
+                OsString::from("-y"),
+                OsString::from("wireguard-tools"),
+                OsString::from("iproute2"),
+            ],
+            "apt-get install -y wireguard-tools iproute2".to_owned(),
+            DATAPLANE_HOST_INSTALL_TIMEOUT,
+        )?;
+        if !output.status.success() {
+            return Err(failure_message(format!(
+                "dataplane host package install failed: {}",
+                output.failure_summary()
+            )));
+        }
+
+        if dataplane_host_ready(self.timeout) {
+            return Ok(());
+        }
+        Err(failure_message(
+            "dataplane host packages installed but wg/ip/tc/tun are not ready",
+        ))
+    }
+}
+
+fn dataplane_host_ready(timeout: Duration) -> bool {
+    Path::new("/dev/net/tun").exists()
+        && command_success("wg", &["--version"], timeout)
+        && command_success("ip", &["-V"], timeout)
+        && command_success("tc", &["-V"], timeout)
+}
+
+fn command_success(program: &str, args: &[&str], timeout: Duration) -> bool {
+    run_command(program, args, timeout).is_ok_and(|output| output.status.success())
 }
 
 struct CapturedCommandOutput {

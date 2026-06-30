@@ -111,6 +111,7 @@ fn first_machine_can_authorize_cloud_user_public_key() {
         .find_map(|step| match step {
             KeeperStep::WriteNatsAuthorizedUsers(users) => Some(users.render()),
             KeeperStep::VerifyHost(_)
+            | KeeperStep::PrepareDataplaneHost
             | KeeperStep::PrepareContainerRuntime(_)
             | KeeperStep::VerifyContainerRuntime(_)
             | KeeperStep::InstallArtifact(_)
@@ -207,6 +208,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
         .find_map(|step| match step {
             KeeperStep::WriteNatsServerConfig(config) => Some(config.render_config()),
             KeeperStep::VerifyHost(_)
+            | KeeperStep::PrepareDataplaneHost
             | KeeperStep::PrepareContainerRuntime(_)
             | KeeperStep::VerifyContainerRuntime(_)
             | KeeperStep::InstallArtifact(_)
