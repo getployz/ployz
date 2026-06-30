@@ -106,11 +106,9 @@ impl NatsServerConfig {
             self.port,
         );
         if let NatsListener::External { advertise_host } = &self.listener {
-            rendered.push_str(&format!(
-                "client_advertise: {}:{}\n",
-                advertise_host.as_str(),
-                self.port
-            ));
+            let client_advertise =
+                quote_nats_string(&format!("{}:{}", advertise_host.as_str(), self.port));
+            rendered.push_str(&format!("client_advertise: {client_advertise}\n",));
         }
         rendered.push_str(&format!(
             "tls {{\n  cert_file: {cert_file}\n  key_file: {key_file}\n}}\njetstream {{\n  store_dir: {store_dir}\n}}\ninclude {include_path}\n"

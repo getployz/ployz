@@ -9,7 +9,9 @@ use ployz_core::install::{
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
     NatsServerInstallSpec,
 };
+use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::{DnsRole, GatewayRole};
+use ployz_core::security::NatsPrincipal;
 use ployz_keeper::cloud_bootstrap::{
     CloudBootstrapAttemptState, CloudBootstrapCallbackTarget, CloudBootstrapLocalState,
     cloud_joiner_connect_config, cloud_joiner_success_callback,
@@ -23,18 +25,27 @@ use ployz_keeper::join_executor::execute_keeper_join_with_redeemed;
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{JoinToken, KeeperStepFailureReason};
+use ployz_nats::connect::{
+    NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
+};
+use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapClientInfo,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapFailure, CloudBootstrapIntent,
     CloudBootstrapMachineFacts, CloudBootstrapOutcome, CloudBootstrapSessionCreateRequest,
-    CloudBootstrapSessionPollRequest, CloudFounderBootstrap, CloudJoinerBootstrap, MachineId,
+    CloudBootstrapSessionPollRequest, CloudFounderBootstrap, CloudJoinerBootstrap,
+    InitFirstMachineActivateRequest, MachineId,
 };
 
 use super::{
-    CLOUD_BOOTSTRAP_MAX_POLLS, CloudJoinTokenConsumer, JoinRedeemer, JoinReporter,
-    KEEPER_STATE_DIR, failure_message, failure_summary, load_machine_public_ip_from_env,
-    read_cloud_founder_bootstrap_result, run_first_machine_install,
+    CLOUD_BOOTSTRAP_MAX_POLLS, CloudJoinTokenConsumer, DEFAULT_NATS_CONNECT_TIMEOUT, JoinRedeemer,
+    JoinReporter, KEEPER_STATE_DIR, failure_message, failure_summary,
+    load_machine_public_ip_from_env, read_cloud_founder_bootstrap_result,
+    run_first_machine_install,
 };
+
+const CLOUD_FOUNDER_ACTIVATION_ATTEMPTS: u32 = 60;
+const CLOUD_FOUNDER_ACTIVATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
     let state_dir = std::path::Path::new(KEEPER_STATE_DIR);
@@ -282,23 +293,33 @@ fn run_cloud_founder_bootstrap(
 
     let terminal = execution.terminal;
     let callback = match &terminal {
-        KeeperPlanTerminal::Completed => match read_cloud_founder_bootstrap_result(
-            &machine_id,
-            &runtime_nats_url,
-            &nats_material,
-        ) {
-            Ok(result) => CloudBootstrapCallbackRequest {
-                attempt_id: envelope.attempt_id.clone(),
-                redemption_id: envelope.redemption_id.clone(),
-                outcome: CloudBootstrapOutcome::FounderSucceeded { result },
-            },
-            Err(message) => failed_callback(
-                envelope,
-                CloudBootstrapFailure::BootstrapFailed {
-                    message: failure_message(&message),
+        KeeperPlanTerminal::Completed => {
+            match activate_cloud_founder_machine(&machine_id, &runtime_nats_url, &nats_material) {
+                Ok(()) => match read_cloud_founder_bootstrap_result(
+                    &machine_id,
+                    &runtime_nats_url,
+                    &nats_material,
+                ) {
+                    Ok(result) => CloudBootstrapCallbackRequest {
+                        attempt_id: envelope.attempt_id.clone(),
+                        redemption_id: envelope.redemption_id.clone(),
+                        outcome: CloudBootstrapOutcome::FounderSucceeded { result },
+                    },
+                    Err(message) => failed_callback(
+                        envelope,
+                        CloudBootstrapFailure::BootstrapFailed {
+                            message: failure_message(&message),
+                        },
+                    ),
                 },
-            ),
-        },
+                Err(message) => failed_callback(
+                    envelope,
+                    CloudBootstrapFailure::BootstrapFailed {
+                        message: failure_message(&message),
+                    },
+                ),
+            }
+        }
         KeeperPlanTerminal::Failed(failure) => failed_callback(
             envelope,
             CloudBootstrapFailure::BootstrapFailed {
@@ -329,6 +350,54 @@ fn run_cloud_founder_bootstrap(
             ExitCode::FAILURE
         }
     }
+}
+
+fn activate_cloud_founder_machine(
+    machine_id: &MachineId,
+    runtime_nats_url: &MachineJoinRuntimeNatsUrl,
+    material: &ployz_core::install::NatsMachineMaterialPaths,
+) -> Result<(), String> {
+    let controller_seed = std::fs::read_to_string(material.controller_seed_file())
+        .map_err(|error| format!("failed to read controller seed: {error}"))?;
+    let controller_seed = NatsUserSeed::try_new(controller_seed.trim())
+        .map_err(|_| "controller seed is invalid".to_owned())?;
+    let url = NatsClientUrl::try_new(runtime_nats_url.as_str().to_owned())
+        .map_err(|error| format!("runtime NATS URL is invalid: {error}"))?;
+    let connect = NatsConnectConfig {
+        url,
+        auth: NatsClientAuth::NkeySeed(controller_seed),
+        trust: NatsTlsTrust::ClusterCa(material.ca_file()),
+        principal: NatsPrincipal::Controller,
+    };
+    let request = InitFirstMachineActivateRequest {
+        machine_id: machine_id.clone(),
+        roles: ployz_core::roles::InstallRolePolicy::install_all(),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to start async runtime: {error}"))?;
+
+    runtime.block_on(async move {
+        let mut last_error = String::new();
+        for _ in 0..CLOUD_FOUNDER_ACTIVATION_ATTEMPTS {
+            match connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT).await {
+                Ok(client) => {
+                    match OperationApiClient::new(client)
+                        .init_first_machine_activate(&request)
+                        .await
+                    {
+                        Ok(_) => return Ok(()),
+                        Err(error) => last_error = error.to_string(),
+                    }
+                }
+                Err(error) => last_error = error.to_string(),
+            }
+            tokio::time::sleep(CLOUD_FOUNDER_ACTIVATION_RETRY_DELAY).await;
+        }
+
+        Err(format!("failed to activate first machine: {last_error}"))
+    })
 }
 
 fn build_cloud_founder_install_spec(

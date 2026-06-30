@@ -225,7 +225,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
     // TLS + authorization land in the same rendered config that opens the
     // listener — a plaintext external listener is unrepresentable.
     assert!(rendered.contains("host: 0.0.0.0\n"));
-    assert!(rendered.contains("client_advertise: 203.0.113.10:4222\n"));
+    assert!(rendered.contains("client_advertise: \"203.0.113.10:4222\"\n"));
     assert!(rendered.contains("tls {\n"));
     assert!(rendered.contains("include \"authorized-users.conf\"\n"));
 }

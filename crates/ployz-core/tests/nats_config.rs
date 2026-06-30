@@ -44,7 +44,7 @@ fn external_listener_binds_all_interfaces_and_advertises_the_public_host() {
     assert_eq!(config.client_host(), "203.0.113.10");
     let rendered = config.render();
     assert!(rendered.contains("host: 0.0.0.0\n"));
-    assert!(rendered.contains("client_advertise: 203.0.113.10:4222\n"));
+    assert!(rendered.contains("client_advertise: \"203.0.113.10:4222\"\n"));
     assert!(rendered.contains("tls {\n"));
 }
 
