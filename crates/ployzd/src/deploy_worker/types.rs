@@ -18,6 +18,7 @@ pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
+    pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) dataplane_machines: Vec<MachineId>,
     pub(super) step_timeout: Duration,
 }
@@ -44,6 +45,36 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    pub fn namespace_cleanup_candidates(&self) -> &[DeployCleanupContainer] {
+        &self.namespace_cleanup_candidates
+    }
+
+    #[must_use]
+    pub fn expected_active(&self) -> &ExpectedActiveService {
+        self.first_service().expected_active()
+    }
+
+    #[must_use]
+    pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
+        self.first_service().existing_replicas()
+    }
+
+    #[must_use]
+    pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
+        self.first_service().cleanup_candidates()
+    }
+
+    #[must_use]
+    pub fn eligible_machines(&self) -> &[MachineId] {
+        self.first_service().eligible_machines()
+    }
+
+    #[must_use]
+    pub fn dataplane_machines(&self) -> &[MachineId] {
+        &self.dataplane_machines
+    }
+
+    #[must_use]
     pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
         self.step_timeout = step_timeout;
         self
@@ -65,6 +96,12 @@ impl DeployExecutionCommand {
             plan,
             &self.dataplane_machines,
         )
+    }
+
+    fn first_service(&self) -> &DeployServiceExecutionCommand {
+        self.services
+            .first()
+            .expect("single-service command accessor requires at least one service")
     }
 }
 
@@ -107,7 +144,6 @@ impl DeployServiceExecutionCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionOutcome {
     pub namespace_id: ployz_core::ids::NamespaceId,
-    pub service_id: ServiceId,
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,

@@ -124,11 +124,8 @@ fn fact_load_failure(
     request: &ployz_core::deploy::DeployRequest,
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
-    let service = request
-        .primary_service()
-        .expect("accepted deploy request has at least one service");
     DeployOperationFailure::PlanningFailed {
-        service_id: service.service_id.clone(),
+        service_id: request.status_service_id(),
         revision_id: request.target_revision.clone(),
         message: FailureMessage::try_new(source.to_string())
             .expect("rendered fact load failure message is non-empty"),
@@ -136,11 +133,8 @@ fn fact_load_failure(
 }
 
 fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOperationFailure {
-    let service = request
-        .primary_service()
-        .expect("accepted deploy request has at least one service");
     DeployOperationFailure::PlanningFailed {
-        service_id: service.service_id.clone(),
+        service_id: request.status_service_id(),
         revision_id: request.target_revision.clone(),
         message: FailureMessage::try_new("deploy command could not be prepared")
             .expect("static operation failure message is non-empty"),
@@ -518,6 +512,8 @@ mod tests {
         required_endpoint_port: Option<RoutePort>,
     ) -> DeployContainer {
         DeployContainer {
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_2"),
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
             step_id: step_id("run_1"),

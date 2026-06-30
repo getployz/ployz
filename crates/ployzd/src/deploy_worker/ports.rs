@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{MachineId, OperationId, ServiceId};
 use ployz_core::ops::{DeployEvidence, DeployTransition};
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveServiceCommit, ActiveServiceCommitRequest,
@@ -79,6 +79,11 @@ pub trait ActiveServiceCommitter {
         &mut self,
         request: ActiveServiceCommitRequest,
     ) -> impl Future<Output = Result<ActiveServiceCommit, ActiveServiceCommitError>> + Send;
+
+    fn remove_active_service(
+        &mut self,
+        service_id: ServiceId,
+    ) -> impl Future<Output = Result<(), ActiveServiceCommitError>> + Send;
 }
 
 pub trait ActiveRouteCommitter {
@@ -136,6 +141,15 @@ impl ActiveServiceCommitter for AsyncNatsCoreStateStore {
         request: ActiveServiceCommitRequest,
     ) -> Result<ActiveServiceCommit, ActiveServiceCommitError> {
         AsyncNatsCoreStateStore::commit_active_service(self, &request)
+            .await
+            .map_err(ActiveServiceCommitError::Store)
+    }
+
+    async fn remove_active_service(
+        &mut self,
+        service_id: ServiceId,
+    ) -> Result<(), ActiveServiceCommitError> {
+        AsyncNatsCoreStateStore::remove_active_service(self, &service_id)
             .await
             .map_err(ActiveServiceCommitError::Store)
     }

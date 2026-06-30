@@ -32,7 +32,7 @@ pub use ports::{
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
-    prepare_deploy_execution_command,
+    namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 
 use crate::docker::labels::ManagedContainerIdentity;
@@ -144,6 +144,7 @@ where
                 cleanup_candidates: service.cleanup_candidates.clone(),
             })
             .collect(),
+        command.namespace_cleanup_candidates().to_vec(),
     )
     .map_err(|source| run.fail(source.into()))?;
     record_evidence(
@@ -153,26 +154,28 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
-    record_running_stage(
-        command,
-        &mut *ports.recorder,
-        DeployRunningStage::PreparingDataplane,
-    )
-    .await
-    .map_err(|source| run.fail(source))?;
-    ensure_endpoint_networks(command, &plan, &mut *ports.machine_runtime)
+    if !plan.services.is_empty() {
+        record_running_stage(
+            command,
+            &mut *ports.recorder,
+            DeployRunningStage::PreparingDataplane,
+        )
         .await
         .map_err(|source| run.fail(source))?;
-    let dataplane = prepare_dataplane(command, &plan, &mut *ports.dataplane)
+        ensure_endpoint_networks(command, &plan, &mut *ports.machine_runtime)
+            .await
+            .map_err(|source| run.fail(source))?;
+        let dataplane = prepare_dataplane(command, &plan, &mut *ports.dataplane)
+            .await
+            .map_err(|source| run.fail(source))?;
+        record_evidence(
+            command,
+            &mut *ports.recorder,
+            DeployEvidence::DataplanePrepared { report: dataplane },
+        )
         .await
         .map_err(|source| run.fail(source))?;
-    record_evidence(
-        command,
-        &mut *ports.recorder,
-        DeployEvidence::DataplanePrepared { report: dataplane },
-    )
-    .await
-    .map_err(|source| run.fail(source))?;
+    }
     record_running_stage(
         command,
         &mut *ports.recorder,
@@ -256,14 +259,16 @@ where
     .await
     .map_err(|source| run.fail(source))?;
 
-    let health_result = with_step_timeout(
-        command,
-        DeployExecutionStep::WaitHealthy,
-        (*ports.health_checker).wait_healthy(&containers),
-    )
-    .await;
-    if let Err(source) = health_result {
-        return Err(run.fail(source));
+    if !containers.is_empty() {
+        let health_result = with_step_timeout(
+            command,
+            DeployExecutionStep::WaitHealthy,
+            (*ports.health_checker).wait_healthy(&containers),
+        )
+        .await;
+        if let Err(source) = health_result {
+            return Err(run.fail(source));
+        }
     }
 
     if command
@@ -307,16 +312,15 @@ where
         .await;
     }
     let cleanup = cleanup_superseded_containers(command, &mut *ports.machine_runtime, &plan).await;
+    if command.services().is_empty() {
+        remove_inactive_services(command, &cleanup, &mut *ports.active_state)
+            .await
+            .map_err(|source| run.fail(source))?;
+    }
     let terminal_event = record_terminal_state(command, &mut *ports.recorder, &cleanup).await;
 
     let outcome = DeployExecutionOutcome {
         namespace_id: plan.namespace_id,
-        service_id: plan
-            .services
-            .first()
-            .expect("planned deploy has at least one service")
-            .service_id
-            .clone(),
         target_revision: plan.target_revision,
         containers,
         cleanup,
@@ -324,6 +328,36 @@ where
     };
 
     Ok(outcome)
+}
+
+async fn remove_inactive_services<A>(
+    command: &DeployExecutionCommand,
+    cleanup: &[DeployCleanupResult],
+    active_state: &mut A,
+) -> Result<(), DeployExecutionError>
+where
+    A: ActiveServiceCommitter,
+{
+    let mut service_ids = cleanup
+        .iter()
+        .filter_map(|result| match result {
+            DeployCleanupResult::Removed(target) => Some(target.service_id.clone()),
+            DeployCleanupResult::Failed { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    service_ids.sort();
+    service_ids.dedup();
+
+    for service_id in service_ids {
+        with_step_timeout(
+            command,
+            DeployExecutionStep::CommitActiveService,
+            active_state.remove_active_service(service_id),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 async fn cleanup_superseded_containers<N>(

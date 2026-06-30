@@ -1,20 +1,30 @@
-use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployCleanupContainer, DeployPreparationError, DeployRequest, DeployServiceSpec,
+    ImageReference, ReplicaCount,
+};
 use ployz_core::ids::StepId;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
 };
 use ployz_core::state::{ActiveServiceState, ExpectedActiveService};
-use ployz_test_support::ids::{container_id, machine_id, operation_id, revision_id, service_id};
-use ployzd::deploy_worker::{DeployExecutionFacts, prepare_deploy_execution_command};
+use ployz_test_support::ids::{
+    container_id, machine_id, namespace_id, operation_id, revision_id, service_id,
+};
+use ployzd::deploy_worker::{
+    DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
+    prepare_deploy_execution_command,
+};
 use std::time::Duration;
 
 #[tokio::test]
 async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
-        active_service: None,
-        active_route: None,
+        services: vec![DeployServiceExecutionFacts {
+            active_service: None,
+            active_route: None,
+        }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![
@@ -33,6 +43,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             )
             .expect("valid machine observation snapshot"),
         ],
+        namespace_cleanup_candidates: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -51,11 +62,13 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 async fn uses_active_service_revision_and_target_replicas() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
-        active_service: Some(ActiveServiceState {
-            service_id: service_id("svc_api"),
-            active_revision: revision_id("rev_1"),
-        }),
-        active_route: None,
+        services: vec![DeployServiceExecutionFacts {
+            active_service: Some(ActiveServiceState {
+                service_id: service_id("svc_api"),
+                active_revision: revision_id("rev_1"),
+            }),
+            active_route: None,
+        }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![
@@ -69,6 +82,7 @@ async fn uses_active_service_revision_and_target_replicas() {
             )
             .expect("valid machine observation snapshot"),
         ],
+        namespace_cleanup_candidates: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -96,14 +110,17 @@ async fn rejects_active_state_for_a_different_service() {
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
-            active_service: Some(ActiveServiceState {
-                service_id: service_id("svc_worker"),
-                active_revision: revision_id("rev_1"),
-            }),
-            active_route: None,
+            services: vec![DeployServiceExecutionFacts {
+                active_service: Some(ActiveServiceState {
+                    service_id: service_id("svc_worker"),
+                    active_revision: revision_id("rev_1"),
+                }),
+                active_route: None,
+            }],
             eligible_machines: vec![machine_id("machine_a")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -111,22 +128,25 @@ async fn rejects_active_state_for_a_different_service() {
 
     assert!(matches!(
         error,
-        ployzd::deploy_worker::DeployCommandPreparationError::ActiveServiceMismatch {
+        DeployCommandPreparationError::Service(DeployPreparationError::ActiveServiceMismatch {
             expected_service_id,
             actual_service_id,
-        } if expected_service_id == service_id("svc_api")
+        }) if expected_service_id == service_id("svc_api")
             && actual_service_id == service_id("svc_worker")
     ));
 }
 
 fn deploy_request() -> DeployRequest {
     DeployRequest {
-        service_id: service_id("svc_api"),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: ImageReference::try_new("registry.example/api:rev_2")
-            .expect("valid image reference"),
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: ImageReference::try_new("registry.example/api:rev_2")
+                .expect("valid image reference"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
+        }],
     }
 }
 
