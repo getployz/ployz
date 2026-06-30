@@ -18,7 +18,10 @@ fn machine_credential_renders_own_scopes_and_route_state_reads() {
         machine_id: machine_id.clone(),
     });
 
-    let mut expected_publish = vec![machine_observation_scope(&machine_id)];
+    let mut expected_publish = vec![
+        "_INBOX_machine_machine_7.>".to_owned(),
+        machine_observation_scope(&machine_id),
+    ];
     expected_publish.extend([
         "$KV.KV_OBS.containers.machine_7".to_owned(),
         "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
@@ -74,6 +77,7 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
     assert_eq!(
         profile.publish.allowed_subjects(),
         &[
+            "_INBOX_ctl.>".to_owned(),
             API_SERVICE_SCOPE.to_owned(),
             MACHINE_SERVICE_SCOPE.to_owned(),
             OPS_STREAM_SUBJECT.to_owned(),

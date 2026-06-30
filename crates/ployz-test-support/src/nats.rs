@@ -17,7 +17,7 @@ use async_nats::jetstream;
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
-    NatsUserSeed, render_authorized_users,
+    NatsUserPublicKey, NatsUserSeed, render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
@@ -63,6 +63,15 @@ impl SecuredTestNats {
     /// Starts a secured server with the base principals plus one Machine user
     /// per supplied machine id.
     pub async fn start_with_machines(machine_ids: &[MachineId]) -> Result<Self, FixtureError> {
+        Self::start_with_machines_and_extra_users(machine_ids, &[]).await
+    }
+
+    /// Starts a secured server with the base principals, supplied Machine
+    /// users, and external User principal public keys such as Cloud clients.
+    pub async fn start_with_machines_and_extra_users(
+        machine_ids: &[MachineId],
+        extra_user_public_keys: &[NatsUserPublicKey],
+    ) -> Result<Self, FixtureError> {
         let dir = tempfile::TempDir::new()?;
 
         // The cluster CA, server certificate, and base NKey users come from
@@ -94,6 +103,12 @@ impl SecuredTestNats {
                 },
                 minted,
             ));
+        }
+        for public_key in extra_user_public_keys {
+            authorized.push(NatsAuthorizedUser {
+                principal: NatsPrincipal::User,
+                nkey_public: public_key.clone(),
+            });
         }
         let authorized_users_path = dir.path().join("authorized-users.conf");
         fs::write(&authorized_users_path, render_authorized_users(&authorized))?;
