@@ -134,6 +134,7 @@ pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
             continue;
         }
         match decision {
+            CloudBootstrapDecision::Pending { .. } => continue,
             CloudBootstrapDecision::Expired => {
                 if let Err(error) = reset_cloud_attempt(std::path::Path::new(KEEPER_STATE_DIR)) {
                     eprintln!(
