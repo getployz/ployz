@@ -26,9 +26,11 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux/amd64
             slug: linux-amd64
+            nats-server-sha256: b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
             slug: linux-arm64
+            nats-server-sha256: 15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +38,9 @@ jobs:
         env:
           PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
+          PLOYZ_NATS_SERVER_VERSION: 2.14.2
+          PLOYZ_NATS_SERVER_URL: https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-${{ matrix.slug }}.tar.gz
+          PLOYZ_NATS_SERVER_SHA256: ${{ matrix.nats-server-sha256 }}
         run: bash scripts/package-release.sh
       - name: Generate artifact attestations
         uses: actions/attest@v4
