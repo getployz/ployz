@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::num::NonZeroU16;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -67,19 +66,12 @@ impl From<RouteHostname> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteHostnameError {
+    #[error("route hostname is empty")]
     Empty,
+    #[error("route hostname is invalid: {value}")]
     Invalid { value: String },
-}
-
-impl fmt::Display for RouteHostnameError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("route hostname is empty"),
-            Self::Invalid { value } => write!(formatter, "route hostname is invalid: {value}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -117,15 +109,8 @@ impl From<RoutePort> for u16 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RoutePortError {
+    #[error("route port must be greater than zero")]
     Zero,
-}
-
-impl fmt::Display for RoutePortError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("route port must be greater than zero"),
-        }
-    }
 }

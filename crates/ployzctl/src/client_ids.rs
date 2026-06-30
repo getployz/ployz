@@ -1,7 +1,5 @@
 //! Client-side operation IDs for ergonomic commands.
 
-use std::fmt;
-
 use ployz_core::ids::{MachineId, OperationId, ServiceId, SubjectTokenError};
 use ployz_core::ops::OperationIdempotencyKey;
 
@@ -55,23 +53,10 @@ fn generated_id_suffix() -> String {
     nuid::next().to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ClientGeneratedIdsError {
+    #[error("generated operation id is invalid: {source}")]
     OperationId { source: SubjectTokenError },
+    #[error("generated idempotency key is invalid: {source}")]
     IdempotencyKey { source: SubjectTokenError },
 }
-
-impl fmt::Display for ClientGeneratedIdsError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OperationId { source } => {
-                write!(formatter, "generated operation id is invalid: {source}")
-            }
-            Self::IdempotencyKey { source } => {
-                write!(formatter, "generated idempotency key is invalid: {source}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ClientGeneratedIdsError {}

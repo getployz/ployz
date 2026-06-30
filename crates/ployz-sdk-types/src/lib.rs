@@ -214,22 +214,12 @@ impl LogsTailLines {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum LogsTailLinesError {
+    #[error("logs tail lines must be greater than zero")]
     Zero,
+    #[error("logs tail lines must be at most {MAX_LOGS_TAIL_LINES}")]
     TooLarge { value: u16 },
-}
-
-impl fmt::Display for LogsTailLinesError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => write!(formatter, "logs tail lines must be greater than zero"),
-            Self::TooLarge { .. } => write!(
-                formatter,
-                "logs tail lines must be at most {MAX_LOGS_TAIL_LINES}"
-            ),
-        }
-    }
 }
 
 impl<'de> Deserialize<'de> for LogsTailLines {

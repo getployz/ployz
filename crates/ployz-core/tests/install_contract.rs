@@ -158,7 +158,7 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(NatsUserSeed::try_new("").is_err());
     assert!(NatsUserSeed::try_new("creds\0bad").is_err());
     assert!(
-        NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_ok()
+        NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM").is_ok()
     );
     assert!(NatsCaCertificatePem::try_new("").is_err());
     assert!(NatsCaCertificatePem::try_new("not-a-pem").is_err());
@@ -244,7 +244,7 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
 fn machine_join_bundle_debug_redacts_secrets() {
     let rendered = format!("{:?}", machine_join_secret_delivery());
 
-    assert!(!rendered.contains("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    assert!(!rendered.contains("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"));
 }
 
 fn first_machine_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstMachineInstallSpec {
@@ -334,7 +334,7 @@ fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
         nats_credentials: NatsUserSeed::try_new(
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
         )
         .expect("valid nats credentials"),
     }

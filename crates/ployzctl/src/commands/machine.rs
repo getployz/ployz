@@ -73,34 +73,21 @@ pub fn derive_machine_identity(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineIdentityError {
+    #[error(
+        "remote hostname \"{hostname}\" is not a valid Ployz machine identity ({source}); pass --name NAME to choose one explicitly"
+    )]
     InvalidHostname {
         hostname: String,
         source: SubjectTokenError,
     },
+    #[error("--name \"{name}\" is not a valid Ployz machine identity ({source})")]
     InvalidNameOverride {
         name: String,
         source: SubjectTokenError,
     },
 }
-
-impl fmt::Display for MachineIdentityError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidHostname { hostname, source } => write!(
-                formatter,
-                "remote hostname \"{hostname}\" is not a valid Ployz machine identity ({source}); pass --name NAME to choose one explicitly"
-            ),
-            Self::InvalidNameOverride { name, source } => write!(
-                formatter,
-                "--name \"{name}\" is not a valid Ployz machine identity ({source})"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MachineIdentityError {}
 
 /// `ployzctl machine init USER@HOST`: form a first-machine cluster on the
 /// remote machine through SSH and record local client context (R4).

@@ -1,5 +1,3 @@
-use std::fmt;
-
 use crate::wire::nonempty_text_newtype;
 
 nonempty_text_newtype! {
@@ -20,15 +18,8 @@ nonempty_text_newtype! {
     error: NonEmptyTextError;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NonEmptyTextError {
+    #[error("text must not be empty")]
     Empty,
-}
-
-impl fmt::Display for NonEmptyTextError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("text must not be empty"),
-        }
-    }
 }

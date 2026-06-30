@@ -380,7 +380,8 @@ fn public_ip_from_runtime_nats_url(
     let (host, _) = authority
         .rsplit_once(':')
         .ok_or_else(|| "runtime NATS URL must include a host and port".to_owned())?;
-    host.parse()
+    host.trim_matches(['[', ']'])
+        .parse()
         .map_err(|_| "Cloud founder runtime NATS URL must use a public IP host for v1".to_owned())
 }
 
@@ -550,6 +551,19 @@ mod tests {
                 .expect("public IP parses")
                 .to_string(),
             "203.0.113.10"
+        );
+    }
+
+    #[test]
+    fn founder_public_ipv6_comes_from_runtime_nats_url() {
+        let url =
+            MachineJoinRuntimeNatsUrl::try_new("tls://[2001:db8::1]:4222").expect("valid nats URL");
+
+        assert_eq!(
+            public_ip_from_runtime_nats_url(&url)
+                .expect("public IP parses")
+                .to_string(),
+            "2001:db8::1"
         );
     }
 

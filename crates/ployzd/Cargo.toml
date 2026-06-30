@@ -15,6 +15,8 @@ aws-sdk-s3 = "1"
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 clap.workspace = true
 futures-util.workspace = true
+httparse = "1"
+ipnet = "2"
 ployz-core.workspace = true
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
 ployz-nats.workspace = true
@@ -24,11 +26,12 @@ serde_json.workspace = true
 sha2.workspace = true
 nkeys = "0.4"
 nuid.workspace = true
+tempfile = "3"
+thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
 ployz-test-support.workspace = true
-tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]

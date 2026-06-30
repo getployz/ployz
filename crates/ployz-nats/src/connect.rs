@@ -5,7 +5,6 @@
 //! prefix derived from the connecting principal. The bare plaintext
 //! [`connect_with_timeout`] exists only for test fixtures.
 
-use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Once;
@@ -103,9 +102,11 @@ impl AsRef<str> for NatsClientUrl {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsClientUrlError {
+    #[error("NATS client URL is empty")]
     Empty,
+    #[error("unsupported NATS client URL environment value: {value:?}")]
     UnsupportedEnvironmentValue { value: String },
 }
 
@@ -210,25 +211,10 @@ fn install_rustls_crypto_provider() {
     });
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsConnectError {
+    #[error("failed to connect to NATS at {url}: {message}")]
     Connect { url: String, message: String },
+    #[error("failed to connect to NATS at {url} within {}ms", timeout.as_millis())]
     Timeout { url: String, timeout: Duration },
 }
-
-impl fmt::Display for NatsConnectError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Connect { url, message } => {
-                write!(formatter, "failed to connect to NATS at {url}: {message}")
-            }
-            Self::Timeout { url, timeout } => write!(
-                formatter,
-                "failed to connect to NATS at {url} within {}ms",
-                timeout.as_millis()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for NatsConnectError {}

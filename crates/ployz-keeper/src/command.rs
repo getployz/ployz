@@ -7,9 +7,10 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ployz_core::ops::FailureMessage;
+use wait_timeout::ChildExt;
 
 pub trait KeeperCommandRunner {
     fn is_linux(&mut self) -> bool;
@@ -220,23 +221,19 @@ fn wait_for_child(
     child: &mut Child,
     timeout: Duration,
 ) -> Result<ExitStatus, FailureMessage> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| failure_message(format!("failed to wait for {command}: {error}")))?
-        {
-            return Ok(status);
-        }
-        if started.elapsed() >= timeout {
+    match child
+        .wait_timeout(timeout)
+        .map_err(|error| failure_message(format!("failed to wait for {command}: {error}")))?
+    {
+        Some(status) => Ok(status),
+        None => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(failure_message(format!(
+            Err(failure_message(format!(
                 "{command} timed out after {}s",
                 timeout.as_secs()
-            )));
+            )))
         }
-        thread::sleep(Duration::from_millis(25));
     }
 }
 

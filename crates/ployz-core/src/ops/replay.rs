@@ -1,7 +1,6 @@
 //! Operation event replay paging.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::num::NonZeroU16;
 
 use crate::ids::OperationId;
@@ -58,26 +57,12 @@ impl From<OperationEventReplayLimit> for u16 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OperationEventReplayLimitError {
+    #[error("operation event replay limit must be greater than zero")]
     Zero,
+    #[error("operation event replay limit {value} exceeds maximum {max}")]
     TooLarge { value: u16, max: u16 },
-}
-
-impl fmt::Display for OperationEventReplayLimitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => {
-                formatter.write_str("operation event replay limit must be greater than zero")
-            }
-            Self::TooLarge { value, max } => {
-                write!(
-                    formatter,
-                    "operation event replay limit {value} exceeds maximum {max}"
-                )
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

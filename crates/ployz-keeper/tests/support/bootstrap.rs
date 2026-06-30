@@ -116,7 +116,7 @@ pub fn keeper_join_material() -> KeeperJoinMaterial {
     KeeperJoinMaterial::new(
         machine_id("machine_7"),
         "prod",
-        NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
             .expect("valid nats credentials"),
         test_ca_pem(),
     )
