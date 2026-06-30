@@ -181,6 +181,7 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
     };
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        KeeperStep::PrepareDataplaneHost,
         KeeperStep::InstallArtifact(ployzd),
         KeeperStep::InstallArtifact(ebpf_bytecode),
         KeeperStep::InstallArtifact(ebpf_ctl),

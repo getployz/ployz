@@ -56,6 +56,7 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
             KeeperStep::VerifyHost(prerequisite) => {
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
+            KeeperStep::PrepareDataplaneHost => self.prepare_dataplane_host(),
             KeeperStep::PrepareContainerRuntime(runtime) => {
                 self.prepare_container_runtime(*runtime)
             }
@@ -127,6 +128,12 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
                 )
             }),
         }
+    }
+
+    fn prepare_dataplane_host(&mut self) -> Result<(), KeeperStepEffectError> {
+        self.runner.prepare_dataplane_host().map_err(|message| {
+            KeeperStepEffectError::new(KeeperStepFailureReason::DataplaneHostPrepareFailed, message)
+        })
     }
 
     fn verify_container_runtime(
