@@ -19,7 +19,10 @@ ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["rt", "time"] }
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+nuid.workspace = true
 
 [dev-dependencies]
 ployz-test-support.workspace = true

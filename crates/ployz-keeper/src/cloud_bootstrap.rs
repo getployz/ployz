@@ -3,7 +3,6 @@
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
@@ -301,17 +300,11 @@ fn accepted_machine_evidence_paths(state_dir: &Path) -> [PathBuf; 7] {
 }
 
 fn new_attempt_id() -> Result<CloudBootstrapAttemptId, CloudAttemptStateError> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| CloudAttemptStateError::Clock {
-            message: error.to_string(),
-        })?
-        .as_nanos();
-    CloudBootstrapAttemptId::try_new(format!("pcba_{nanos}_{}", std::process::id())).map_err(
-        |error| CloudAttemptStateError::InvalidGeneratedAttempt {
+    CloudBootstrapAttemptId::try_new(format!("pcba_{}", nuid::next())).map_err(|error| {
+        CloudAttemptStateError::InvalidGeneratedAttempt {
             message: format!("{error:?}"),
-        },
-    )
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,7 +321,6 @@ pub enum CloudAttemptStateError {
     Parse { path: PathBuf, message: String },
     Serialize { message: String },
     Write { path: PathBuf, message: String },
-    Clock { message: String },
     InvalidGeneratedAttempt { message: String },
     TerminalCallbackEnvelopeMismatch { path: PathBuf },
     ConflictingTerminalCallback { path: PathBuf },
@@ -363,10 +355,6 @@ impl fmt::Display for CloudAttemptStateError {
                 formatter,
                 "failed to write cloud bootstrap attempt {}: {message}",
                 path.display()
-            ),
-            Self::Clock { message } => write!(
-                formatter,
-                "failed to create cloud bootstrap attempt id from system clock: {message}"
             ),
             Self::InvalidGeneratedAttempt { message } => write!(
                 formatter,
