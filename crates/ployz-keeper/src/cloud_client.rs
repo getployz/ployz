@@ -1,25 +1,24 @@
 //! Minimal HTTPS JSON client for interactive Cloud bootstrap.
 
 use std::fmt;
-use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CloudClient {
     host: String,
+    agent: ureq::Agent,
 }
 
 impl CloudClient {
     #[must_use]
     pub fn new(host: impl Into<String>) -> Self {
-        Self { host: host.into() }
+        Self {
+            host: host.into(),
+            agent: cloud_agent(),
+        }
     }
 
     pub fn post_json<T, R>(
@@ -47,115 +46,58 @@ impl CloudClient {
         R: DeserializeOwned,
     {
         validate_same_origin_url(&self.host, url)?;
-        let body = serde_json::to_vec(body).map_err(|error| CloudClientError::Serialize {
-            message: error.to_string(),
-        })?;
-        let body_file = write_curl_body_file(&body)?;
-
-        let mut command = Command::new("curl");
-        command.args([
-            "-K",
-            "-",
-            "-fsS",
-            "--max-time",
-            "15",
-            "--connect-timeout",
-            "5",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-        ]);
-        command
-            .arg("--data-binary")
-            .arg(format!("@{}", body_file.display()))
-            .arg(url);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                let _ = fs::remove_file(&body_file);
-                return Err(CloudClientError::Spawn {
-                    message: error.to_string(),
-                });
-            }
-        };
-        if let Err(error) = child
-            .stdin
-            .take()
-            .expect("curl stdin is piped")
-            .write_all(curl_config(bearer_token).as_bytes())
-        {
-            let _ = fs::remove_file(&body_file);
-            return Err(CloudClientError::WriteRequest {
-                message: error.to_string(),
-            });
-        }
-        let output = match child.wait_with_output() {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_file(&body_file);
-                return Err(CloudClientError::Wait {
-                    message: error.to_string(),
-                });
-            }
-        };
-        let _ = fs::remove_file(&body_file);
-        if !output.status.success() {
-            return Err(CloudClientError::Http {
-                status: output.status.code(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            });
-        }
-
-        serde_json::from_slice(&output.stdout).map_err(|error| CloudClientError::Deserialize {
-            message: error.to_string(),
-        })
+        let request = self.post_request(url, bearer_token);
+        request
+            .send_json(body)
+            .map_err(CloudClientError::from_ureq)?
+            .body_mut()
+            .read_json()
+            .map_err(CloudClientError::from_ureq)
     }
 
     pub fn validate_same_origin_url(&self, url: &str) -> Result<(), CloudClientError> {
         validate_same_origin_url(&self.host, url)
     }
+
+    pub fn get_text(&self, url: &str) -> Result<String, CloudClientError> {
+        get_text_with_agent(&self.agent, url)
+    }
+
+    fn post_request(
+        &self,
+        url: &str,
+        bearer_token: Option<&str>,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+        let request = self.agent.post(url);
+        if let Some(token) = bearer_token {
+            request.header("Authorization", format!("Bearer {token}"))
+        } else {
+            request
+        }
+    }
 }
 
-fn curl_config(bearer_token: Option<&str>) -> String {
-    bearer_token
-        .map(|token| format!("header = \"Authorization: Bearer {token}\"\n"))
-        .unwrap_or_default()
+pub fn get_text_url(url: &str) -> Result<String, CloudClientError> {
+    get_text_with_agent(&cloud_agent(), url)
 }
 
-fn write_curl_body_file(body: &[u8]) -> Result<PathBuf, CloudClientError> {
-    let path = curl_body_file_path()?;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|error| CloudClientError::WriteRequest {
-            message: error.to_string(),
-        })?;
-    file.write_all(body)
-        .map_err(|error| CloudClientError::WriteRequest {
-            message: error.to_string(),
-        })?;
-    Ok(path)
+fn get_text_with_agent(agent: &ureq::Agent, url: &str) -> Result<String, CloudClientError> {
+    validate_https_url(url)?;
+    agent
+        .get(url)
+        .call()
+        .map_err(CloudClientError::from_ureq)?
+        .body_mut()
+        .read_to_string()
+        .map_err(CloudClientError::from_ureq)
 }
 
-fn curl_body_file_path() -> Result<PathBuf, CloudClientError> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| CloudClientError::WriteRequest {
-            message: error.to_string(),
-        })?
-        .as_nanos();
-    Ok(std::env::temp_dir().join(format!(
-        "ployz-cloud-body-{}-{nanos}.json",
-        std::process::id()
-    )))
+fn cloud_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .build()
+        .into()
 }
 
 pub fn endpoint_url(host: &str, path: &str) -> Result<String, CloudClientError> {
@@ -163,6 +105,13 @@ pub fn endpoint_url(host: &str, path: &str) -> Result<String, CloudClientError> 
         return Err(CloudClientError::InvalidEndpoint);
     }
     Ok(format!("{host}{path}"))
+}
+
+fn validate_https_url(url: &str) -> Result<(), CloudClientError> {
+    if !url.starts_with("https://") {
+        return Err(CloudClientError::InvalidEndpoint);
+    }
+    Ok(())
 }
 
 pub fn validate_same_origin_url(host: &str, url: &str) -> Result<(), CloudClientError> {
@@ -181,56 +130,45 @@ pub fn validate_same_origin_url(host: &str, url: &str) -> Result<(), CloudClient
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudClientError {
     InvalidEndpoint,
-    Serialize {
-        message: String,
-    },
-    Spawn {
-        message: String,
-    },
-    WriteRequest {
-        message: String,
-    },
-    Wait {
-        message: String,
-    },
     Http {
-        status: Option<i32>,
+        status: Option<u16>,
         message: String,
     },
-    Deserialize {
+    Request {
         message: String,
     },
+}
+
+impl CloudClientError {
+    fn from_ureq(error: ureq::Error) -> Self {
+        match error {
+            ureq::Error::StatusCode(status) => Self::Http {
+                status: Some(status),
+                message: error.to_string(),
+            },
+            error => Self::Request {
+                message: error.to_string(),
+            },
+        }
+    }
 }
 
 impl fmt::Display for CloudClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidEndpoint => formatter.write_str("cloud endpoint is invalid"),
-            Self::Serialize { message } => {
-                write!(formatter, "failed to serialize cloud request: {message}")
-            }
-            Self::Spawn { message } => write!(
-                formatter,
-                "failed to start curl for cloud request: {message}"
-            ),
-            Self::WriteRequest { message } => {
-                write!(formatter, "failed to write cloud request: {message}")
-            }
-            Self::Wait { message } => {
-                write!(formatter, "failed to wait for cloud request: {message}")
-            }
             Self::Http { status, message } => {
                 write!(formatter, "cloud request failed")?;
                 if let Some(status) = status {
-                    write!(formatter, " with exit status {status}")?;
+                    write!(formatter, " with HTTP status {status}")?;
                 }
                 if !message.is_empty() {
                     write!(formatter, ": {message}")?;
                 }
                 Ok(())
             }
-            Self::Deserialize { message } => {
-                write!(formatter, "failed to parse cloud response: {message}")
+            Self::Request { message } => {
+                write!(formatter, "cloud request failed: {message}")
             }
         }
     }

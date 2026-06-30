@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use ployz_core::install::{
@@ -16,7 +16,7 @@ use ployz_keeper::cloud_bootstrap::{
     inspect_cloud_bootstrap_local_state, load_existing_cloud_attempt, load_or_create_cloud_attempt,
     persist_cloud_terminal_callback, reset_cloud_attempt, write_cloud_joiner_trusted_ca,
 };
-use ployz_keeper::cloud_client::CloudClient;
+use ployz_keeper::cloud_client::{CloudClient, get_text_url};
 use ployz_keeper::command::SystemKeeperCommandRunner;
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal};
 use ployz_keeper::join_executor::execute_keeper_join_with_redeemed;
@@ -446,38 +446,9 @@ fn load_release_manifest() -> Result<ReleaseManifest, String> {
             release_platform()
         )
     });
-    let path = std::env::temp_dir().join(format!(
-        "ployz-release-manifest-{}-{}.env",
-        std::process::id(),
-        envelope_timestamp()
-    ));
-    let output = Command::new("curl")
-        .args(["-fsSL", "--max-time", "30", "--connect-timeout", "5", "-o"])
-        .arg(&path)
-        .arg(&url)
-        .output()
-        .map_err(|error| format!("failed to start curl for release manifest: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to download release manifest {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let contents = std::fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "failed to read release manifest {}: {error}",
-            path.display()
-        )
-    });
-    let _ = std::fs::remove_file(&path);
-    ReleaseManifest::parse(&contents?)
-}
-
-fn envelope_timestamp() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0)
+    let contents = get_text_url(&url)
+        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    ReleaseManifest::parse(&contents)
 }
 
 fn release_platform() -> &'static str {

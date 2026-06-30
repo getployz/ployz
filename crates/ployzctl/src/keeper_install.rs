@@ -2,12 +2,10 @@
 //! output capture.
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::io::{Read, Write};
 use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use ployz_core::install::FirstMachineInstallSpec;
 
@@ -32,18 +30,11 @@ pub(crate) fn run_keeper_first_machine_install(
     ];
     let command = render_command(keeper_binary, &args);
     let spec = serde_json::to_vec(keeper_install).expect("first-machine install spec serializes");
-    let mut capture = OutputCapture::new().map_err(|message| capture_setup(&command, message))?;
-    let stdout_stdio = capture
-        .stdout_stdio()
-        .map_err(|message| capture_setup(&command, message))?;
-    let stderr_stdio = capture
-        .stderr_stdio()
-        .map_err(|message| capture_setup(&command, message))?;
     let mut child = Command::new(keeper_binary)
         .args(&args)
         .stdin(Stdio::piped())
-        .stdout(stdout_stdio)
-        .stderr(stderr_stdio)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
             Box::new(LocalKeeperInstallError::Spawn {
@@ -57,6 +48,20 @@ pub(crate) fn run_keeper_first_machine_install(
             message: "keeper stdin was not piped".to_owned(),
         }));
     };
+    let Some(stdout) = child.stdout.take() else {
+        return Err(Box::new(LocalKeeperInstallError::Stdout {
+            command,
+            message: "keeper stdout was not piped".to_owned(),
+        }));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(Box::new(LocalKeeperInstallError::Stderr {
+            command,
+            message: "keeper stderr was not piped".to_owned(),
+        }));
+    };
+    let stdout_reader = thread::spawn(move || read_limited_output(stdout));
+    let stderr_reader = thread::spawn(move || read_limited_output(stderr));
     stdin.write_all(&spec).map_err(|error| {
         Box::new(LocalKeeperInstallError::Stdin {
             command: command.clone(),
@@ -77,19 +82,21 @@ pub(crate) fn run_keeper_first_machine_install(
             None if started_at.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let stdout = join_output(stdout_reader);
+                let stderr = join_output(stderr_reader);
                 return Err(Box::new(LocalKeeperInstallError::Timeout {
                     command,
                     timeout,
-                    stdout: capture.stdout_output(),
-                    stderr: capture.stderr_output(),
+                    stdout,
+                    stderr,
                 }));
             }
             None => thread::sleep(Duration::from_millis(50)),
         }
     };
 
-    let stdout = capture.stdout_output();
-    let stderr = capture.stderr_output();
+    let stdout = join_output(stdout_reader);
+    let stderr = join_output(stderr_reader);
     if status.success() {
         if stdout.read_error.is_some() || stderr.read_error.is_some() {
             return Err(Box::new(LocalKeeperInstallError::CaptureIncomplete {
@@ -112,155 +119,54 @@ pub(crate) fn run_keeper_first_machine_install(
     }
 }
 
-fn capture_setup(command: &str, message: String) -> Box<LocalKeeperInstallError> {
-    Box::new(LocalKeeperInstallError::CaptureSetup {
-        command: command.to_owned(),
-        message,
+fn join_output(reader: JoinHandle<LimitedOutput>) -> LimitedOutput {
+    reader.join().unwrap_or_else(|_error| LimitedOutput {
+        text: String::new(),
+        truncated: false,
+        read_error: Some("output reader panicked".to_owned()),
     })
 }
 
-struct OutputCapture {
-    stdout: CapturedFile,
-    stderr: CapturedFile,
-}
+fn read_limited_output(mut reader: impl Read) -> LimitedOutput {
+    let mut output = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0; 8192];
 
-impl OutputCapture {
-    fn new() -> Result<Self, String> {
-        Ok(Self {
-            stdout: CapturedFile::new("stdout")?,
-            stderr: CapturedFile::new("stderr")?,
-        })
-    }
-
-    fn stdout_stdio(&self) -> Result<Stdio, String> {
-        self.stdout.stdio()
-    }
-
-    fn stderr_stdio(&self) -> Result<Stdio, String> {
-        self.stderr.stdio()
-    }
-
-    fn stdout_output(&mut self) -> LimitedOutput {
-        self.stdout.output()
-    }
-
-    fn stderr_output(&mut self) -> LimitedOutput {
-        self.stderr.output()
-    }
-}
-
-struct CapturedFile {
-    path: PathBuf,
-    file: File,
-}
-
-impl CapturedFile {
-    fn new(label: &str) -> Result<Self, String> {
-        for attempt in 0..16 {
-            let path = capture_path(label, attempt)?;
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => return Ok(Self { path, file }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(format!(
-                        "failed to create keeper {label} capture file {}: {error}",
-                        path.display()
-                    ));
-                }
-            }
-        }
-
-        Err(format!(
-            "failed to create unique keeper {label} capture file"
-        ))
-    }
-
-    fn stdio(&self) -> Result<Stdio, String> {
-        self.file.try_clone().map(Stdio::from).map_err(|error| {
-            format!(
-                "failed to clone capture file {}: {error}",
-                self.path.display()
-            )
-        })
-    }
-
-    fn output(&mut self) -> LimitedOutput {
-        let mut output = Vec::new();
-        let mut truncated = false;
-        let mut buffer = [0; 8192];
-
-        if let Err(error) = self.file.seek(SeekFrom::Start(0)) {
-            return LimitedOutput {
-                text: String::new(),
-                truncated: false,
-                read_error: Some(format!(
-                    "failed to seek capture file {}: {error}",
-                    self.path.display()
-                )),
-            };
-        }
-
-        loop {
-            match self.file.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    let remaining = MAX_KEEPER_OUTPUT_BYTES.saturating_sub(output.len());
-                    if remaining > 0 {
-                        let keep = read.min(remaining);
-                        let Some(bytes) = buffer.get(..keep) else {
-                            return LimitedOutput {
-                                text: String::from_utf8_lossy(&output).into_owned(),
-                                truncated,
-                                read_error: Some("output slice exceeded read buffer".to_owned()),
-                            };
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                let remaining = MAX_KEEPER_OUTPUT_BYTES.saturating_sub(output.len());
+                if remaining > 0 {
+                    let keep = read.min(remaining);
+                    let Some(bytes) = buffer.get(..keep) else {
+                        return LimitedOutput {
+                            text: String::from_utf8_lossy(&output).into_owned(),
+                            truncated,
+                            read_error: Some("output slice exceeded read buffer".to_owned()),
                         };
-                        output.extend_from_slice(bytes);
-                    }
-                    if read > remaining {
-                        truncated = true;
-                    }
-                }
-                Err(error) => {
-                    return LimitedOutput {
-                        text: String::from_utf8_lossy(&output).into_owned(),
-                        truncated,
-                        read_error: Some(format!(
-                            "failed to read capture file {}: {error}",
-                            self.path.display()
-                        )),
                     };
+                    output.extend_from_slice(bytes);
+                }
+                if read > remaining {
+                    truncated = true;
                 }
             }
-        }
-
-        LimitedOutput {
-            text: String::from_utf8_lossy(&output).into_owned(),
-            truncated,
-            read_error: None,
+            Err(error) => {
+                return LimitedOutput {
+                    text: String::from_utf8_lossy(&output).into_owned(),
+                    truncated,
+                    read_error: Some(error.to_string()),
+                };
+            }
         }
     }
-}
 
-impl Drop for CapturedFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+    LimitedOutput {
+        text: String::from_utf8_lossy(&output).into_owned(),
+        truncated,
+        read_error: None,
     }
-}
-
-fn capture_path(label: &str, attempt: u8) -> Result<PathBuf, String> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("system clock is before unix epoch: {error}"))?
-        .as_nanos();
-    Ok(std::env::temp_dir().join(format!(
-        "ployzctl-keeper-{}-{nanos}-{attempt}-{label}.log",
-        std::process::id()
-    )))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -311,7 +217,11 @@ fn render_command(program: &str, args: &[String]) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalKeeperInstallError {
-    CaptureSetup {
+    Stdout {
+        command: String,
+        message: String,
+    },
+    Stderr {
         command: String,
         message: String,
     },
@@ -349,8 +259,11 @@ pub enum LocalKeeperInstallError {
 impl fmt::Display for LocalKeeperInstallError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CaptureSetup { command, message } => {
-                write!(formatter, "{command} output capture failed: {message}")
+            Self::Stdout { command, message } => {
+                write!(formatter, "{command} stdout capture failed: {message}")
+            }
+            Self::Stderr { command, message } => {
+                write!(formatter, "{command} stderr capture failed: {message}")
             }
             Self::Spawn { command, message } => {
                 write!(formatter, "{command} failed to start: {message}")
