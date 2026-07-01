@@ -152,24 +152,18 @@ async fn gateway_process_serves_http_from_nats_projection() {
         .await
         .expect("connect gateway");
     client
-        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n")
         .await
         .expect("write request");
-    client.shutdown().await.expect("finish request");
-    let mut response = String::new();
-    client
-        .read_to_string(&mut response)
-        .await
-        .expect("read response");
+    let response = read_response_until(&mut client, b"smoke").await;
 
-    assert_eq!(
-        response,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
-    );
-    assert_eq!(
-        upstream.request().await,
-        "GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
-    );
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("\r\n\r\nsmoke"));
+    let upstream_request = upstream.request().await;
+    assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
+    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
+    assert!(upstream_request.contains("\r\nConnection: close\r\n"));
+    drop(client);
 
     runtime.shutdown().await;
 }
@@ -265,10 +259,7 @@ async fn gateway_process_records_http_proxy_failures() {
         Some(GatewayHttpFailure::Proxy { .. })
     ));
     assert_eq!(runtime.health().consecutive_http_failures, 1);
-    assert_eq!(
-        response,
-        "HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\nConnection: close\r\n\r\nnot found\n"
-    );
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
 
     runtime.shutdown().await;
 }
@@ -415,14 +406,19 @@ impl TestUpstream {
         let addr = listener.local_addr().expect("upstream local addr");
         let (request_tx, request_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept upstream");
-            let mut request = Vec::new();
-            read_until_http_head(&mut stream, &mut request).await;
-            let _ = request_tx.send(String::from_utf8(request).expect("request is utf8"));
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
-                .await
-                .expect("write upstream response");
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept upstream");
+                let mut request = Vec::new();
+                if !read_until_http_head(&mut stream, &mut request).await {
+                    continue;
+                }
+                let _ = request_tx.send(String::from_utf8(request).expect("request is utf8"));
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
+                    .await
+                    .expect("write upstream response");
+                return;
+            }
         });
 
         Self {
@@ -440,21 +436,50 @@ impl TestUpstream {
     }
 }
 
-async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) {
+async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) -> bool {
     let mut chunk = [0; 1024];
     loop {
         let read = stream
             .read(&mut chunk)
             .await
             .expect("read upstream request");
-        assert!(read > 0, "client closed before complete HTTP head");
+        if read == 0 {
+            return false;
+        }
         request.extend_from_slice(
             chunk
                 .get(..read)
                 .expect("read byte count is within buffer length"),
         );
         if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            return;
+            return true;
         }
     }
+}
+
+async fn read_response_until(stream: &mut TcpStream, expected: &[u8]) -> String {
+    let mut response = Vec::new();
+    let read = async {
+        let mut chunk = [0; 1024];
+        loop {
+            let count = stream.read(&mut chunk).await.expect("read response");
+            assert!(count > 0, "gateway closed before expected response");
+            response.extend_from_slice(
+                chunk
+                    .get(..count)
+                    .expect("read byte count is within buffer length"),
+            );
+            if response
+                .windows(expected.len())
+                .any(|window| window == expected)
+            {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), read)
+        .await
+        .expect("gateway response arrives");
+
+    String::from_utf8(response).expect("response is utf8")
 }

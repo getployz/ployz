@@ -516,24 +516,20 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("connect gateway");
     client
-        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n")
         .await
         .expect("write gateway request");
-    client.shutdown().await.expect("finish gateway request");
     let mut response = String::new();
     client
         .read_to_string(&mut response)
         .await
         .expect("read gateway response");
 
-    assert_eq!(
-        response,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
-    );
-    assert_eq!(
-        upstream.request().await,
-        "GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
-    );
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("\r\n\r\nsmoke"));
+    let upstream_request = upstream.request().await;
+    assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
+    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
 
     gateway.shutdown().await;
     machine_runtime

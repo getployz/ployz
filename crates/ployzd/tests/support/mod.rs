@@ -19,19 +19,24 @@ impl TestHttpUpstream {
         let addr = listener.local_addr().expect("upstream local addr");
         let (request_tx, request_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept upstream");
-            let mut request = Vec::new();
-            read_until_http_head(&mut stream, &mut request).await;
-            let _ = request_tx.send(String::from_utf8(request).expect("request is utf8"));
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("write upstream response");
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept upstream");
+                let mut request = Vec::new();
+                if !read_until_http_head(&mut stream, &mut request).await {
+                    continue;
+                }
+                let _ = request_tx.send(String::from_utf8(request).expect("request is utf8"));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write upstream response");
+                return;
+            }
         });
 
         Self {
@@ -50,18 +55,18 @@ impl TestHttpUpstream {
     }
 }
 
-async fn read_until_http_head(stream: &mut tokio::net::TcpStream, request: &mut Vec<u8>) {
+async fn read_until_http_head(stream: &mut tokio::net::TcpStream, request: &mut Vec<u8>) -> bool {
     let mut chunk = [0; 128];
     loop {
         let read = stream.read(&mut chunk).await.expect("read upstream");
         if read == 0 {
-            return;
+            return false;
         }
         if let Some(bytes) = chunk.get(..read) {
             request.extend_from_slice(bytes);
         }
         if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            return;
+            return true;
         }
     }
 }
