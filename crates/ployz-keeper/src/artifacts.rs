@@ -5,11 +5,13 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest,
 };
+use tempfile::TempDir;
 
 use crate::fsx::{FileMode, StagedFile, StagedFileError};
 
@@ -386,6 +388,127 @@ pub fn install_verified_artifact(
     })
 }
 
+pub fn install_verified_nats_server_archive(
+    verified: &VerifiedArtifactFile,
+    target: &ArtifactTarget,
+) -> Result<InstalledArtifactFile, ArtifactInstallError> {
+    if target.kind != ArtifactKind::NatsServer {
+        return Err(ArtifactInstallError::ArchiveKindMismatch { kind: target.kind });
+    }
+    if verified.digest != target.digest {
+        return Err(ArtifactInstallError::VerifiedDigestMismatch {
+            install_path: target.install_path().to_path_buf(),
+            expected: target.digest.clone(),
+            verified: verified.digest.clone(),
+        });
+    }
+    let extracted = extract_nats_server_binary(&verified.path)?;
+    install_extracted_artifact(extracted.path(), verified.path.clone(), target)
+}
+
+struct ExtractedNatsServer {
+    _directory: TempDir,
+    path: PathBuf,
+}
+
+impl ExtractedNatsServer {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+fn extract_nats_server_binary(archive: &Path) -> Result<ExtractedNatsServer, ArtifactInstallError> {
+    let directory = tempfile::Builder::new()
+        .prefix("ployz-nats-server-")
+        .tempdir()
+        .map_err(|error| ArtifactInstallError::ExtractArchiveFailed {
+            archive: archive.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    let output = Command::new("tar")
+        .arg("-xzf")
+        .arg(archive)
+        .arg("-C")
+        .arg(directory.path())
+        .output()
+        .map_err(|error| ArtifactInstallError::ExtractArchiveFailed {
+            archive: archive.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(ArtifactInstallError::ExtractArchiveFailed {
+            archive: archive.to_path_buf(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let Some(path) = find_file_named(directory.path(), "nats-server")? else {
+        return Err(ArtifactInstallError::ArchiveMemberMissing {
+            archive: archive.to_path_buf(),
+            member: "nats-server",
+        });
+    };
+    Ok(ExtractedNatsServer {
+        _directory: directory,
+        path,
+    })
+}
+
+fn find_file_named(
+    directory: &Path,
+    name: &'static str,
+) -> Result<Option<PathBuf>, ArtifactInstallError> {
+    for entry in fs::read_dir(directory).map_err(|error| ArtifactInstallError::ReadDirFailed {
+        path: directory.to_path_buf(),
+        message: error.to_string(),
+    })? {
+        let entry = entry.map_err(|error| ArtifactInstallError::ReadDirFailed {
+            path: directory.to_path_buf(),
+            message: error.to_string(),
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_named(&path, name)? {
+                return Ok(Some(found));
+            }
+            continue;
+        }
+        if path.file_name().is_some_and(|file_name| file_name == name) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn install_extracted_artifact(
+    source_path: &Path,
+    archive_path: PathBuf,
+    target: &ArtifactTarget,
+) -> Result<InstalledArtifactFile, ArtifactInstallError> {
+    let install_path = target.install_path();
+    let parent = install_path
+        .parent()
+        .expect("artifact install path is validated with a parent");
+    let file_name = install_path
+        .file_name()
+        .expect("artifact install path is validated with a file name");
+
+    fs::create_dir_all(parent).map_err(|error| ArtifactInstallError::CreateParentFailed {
+        path: parent.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let mut staged_artifact = create_staged_artifact(source_path, parent, file_name)?;
+    let digest =
+        sha256_file(staged_artifact.path()).map_err(ArtifactInstallError::VerificationFailed)?;
+    let durability = commit_staged_artifact(&mut staged_artifact, install_path)?;
+
+    Ok(InstalledArtifactFile {
+        source_path: archive_path,
+        install_path: install_path.to_path_buf(),
+        digest,
+        durability,
+    })
+}
+
 #[cfg(unix)]
 fn make_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -502,6 +625,21 @@ fn sync_parent_directory(_install_path: &Path) -> std::io::Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactInstallError {
     VerificationFailed(ArtifactVerificationError),
+    ArchiveKindMismatch {
+        kind: ArtifactKind,
+    },
+    ExtractArchiveFailed {
+        archive: PathBuf,
+        message: String,
+    },
+    ArchiveMemberMissing {
+        archive: PathBuf,
+        member: &'static str,
+    },
+    ReadDirFailed {
+        path: PathBuf,
+        message: String,
+    },
     VerifiedDigestMismatch {
         install_path: PathBuf,
         expected: Sha256Digest,
@@ -551,6 +689,33 @@ impl fmt::Display for ArtifactInstallError {
                 write!(
                     formatter,
                     "artifact verification failed before install: {error}"
+                )
+            }
+            Self::ArchiveKindMismatch { kind } => {
+                write!(
+                    formatter,
+                    "artifact kind {kind:?} is not an archive install"
+                )
+            }
+            Self::ExtractArchiveFailed { archive, message } => {
+                write!(
+                    formatter,
+                    "failed to extract artifact archive {}: {message}",
+                    archive.display()
+                )
+            }
+            Self::ArchiveMemberMissing { archive, member } => {
+                write!(
+                    formatter,
+                    "artifact archive {} does not contain {member}",
+                    archive.display()
+                )
+            }
+            Self::ReadDirFailed { path, message } => {
+                write!(
+                    formatter,
+                    "failed to read artifact directory {}: {message}",
+                    path.display()
                 )
             }
             Self::VerifiedDigestMismatch {

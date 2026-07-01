@@ -62,8 +62,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     )
     .await
     .expect("accepted deploy runs");
-
-    assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(runtime.requests.len(), 1);
     let [(run_machine_id, run_request)] = runtime.requests.as_slice() else {

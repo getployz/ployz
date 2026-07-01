@@ -279,6 +279,7 @@ pub struct RuntimeSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeServiceRevision {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
 }
@@ -286,6 +287,7 @@ pub struct RuntimeServiceRevision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeServiceRelease {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
     pub routes: Vec<RouteTarget>,
@@ -294,6 +296,7 @@ pub struct RuntimeServiceRelease {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeServiceInstance {
+    pub namespace_id: NamespaceId,
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,

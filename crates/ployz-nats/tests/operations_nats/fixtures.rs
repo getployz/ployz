@@ -3,7 +3,9 @@ use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
 };
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot};
+use ployz_core::deploy::{
+    DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ReplicaSlot,
+};
 use ployz_core::machine::IssuedJoinToken;
 use ployz_core::ops::{DeployOperationFailure, DeployRunningStage};
 use ployz_core::roles::InstallRolePolicy;
@@ -44,6 +46,17 @@ pub(super) fn deploy_submission(operation_id: &str, service_id: &str) -> DeployO
     DeployOperationSubmission {
         operation_id: self::operation_id(operation_id),
         target: deploy_target(service_id),
+    }
+}
+
+pub(super) fn empty_deploy_submission(operation_id: &str) -> DeployOperationSubmission {
+    DeployOperationSubmission {
+        operation_id: self::operation_id(operation_id),
+        target: DeployRequest {
+            namespace_id: namespace_id("production"),
+            target_revision: revision_id("rev_empty"),
+            services: Vec::new(),
+        },
     }
 }
 

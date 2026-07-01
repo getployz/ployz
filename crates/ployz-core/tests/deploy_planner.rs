@@ -126,6 +126,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(2),
         active_service: Some(ActiveServiceState {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             active_revision: revision_id("rev_old"),
         }),
@@ -239,6 +240,7 @@ fn deploy_preparation_rejects_active_state_for_another_service() {
         prepare_deploy(DeployPreparationInput {
             request: deploy_request(1),
             active_service: Some(ActiveServiceState {
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_other"),
                 active_revision: revision_id("rev_old"),
             }),
@@ -263,6 +265,7 @@ fn deploy_preparation_rejects_active_route_for_another_target() {
             request,
             active_service: None,
             active_route: Some(ActiveRouteState {
+                namespace_id: namespace_id("default"),
                 target: route_target("admin.example.com", 443),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
@@ -287,6 +290,7 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
         request,
         active_service: None,
         active_route: Some(ActiveRouteState {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
@@ -328,6 +332,7 @@ fn planning_input(
 
 fn deploy_request(replicas: u16) -> DeployServiceRequest {
     DeployServiceRequest {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         target_revision: revision_id("rev_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),

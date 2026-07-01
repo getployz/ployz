@@ -13,6 +13,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<ActiveServiceCommit, CoreStateStoreError> {
         let key = ActiveServiceStateKey::from_service_id(&request.service_id);
         let state = ActiveServiceState {
+            namespace_id: request.namespace_id.clone(),
             service_id: request.service_id.clone(),
             active_revision: request.target_revision.clone(),
         };
@@ -100,6 +101,28 @@ impl AsyncNatsCoreStateStore {
         };
 
         decode_active_service_state(service_id, &key, &payload).map(Some)
+    }
+
+    pub async fn remove_active_service(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<(), CoreStateStoreError> {
+        if self.active_service(service_id).await?.is_none() {
+            return Ok(());
+        }
+
+        let key = ActiveServiceStateKey::from_service_id(service_id);
+        with_io_timeout(
+            "active service state delete",
+            self.bucket.delete(key.as_str()),
+        )
+        .await?
+        .map_err(|error| CoreStateStoreError::Delete {
+            key: key.as_str().to_owned(),
+            message: error.to_string(),
+        })?;
+
+        Ok(())
     }
 
     pub async fn active_services(&self) -> Result<Vec<ActiveServiceState>, CoreStateStoreError> {

@@ -28,6 +28,31 @@ async fn operation_repository_duplicate_operation_id_recovers_submit() {
 }
 
 #[tokio::test]
+async fn operation_repository_accepts_empty_deploy_target() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+
+    let accepted = repository
+        .submit_deploy(empty_deploy_submission("op_empty"))
+        .await
+        .expect("empty deploy submit accepted");
+
+    assert!(accepted.target.services.is_empty());
+    assert_eq!(
+        repository
+            .records()
+            .get(&operation_id("op_empty"))
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::deploy_accepted(
+            operation_id("op_empty"),
+            service_id("production"),
+            accepted.start_sequence,
+        ))
+    );
+}
+
+#[tokio::test]
 async fn operation_repository_duplicate_operation_id_after_progress_does_not_restart() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;

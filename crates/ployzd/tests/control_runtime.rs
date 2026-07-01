@@ -270,6 +270,7 @@ async fn control_runtime_serves_active_service_queries() {
         .expect("open core state");
     core_state
         .commit_active_service(&ActiveServiceCommitRequest {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             expected_current: ExpectedActiveService::Absent,
             target_revision: revision_id("rev_2"),
@@ -321,6 +322,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .expect("active machine stores");
     core_state
         .commit_active_service(&ActiveServiceCommitRequest {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             expected_current: ExpectedActiveService::Absent,
             target_revision: revision_id("rev_2"),
@@ -329,6 +331,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .expect("active service stores");
     core_state
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
             endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
@@ -371,6 +374,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     assert_eq!(
         snapshot.revisions,
         vec![ployz_sdk_types::RuntimeServiceRevision {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
         }]

@@ -278,11 +278,11 @@ export type ExpectedActiveService = "absent" | { "revision": RevisionId };
 
 export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, };
 
-export type ActiveRouteState = { target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: RevisionId, };
+export type ActiveRouteState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: RevisionId, };
 
-export type ActiveServiceState = { service_id: ServiceId, active_revision: RevisionId, };
+export type ActiveServiceState = { namespace_id: NamespaceId, service_id: ServiceId, active_revision: RevisionId, };
 
-export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
+export type ActiveServiceCommitRequest = { namespace_id: NamespaceId, service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
 
 export type MachinePublicIpObservation = { machine_id: MachineId, public_ip: string, };
 
@@ -338,11 +338,11 @@ export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, };
 
 export type RuntimeSnapshot = { machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<ActiveRouteState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
 
-export type RuntimeServiceRevision = { service_id: ServiceId, revision_id: RevisionId, };
+export type RuntimeServiceRevision = { namespace_id: NamespaceId, service_id: ServiceId, revision_id: RevisionId, };
 
-export type RuntimeServiceRelease = { service_id: ServiceId, revision_id: RevisionId, routes: Array<RouteTarget>, };
+export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: ServiceId, revision_id: RevisionId, routes: Array<RouteTarget>, };
 
-export type RuntimeServiceInstance = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
+export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
 
 export type RuntimeProjectionSources = { core_state: RuntimeProjectionSource, observations: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
 

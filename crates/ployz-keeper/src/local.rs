@@ -7,8 +7,8 @@ use ployz_core::ops::FailureMessage;
 use tempfile::{Builder, TempDir};
 
 use crate::artifacts::{
-    ArtifactInstallDurability, ArtifactSourceView, ArtifactTarget, install_verified_artifact,
-    verify_artifact_file,
+    ArtifactInstallDurability, ArtifactKind, ArtifactSourceView, ArtifactTarget,
+    install_verified_artifact, install_verified_nats_server_archive, verify_artifact_file,
 };
 use crate::command::KeeperCommandRunner;
 use crate::executor::KeeperStepEffects;
@@ -351,8 +351,13 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
                 failure_message(error.to_string()),
             )
         })?;
-        let installed = install_verified_artifact(&verified, target)
-            .map_err(|error| failure_message(error.to_string()))?;
+        let installed = match target.kind {
+            ArtifactKind::NatsServer => install_verified_nats_server_archive(&verified, target),
+            ArtifactKind::EbpfBytecode | ArtifactKind::EbpfCtl | ArtifactKind::Ployzd => {
+                install_verified_artifact(&verified, target)
+            }
+        }
+        .map_err(|error| failure_message(error.to_string()))?;
         match installed.durability {
             ArtifactInstallDurability::Confirmed => Ok(()),
             ArtifactInstallDurability::Unconfirmed { message } => Err(failure_message(format!(

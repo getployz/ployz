@@ -63,14 +63,7 @@ impl SubmitKind for DeployOperationSubmission {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::deploy_accepted(
-            operation_id,
-            payload
-                .primary_service_id()
-                .expect("validated deploy request has a service")
-                .clone(),
-            sequence,
-        )
+        OperationStatus::deploy_accepted(operation_id, payload.status_service_id(), sequence)
     }
 }
 
@@ -139,9 +132,6 @@ impl AsyncNatsOperationRepository {
             operation_id,
             target,
         } = submission;
-        if target.primary_service_id().is_none() {
-            return Err(SubmitOperationError::InvalidDeployTarget);
-        }
         let submitted = self
             .submit_operation::<DeployOperationSubmission>(operation_id, target)
             .await?;
