@@ -17,6 +17,7 @@ fn bootstrap_script_file_is_keeper_only_release_delivery() {
     assert!(script.contains("PLOYZ_RELEASE_PLATFORM"));
     assert!(script.contains("installed $keeper_bin"));
     assert!(script.contains("run: sudo ployz-keeper bootstrap"));
+    assert!(script.contains("sudo ployz-keeper substrate-update --version $release_tag"));
     assert!(script.contains("--version <version>"));
     assert!(script.contains("--channel <channel>"));
     assert!(script.contains("shasum"));
