@@ -93,6 +93,9 @@ import type {
   OperationStatusSnapshot,
   OpsStatusError,
   OpsWatchError,
+  RuntimeSnapshotError,
+  RuntimeSnapshot,
+  RuntimeSnapshotRequest,
   ServiceInspectError,
   ServiceInspectRequest,
   ServiceListError,
@@ -261,6 +264,13 @@ export class PloyzClient {
     );
   }
 
+  async runtimeSnapshot(): Promise<RuntimeSnapshot> {
+    return unwrapApiResponse(
+      "runtime.snapshot",
+      await this.#transport.request("runtime.snapshot", runtimeSnapshotRequest()),
+    ).snapshot;
+  }
+
   async logsTail(input: string | PloyzLogsTailInput): Promise<LogsTailResult> {
     return unwrapApiResponse(
       "logs.tail",
@@ -409,6 +419,10 @@ export function serviceInspectRequest(
   };
 }
 
+export function runtimeSnapshotRequest(): RuntimeSnapshotRequest {
+  return {};
+}
+
 export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailRequest {
   if (typeof input === "string") {
     return {
@@ -554,6 +568,7 @@ export type PloyzOperationError =
   | PloyzApiError<MachineInspectError>
   | PloyzApiError<MachineJoinRedeemError>
   | PloyzApiError<LogsTailError>
+  | PloyzApiError<RuntimeSnapshotError>
   | PloyzApiError<ServiceListError>
   | PloyzApiError<ServiceInspectError>
   | PloyzApiError<OpsStatusError>

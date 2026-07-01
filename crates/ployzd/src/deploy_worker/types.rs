@@ -129,6 +129,7 @@ impl DeployServiceExecutionCommand {
     #[must_use]
     pub fn active_service_commit_request(&self) -> ActiveServiceCommitRequest {
         ActiveServiceCommitRequest {
+            namespace_id: self.request.namespace_id.clone(),
             service_id: self.request.service_id.clone(),
             expected_current: self.expected_active.clone(),
             target_revision: self.request.target_revision.clone(),

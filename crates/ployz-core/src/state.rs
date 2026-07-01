@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
-use crate::ids::{MachineId, OperationId, RevisionId, ServiceId};
+use crate::ids::{MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
 use crate::wire::id_prefixed_state_key;
@@ -27,6 +27,7 @@ pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveServiceState {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub active_revision: RevisionId,
 }
@@ -35,6 +36,7 @@ pub struct ActiveServiceState {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveRouteState {
+    pub namespace_id: NamespaceId,
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
@@ -128,6 +130,7 @@ impl CoreStateRevision {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveServiceCommitRequest {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub expected_current: ExpectedActiveService,
     pub target_revision: RevisionId,
@@ -137,6 +140,7 @@ pub struct ActiveServiceCommitRequest {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveRouteCommitRequest {
+    pub namespace_id: NamespaceId,
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub expected_current: ExpectedActiveRoute,

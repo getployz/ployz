@@ -11,14 +11,19 @@ use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
+};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationStatus, RouteTarget,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
-    ActiveMachineState, ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
-    GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveRoute,
+    ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation,
+    MachinePublicIpObservation,
 };
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::connect_authenticated;
@@ -27,7 +32,8 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, ServiceInspectRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
+    RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest, ServiceInspectRequest,
     ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
@@ -264,6 +270,7 @@ async fn control_runtime_serves_active_service_queries() {
         .expect("open core state");
     core_state
         .commit_active_service(&ActiveServiceCommitRequest {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             expected_current: ExpectedActiveService::Absent,
             target_revision: revision_id("rev_2"),
@@ -290,6 +297,94 @@ async fn control_runtime_serves_active_service_queries() {
         .expect("service inspects");
     assert_eq!(inspected.active.service_id, service_id("svc_api"));
     assert_eq!(inspected.active.active_revision, revision_id("rev_2"));
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_serves_runtime_snapshot_projection() {
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
+        .await
+        .expect("open core state");
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
+        .await
+        .expect("open observations");
+    core_state
+        .replace_active_machine(&active_machine("machine_a"))
+        .await
+        .expect("active machine stores");
+    core_state
+        .commit_active_service(&ActiveServiceCommitRequest {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            expected_current: ExpectedActiveService::Absent,
+            target_revision: revision_id("rev_2"),
+        })
+        .await
+        .expect("active service stores");
+    core_state
+        .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
+            target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
+            endpoint_port: route_port(8080),
+            expected_current: ExpectedActiveRoute::Absent,
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_2"),
+        })
+        .await
+        .expect("active route stores");
+    observations
+        .replace_machine_containers(
+            &MachineContainerObservationSnapshot::try_new(
+                machine_id("machine_a"),
+                [ManagedContainerObservation {
+                    machine_id: machine_id("machine_a"),
+                    container_id: ployz_test_support::ids::container_id("ctr_api"),
+                    service_id: service_id("svc_api"),
+                    revision_id: revision_id("rev_2"),
+                    operation_id: operation_id("op_deploy"),
+                    step_id: ployz_test_support::ids::step_id("step_run"),
+                    kind: ManagedContainerKind::Service,
+                    state: ContainerRuntimeState::running_unroutable(),
+                }],
+            )
+            .expect("machine snapshot builds"),
+        )
+        .await
+        .expect("machine observations store");
+
+    let snapshot = nats
+        .api()
+        .runtime_snapshot(&RuntimeSnapshotRequest {})
+        .await
+        .expect("runtime snapshot loads")
+        .snapshot;
+
+    assert_eq!(snapshot.machines.len(), 1);
+    assert_eq!(snapshot.services.len(), 1);
+    assert_eq!(snapshot.routes.len(), 1);
+    assert_eq!(snapshot.containers.len(), 1);
+    assert_eq!(
+        snapshot.revisions,
+        vec![ployz_sdk_types::RuntimeServiceRevision {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_2"),
+        }]
+    );
+    assert_eq!(snapshot.releases.len(), 1);
+    assert_eq!(snapshot.instances.len(), 1);
+    assert_eq!(
+        snapshot.projection_sources.revisions.status,
+        RuntimeDerivedCollectionStatus::Complete
+    );
 
     runtime
         .shutdown()

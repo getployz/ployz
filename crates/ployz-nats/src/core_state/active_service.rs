@@ -13,6 +13,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<ActiveServiceCommit, CoreStateStoreError> {
         let key = ActiveServiceStateKey::from_service_id(&request.service_id);
         let state = ActiveServiceState {
+            namespace_id: request.namespace_id.clone(),
             service_id: request.service_id.clone(),
             active_revision: request.target_revision.clone(),
         };

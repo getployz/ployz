@@ -15,7 +15,8 @@ use ployz_sdk_types::{
     operation_api::{
         BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
+        ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -106,6 +107,16 @@ async fn bind_operation_endpoint(
                 handlers,
                 |handlers, request| async move {
                     handlers.service_query().inspect(&request.service_id).await
+                },
+            )
+            .await
+        }
+        OperationApiEndpoint::RuntimeSnapshot => {
+            bind_operation_contract::<RuntimeSnapshotApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, _request| async move {
+                    handlers.runtime_snapshot_query().snapshot().await
                 },
             )
             .await

@@ -14,6 +14,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<ActiveRouteCommit, ActiveRouteStoreError> {
         let key = ActiveRouteStateKey::from_target(&request.target);
         let state = ActiveRouteState {
+            namespace_id: request.namespace_id.clone(),
             target: request.target.clone(),
             endpoint_port: request.endpoint_port,
             service_id: request.service_id.clone(),
