@@ -108,6 +108,12 @@ export type DeployCleanupFailure = { target: DeployCleanupContainer, message: Fa
 
 export type ManagedContainerKind = "service" | "predeploy" | "job";
 
+export type ContainerEndpoint = { ip: string, port: RoutePort, };
+
+export type ContainerRuntimeState = { "state": "running", endpoint?: ContainerEndpoint | null, } | { "state": "exited" };
+
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
+
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
 export type OperationEventReplayLimit = SafeInteger<"OperationEventReplayLimit">;
@@ -272,6 +278,8 @@ export type ExpectedActiveService = "absent" | { "revision": RevisionId };
 
 export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, };
 
+export type ActiveRouteState = { target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: RevisionId, };
+
 export type ActiveServiceState = { service_id: ServiceId, active_revision: RevisionId, };
 
 export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
@@ -323,6 +331,30 @@ export type ServiceInspectRequest = { service_id: ServiceId, };
 export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", source: ServiceQueryUnavailableSource, };
 
 export type ServiceQueryUnavailableSource = { "source": "core_state" };
+
+export type RuntimeSnapshotRequest = Record<symbol, never>;
+
+export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, };
+
+export type RuntimeSnapshot = { machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<ActiveRouteState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
+
+export type RuntimeServiceRevision = { service_id: ServiceId, revision_id: RevisionId, };
+
+export type RuntimeServiceRelease = { service_id: ServiceId, revision_id: RevisionId, routes: Array<RouteTarget>, };
+
+export type RuntimeServiceInstance = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
+
+export type RuntimeProjectionSources = { core_state: RuntimeProjectionSource, observations: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
+
+export type RuntimeProjectionSource = { read_at_unix_seconds: number, };
+
+export type RuntimeDerivedCollectionSource = { status: RuntimeDerivedCollectionStatus, source_count: number, missing_link_count: number, };
+
+export type RuntimeDerivedCollectionStatus = "complete" | "partial";
+
+export type RuntimeSnapshotError = { "error": "unavailable", source: RuntimeSnapshotUnavailableSource, };
+
+export type RuntimeSnapshotUnavailableSource = { "source": "core_state" } | { "source": "observations" } | { "source": "runtime_projection" };
 
 export type LogsTailLines = SafeInteger<"LogsTailLines">;
 
@@ -446,6 +478,8 @@ export type ServiceListResponse = OperationApiResponse<ServiceListResult, Servic
 
 export type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
 
+export type RuntimeSnapshotResponse = OperationApiResponse<RuntimeSnapshotResult, RuntimeSnapshotError>;
+
 export type LogsTailResponse = OperationApiResponse<LogsTailResult, LogsTailError>;
 
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
@@ -466,6 +500,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
   { name: "service.list", subject: "plz.v1.svc.api.service.list", execution: "query", request: "ServiceListRequest", success: "ServiceListResult", error: "ServiceListError", response: "ServiceListResponse" },
   { name: "service.inspect", subject: "plz.v1.svc.api.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
+  { name: "runtime.snapshot", subject: "plz.v1.svc.api.runtime.snapshot", execution: "query", request: "RuntimeSnapshotRequest", success: "RuntimeSnapshotResult", error: "RuntimeSnapshotError", response: "RuntimeSnapshotResponse" },
   { name: "logs.tail", subject: "plz.v1.svc.api.logs.tail", execution: "query", request: "LogsTailRequest", success: "LogsTailResult", error: "LogsTailError", response: "LogsTailResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
@@ -484,6 +519,7 @@ export type OperationApiRequestByEndpoint = {
   "machine.join.report": MachineJoinReportRequest;
   "service.list": ServiceListRequest;
   "service.inspect": ServiceInspectRequest;
+  "runtime.snapshot": RuntimeSnapshotRequest;
   "logs.tail": LogsTailRequest;
   "ops.status": OpsStatusRequest;
   "ops.watch": OpsWatchRequest;
@@ -500,6 +536,7 @@ export type OperationApiResponseByEndpoint = {
   "machine.join.report": MachineJoinReportResponse;
   "service.list": ServiceListResponse;
   "service.inspect": ServiceInspectResponse;
+  "runtime.snapshot": RuntimeSnapshotResponse;
   "logs.tail": LogsTailResponse;
   "ops.status": OpsStatusResponse;
   "ops.watch": OpsWatchResponse;
