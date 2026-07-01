@@ -22,7 +22,9 @@
 
 mod support;
 
-use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::machine::{MachineAddOperationState, MachineCredentialProvisioningStep};
 use ployz_core::ops::{
@@ -46,7 +48,7 @@ use ployz_sdk_types::{
     MachineSnapshot,
 };
 use ployz_test_support::ids::{
-    machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
@@ -537,17 +539,20 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
 /// routed on every gateway's listen port.
 fn smoke_deploy_target() -> DeployRequest {
     DeployRequest {
-        service_id: service_id("svc_smoke"),
+        namespace_id: namespace_id("smoke"),
         target_revision: revision_id("rev_local"),
-        image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
-        replicas: ReplicaCount::try_new(2).expect("valid replica count"),
-        route: Some(DeployRoute {
-            target: RouteTarget::new(
-                route_hostname(ROUTE_HOSTNAME),
-                route_port(dind::MACHINE_GATEWAY_PORT),
-            ),
-            endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
-        }),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_smoke"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            route: Some(DeployRoute {
+                target: RouteTarget::new(
+                    route_hostname(ROUTE_HOSTNAME),
+                    route_port(dind::MACHINE_GATEWAY_PORT),
+                ),
+                endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
+            }),
+        }],
     }
 }
 
