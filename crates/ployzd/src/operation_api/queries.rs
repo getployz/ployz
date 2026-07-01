@@ -4,7 +4,7 @@
 use crate::controllers::OperationControllers;
 use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
-use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
@@ -94,7 +94,7 @@ impl RuntimeSnapshotQueryRuntime {
             .collect::<Vec<_>>();
         let revisions = derive_runtime_revisions(&services, &routes, &containers);
         let releases = derive_runtime_releases(&services, &routes);
-        let instances = derive_runtime_instances(&containers);
+        let instances = derive_runtime_instances(&services, &routes, &containers);
         let missing_link_count = missing_runtime_links(&services, &routes, &containers);
 
         Ok(RuntimeSnapshotResult {
@@ -277,23 +277,37 @@ fn derive_runtime_revisions(
     routes: &[ActiveRouteState],
     containers: &[ManagedContainerObservation],
 ) -> Vec<RuntimeServiceRevision> {
+    let namespaces = runtime_service_namespaces(services, routes);
     let mut revisions = BTreeSet::new();
     for service in services {
         revisions.insert((
+            service.active.namespace_id.clone(),
             service.active.service_id.clone(),
             service.active.active_revision.clone(),
         ));
     }
     for route in routes {
-        revisions.insert((route.service_id.clone(), route.revision_id.clone()));
+        revisions.insert((
+            route.namespace_id.clone(),
+            route.service_id.clone(),
+            route.revision_id.clone(),
+        ));
     }
     for container in containers {
-        revisions.insert((container.service_id.clone(), container.revision_id.clone()));
+        let Some(namespace_id) = namespaces.get(&container.service_id) else {
+            continue;
+        };
+        revisions.insert((
+            namespace_id.clone(),
+            container.service_id.clone(),
+            container.revision_id.clone(),
+        ));
     }
 
     revisions
         .into_iter()
-        .map(|(service_id, revision_id)| RuntimeServiceRevision {
+        .map(|(namespace_id, service_id, revision_id)| RuntimeServiceRevision {
+            namespace_id,
             service_id,
             revision_id,
         })
@@ -304,10 +318,11 @@ fn derive_runtime_releases(
     services: &[ServiceSnapshot],
     routes: &[ActiveRouteState],
 ) -> Vec<RuntimeServiceRelease> {
-    let mut releases = BTreeMap::<(ServiceId, RevisionId), Vec<_>>::new();
+    let mut releases = BTreeMap::<(NamespaceId, ServiceId, RevisionId), Vec<_>>::new();
     for service in services {
         releases
             .entry((
+                service.active.namespace_id.clone(),
                 service.active.service_id.clone(),
                 service.active.active_revision.clone(),
             ))
@@ -315,7 +330,11 @@ fn derive_runtime_releases(
     }
     for route in routes {
         releases
-            .entry((route.service_id.clone(), route.revision_id.clone()))
+            .entry((
+                route.namespace_id.clone(),
+                route.service_id.clone(),
+                route.revision_id.clone(),
+            ))
             .or_default()
             .push(route.target.clone());
     }
@@ -323,7 +342,8 @@ fn derive_runtime_releases(
     releases
         .into_iter()
         .map(
-            |((service_id, revision_id), routes)| RuntimeServiceRelease {
+            |((namespace_id, service_id, revision_id), routes)| RuntimeServiceRelease {
+                namespace_id,
                 service_id,
                 revision_id,
                 routes,
@@ -333,19 +353,26 @@ fn derive_runtime_releases(
 }
 
 fn derive_runtime_instances(
+    services: &[ServiceSnapshot],
+    routes: &[ActiveRouteState],
     containers: &[ManagedContainerObservation],
 ) -> Vec<RuntimeServiceInstance> {
+    let namespaces = runtime_service_namespaces(services, routes);
     containers
         .iter()
         .filter(|container| container.kind == ManagedContainerKind::Service)
-        .map(|container| RuntimeServiceInstance {
-            machine_id: container.machine_id.clone(),
-            container_id: container.container_id.clone(),
-            service_id: container.service_id.clone(),
-            revision_id: container.revision_id.clone(),
-            operation_id: container.operation_id.clone(),
-            step_id: container.step_id.clone(),
-            state: container.state.clone(),
+        .filter_map(|container| {
+            let namespace_id = namespaces.get(&container.service_id)?;
+            Some(RuntimeServiceInstance {
+                namespace_id: namespace_id.clone(),
+                machine_id: container.machine_id.clone(),
+                container_id: container.container_id.clone(),
+                service_id: container.service_id.clone(),
+                revision_id: container.revision_id.clone(),
+                operation_id: container.operation_id.clone(),
+                step_id: container.step_id.clone(),
+                state: container.state.clone(),
+            })
         })
         .collect()
 }
@@ -368,6 +395,25 @@ fn missing_runtime_links(
             .iter()
             .filter(|container| !service_ids.contains(&container.service_id))
             .count()
+}
+
+fn runtime_service_namespaces(
+    services: &[ServiceSnapshot],
+    routes: &[ActiveRouteState],
+) -> BTreeMap<ServiceId, NamespaceId> {
+    let mut namespaces = BTreeMap::new();
+    for service in services {
+        namespaces.insert(
+            service.active.service_id.clone(),
+            service.active.namespace_id.clone(),
+        );
+    }
+    for route in routes {
+        namespaces
+            .entry(route.service_id.clone())
+            .or_insert_with(|| route.namespace_id.clone());
+    }
+    namespaces
 }
 
 fn derived_source(

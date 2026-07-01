@@ -13,6 +13,7 @@ fn bootstrap_script_file_is_keeper_only_release_delivery() {
     assert!(script.contains("PLOYZ_VERSION"));
     assert!(script.contains("PLOYZ_CHANNEL"));
     assert!(script.contains("PLOYZ_RELEASE_MANIFEST_URL"));
+    assert!(script.contains("PLOYZ_RELEASE_ENV_FILE"));
     assert!(script.contains("PLOYZ_RELEASE_PLATFORM"));
     assert!(script.contains("installed $keeper_bin"));
     assert!(script.contains("run: sudo ployz-keeper bootstrap"));
@@ -111,6 +112,10 @@ fn bootstrap_script_installs_keeper_by_default_from_alpha_channel() {
 
     assert_success(&output);
     assert!(install_dir.join("ployz-keeper").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("release.env")).expect("release env is written"),
+        "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/ployz-release-linux-amd64.env\nPLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZ_RELEASE_PLATFORM=linux-amd64\n"
+    );
     assert!(!install_dir.join("ployzctl").exists());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("resolved ployz channel alpha -> v0.0.2-alpha.1"));
@@ -510,7 +515,16 @@ fn test_bootstrap_script_path(root: &std::path::Path, install_dir: &std::path::P
         "install_dir=\"/usr/local/bin\"",
         &format!("install_dir=\"{}\"", install_dir.display()),
     );
+    let rewritten = replace_required(
+        rewritten,
+        "release_env_file=\"${PLOYZ_RELEASE_ENV_FILE:-/etc/ployz/release.env}\"",
+        &format!(
+            "release_env_file=\"${{PLOYZ_RELEASE_ENV_FILE:-{}}}\"",
+            root.join("release.env").display()
+        ),
+    );
     assert!(!rewritten.contains("install_dir=\"/usr/local/bin\""));
+    assert!(!rewritten.contains("/etc/ployz/release.env"));
     let path = root.join("ployz.sh");
     fs::write(&path, rewritten).expect("test bootstrap script can be written");
     path

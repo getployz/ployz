@@ -50,6 +50,10 @@ pub enum CoreStateStoreError {
         key: String,
         message: String,
     },
+    Delete {
+        key: String,
+        message: String,
+    },
     ListKeys {
         message: String,
     },
@@ -77,6 +81,7 @@ impl fmt::Display for CoreStateStoreError {
             Self::Decode(error) => write!(formatter, "decode active service state: {error}"),
             Self::CasConflict { message } => write!(formatter, "cas conflict: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
             Self::ListKeys { message } => write!(formatter, "list active service keys: {message}"),
             Self::CorruptActiveServiceState {
                 key,

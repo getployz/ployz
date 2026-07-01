@@ -96,8 +96,6 @@ async fn deploy_worker_runs_containers_then_completes() {
     )
     .await
     .expect("deploy succeeds");
-
-    assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(outcome.terminal_event, DeployTerminalEvent::Recorded);
     assert_eq!(
@@ -316,6 +314,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
         DeployRunningStage::ActiveServiceCommit,
         DeployRunningStage::RemovingSupersededContainers,
     );
+    assert!(active_state.removals.is_empty());
     assert_eq!(
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::completed()))
@@ -385,6 +384,59 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
                 outcome: DeployCompletionOutcome::CompletedWithWarnings,
             }
         ))
+    );
+}
+
+#[tokio::test]
+async fn empty_deploy_removes_running_namespace_containers() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers([]);
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = empty_deploy_command_with_running_container("machine_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("empty deploy succeeds");
+
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "rev_old");
+    assert_eq!(
+        runtime.removals,
+        vec![(
+            machine_id("machine_b"),
+            ployzd::machine_runtime::protocol::MachineContainerRemoveRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_old"),
+                expected_identity: cleanup_expected_identity(&cleanup_target),
+            },
+        )]
+    );
+    assert_eq!(active_state.removals, vec![service_id("svc_api")]);
+    assert!(runtime.requests.is_empty());
+    assert_eq!(health.checked, Vec::<Vec<DeployContainerForAssert>>::new());
+    assert_eq!(
+        outcome.cleanup,
+        vec![DeployCleanupResult::Removed(cleanup_target.clone())]
+    );
+    assert!(
+        recorder
+            .records
+            .contains(&RecordedOperation::CleanupFinished {
+                removed: vec![cleanup_target],
+                failed: Vec::new(),
+            })
     );
 }
 
@@ -1156,8 +1208,6 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
     )
     .await
     .expect("active commit succeeds even when the completed event is rejected");
-
-    assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(outcome.terminal_event, DeployTerminalEvent::Missing);
 

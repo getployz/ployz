@@ -10,7 +10,8 @@ use ployz_core::state::{
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_test_support::ids::{
-    machine_id, machine_name, operation_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, machine_name, namespace_id, operation_id, revision_id, route_hostname, route_port,
+    service_id,
 };
 
 #[tokio::test]
@@ -38,6 +39,7 @@ async fn active_service_state_round_trips_through_kv_core() {
             .await
             .expect("active state loads"),
         Some(ActiveServiceState {
+            namespace_id: namespace_id("default"),
             service_id,
             active_revision: revision
         })
@@ -97,10 +99,12 @@ async fn active_services_list_sorted_by_service_id() {
         .await
         .expect("open core state store");
     let api = ActiveServiceState {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         active_revision: revision_id("rev_2"),
     };
     let worker = ActiveServiceState {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),
         active_revision: revision_id("rev_1"),
     };
@@ -183,6 +187,7 @@ async fn active_service_commit_rejects_stale_previous_revision() {
             .await
             .expect("active state loads"),
         Some(ActiveServiceState {
+            namespace_id: namespace_id("default"),
             service_id,
             active_revision: rev_2
         })
@@ -349,6 +354,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         .expect("open test KV_CORE bucket");
 
     let wrong_payload = serde_json::to_vec(&ActiveServiceState {
+        namespace_id: namespace_id("default"),
         service_id: other_service_id.clone(),
         active_revision: revision_id("rev_1"),
     })
@@ -376,6 +382,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         | CoreStateStoreError::Encode(_)
         | CoreStateStoreError::Decode(_)
         | CoreStateStoreError::CasConflict { .. }
+        | CoreStateStoreError::Delete { .. }
         | CoreStateStoreError::Get { .. }
         | CoreStateStoreError::ListKeys { .. }
         | CoreStateStoreError::CorruptKey { .. }
@@ -426,6 +433,7 @@ async fn active_route_state_round_trips_through_kv_core() {
             .await
             .expect("active route loads"),
         Some(ActiveRouteState {
+            namespace_id: namespace_id("default"),
             target,
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
@@ -659,6 +667,7 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
         .expect("open test KV_CORE bucket");
 
     let wrong_payload = serde_json::to_vec(&ActiveRouteState {
+        namespace_id: namespace_id("default"),
         target: other_target.clone(),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
@@ -745,6 +754,7 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
 
 fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> ActiveRouteState {
     ActiveRouteState {
+        namespace_id: namespace_id("default"),
         target: target.clone(),
         endpoint_port: route_port(8080),
         service_id: service_id(service),
@@ -766,6 +776,7 @@ fn commit_request(
     target_revision: &RevisionId,
 ) -> ActiveServiceCommitRequest {
     ActiveServiceCommitRequest {
+        namespace_id: namespace_id("default"),
         service_id: service_id.clone(),
         expected_current,
         target_revision: target_revision.clone(),
@@ -779,6 +790,7 @@ fn route_commit_request(
     revision: &str,
 ) -> ActiveRouteCommitRequest {
     ActiveRouteCommitRequest {
+        namespace_id: namespace_id("default"),
         target: target.clone(),
         endpoint_port: route_port(8080),
         expected_current,

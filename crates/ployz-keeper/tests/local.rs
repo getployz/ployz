@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
@@ -1174,14 +1175,42 @@ fn ployzd_artifact(source: &Path, install_path: &Path) -> ArtifactTarget {
 }
 
 fn nats_server_artifact(source: &Path, install_path: &Path) -> ArtifactTarget {
+    write_nats_server_archive(source, b"ployz\n");
     ArtifactTarget::new(
         ArtifactKind::NatsServer,
         version("2.12.0"),
         artifact_source(source),
-        digest(PLOYZ_NEWLINE_SHA256),
+        digest(sha256(source).as_str()),
         install_path.to_path_buf(),
     )
     .expect("valid nats-server artifact")
+}
+
+fn write_nats_server_archive(path: &Path, binary: &[u8]) {
+    let root = path
+        .parent()
+        .expect("test nats archive path has parent")
+        .join("nats-server-archive");
+    let package = root.join("nats-server-v2.12.0-linux-amd64");
+    fs::create_dir_all(&package).expect("nats archive package dir can be created");
+    fs::write(package.join("nats-server"), binary).expect("nats binary can be written");
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(path)
+        .arg("-C")
+        .arg(&root)
+        .arg("nats-server-v2.12.0-linux-amd64")
+        .status()
+        .expect("tar can run");
+    assert!(status.success());
+}
+
+fn sha256(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+
+    let bytes = fs::read(path).expect("file can be read");
+    let digest = Sha256::digest(bytes);
+    format!("{digest:x}")
 }
 
 fn ebpf_bytecode_artifact(root: &Path) -> ArtifactTarget {

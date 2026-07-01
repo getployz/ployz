@@ -1,6 +1,7 @@
 use async_nats::jetstream;
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
+    DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
+    ReplicaCount,
 };
 use ployz_core::ids::{OperationId, StepId};
 use ployz_core::machine::MachineName;
@@ -17,7 +18,7 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, route_port, service_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, route_port, service_id,
 };
 use ployzd::deploy_worker::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
@@ -291,7 +292,11 @@ async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
     let request = deploy_request();
-    let key = ActiveServiceStateKey::from_service_id(&request.service_id);
+    let key = ActiveServiceStateKey::from_service_id(
+        request
+            .primary_service_id()
+            .expect("test deploy request has a service"),
+    );
     nats.jetstream
         .get_key_value(KV_CORE_BUCKET)
         .await
@@ -394,26 +399,28 @@ async fn test_nats() -> TestNats {
 
 fn deploy_request() -> DeployRequest {
     DeployRequest {
-        service_id: service_id("svc_api"),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: ImageReference::try_new("registry.example/api:rev_2")
-            .expect("valid image reference"),
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: ImageReference::try_new("registry.example/api:rev_2")
+                .expect("valid image reference"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
+        }],
     }
 }
 
 fn routed_deploy_request() -> DeployRequest {
-    DeployRequest {
-        route: Some(DeployRoute {
-            target: RouteTarget {
-                hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
-                port: route_port(8080),
-            },
-            endpoint_port: route_port(80),
-        }),
-        ..deploy_request()
-    }
+    let mut request = deploy_request();
+    request.services[0].route = Some(DeployRoute {
+        target: RouteTarget {
+            hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
+            port: route_port(8080),
+        },
+        endpoint_port: route_port(80),
+    });
+    request
 }
 
 fn machine_snapshot(

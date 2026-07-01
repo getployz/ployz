@@ -467,16 +467,31 @@ fn artifact_spec(
 }
 
 fn load_release_manifest() -> Result<ReleaseManifest, String> {
-    let url = std::env::var("PLOYZ_RELEASE_MANIFEST_URL").unwrap_or_else(|_| {
-        format!(
-            "https://github.com/getployz/ployz/releases/download/v{}/ployz-release-{}.env",
-            env!("CARGO_PKG_VERSION"),
-            release_platform()
-        )
-    });
+    let url = release_manifest_url();
     let contents = get_text_url(&url)
         .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
     ReleaseManifest::parse(&contents)
+}
+
+fn release_manifest_url() -> String {
+    std::env::var("PLOYZ_RELEASE_MANIFEST_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            persisted_release_manifest_url(std::path::Path::new("/etc/ployz/release.env")).ok()
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "https://github.com/getployz/ployz/releases/download/v{}/ployz-release-{}.env",
+                env!("CARGO_PKG_VERSION"),
+                release_platform()
+            )
+        })
+}
+
+fn persisted_release_manifest_url(path: &std::path::Path) -> Result<String, String> {
+    let contents = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    manifest_value(&contents, "PLOYZ_RELEASE_MANIFEST_URL")
 }
 
 fn release_platform() -> &'static str {
@@ -499,8 +514,8 @@ fn manifest_value(contents: &str, key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReleaseManifest, cloud_joiner_failed_terminal_callback, public_ip_from_runtime_nats_url,
-        update_poll_delay_from_pending,
+        ReleaseManifest, cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
+        public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
     };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;
     use ployz_core::ops::FailureMessage;
@@ -539,6 +554,29 @@ mod tests {
             artifacts.nats_server.binary.as_str(),
             "/usr/local/bin/nats-server"
         );
+    }
+
+    #[test]
+    fn persisted_release_env_supplies_manifest_url() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-release-env-{}-{}.env",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env\n",
+        )
+        .expect("release env can be written");
+
+        assert_eq!(
+            persisted_release_manifest_url(&path).expect("manifest URL loads"),
+            "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env"
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
