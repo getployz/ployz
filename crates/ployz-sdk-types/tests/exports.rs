@@ -25,12 +25,14 @@ use ployz_sdk_types::{
     OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
     OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount,
     ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
+        ServiceListApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -371,6 +373,12 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<ServiceListApi, ServiceListRequest, ServiceListResult, ServiceListError>();
     assert_contract::<ServiceInspectApi, ServiceInspectRequest, ServiceSnapshot, ServiceInspectError>(
     );
+    assert_contract::<
+        RuntimeSnapshotApi,
+        RuntimeSnapshotRequest,
+        RuntimeSnapshotResult,
+        RuntimeSnapshotError,
+    >();
     assert_contract::<LogsTailApi, LogsTailRequest, LogsTailResult, LogsTailError>();
     assert_contract::<
         MachineJoinRedeemApi,
@@ -477,6 +485,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "ServiceSnapshot".to_owned(),
                 "ServiceInspectError".to_owned(),
                 "ServiceInspectResponse",
+            ),
+            (
+                "runtime.snapshot",
+                "plz.v1.svc.api.runtime.snapshot",
+                OperationApiEndpointExecution::Query,
+                "RuntimeSnapshotRequest".to_owned(),
+                "RuntimeSnapshotResult".to_owned(),
+                "RuntimeSnapshotError".to_owned(),
+                "RuntimeSnapshotResponse",
             ),
             (
                 "logs.tail",

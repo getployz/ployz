@@ -475,8 +475,8 @@ fn release_manifest_url() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cloud_joiner_failed_terminal_callback, public_ip_from_runtime_nats_url,
-        update_poll_delay_from_pending,
+        ReleaseManifest, cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
+        public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
     };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;
     use ployz_core::ops::FailureMessage;
@@ -487,6 +487,29 @@ mod tests {
         CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
         CloudBootstrapRedemptionId,
     };
+
+    #[test]
+    fn persisted_release_env_supplies_manifest_url() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-release-env-{}-{}.env",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env\n",
+        )
+        .expect("release env can be written");
+
+        assert_eq!(
+            persisted_release_manifest_url(&path).expect("manifest URL loads"),
+            "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env"
+        );
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn founder_public_ip_comes_from_runtime_nats_url() {

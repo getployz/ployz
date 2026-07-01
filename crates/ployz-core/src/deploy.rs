@@ -44,6 +44,7 @@ impl DeployRequest {
         self.services
             .iter()
             .map(|service| DeployServiceRequest {
+                namespace_id: self.namespace_id.clone(),
                 service_id: service.service_id.clone(),
                 target_revision: self.target_revision.clone(),
                 image: service.image.clone(),
@@ -69,6 +70,7 @@ pub struct DeployServiceSpec {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployServiceRequest {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub target_revision: RevisionId,
     pub image: ImageReference,
@@ -371,6 +373,7 @@ fn active_route_commit_request(
     };
 
     Ok(Some(ActiveRouteCommitRequest {
+        namespace_id: request.namespace_id.clone(),
         target,
         endpoint_port,
         expected_current,

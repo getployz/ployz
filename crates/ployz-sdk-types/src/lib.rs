@@ -53,7 +53,9 @@ pub use ployz_core::machine::{
     MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
     MachineReadinessEvidence,
 };
-pub use ployz_core::machine_runtime::ManagedContainerKind;
+pub use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+};
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,
@@ -71,8 +73,9 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
-    ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
-    GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, ActiveRouteState, ActiveServiceCommitRequest, ActiveServiceState,
+    ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation,
+    MachinePublicIpObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -129,6 +132,9 @@ pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineI
 pub type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;
 
 pub type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
+
+pub type RuntimeSnapshotResponse =
+    OperationApiResponse<RuntimeSnapshotResult, RuntimeSnapshotError>;
 
 pub type LogsTailResponse = OperationApiResponse<LogsTailResult, LogsTailError>;
 
@@ -248,6 +254,91 @@ pub struct ServiceSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+pub struct RuntimeSnapshotRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSnapshotResult {
+    pub snapshot: RuntimeSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSnapshot {
+    pub machines: Vec<MachineSnapshot>,
+    pub services: Vec<ServiceSnapshot>,
+    pub routes: Vec<ActiveRouteState>,
+    pub containers: Vec<ManagedContainerObservation>,
+    pub revisions: Vec<RuntimeServiceRevision>,
+    pub releases: Vec<RuntimeServiceRelease>,
+    pub instances: Vec<RuntimeServiceInstance>,
+    pub projection_sources: RuntimeProjectionSources,
+    pub updated_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeServiceRevision {
+    pub namespace_id: NamespaceId,
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeServiceRelease {
+    pub namespace_id: NamespaceId,
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+    pub routes: Vec<RouteTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeServiceInstance {
+    pub namespace_id: NamespaceId,
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+    pub operation_id: OperationId,
+    pub step_id: StepId,
+    pub state: ContainerRuntimeState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeProjectionSources {
+    pub core_state: RuntimeProjectionSource,
+    pub observations: RuntimeProjectionSource,
+    pub revisions: RuntimeDerivedCollectionSource,
+    pub releases: RuntimeDerivedCollectionSource,
+    pub instances: RuntimeDerivedCollectionSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeProjectionSource {
+    pub read_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeDerivedCollectionSource {
+    pub status: RuntimeDerivedCollectionStatus,
+    pub source_count: usize,
+    pub missing_link_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeDerivedCollectionStatus {
+    Complete,
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub active: ActiveMachineState,
     pub public_ip: Option<MachinePublicIpObservation>,
@@ -291,6 +382,22 @@ pub enum ServiceInspectError {
     Unavailable {
         source: ServiceQueryUnavailableSource,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimeSnapshotError {
+    Unavailable {
+        source: RuntimeSnapshotUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimeSnapshotUnavailableSource {
+    CoreState,
+    Observations,
+    RuntimeProjection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
