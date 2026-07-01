@@ -306,11 +306,13 @@ fn derive_runtime_revisions(
 
     revisions
         .into_iter()
-        .map(|(namespace_id, service_id, revision_id)| RuntimeServiceRevision {
-            namespace_id,
-            service_id,
-            revision_id,
-        })
+        .map(
+            |(namespace_id, service_id, revision_id)| RuntimeServiceRevision {
+                namespace_id,
+                service_id,
+                revision_id,
+            },
+        )
         .collect()
 }
 

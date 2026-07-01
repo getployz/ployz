@@ -48,6 +48,11 @@ impl KeeperStepPlan {
     }
 
     #[must_use]
+    pub fn from_steps(steps: Vec<KeeperStep>) -> Self {
+        Self::new(steps)
+    }
+
+    #[must_use]
     pub fn steps(&self) -> &[KeeperStep] {
         &self.steps
     }
@@ -56,6 +61,7 @@ impl KeeperStepPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperStep {
     VerifyHost(HostPrerequisite),
+    PrepareDataplaneHost,
     PrepareContainerRuntime(ContainerRuntime),
     VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
@@ -74,6 +80,7 @@ pub enum KeeperStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperStepLabel {
     VerifyHost(HostPrerequisite),
+    PrepareDataplaneHost,
     PrepareContainerRuntime(ContainerRuntime),
     VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
@@ -97,6 +104,7 @@ impl KeeperStepLabel {
     pub fn from_step(step: &KeeperStep) -> Self {
         match step {
             KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
+            KeeperStep::PrepareDataplaneHost => Self::PrepareDataplaneHost,
             KeeperStep::PrepareContainerRuntime(runtime) => Self::PrepareContainerRuntime(*runtime),
             KeeperStep::VerifyContainerRuntime(runtime) => Self::VerifyContainerRuntime(*runtime),
             KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
@@ -767,6 +775,7 @@ fn keeper_join_material_steps(target: &KeeperJoinTarget) -> Vec<KeeperStep> {
 
 fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
     let mut steps = vec![
+        KeeperStep::PrepareDataplaneHost,
         KeeperStep::PrepareContainerRuntime(ContainerRuntime::Docker),
         KeeperStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone()),
@@ -810,6 +819,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
     );
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        KeeperStep::PrepareDataplaneHost,
         KeeperStep::PrepareContainerRuntime(ContainerRuntime::Docker),
         KeeperStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone()),
@@ -960,6 +970,7 @@ pub enum KeeperStepFailureReason {
     JoinReportFailed,
     JoinTokenConsumeFailed,
     JoinMaterialStoreFailed,
+    DataplaneHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
 }
@@ -969,6 +980,7 @@ impl KeeperStepFailureReason {
     pub const fn from_step(step: &KeeperStep) -> Self {
         match step {
             KeeperStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
+            KeeperStep::PrepareDataplaneHost => Self::DataplaneHostPrepareFailed,
             KeeperStep::PrepareContainerRuntime(_) => Self::ContainerRuntimePrepareFailed,
             KeeperStep::VerifyContainerRuntime(_) => Self::ContainerRuntimeVerifyFailed,
             KeeperStep::InstallArtifact(_) => Self::ArtifactInstallFailed,

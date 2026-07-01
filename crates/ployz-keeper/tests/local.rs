@@ -287,6 +287,58 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
 }
 
 #[test]
+fn local_effects_prepare_dataplane_host_before_docker() {
+    let root = temp_dir("ployz-keeper-local-dataplane-host");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(effects.runner().dataplane_host_prepare_runs, 1);
+}
+
+#[test]
+fn local_effects_report_dataplane_host_prepare_failure() {
+    let root = temp_dir("ployz-keeper-local-dataplane-host-fail");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            fail_dataplane_host_prepare: true,
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::PrepareDataplaneHost,
+            reason: KeeperStepFailureReason::DataplaneHostPrepareFailed,
+            message,
+        })) if message.as_str() == "simulated dataplane host prepare failure"
+    ));
+    assert_eq!(effects.runner().docker_install_runs, 0);
+}
+
+#[test]
 fn local_effects_skip_docker_install_when_runtime_is_ready() {
     let root = temp_dir("ployz-keeper-local-docker-ready");
     let systemd_dir = root.join("systemd");
@@ -934,7 +986,9 @@ struct RecordingRunner {
     docker_installed: bool,
     docker_running: bool,
     docker_install_runs: usize,
+    dataplane_host_prepare_runs: usize,
     fail_docker_install: bool,
+    fail_dataplane_host_prepare: bool,
     force_docker_info_failure: bool,
     systemctl_calls: Vec<Vec<String>>,
     fail_systemctl: Option<Vec<String>>,
@@ -951,7 +1005,9 @@ impl RecordingRunner {
             docker_installed: true,
             docker_running: true,
             docker_install_runs: 0,
+            dataplane_host_prepare_runs: 0,
             fail_docker_install: false,
+            fail_dataplane_host_prepare: false,
             force_docker_info_failure: false,
             systemctl_calls: Vec::new(),
             fail_systemctl: None,
@@ -1028,6 +1084,14 @@ impl KeeperCommandRunner for RecordingRunner {
             return Err(failure_message("simulated docker install failure"));
         }
         self.docker_installed = true;
+        Ok(())
+    }
+
+    fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
+        self.dataplane_host_prepare_runs += 1;
+        if self.fail_dataplane_host_prepare {
+            return Err(failure_message("simulated dataplane host prepare failure"));
+        }
         Ok(())
     }
 }

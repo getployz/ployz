@@ -93,6 +93,7 @@ import type {
   OperationStatusSnapshot,
   OpsStatusError,
   OpsWatchError,
+  RuntimeSnapshotError,
   RuntimeSnapshot,
   RuntimeSnapshotRequest,
   ServiceInspectError,
@@ -567,6 +568,7 @@ export type PloyzOperationError =
   | PloyzApiError<MachineInspectError>
   | PloyzApiError<MachineJoinRedeemError>
   | PloyzApiError<LogsTailError>
+  | PloyzApiError<RuntimeSnapshotError>
   | PloyzApiError<ServiceListError>
   | PloyzApiError<ServiceInspectError>
   | PloyzApiError<OpsStatusError>

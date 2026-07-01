@@ -106,11 +106,9 @@ impl NatsServerConfig {
             self.port,
         );
         if let NatsListener::External { advertise_host } = &self.listener {
-            rendered.push_str(&format!(
-                "client_advertise: {}:{}\n",
-                advertise_host.as_str(),
-                self.port
-            ));
+            let client_advertise =
+                quote_nats_string(&format!("{}:{}", advertise_host.as_str(), self.port));
+            rendered.push_str(&format!("client_advertise: {client_advertise}\n",));
         }
         rendered.push_str(&format!(
             "tls {{\n  cert_file: {cert_file}\n  key_file: {key_file}\n}}\njetstream {{\n  store_dir: {store_dir}\n}}\ninclude {include_path}\n"
@@ -136,6 +134,23 @@ impl NatsServerConfig {
 pub struct NatsAuthorizedUser {
     pub principal: NatsPrincipal,
     pub nkey_public: NatsUserPublicKey,
+}
+
+impl NatsAuthorizedUser {
+    /// Stable identity for one authorization file entry.
+    ///
+    /// Most principals are unique by role or machine id. User credentials are
+    /// intentionally plural: the local operator and Cloud can both hold User
+    /// authority, so the public NKey is part of their durable record key.
+    #[must_use]
+    pub fn authority_record_key(&self) -> String {
+        match self.principal {
+            NatsPrincipal::User => {
+                format!("user.{}", self.nkey_public.as_str())
+            }
+            _ => self.principal.authority_key(),
+        }
+    }
 }
 
 /// The marker comment that precedes each rendered user entry. It names the

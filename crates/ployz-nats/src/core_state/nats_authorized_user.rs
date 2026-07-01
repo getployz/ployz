@@ -13,7 +13,7 @@ use ployz_core::state::NATS_AUTHORIZED_USER_PREFIX;
 fn authorized_user_key(user: &NatsAuthorizedUser) -> String {
     format!(
         "{NATS_AUTHORIZED_USER_PREFIX}.{}",
-        user.principal.authority_key()
+        user.authority_record_key()
     )
 }
 

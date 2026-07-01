@@ -53,71 +53,73 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     assert!(rendered.contains(PLOYZD_DIGEST));
     assert_eq!(effects.calls.len(), plan.steps().len());
     assert_eq!(recorder.events, execution.events);
-    let [first, second, third, fourth, ..] = effects.calls.as_slice() else {
+    let [first, second, third, fourth, fifth, ..] = effects.calls.as_slice() else {
         panic!("plan records at least four calls");
     };
     assert_eq!(
         *first,
         KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd)
     );
+    assert_eq!(*second, KeeperStepLabel::PrepareDataplaneHost);
     assert_eq!(
-        *second,
+        *third,
         KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker)
     );
     assert_eq!(
-        *third,
+        *fourth,
         KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker)
     );
-    assert_eq!(*fourth, KeeperStepLabel::InstallArtifact(ployzd_artifact()));
+    assert_eq!(*fifth, KeeperStepLabel::InstallArtifact(ployzd_artifact()));
     let [
         _,
         _,
         _,
         _,
-        fifth,
+        _,
         sixth,
         seventh,
         eighth,
         ninth,
         tenth,
         eleventh,
+        twelfth,
         ..,
     ] = effects.calls.as_slice()
     else {
         panic!("first-machine plan records nats setup calls");
     };
     assert_eq!(
-        *fifth,
+        *sixth,
         KeeperStepLabel::InstallArtifact(ebpf_bytecode_artifact())
     );
     assert_eq!(
-        *sixth,
+        *seventh,
         KeeperStepLabel::InstallArtifact(ebpf_ctl_artifact())
     );
     assert_eq!(
-        *seventh,
+        *eighth,
         KeeperStepLabel::InstallArtifact(nats_server_artifact())
     );
     assert_eq!(
-        *eighth,
+        *ninth,
         KeeperStepLabel::WriteNatsTlsMaterial {
             state_dir: PathBuf::from("/var/lib/ployz/nats"),
         }
     );
     assert_eq!(
-        *ninth,
+        *tenth,
         KeeperStepLabel::WriteNatsAuthorizedUsers {
             path: PathBuf::from("/etc/nats/authorized-users.conf"),
         }
     );
     assert_eq!(
-        *tenth,
+        *eleventh,
         KeeperStepLabel::WriteNatsClientCredentials {
             state_dir: PathBuf::from("/var/lib/ployz/nats"),
         }
     );
     assert_eq!(
-        *eleventh,
+        *twelfth,
         KeeperStepLabel::WriteNatsServerConfig(first_machine_nats_target(machine_id("machine_1")))
     );
     assert_eq!(
@@ -163,6 +165,7 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
         effects.calls,
         vec![
             KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+            KeeperStepLabel::PrepareDataplaneHost,
             KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
             KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
             KeeperStepLabel::InstallArtifact(ployzd_target),
@@ -219,6 +222,7 @@ fn keeper_plan_executor_records_started_before_applying_step() {
         effects.calls,
         vec![
             KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+            KeeperStepLabel::PrepareDataplaneHost,
             KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
             KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
         ]

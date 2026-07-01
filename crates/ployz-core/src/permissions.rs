@@ -27,6 +27,7 @@ const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
 const JETSTREAM_ACK_SCOPE: &str = "$JS.ACK.>";
+const NATS_SERVICE_DISCOVERY_SCOPE: &str = "$SRV.>";
 
 /// The request-reply inbox prefix a principal connects with.
 ///
@@ -67,7 +68,7 @@ pub fn active_machine_state_kv_write_scope() -> String {
 /// Control's writes of the durable authorized-principal set.
 #[must_use]
 pub fn nats_authorized_user_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{NATS_AUTHORIZED_USER_PREFIX}.*")
+    format!("$KV.{KV_CORE_BUCKET}.{NATS_AUTHORIZED_USER_PREFIX}.>")
 }
 
 #[must_use]
@@ -133,7 +134,8 @@ impl NatsPermissionProfile {
                 // Gateway and DNS authenticate as the machine's Machine user in
                 // v1, so this profile carries their read-only route-state
                 // access (KV_CORE reads stay read-only via the publish deny).
-                let mut publish_allow = vec![machine_observation_scope(machine_id)];
+                let mut publish_allow = request_reply_publications(&principal);
+                publish_allow.push(machine_observation_scope(machine_id));
                 publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
                 publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
                 publish_allow.extend(kv_read_js_api_subjects(KV_CORE_BUCKET));
@@ -141,37 +143,19 @@ impl NatsPermissionProfile {
                     principal: principal.clone(),
                     publish: SubjectPermissions::allowing_all(publish_allow)
                         .with_denied([CORE_KV_WRITES]),
-                    subscribe: SubjectPermissions::allowing([
-                        machine_service_scope(machine_id),
-                        inbox_scope,
-                    ]),
+                    subscribe: machine_service_server_subscriptions(machine_id, inbox_scope),
                     allow_responses: ResponsePermission::Allowed,
                 }
             }
             NatsPrincipal::Controller => Self {
                 principal: principal.clone(),
-                publish: SubjectPermissions::allowing([
-                    MACHINE_SERVICE_SCOPE.to_owned(),
-                    OPS_STREAM_SUBJECT.to_owned(),
-                    JETSTREAM_API_SCOPE.to_owned(),
-                    JETSTREAM_ACK_SCOPE.to_owned(),
-                    active_service_state_kv_write_scope(),
-                    active_route_state_kv_write_scope(),
-                    active_machine_state_kv_write_scope(),
-                    nats_authorized_user_kv_write_scope(),
-                    operation_status_kv_write_scope(),
-                ]),
-                // Control serves the user-facing command API, so it
-                // subscribes the API service scope and answers requests.
-                subscribe: SubjectPermissions::allowing([
-                    API_SERVICE_SCOPE.to_owned(),
-                    inbox_scope,
-                ]),
+                publish: controller_publications(),
+                subscribe: api_service_server_subscriptions(inbox_scope),
                 allow_responses: ResponsePermission::Allowed,
             },
             NatsPrincipal::User => Self {
                 principal: principal.clone(),
-                publish: SubjectPermissions::allowing([API_SERVICE_SCOPE.to_owned()]),
+                publish: api_service_client_publications(),
                 subscribe: SubjectPermissions::allowing([
                     inbox_scope,
                     OPS_STREAM_SUBJECT.to_owned(),
@@ -185,7 +169,7 @@ impl NatsPermissionProfile {
                     API_MACHINE_JOIN_REPORT.to_owned(),
                 ]),
                 subscribe: SubjectPermissions::allowing([inbox_scope]),
-                allow_responses: ResponsePermission::Allowed,
+                allow_responses: ResponsePermission::Denied,
             },
             NatsPrincipal::System => Self {
                 principal: principal.clone(),
@@ -195,6 +179,60 @@ impl NatsPermissionProfile {
             },
         }
     }
+}
+
+#[must_use]
+fn api_service_client_publications() -> SubjectPermissions {
+    SubjectPermissions::allowing([API_SERVICE_SCOPE.to_owned()])
+}
+
+#[must_use]
+fn machine_service_client_publications() -> SubjectPermissions {
+    SubjectPermissions::allowing([MACHINE_SERVICE_SCOPE.to_owned()])
+}
+
+#[must_use]
+fn api_service_server_subscriptions(inbox_scope: String) -> SubjectPermissions {
+    SubjectPermissions::allowing([
+        API_SERVICE_SCOPE.to_owned(),
+        NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
+        inbox_scope,
+    ])
+}
+
+#[must_use]
+fn machine_service_server_subscriptions(
+    machine_id: &MachineId,
+    inbox_scope: String,
+) -> SubjectPermissions {
+    SubjectPermissions::allowing([
+        machine_service_scope(machine_id),
+        NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
+        inbox_scope,
+    ])
+}
+
+#[must_use]
+fn controller_publications() -> SubjectPermissions {
+    let mut allow = request_reply_publications(&NatsPrincipal::Controller);
+    allow.extend(api_service_client_publications().into_allowed_subjects());
+    allow.extend(machine_service_client_publications().into_allowed_subjects());
+    allow.extend([
+        OPS_STREAM_SUBJECT.to_owned(),
+        JETSTREAM_API_SCOPE.to_owned(),
+        JETSTREAM_ACK_SCOPE.to_owned(),
+        active_service_state_kv_write_scope(),
+        active_route_state_kv_write_scope(),
+        active_machine_state_kv_write_scope(),
+        nats_authorized_user_kv_write_scope(),
+        operation_status_kv_write_scope(),
+    ]);
+    SubjectPermissions::allowing_all(allow)
+}
+
+#[must_use]
+fn request_reply_publications(principal: &NatsPrincipal) -> Vec<String> {
+    vec![inbox_subscribe_scope(principal)]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +270,11 @@ impl SubjectPermissions {
     #[must_use]
     pub fn denied_subjects(&self) -> &[String] {
         &self.deny
+    }
+
+    #[must_use]
+    fn into_allowed_subjects(self) -> Vec<String> {
+        self.allow
     }
 }
 

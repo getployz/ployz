@@ -44,7 +44,7 @@ fn external_listener_binds_all_interfaces_and_advertises_the_public_host() {
     assert_eq!(config.client_host(), "203.0.113.10");
     let rendered = config.render();
     assert!(rendered.contains("host: 0.0.0.0\n"));
-    assert!(rendered.contains("client_advertise: 203.0.113.10:4222\n"));
+    assert!(rendered.contains("client_advertise: \"203.0.113.10:4222\"\n"));
     assert!(rendered.contains("tls {\n"));
 }
 
@@ -146,6 +146,38 @@ fn authorized_machine_user_denies_core_kv_writes() {
 }
 
 #[test]
+fn authorized_user_record_keys_include_user_public_key() {
+    let first = generated_user_public_key();
+    let second = generated_user_public_key();
+    let first_user = NatsAuthorizedUser {
+        principal: NatsPrincipal::User,
+        nkey_public: first.clone(),
+    };
+    let second_user = NatsAuthorizedUser {
+        principal: NatsPrincipal::User,
+        nkey_public: second.clone(),
+    };
+    let controller = NatsAuthorizedUser {
+        principal: NatsPrincipal::Controller,
+        nkey_public: generated_user_public_key(),
+    };
+
+    assert_eq!(
+        first_user.authority_record_key(),
+        format!("user.{}", first.as_str())
+    );
+    assert_eq!(
+        second_user.authority_record_key(),
+        format!("user.{}", second.as_str())
+    );
+    assert_ne!(
+        first_user.authority_record_key(),
+        second_user.authority_record_key()
+    );
+    assert_eq!(controller.authority_record_key(), "controller");
+}
+
+#[test]
 fn nats_user_key_material_is_validated_and_seed_debug_is_redacted() {
     let public = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
     let seed = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
@@ -198,4 +230,9 @@ fn tls_files() -> NatsServerTlsFiles {
 fn user_public_key(_fill: char) -> NatsUserPublicKey {
     NatsUserPublicKey::try_new("UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4")
         .expect("valid user public key")
+}
+
+fn generated_user_public_key() -> NatsUserPublicKey {
+    NatsUserPublicKey::try_new(nkeys::KeyPair::new_user().public_key())
+        .expect("generated user public key is valid")
 }

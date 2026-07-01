@@ -191,6 +191,13 @@ curl -fsSL https://ployz.sh | sh -s -- --version v0.0.2-alpha.1
 ployz-keeper --help
 ```
 
+Update existing machine substrate to an exact release after keeper is installed:
+
+```sh
+curl -fsSL https://ployz.sh | sh -s -- --version v0.0.2-alpha.1
+sudo ployz-keeper substrate-update --version v0.0.2-alpha.1
+```
+
 Cloud Bootstrap Delivery installs keeper first, then runs
 `sudo ployz-keeper bootstrap`. Noninteractive tokens are passed to keeper with
 `--cloud-token`; they are not passed to `ployz.sh`. Keeper and substrate update

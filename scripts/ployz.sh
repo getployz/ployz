@@ -325,3 +325,4 @@ persist_release_env
 
 echo "installed $keeper_bin"
 echo "run: sudo ployz-keeper bootstrap"
+echo "update existing substrate: sudo ployz-keeper substrate-update --version $release_tag"
