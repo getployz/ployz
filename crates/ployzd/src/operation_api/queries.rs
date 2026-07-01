@@ -4,20 +4,26 @@
 use crate::controllers::OperationControllers;
 use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
-use ployz_core::ids::{ContainerId, MachineId, OperationId};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId};
+use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
-use ployz_core::state::{ActiveMachineState, ActiveServiceState};
+use ployz_core::state::{ActiveMachineState, ActiveRouteState, ActiveServiceState};
 use ployz_nats::core_state::{ActiveMachineReadError, AsyncNatsCoreStateStore};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
     LogsTailError, LogsTailRequest, LogsTailResult, LogsTailUnavailableSource, MachineInspectError,
     MachineListError, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
-    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, ServiceInspectError,
-    ServiceListError, ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot,
+    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, RuntimeDerivedCollectionSource,
+    RuntimeDerivedCollectionStatus, RuntimeProjectionSource, RuntimeProjectionSources,
+    RuntimeServiceInstance, RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot,
+    RuntimeSnapshotError, RuntimeSnapshotResult, RuntimeSnapshotUnavailableSource,
+    ServiceInspectError, ServiceListError, ServiceListResult, ServiceQueryUnavailableSource,
+    ServiceSnapshot,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::error_map::{ops_watch_error_from_replay_error, status_read_failure};
 
@@ -36,6 +42,85 @@ pub struct ServiceQueryRuntime {
 pub struct LogsQueryRuntime {
     observations: AsyncNatsObservationStore,
     tailer: NatsMachineLogsTailer,
+}
+
+#[derive(Clone)]
+pub struct RuntimeSnapshotQueryRuntime {
+    core_state: AsyncNatsCoreStateStore,
+    observations: AsyncNatsObservationStore,
+}
+
+impl RuntimeSnapshotQueryRuntime {
+    #[must_use]
+    pub(crate) const fn new(
+        core_state: AsyncNatsCoreStateStore,
+        observations: AsyncNatsObservationStore,
+    ) -> Self {
+        Self {
+            core_state,
+            observations,
+        }
+    }
+
+    pub(crate) async fn snapshot(&self) -> Result<RuntimeSnapshotResult, RuntimeSnapshotError> {
+        let read_at_unix_seconds = current_unix_seconds();
+        let machine_query =
+            MachineQueryRuntime::new(self.core_state.clone(), self.observations.clone());
+        let service_query = ServiceQueryRuntime::new(self.core_state.clone());
+        let machines = machine_query
+            .list()
+            .await
+            .map_err(runtime_machine_error)?
+            .machines;
+        let services = service_query
+            .list()
+            .await
+            .map_err(runtime_service_error)?
+            .services;
+        let routes = self.core_state.active_routes().await.map_err(|_| {
+            RuntimeSnapshotError::Unavailable {
+                source: RuntimeSnapshotUnavailableSource::CoreState,
+            }
+        })?;
+        let containers = self
+            .observations
+            .machine_snapshot_records()
+            .await
+            .map_err(|_| RuntimeSnapshotError::Unavailable {
+                source: RuntimeSnapshotUnavailableSource::Observations,
+            })?
+            .into_iter()
+            .flat_map(|record| record.snapshot.containers().to_vec())
+            .collect::<Vec<_>>();
+        let revisions = derive_runtime_revisions(&services, &routes, &containers);
+        let releases = derive_runtime_releases(&services, &routes);
+        let instances = derive_runtime_instances(&containers);
+        let missing_link_count = missing_runtime_links(&services, &routes, &containers);
+
+        Ok(RuntimeSnapshotResult {
+            snapshot: RuntimeSnapshot {
+                machines,
+                services,
+                routes,
+                containers,
+                projection_sources: RuntimeProjectionSources {
+                    core_state: RuntimeProjectionSource {
+                        read_at_unix_seconds,
+                    },
+                    observations: RuntimeProjectionSource {
+                        read_at_unix_seconds,
+                    },
+                    revisions: derived_source(revisions.len(), missing_link_count),
+                    releases: derived_source(releases.len(), missing_link_count),
+                    instances: derived_source(instances.len(), missing_link_count),
+                },
+                revisions,
+                releases,
+                instances,
+                updated_at_unix_seconds: read_at_unix_seconds,
+            },
+        })
+    }
 }
 
 impl LogsQueryRuntime {
@@ -185,6 +270,126 @@ impl ServiceQueryRuntime {
 
 fn service_snapshot(active: ActiveServiceState) -> ServiceSnapshot {
     ServiceSnapshot { active }
+}
+
+fn derive_runtime_revisions(
+    services: &[ServiceSnapshot],
+    routes: &[ActiveRouteState],
+    containers: &[ManagedContainerObservation],
+) -> Vec<RuntimeServiceRevision> {
+    let mut revisions = BTreeSet::new();
+    for service in services {
+        revisions.insert((
+            service.active.service_id.clone(),
+            service.active.active_revision.clone(),
+        ));
+    }
+    for route in routes {
+        revisions.insert((route.service_id.clone(), route.revision_id.clone()));
+    }
+    for container in containers {
+        revisions.insert((container.service_id.clone(), container.revision_id.clone()));
+    }
+
+    revisions
+        .into_iter()
+        .map(|(service_id, revision_id)| RuntimeServiceRevision {
+            service_id,
+            revision_id,
+        })
+        .collect()
+}
+
+fn derive_runtime_releases(
+    services: &[ServiceSnapshot],
+    routes: &[ActiveRouteState],
+) -> Vec<RuntimeServiceRelease> {
+    let mut releases = BTreeMap::<(ServiceId, RevisionId), Vec<_>>::new();
+    for service in services {
+        releases
+            .entry((
+                service.active.service_id.clone(),
+                service.active.active_revision.clone(),
+            ))
+            .or_default();
+    }
+    for route in routes {
+        releases
+            .entry((route.service_id.clone(), route.revision_id.clone()))
+            .or_default()
+            .push(route.target.clone());
+    }
+
+    releases
+        .into_iter()
+        .map(
+            |((service_id, revision_id), routes)| RuntimeServiceRelease {
+                service_id,
+                revision_id,
+                routes,
+            },
+        )
+        .collect()
+}
+
+fn derive_runtime_instances(
+    containers: &[ManagedContainerObservation],
+) -> Vec<RuntimeServiceInstance> {
+    containers
+        .iter()
+        .filter(|container| container.kind == ManagedContainerKind::Service)
+        .map(|container| RuntimeServiceInstance {
+            machine_id: container.machine_id.clone(),
+            container_id: container.container_id.clone(),
+            service_id: container.service_id.clone(),
+            revision_id: container.revision_id.clone(),
+            operation_id: container.operation_id.clone(),
+            step_id: container.step_id.clone(),
+            state: container.state.clone(),
+        })
+        .collect()
+}
+
+fn missing_runtime_links(
+    services: &[ServiceSnapshot],
+    routes: &[ActiveRouteState],
+    containers: &[ManagedContainerObservation],
+) -> usize {
+    let service_ids = services
+        .iter()
+        .map(|service| service.active.service_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    routes
+        .iter()
+        .filter(|route| !service_ids.contains(&route.service_id))
+        .count()
+        + containers
+            .iter()
+            .filter(|container| !service_ids.contains(&container.service_id))
+            .count()
+}
+
+fn derived_source(
+    source_count: usize,
+    missing_link_count: usize,
+) -> RuntimeDerivedCollectionSource {
+    RuntimeDerivedCollectionSource {
+        status: if missing_link_count == 0 {
+            RuntimeDerivedCollectionStatus::Complete
+        } else {
+            RuntimeDerivedCollectionStatus::Partial
+        },
+        source_count,
+        missing_link_count,
+    }
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl MachineQueryRuntime {
@@ -364,6 +569,33 @@ fn service_inspect_core_error(
 ) -> ServiceInspectError {
     ServiceInspectError::Unavailable {
         source: ServiceQueryUnavailableSource::CoreState,
+    }
+}
+
+fn runtime_machine_error(error: MachineListError) -> RuntimeSnapshotError {
+    match error {
+        MachineListError::Unavailable { source } => RuntimeSnapshotError::Unavailable {
+            source: match source {
+                MachineQueryUnavailableSource::CoreState => {
+                    RuntimeSnapshotUnavailableSource::CoreState
+                }
+                MachineQueryUnavailableSource::Observations => {
+                    RuntimeSnapshotUnavailableSource::Observations
+                }
+            },
+        },
+    }
+}
+
+fn runtime_service_error(error: ServiceListError) -> RuntimeSnapshotError {
+    match error {
+        ServiceListError::Unavailable { source } => RuntimeSnapshotError::Unavailable {
+            source: match source {
+                ServiceQueryUnavailableSource::CoreState => {
+                    RuntimeSnapshotUnavailableSource::CoreState
+                }
+            },
+        },
     }
 }
 

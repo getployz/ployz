@@ -28,6 +28,7 @@ import {
   PloyzApiError,
   PloyzClient,
   revisionId,
+  runtimeSnapshotRequest,
   serviceInspectRequest,
   serviceId,
   serviceListRequest,
@@ -67,6 +68,9 @@ import type {
   PloyzBackupCreateInput,
   PloyzOperationTransport,
   PloyzApiEndpoint,
+  RuntimeSnapshot,
+  RuntimeSnapshotRequest,
+  RuntimeSnapshotResponse,
   ServiceInspectResponse,
   ServiceInspectRequest,
   ServiceListResponse,
@@ -178,6 +182,17 @@ test("service queries return current active service snapshots", async () => {
   ]);
   assert.deepEqual(services, fixture.service_snapshots);
   assert.deepEqual(service, fixture.service_snapshots[0]);
+});
+
+test("runtime snapshot returns Rust-owned projection", async () => {
+  const fixture = defaultFixture();
+  const transport = new RecordingTransport(fixture);
+  const client = new PloyzClient(transport);
+
+  const snapshot = await client.runtimeSnapshot();
+
+  assert.deepEqual(transport.runtimeSnapshotRequests, [runtimeSnapshotRequest()]);
+  assert.deepEqual(snapshot, fixture.runtime_snapshot);
 });
 
 test("logs tail returns recent container evidence", async () => {
@@ -441,6 +456,7 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
   assert.deepEqual(serviceListRequest(), {});
   assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
   assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
+  assert.deepEqual(runtimeSnapshotRequest(), {});
   assert.deepEqual(logsTailRequest("ctr_failed"), { container_id: "ctr_failed" });
   assert.deepEqual(logsTailRequest({ containerId: "ctr_failed", tailLines: 25 }), {
     container_id: "ctr_failed",
@@ -578,6 +594,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "ServiceInspectResponse",
     },
     {
+      name: "runtime.snapshot",
+      subject: "plz.v1.svc.api.runtime.snapshot",
+      execution: "query",
+      request: "RuntimeSnapshotRequest",
+      success: "RuntimeSnapshotResult",
+      error: "RuntimeSnapshotError",
+      response: "RuntimeSnapshotResponse",
+    },
+    {
       name: "logs.tail",
       subject: "plz.v1.svc.api.logs.tail",
       execution: "query",
@@ -641,6 +666,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly machineJoinRedeemRequests: MachineJoinRedeemRequest[] = [];
   readonly serviceListRequests: ServiceListRequest[] = [];
   readonly serviceInspectRequests: ServiceInspectRequest[] = [];
+  readonly runtimeSnapshotRequests: RuntimeSnapshotRequest[] = [];
   readonly logsTailRequests: LogsTailRequest[] = [];
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
@@ -651,6 +677,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly machineSnapshots: MachineSnapshot[];
   readonly machineJoinRedeemed: MachineJoinRedeemed;
   readonly serviceSnapshots: ServiceSnapshot[];
+  readonly runtimeSnapshot: RuntimeSnapshot;
   readonly status: OperationStatusSnapshot;
   readonly replay: OperationEventReplayPage;
   readonly replayPages: OperationEventReplayPage[] = [];
@@ -663,6 +690,7 @@ class RecordingTransport implements PloyzOperationTransport {
   machineJoinRedeemResponse?: MachineJoinRedeemResponse;
   serviceListResponse?: ServiceListResponse;
   serviceInspectResponse?: ServiceInspectResponse;
+  runtimeSnapshotResponse?: RuntimeSnapshotResponse;
   logsTailResponse?: LogsTailResponse;
   statusResponse?: OpsStatusResponse;
   watchResponse?: OpsWatchResponse;
@@ -675,6 +703,7 @@ class RecordingTransport implements PloyzOperationTransport {
     this.machineSnapshots = fixture.machine_snapshots;
     this.machineJoinRedeemed = fixture.machine_join_redeem_response.value;
     this.serviceSnapshots = fixture.service_snapshots;
+    this.runtimeSnapshot = fixture.runtime_snapshot;
     this.status = fixture.operation_status_snapshot;
     this.replay = fixture.operation_event_replay_page;
   }
@@ -731,6 +760,12 @@ class RecordingTransport implements PloyzOperationTransport {
           status: "ok",
           value: this.serviceSnapshots[0],
         }) as OperationApiResponseByEndpoint[E];
+      case "runtime.snapshot":
+        this.runtimeSnapshotRequests.push(request as RuntimeSnapshotRequest);
+        return (this.runtimeSnapshotResponse ?? {
+          status: "ok",
+          value: { snapshot: this.runtimeSnapshot },
+        }) as OperationApiResponseByEndpoint[E];
       case "logs.tail": {
         const logsRequest = request as LogsTailRequest;
         this.logsTailRequests.push(logsRequest);
@@ -764,6 +799,7 @@ interface OperationFixture {
   machine_snapshots: MachineSnapshot[];
   machine_join_redeem_response: { status: "ok"; value: MachineJoinRedeemed };
   service_snapshots: ServiceSnapshot[];
+  runtime_snapshot: RuntimeSnapshot;
   operation_status_snapshot: OperationStatusSnapshot;
   operation_event_replay_page: OperationEventReplayPage;
 }
@@ -826,6 +862,41 @@ function defaultFixture(): OperationFixture {
         },
       },
     ],
+    runtime_snapshot: {
+      machines: [
+        {
+          active: {
+            machine_id: machineId("machine_2"),
+            name: machineName("edge_2"),
+            activated_by: operationId("op_machine"),
+          },
+          public_ip: null,
+          gateway: null,
+          observed_container_count: 0,
+        },
+      ],
+      services: [
+        {
+          active: {
+            service_id: serviceId("svc_api"),
+            active_revision: revisionId("rev_2"),
+          },
+        },
+      ],
+      routes: [],
+      containers: [],
+      revisions: [{ service_id: serviceId("svc_api"), revision_id: revisionId("rev_2") }],
+      releases: [{ service_id: serviceId("svc_api"), revision_id: revisionId("rev_2"), routes: [] }],
+      instances: [],
+      projection_sources: {
+        core_state: { read_at_unix_seconds: 1 },
+        observations: { read_at_unix_seconds: 1 },
+        revisions: { status: "complete", source_count: 1, missing_link_count: 0 },
+        releases: { status: "complete", source_count: 1, missing_link_count: 0 },
+        instances: { status: "complete", source_count: 0, missing_link_count: 0 },
+      },
+      updated_at_unix_seconds: 1,
+    },
     operation_status_snapshot: {
       status: {
         kind: "deploy",

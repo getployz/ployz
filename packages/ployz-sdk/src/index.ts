@@ -93,6 +93,8 @@ import type {
   OperationStatusSnapshot,
   OpsStatusError,
   OpsWatchError,
+  RuntimeSnapshot,
+  RuntimeSnapshotRequest,
   ServiceInspectError,
   ServiceInspectRequest,
   ServiceListError,
@@ -261,6 +263,13 @@ export class PloyzClient {
     );
   }
 
+  async runtimeSnapshot(): Promise<RuntimeSnapshot> {
+    return unwrapApiResponse(
+      "runtime.snapshot",
+      await this.#transport.request("runtime.snapshot", runtimeSnapshotRequest()),
+    ).snapshot;
+  }
+
   async logsTail(input: string | PloyzLogsTailInput): Promise<LogsTailResult> {
     return unwrapApiResponse(
       "logs.tail",
@@ -407,6 +416,10 @@ export function serviceInspectRequest(
   return {
     service_id: serviceId(typeof input === "string" ? input : input.serviceId),
   };
+}
+
+export function runtimeSnapshotRequest(): RuntimeSnapshotRequest {
+  return {};
 }
 
 export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailRequest {

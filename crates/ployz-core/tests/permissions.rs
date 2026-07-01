@@ -6,8 +6,8 @@ use ployz_core::permissions::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
-    OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
+    MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -108,6 +108,17 @@ fn user_credential_renders_api_service_scope_without_machine_scope() {
             .publish
             .allowed_subjects()
             .contains(&MACHINE_SERVICE_SCOPE.to_owned())
+    );
+}
+
+#[test]
+fn runtime_snapshot_endpoint_is_inside_the_user_api_scope() {
+    assert!(API_RUNTIME_SNAPSHOT.starts_with("plz.v1.svc.api."));
+    let profile = NatsPermissionProfile::render(NatsPrincipal::User);
+
+    assert_eq!(
+        profile.publish.allowed_subjects(),
+        &[API_SERVICE_SCOPE.to_owned()]
     );
 }
 

@@ -9,8 +9,8 @@ mod submit;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use queries::{
-    LogsQueryRuntime, MachineQueryRuntime, ServiceQueryRuntime, ops_status, ops_status_missing,
-    ops_watch,
+    LogsQueryRuntime, MachineQueryRuntime, RuntimeSnapshotQueryRuntime, ServiceQueryRuntime,
+    ops_status, ops_status_missing, ops_watch,
 };
 pub use submit::{backup_create, deploy_submit, machine_add, owned_operation};
 
@@ -35,6 +35,7 @@ pub struct OperationApiHandlers {
     core_state: AsyncNatsCoreStateStore,
     machine_query: Arc<MachineQueryRuntime>,
     service_query: Arc<ServiceQueryRuntime>,
+    runtime_snapshot_query: Arc<RuntimeSnapshotQueryRuntime>,
     logs_query: Arc<LogsQueryRuntime>,
 }
 
@@ -51,6 +52,8 @@ impl OperationApiHandlers {
     ) -> Self {
         let machine_query = MachineQueryRuntime::new(core_state.clone(), observations.clone());
         let service_query = ServiceQueryRuntime::new(core_state.clone());
+        let runtime_snapshot_query =
+            RuntimeSnapshotQueryRuntime::new(core_state.clone(), observations.clone());
         let logs_query = LogsQueryRuntime::new(observations, logs_tailer);
         Self {
             controllers,
@@ -60,6 +63,7 @@ impl OperationApiHandlers {
             core_state,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
+            runtime_snapshot_query: Arc::new(runtime_snapshot_query),
             logs_query: Arc::new(logs_query),
         }
     }
@@ -75,6 +79,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn service_query(&self) -> &ServiceQueryRuntime {
         &self.service_query
+    }
+
+    pub(crate) fn runtime_snapshot_query(&self) -> &RuntimeSnapshotQueryRuntime {
+        &self.runtime_snapshot_query
     }
 
     pub(crate) fn logs_query(&self) -> &LogsQueryRuntime {

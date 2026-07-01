@@ -20,6 +20,7 @@ pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
 pub const API_MACHINE_JOIN_REPORT: &str = "plz.v1.svc.api.machine.join.report";
 pub const API_SERVICE_LIST: &str = "plz.v1.svc.api.service.list";
 pub const API_SERVICE_INSPECT: &str = "plz.v1.svc.api.service.inspect";
+pub const API_RUNTIME_SNAPSHOT: &str = "plz.v1.svc.api.runtime.snapshot";
 pub const API_LOGS_TAIL: &str = "plz.v1.svc.api.logs.tail";
 pub const API_BACKUP_CREATE: &str = "plz.v1.svc.api.backup.create";
 
@@ -34,13 +35,14 @@ pub enum OperationApiEndpoint {
     MachineJoinReport,
     ServiceList,
     ServiceInspect,
+    RuntimeSnapshot,
     LogsTail,
     OpsStatus,
     OpsWatch,
     BackupCreate,
 }
 
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 13] = [
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 14] = [
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
@@ -50,6 +52,7 @@ pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 13] = [
     OperationApiEndpoint::MachineJoinReport,
     OperationApiEndpoint::ServiceList,
     OperationApiEndpoint::ServiceInspect,
+    OperationApiEndpoint::RuntimeSnapshot,
     OperationApiEndpoint::LogsTail,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
@@ -76,6 +79,7 @@ impl OperationApiEndpoint {
             Self::MachineJoinReport => "machine.join.report",
             Self::ServiceList => "service.list",
             Self::ServiceInspect => "service.inspect",
+            Self::RuntimeSnapshot => "runtime.snapshot",
             Self::LogsTail => "logs.tail",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
@@ -95,6 +99,7 @@ impl OperationApiEndpoint {
             Self::MachineJoinReport => API_MACHINE_JOIN_REPORT,
             Self::ServiceList => API_SERVICE_LIST,
             Self::ServiceInspect => API_SERVICE_INSPECT,
+            Self::RuntimeSnapshot => API_RUNTIME_SNAPSHOT,
             Self::LogsTail => API_LOGS_TAIL,
             Self::OpsStatus => API_OPS_STATUS,
             Self::OpsWatch => API_OPS_WATCH,
@@ -115,6 +120,7 @@ impl OperationApiEndpoint {
             | Self::MachineInspect
             | Self::ServiceList
             | Self::ServiceInspect
+            | Self::RuntimeSnapshot
             | Self::LogsTail
             | Self::OpsStatus
             | Self::OpsWatch => OperationApiEndpointExecution::Query,

@@ -14,12 +14,14 @@ use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
     MachineListResult, MachineSnapshot, OperationApiResponse, OpsStatusError, OpsStatusRequest,
-    OpsWatchError, OpsWatchRequest, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
+    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
     ServiceListRequest, ServiceListResult, ServiceSnapshot,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
+        ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -113,6 +115,13 @@ impl OperationApiClient {
         request: &ServiceInspectRequest,
     ) -> Result<ServiceSnapshot, OperationApiClientError<ServiceInspectError>> {
         self.request_api::<ServiceInspectApi>(request).await
+    }
+
+    pub async fn runtime_snapshot(
+        &self,
+        request: &RuntimeSnapshotRequest,
+    ) -> Result<RuntimeSnapshotResult, OperationApiClientError<RuntimeSnapshotError>> {
+        self.request_api::<RuntimeSnapshotApi>(request).await
     }
 
     pub async fn logs_tail(

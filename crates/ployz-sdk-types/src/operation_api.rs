@@ -8,7 +8,8 @@ use crate::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
     MachineListResult, MachineSnapshot, OperationStatusSnapshot, OpsStatusError, OpsStatusRequest,
-    OpsWatchError, OpsWatchRequest, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
+    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
     ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
@@ -37,6 +38,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::ServiceListApi,
             $crate::operation_api::ServiceInspectApi,
+            $crate::operation_api::RuntimeSnapshotApi,
             $crate::operation_api::LogsTailApi,
             $crate::operation_api::OpsStatusApi,
             $crate::operation_api::OpsWatchApi,
@@ -139,6 +141,18 @@ impl OperationApiContract for ServiceInspectApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::ServiceInspect;
     const RESPONSE_ALIAS: &'static str = "ServiceInspectResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeSnapshotApi;
+
+impl OperationApiContract for RuntimeSnapshotApi {
+    type Request = RuntimeSnapshotRequest;
+    type Success = RuntimeSnapshotResult;
+    type Error = RuntimeSnapshotError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::RuntimeSnapshot;
+    const RESPONSE_ALIAS: &'static str = "RuntimeSnapshotResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
