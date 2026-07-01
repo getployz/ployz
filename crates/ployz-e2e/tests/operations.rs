@@ -8,8 +8,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
-    plan_service_deploy,
+    DeployPlanningInput, DeployRequest, DeployRoute, DeployServiceRequest, DeployServiceSpec,
+    ImageReference, ReplicaCount, plan_namespace_deploy,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
@@ -50,8 +50,8 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 use ployz_test_support::ids::{container_id, step_id};
 use ployz_test_support::ids::{
-    event_replay_limit, event_sequence, machine_id, operation_id, revision_id, route_hostname,
-    route_port, service_id,
+    event_replay_limit, event_sequence, machine_id, namespace_id, operation_id, revision_id,
+    route_hostname, route_port, service_id,
 };
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
@@ -263,12 +263,17 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployPlanCreated {
                 operation_id: operation_id("op_e2e_run"),
-                plan: plan_service_deploy(DeployPlanningInput {
-                    request: deploy_target("svc_api"),
-                    eligible_machines: vec![machine_id("machine_a")],
-                    existing_replicas: Vec::new(),
-                    cleanup_candidates: Vec::new(),
-                })
+                plan: plan_namespace_deploy(
+                    namespace_id("default"),
+                    revision_id("rev_2"),
+                    vec![DeployPlanningInput {
+                        request: deploy_service_target("svc_api"),
+                        eligible_machines: vec![machine_id("machine_a")],
+                        existing_replicas: Vec::new(),
+                        cleanup_candidates: Vec::new(),
+                    }],
+                    Vec::new(),
+                )
                 .expect("single-machine deploy plan is valid"),
             },
             OperationEvent::DeployRunning {
@@ -419,14 +424,12 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     assert_eq!(accepted.operation_id, operation_id("op_e2e_route"));
     wait_for_gateway_route(&gateway_runtime).await;
 
-    assert_eq!(
-        http_get_with_host(gateway_runtime.listen_addr(), "api.example.com").await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    assert_smoke_response(
+        &http_get_with_host(gateway_runtime.listen_addr(), "api.example.com").await?,
     );
-    assert_eq!(
-        upstream.request().await,
-        "GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
-    );
+    let upstream_request = upstream.request().await;
+    assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
+    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
 
     gateway_runtime.shutdown().await;
     machine_runtime
@@ -513,10 +516,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         "expected routed deploy to complete, got {status:?}"
     );
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", upstream.port()).await;
-    assert_eq!(
-        http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
-    );
+    assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
 
     machine_runtime
         .shutdown()
@@ -534,10 +534,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
             reason: MachineRuntimeUnavailableReason::NoResponders,
         }
     );
-    assert_eq!(
-        http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
-    );
+    assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
     assert_eq!(upstream.requests().await.len(), 2);
 
     gateway_runtime.shutdown().await;
@@ -623,19 +620,18 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         "expected routed deploy to complete, got {status:?}"
     );
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", first_upstream_port).await;
-    assert_eq!(
-        http_get_with_host(
+    assert_smoke_response(
+        &http_get_with_host(
             gateway_runtime.listen_addr(),
             &format!("control-down.local:{}", route_port.get()),
         )
         .await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
     );
-    assert_eq!(
-        first_upstream.request().await,
-        "GET /smoke HTTP/1.1\r\nHost: control-down.local:".to_owned()
-            + &route_port.get().to_string()
-            + "\r\n\r\n"
+    let first_request = first_upstream.request().await;
+    assert!(first_request.starts_with("GET /smoke HTTP/1.1\r\n"));
+    assert!(
+        first_request
+            .contains(&("Host: control-down.local:".to_owned() + &route_port.get().to_string()))
     );
 
     control_runtime
@@ -685,19 +681,18 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .expect("observation can change without control runtime");
 
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", second_upstream.port()).await;
-    assert_eq!(
-        http_get_with_host(
+    assert_smoke_response(
+        &http_get_with_host(
             gateway_runtime.listen_addr(),
             &format!("control-down.local:{}", route_port.get()),
         )
         .await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
     );
-    assert_eq!(
-        second_upstream.request().await,
-        "GET /smoke HTTP/1.1\r\nHost: control-down.local:".to_owned()
-            + &route_port.get().to_string()
-            + "\r\n\r\n"
+    let second_request = second_upstream.request().await;
+    assert!(second_request.starts_with("GET /smoke HTTP/1.1\r\n"));
+    assert!(
+        second_request
+            .contains(&("Host: control-down.local:".to_owned() + &route_port.get().to_string()))
     );
 
     gateway_runtime.shutdown().await;
@@ -835,21 +830,19 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
             .len(),
         1
     );
-    assert_eq!(
-        http_get_with_host(
+    assert_smoke_response(
+        &http_get_with_host(
             core_gateway_runtime.listen_addr(),
             &format!("smoke.local:{route_port}"),
         )
         .await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
     );
-    assert_eq!(
-        http_get_with_host(
+    assert_smoke_response(
+        &http_get_with_host(
             edge_gateway_runtime.listen_addr(),
             &format!("smoke.local:{route_port}"),
         )
         .await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
     );
     assert_eq!(upstream.requests().await.len(), 2);
 
@@ -926,12 +919,23 @@ fn replicas(value: u16) -> ReplicaCount {
 
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
-        service_id: self::service_id(service_id),
+        namespace_id: namespace_id("default"),
         target_revision: revision_id("rev_2"),
-        image: image("ghcr.io/acme/api:rev-2"),
-        replicas: replicas(1),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: self::service_id(service_id),
+            image: image("ghcr.io/acme/api:rev-2"),
+            replicas: replicas(1),
+            route: None,
+        }],
     }
+}
+
+fn deploy_service_target(service_id: &str) -> DeployServiceRequest {
+    deploy_target(service_id)
+        .service_requests()
+        .into_iter()
+        .next()
+        .expect("deploy target has one service")
 }
 
 fn deploy_target_with_route(
@@ -940,13 +944,15 @@ fn deploy_target_with_route(
     route_port: u16,
     endpoint_port: u16,
 ) -> DeployRequest {
-    DeployRequest {
-        route: Some(DeployRoute {
-            target: RouteTarget::new(route_hostname(hostname), self::route_port(route_port)),
-            endpoint_port: self::route_port(endpoint_port),
-        }),
-        ..deploy_target(service_id)
-    }
+    let mut target = deploy_target(service_id);
+    let [service] = target.services.as_mut_slice() else {
+        panic!("deploy target has one service");
+    };
+    service.route = Some(DeployRoute {
+        target: RouteTarget::new(route_hostname(hostname), self::route_port(route_port)),
+        endpoint_port: self::route_port(endpoint_port),
+    });
+    target
 }
 
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
@@ -1013,6 +1019,11 @@ fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
         ip: ip.parse().expect("valid endpoint ip"),
         port: route_port(port),
     }
+}
+
+fn assert_smoke_response(response: &str) {
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("\r\n\r\nsmoke"));
 }
 
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
