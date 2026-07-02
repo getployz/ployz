@@ -48,7 +48,14 @@ fn init_first_machine_reports_supervised_product_roles() {
 #[test]
 fn cli_init_activate_first_machine_is_explicit_subcommand() {
     let command = parse_command(
-        ["init", "activate-first-machine", "--machine", "machine_1"].map(str::to_owned),
+        [
+            "internal",
+            "init",
+            "activate-first-machine",
+            "--machine",
+            "machine_1",
+        ]
+        .map(str::to_owned),
     )
     .expect("activation-only init command parses");
 
@@ -64,6 +71,7 @@ fn cli_init_activate_first_machine_is_explicit_subcommand() {
 fn cli_init_activate_first_machine_accepts_role_opt_outs() {
     let command = parse_command(
         [
+            "internal",
             "init",
             "activate-first-machine",
             "--machine",
@@ -91,7 +99,7 @@ fn cli_init_activate_first_machine_accepts_role_opt_outs() {
 fn cli_init_can_emit_keeper_first_machine_install_command() {
     let command = parse_command(init_with_keeper_install_args()).expect("init command parses");
 
-    let PloyzctlCommand::Init(command) = command else {
+    let PloyzctlCommand::InternalInit(command) = command else {
         panic!("expected init command");
     };
 
@@ -112,7 +120,7 @@ fn cli_init_can_pass_first_machine_public_ip_to_keeper_install() {
     let command =
         parse_command(init_with_keeper_install_args_with_public_ip()).expect("init command parses");
 
-    let PloyzctlCommand::Init(command) = command else {
+    let PloyzctlCommand::InternalInit(command) = command else {
         panic!("expected init command");
     };
 
@@ -125,7 +133,9 @@ fn cli_init_can_pass_first_machine_public_ip_to_keeper_install() {
 
 #[test]
 fn cli_init_requires_complete_keeper_install_inputs() {
-    assert!(parse_command(["init", "--emit-keeper-install"].map(str::to_owned)).is_err());
+    assert!(
+        parse_command(["internal", "init", "--emit-keeper-install"].map(str::to_owned)).is_err()
+    );
 }
 
 #[test]
@@ -134,6 +144,7 @@ fn cli_init_requires_explicit_keeper_install_mode() {
     assert!(
         parse_command(
             [
+                "internal",
                 "init",
                 "--install-spec",
                 spec.to_str().expect("spec path is utf-8"),
@@ -150,6 +161,7 @@ fn cli_init_validates_keeper_install_inputs_before_rendering() {
     assert!(matches!(
         parse_command(
             [
+                "internal",
                 "init",
                 "--emit-keeper-install",
                 "--install-spec",
@@ -164,10 +176,10 @@ fn cli_init_validates_keeper_install_inputs_before_rendering() {
 
 #[test]
 fn cli_dispatches_init_first_machine() {
-    let command = parse_command(["init", "--machine", "machine_1"].map(str::to_owned))
+    let command = parse_command(["internal", "init", "--machine", "machine_1"].map(str::to_owned))
         .expect("init command parses");
 
-    let PloyzctlCommand::Init(command) = command else {
+    let PloyzctlCommand::InternalInit(command) = command else {
         panic!("expected init command");
     };
     assert_eq!(
@@ -178,13 +190,16 @@ fn cli_dispatches_init_first_machine() {
 
 #[test]
 fn cli_rejects_init_without_machine() {
-    assert!(parse_command(["init"].map(str::to_owned)).is_err());
+    assert!(parse_command(["internal", "init"].map(str::to_owned)).is_err());
 }
 
 #[test]
 fn cli_rejects_option_like_init_machine_values() {
-    assert!(parse_command(["init", "--machine", "--no-gateway"].map(str::to_owned)).is_err());
-    assert!(parse_command(["init", "--machine", "--help"].map(str::to_owned)).is_err());
+    assert!(
+        parse_command(["internal", "init", "--machine", "--no-gateway"].map(str::to_owned))
+            .is_err()
+    );
+    assert!(parse_command(["internal", "init", "--machine", "--help"].map(str::to_owned)).is_err());
 }
 
 #[test]
@@ -250,76 +265,6 @@ fn cli_requires_ops_status_operation_id() {
 #[test]
 fn cli_requires_ops_watch_operation_id() {
     assert!(parse_command(["ops", "watch"].map(str::to_owned)).is_err());
-}
-
-#[test]
-fn cli_dispatches_backup_create_request() {
-    let command = parse_command(
-        [
-            "backup",
-            "create",
-            "--operation",
-            "op_backup",
-            "--s3-bucket",
-            "ployz-backups",
-            "--s3-prefix",
-            "clusters/dev",
-            "--s3-region",
-            "us-east-1",
-        ]
-        .map(str::to_owned),
-    )
-    .expect("backup create parses");
-
-    let PloyzctlCommand::BackupCreate(command) = command else {
-        panic!("expected backup create command");
-    };
-    let request = command.into_request();
-
-    assert_eq!(request.operation_id, operation_id("op_backup"));
-    assert_eq!(request.target, backup_target("clusters/dev"));
-}
-
-#[test]
-fn cli_dispatches_backup_restore_plan() {
-    let command = parse_command(
-        [
-            "backup",
-            "restore",
-            "--plan",
-            "--s3-bucket",
-            "ployz-backups",
-            "--s3-manifest-key",
-            "clusters/dev/op_backup/manifest.json",
-            "--s3-region",
-            "us-east-1",
-            "--s3-addressing-style",
-            "path",
-        ]
-        .map(str::to_owned),
-    )
-    .expect("backup restore plan parses");
-
-    let PloyzctlCommand::BackupRestorePlan(command) = command else {
-        panic!("expected backup restore plan command");
-    };
-    assert_eq!(
-        command.source,
-        ployz_core::backup::BackupRestoreSource::s3(
-            ployz_core::backup::S3BackupRestoreSource::new(
-                "ployz-backups",
-                "clusters/dev/op_backup/manifest.json",
-                "us-east-1",
-                None,
-                ployz_core::backup::S3AddressingStyle::Path,
-            ),
-        )
-    );
-}
-
-#[test]
-fn cli_requires_backup_restore_plan_flag() {
-    assert!(parse_command(["backup", "restore"].map(str::to_owned)).is_err());
 }
 
 #[test]
@@ -478,7 +423,7 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert!(stdout(&output).contains("Usage: ployzctl"));
     for command in [
-        "deploy", "backup", "init", "machine", "service", "logs", "ops",
+        "deploy", "ls", "inspect", "machine", "service", "logs", "ops",
     ] {
         assert!(stdout(&output).contains(command), "missing {command}");
     }
@@ -487,7 +432,7 @@ fn binary_help_only_advertises_implemented_commands() {
 
 #[test]
 fn binary_dispatches_init_first_machine() {
-    let output = run_ployzctl(&["init", "--machine", "machine_1"]);
+    let output = run_ployzctl(&["internal", "init", "--machine", "machine_1"]);
 
     assert!(
         output.status.success(),
@@ -614,6 +559,7 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
     let spec = write_first_machine_install_spec(None);
     let command = parse_command(
         [
+            "internal",
             "init",
             "--keeper-binary",
             "/tmp/ployz-keeper",
@@ -625,7 +571,7 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
     )
     .expect("init command accepts order-independent keeper binary");
 
-    let PloyzctlCommand::Init(command) = command else {
+    let PloyzctlCommand::InternalInit(command) = command else {
         panic!("expected init command");
     };
     assert_eq!(command.machine_id(), &machine_id("machine_1"));
@@ -635,7 +581,14 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
 fn cli_init_rejects_old_activation_flag() {
     assert!(
         parse_command(
-            ["init", "--machine", "machine_1", "--activate-first-machine"].map(str::to_owned)
+            [
+                "internal",
+                "init",
+                "--machine",
+                "machine_1",
+                "--activate-first-machine"
+            ]
+            .map(str::to_owned)
         )
         .is_err()
     );
@@ -647,6 +600,7 @@ fn cli_init_rejects_keeper_binary_with_emit_mode() {
     assert!(
         parse_command(
             [
+                "internal",
                 "init",
                 "--emit-keeper-install",
                 "--keeper-binary",
@@ -774,7 +728,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
-        .args(["init", "--machine", "machine_1"])
+        .args(["internal", "init", "--machine", "machine_1"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -1009,6 +963,8 @@ fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOp
 fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
         active: ActiveServiceState {
+            namespace_id: ployz_core::ids::NamespaceId::try_new("default")
+                .expect("valid namespace id"),
             service_id: ServiceId::try_new(service_id).expect("valid service id"),
             active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
         },
@@ -1043,8 +999,8 @@ fn machine_add_args_without(flag: &str) -> Vec<String> {
 
 fn machine_add_arg_refs() -> Vec<String> {
     vec![
-        "machine".to_owned(),
-        "add".to_owned(),
+        "internal".to_owned(),
+        "machine-add".to_owned(),
         "--machine".to_owned(),
         "machine_2".to_owned(),
         "--name".to_owned(),
@@ -1066,6 +1022,7 @@ fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
 fn init_with_keeper_install_arg_refs() -> Vec<String> {
     let spec = write_first_machine_install_spec(None);
     vec![
+        "internal".to_owned(),
         "init".to_owned(),
         "--emit-keeper-install".to_owned(),
         "--install-spec".to_owned(),
@@ -1076,6 +1033,7 @@ fn init_with_keeper_install_arg_refs() -> Vec<String> {
 fn init_with_keeper_install_args_with_public_ip() -> Vec<String> {
     let spec = write_first_machine_install_spec(Some("203.0.113.10"));
     vec![
+        "internal".to_owned(),
         "init".to_owned(),
         "--emit-keeper-install".to_owned(),
         "--install-spec".to_owned(),
@@ -1086,6 +1044,7 @@ fn init_with_keeper_install_args_with_public_ip() -> Vec<String> {
 fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<String> {
     let spec = write_first_machine_install_spec(None);
     vec![
+        "internal".to_owned(),
         "init".to_owned(),
         "--run-keeper-install".to_owned(),
         "--install-spec".to_owned(),
@@ -1171,16 +1130,6 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn backup_target(key_prefix: &str) -> ployz_core::backup::BackupTarget {
-    ployz_core::backup::BackupTarget::s3(ployz_core::backup::S3BackupTarget::new(
-        "ployz-backups",
-        key_prefix,
-        "us-east-1",
-        None,
-        ployz_core::backup::S3AddressingStyle::VirtualHosted,
-    ))
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {

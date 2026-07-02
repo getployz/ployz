@@ -2,23 +2,23 @@
 //! and return the operation id + watch subject.
 
 use crate::controllers::{
-    BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
+    DeploySubmitCommand, MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError,
+    MachineAddSubmitCommand, OperationControllers,
 };
 use crate::nats_authorization::MintRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;
 use ployz_sdk_types::{
-    AcceptedOperation, BackupCreateError, BackupCreateRequest, BootstrapMaterialFailure,
-    DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineAddUnavailableSource, MachineJoinToken,
+    AcceptedOperation, BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddUnavailableSource,
+    MachineJoinToken,
 };
 
 use super::OperationApiHandlers;
 use super::error_map::{
-    backup_create_error_from_submit_error, bootstrap_material_failure,
-    deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
+    bootstrap_material_failure, deploy_submit_error_from_submit_error,
+    machine_add_error_from_submit_error,
 };
 
 #[must_use]
@@ -43,15 +43,6 @@ impl From<DeploySubmitRequest> for DeploySubmitCommand {
     }
 }
 
-impl From<BackupCreateRequest> for BackupCreateCommand {
-    fn from(value: BackupCreateRequest) -> Self {
-        Self {
-            operation_id: value.operation_id,
-            target: value.target,
-        }
-    }
-}
-
 pub async fn deploy_submit(
     handlers: &OperationApiHandlers,
     command: DeploySubmitCommand,
@@ -64,22 +55,6 @@ pub async fn deploy_submit(
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
     handlers.deploy_runtime.start(accepted);
-
-    Ok(operation)
-}
-
-pub async fn backup_create(
-    handlers: &OperationApiHandlers,
-    request: BackupCreateRequest,
-) -> Result<AcceptedOperation, BackupCreateError> {
-    let operation_id = request.operation_id.clone();
-    let accepted = handlers
-        .controllers
-        .submit_backup(request.into())
-        .await
-        .map_err(|error| backup_create_error_from_submit_error(operation_id, error))?;
-    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.backup_runtime.start(accepted);
 
     Ok(operation)
 }

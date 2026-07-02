@@ -165,7 +165,7 @@ pub async fn start_gateway_process_runtime_with_client(
         )
         .await;
     });
-    let pingora_shutdown = shutdown.clone();
+    let pingora_shutdown_rx = shutdown.subscribe();
     let pingora_health = Arc::clone(&health);
     let pingora_registry = registry.clone();
     let http_task = tokio::task::spawn_blocking(move || {
@@ -174,7 +174,7 @@ pub async fn start_gateway_process_runtime_with_client(
             listener_port,
             pingora_registry,
             pingora_health,
-            pingora_shutdown,
+            pingora_shutdown_rx,
         );
     });
     let health_registry = registry.clone();
@@ -611,7 +611,7 @@ fn run_pingora_gateway_server(
     listener_port: RoutePort,
     registry: PingoraRouteRegistry,
     health: Arc<Mutex<GatewayProcessHealth>>,
-    shutdown: broadcast::Sender<()>,
+    shutdown: broadcast::Receiver<()>,
 ) {
     let mut conf = ServerConf::default();
     conf.grace_period_seconds = Some(0);
@@ -627,18 +627,20 @@ fn run_pingora_gateway_server(
     service.add_tcp(&listen_addr.to_string());
     server.add_service(service);
     server.run(RunArgs {
-        shutdown_signal: Box::new(GatewayPingoraShutdown { shutdown }),
+        shutdown_signal: Box::new(GatewayPingoraShutdown {
+            shutdown: tokio::sync::Mutex::new(shutdown),
+        }),
     });
 }
 
 struct GatewayPingoraShutdown {
-    shutdown: broadcast::Sender<()>,
+    shutdown: tokio::sync::Mutex<broadcast::Receiver<()>>,
 }
 
 #[async_trait::async_trait]
 impl ShutdownSignalWatch for GatewayPingoraShutdown {
     async fn recv(&self) -> ShutdownSignal {
-        let mut shutdown = self.shutdown.subscribe();
+        let mut shutdown = self.shutdown.lock().await;
         let _ = shutdown.recv().await;
         ShutdownSignal::GracefulTerminate
     }

@@ -5,9 +5,11 @@ use crate::controllers::OperationControllers;
 use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
+use ployz_core::machine::MachineAddOperationState;
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{
-    OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
+    CertOperationState, DeployOperationState, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot,
 };
 use ployz_core::state::{ActiveMachineState, ActiveRouteState, ActiveServiceState};
 use ployz_nats::core_state::{ActiveMachineReadError, AsyncNatsCoreStateStore};
@@ -15,7 +17,8 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
     LogsTailError, LogsTailRequest, LogsTailResult, LogsTailUnavailableSource, MachineInspectError,
     MachineListError, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
-    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, RuntimeDerivedCollectionSource,
+    OpsListError, OpsListItem, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsStatusUnavailableSource, OpsWatchError, RuntimeDerivedCollectionSource,
     RuntimeDerivedCollectionStatus, RuntimeProjectionSource, RuntimeProjectionSources,
     RuntimeServiceInstance, RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot,
     RuntimeSnapshotError, RuntimeSnapshotResult, RuntimeSnapshotUnavailableSource,
@@ -667,6 +670,97 @@ pub async fn ops_status(
                 failure: status_read_failure(&error),
             },
         }),
+    }
+}
+
+pub async fn ops_list(
+    controllers: &OperationControllers,
+    request: OpsListRequest,
+) -> Result<OpsListResult, OpsListError> {
+    let operations = controllers
+        .operation_statuses()
+        .await
+        .map_err(|error| OpsListError::Unavailable {
+            source: OpsStatusUnavailableSource::StatusStore {
+                failure: status_read_failure(&error),
+            },
+        })?
+        .into_iter()
+        .filter(|status| !request.active_only || !status.is_terminal())
+        .map(ops_list_item)
+        .collect();
+    Ok(OpsListResult { operations })
+}
+
+fn ops_list_item(status: OperationStatus) -> OpsListItem {
+    OpsListItem {
+        operation_id: status.id().clone(),
+        kind: operation_kind(&status).to_owned(),
+        subject: operation_subject(&status),
+        state: operation_state(&status),
+        started_at_unix_seconds: None,
+        finished_at_unix_seconds: None,
+    }
+}
+
+const fn operation_kind(status: &OperationStatus) -> &'static str {
+    match status {
+        OperationStatus::Deploy { .. } => "deploy",
+        OperationStatus::Cert { .. } => "cert",
+        OperationStatus::MachineAdd { .. } => "machine-add",
+    }
+}
+
+fn operation_subject(status: &OperationStatus) -> String {
+    match status {
+        OperationStatus::Deploy { service_id, .. } => {
+            format!("service {}", service_id.as_str())
+        }
+        OperationStatus::Cert { cert_id, .. } => format!("cert {}", cert_id.as_str()),
+        OperationStatus::MachineAdd {
+            machine_id, name, ..
+        } => {
+            format!("machine {} name {}", machine_id.as_str(), name.as_str())
+        }
+    }
+}
+
+fn operation_state(status: &OperationStatus) -> String {
+    match status {
+        OperationStatus::Deploy { state, .. } => deploy_state(state).to_owned(),
+        OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
+        OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
+    }
+}
+
+const fn deploy_state(state: &DeployOperationState) -> &'static str {
+    match state {
+        DeployOperationState::Accepted => "accepted",
+        DeployOperationState::Planning => "planning",
+        DeployOperationState::Running { .. } => "running",
+        DeployOperationState::Completed { .. } => "completed",
+        DeployOperationState::Failed { .. } => "failed",
+        DeployOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+const fn cert_state(state: &CertOperationState) -> &'static str {
+    match state {
+        CertOperationState::Accepted => "accepted",
+        CertOperationState::Running { .. } => "running",
+        CertOperationState::Completed => "completed",
+        CertOperationState::Failed { .. } => "failed",
+        CertOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+const fn machine_add_state(state: &MachineAddOperationState) -> &'static str {
+    match state {
+        MachineAddOperationState::Pending { .. } => "pending",
+        MachineAddOperationState::Joining { .. } => "joining",
+        MachineAddOperationState::Completed => "completed",
+        MachineAddOperationState::Failed { .. } => "failed",
+        MachineAddOperationState::Cancelled { .. } => "cancelled",
     }
 }
 

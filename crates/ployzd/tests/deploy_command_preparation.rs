@@ -64,6 +64,7 @@ async fn uses_active_service_revision_and_target_replicas() {
     let facts = DeployExecutionFacts {
         services: vec![DeployServiceExecutionFacts {
             active_service: Some(ActiveServiceState {
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 active_revision: revision_id("rev_1"),
             }),
@@ -112,6 +113,7 @@ async fn rejects_active_state_for_a_different_service() {
         DeployExecutionFacts {
             services: vec![DeployServiceExecutionFacts {
                 active_service: Some(ActiveServiceState {
+                    namespace_id: namespace_id("default"),
                     service_id: service_id("svc_worker"),
                     active_revision: revision_id("rev_1"),
                 }),

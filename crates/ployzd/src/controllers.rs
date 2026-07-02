@@ -2,7 +2,6 @@
 
 pub mod cert;
 
-use ployz_core::backup::{BackupTarget, BackupTargetValidationError};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::install::{
@@ -11,14 +10,13 @@ use ployz_core::install::{
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
 };
-use ployz_core::ops::OperationStatusSnapshot;
+use ployz_core::ops::{OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
-    AcceptedBackupSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    BackupOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinRedemption, OperationStatusReadError, RedeemMachineJoinTokenError,
-    SubmitMachineAddError, SubmitOperationError,
+    AcceptedDeploySubmission, AcceptedMachineAddSubmission, AsyncNatsOperationEventLog,
+    AsyncNatsOperationRepository, AsyncNatsOperationStatusStore, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineJoinRedemption, OperationStatusReadError,
+    RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,12 +40,6 @@ pub struct MachineAddSubmitCommand {
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupCreateCommand {
-    pub operation_id: OperationId,
-    pub target: BackupTarget,
 }
 
 /// Bootstrap material available at submit time.
@@ -172,23 +164,6 @@ impl OperationControllers {
             .await?)
     }
 
-    pub async fn submit_backup(
-        &self,
-        command: BackupCreateCommand,
-    ) -> Result<AcceptedBackupSubmission, BackupSubmitCommandError> {
-        command
-            .target
-            .validate_create()
-            .map_err(BackupSubmitCommandError::InvalidTarget)?;
-        Ok(self
-            .repository
-            .submit_backup(BackupOperationSubmission {
-                operation_id: command.operation_id,
-                target: command.target,
-            })
-            .await?)
-    }
-
     pub async fn redeem_machine_join_token(
         &self,
         token: &RawJoinToken,
@@ -251,6 +226,12 @@ impl OperationControllers {
             .operation_status_snapshot(operation_id)
             .await
     }
+
+    pub async fn operation_statuses(
+        &self,
+    ) -> Result<Vec<OperationStatus>, OperationStatusReadError> {
+        self.repository.records().list().await
+    }
 }
 
 /// How a submit command fails at the controller.
@@ -262,26 +243,6 @@ pub enum SubmitCommandError {
 impl From<SubmitOperationError> for SubmitCommandError {
     fn from(value: SubmitOperationError) -> Self {
         Self::Submit(value)
-    }
-}
-
-/// Backup-create extends the shared submit command failure with target
-/// validation that must happen before an operation is recorded.
-#[derive(Debug)]
-pub enum BackupSubmitCommandError {
-    InvalidTarget(BackupTargetValidationError),
-    Submit(SubmitCommandError),
-}
-
-impl From<SubmitCommandError> for BackupSubmitCommandError {
-    fn from(value: SubmitCommandError) -> Self {
-        Self::Submit(value)
-    }
-}
-
-impl From<SubmitOperationError> for BackupSubmitCommandError {
-    fn from(value: SubmitOperationError) -> Self {
-        Self::Submit(SubmitCommandError::Submit(value))
     }
 }
 

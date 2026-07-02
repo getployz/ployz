@@ -59,8 +59,6 @@ import {
 } from "./primitives.ts";
 import type {
   AcceptedOperation,
-  BackupCreateError,
-  BackupCreateRequest,
   DeploySubmitError,
   DeploySubmitRequest,
   EventSequence,
@@ -154,22 +152,6 @@ export interface PloyzMachineJoinRedeemInput {
   joinToken: string;
 }
 
-export interface PloyzBackupCreateInput {
-  operationId: string;
-  target: PloyzBackupTargetInput;
-}
-
-export type PloyzBackupTargetInput = PloyzS3BackupTargetInput;
-
-export interface PloyzS3BackupTargetInput {
-  kind: "s3";
-  bucket: string;
-  keyPrefix: string;
-  region: string;
-  endpointUrl?: string;
-  addressingStyle: "virtual_hosted" | "path";
-}
-
 export interface PloyzMachineInspectInput {
   machineId: string;
 }
@@ -196,14 +178,6 @@ export class PloyzClient {
     const accepted = unwrapApiResponse(
       "deploy.submit",
       await this.#transport.request("deploy.submit", request),
-    );
-    return new OperationHandle(this.#transport, accepted);
-  }
-
-  async backupCreate(input: PloyzBackupCreateInput): Promise<OperationHandle> {
-    const accepted = unwrapApiResponse(
-      "backup.create",
-      await this.#transport.request("backup.create", backupCreateRequest(input)),
     );
     return new OperationHandle(this.#transport, accepted);
   }
@@ -307,37 +281,6 @@ export async function connectPloyzNats(
   options: PloyzNatsConnectOptions = {},
 ): Promise<PloyzClient> {
   return (await connectPloyzNatsClient(options)).client;
-}
-
-export function backupCreateRequest(input: PloyzBackupCreateInput): BackupCreateRequest {
-  return {
-    operation_id: operationId(input.operationId),
-    target: backupTarget(input.target),
-  };
-}
-
-function backupTarget(input: PloyzBackupTargetInput): BackupCreateRequest["target"] {
-  switch (input.kind) {
-    case "s3":
-      return {
-        kind: "s3",
-        bucket: nonEmptyBackupTargetText("backup S3 bucket", input.bucket),
-        key_prefix: nonEmptyBackupTargetText("backup S3 key prefix", input.keyPrefix),
-        region: nonEmptyBackupTargetText("backup S3 region", input.region),
-        endpoint_url:
-          input.endpointUrl == null
-            ? null
-            : nonEmptyBackupTargetText("backup S3 endpoint URL", input.endpointUrl),
-        addressing_style: input.addressingStyle,
-      };
-  }
-}
-
-function nonEmptyBackupTargetText(field: string, value: string): string {
-  if (value.trim() === "") {
-    throw new RangeError(`${field} must not be empty`);
-  }
-  return value;
 }
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
@@ -560,7 +503,6 @@ function unwrapApiResponse<T, E>(
 }
 
 export type PloyzOperationError =
-  | PloyzApiError<BackupCreateError>
   | PloyzApiError<DeploySubmitError>
   | PloyzApiError<InitFirstMachineActivateError>
   | PloyzApiError<MachineAddError>

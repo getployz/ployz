@@ -1,8 +1,8 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::operation_api::{
-    OperationApiHandlers, backup_create, deploy_submit, init_first_machine_activate, machine_add,
-    machine_join_redeem, machine_join_report, ops_status, ops_watch,
+    OperationApiHandlers, deploy_submit, init_first_machine_activate, machine_add,
+    machine_join_redeem, machine_join_report, ops_list, ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -13,10 +13,10 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
-        ServiceListApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -129,14 +129,6 @@ async fn bind_operation_endpoint(
             )
             .await
         }
-        OperationApiEndpoint::BackupCreate => {
-            bind_operation_contract::<BackupCreateApi, _, _>(
-                runtime,
-                handlers,
-                |handlers, request| async move { backup_create(&handlers, request).await },
-            )
-            .await
-        }
         OperationApiEndpoint::MachineJoinRedeem => {
             bind_operation_contract::<MachineJoinRedeemApi, _, _>(
                 runtime,
@@ -152,6 +144,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { machine_join_report(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::OpsList => {
+            bind_operation_contract::<OpsListApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { ops_list(handlers.controllers(), request).await },
             )
             .await
         }

@@ -1,7 +1,7 @@
 use super::fixtures::*;
 use ployz_core::ops::{
-    DeployRunningStage, DeployTransition, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayRequest, OperationStatus,
+    DeployRunningStage, DeployTransition, OperationEventReplayCursor, OperationEventReplayRequest,
+    OperationStatus,
 };
 use ployz_nats::operations::{ReplayOperationEventsError, SubmitOperationError};
 
@@ -83,7 +83,7 @@ async fn operation_repository_rejects_operation_id_reuse_across_kinds() {
         .expect("deploy submit accepted");
 
     let rejected = repository
-        .submit_backup(backup_submission("op_123"))
+        .submit_cert(cert_submission("op_123", "cert_api"))
         .await
         .expect_err("operation id reuse across kinds is rejected");
 
@@ -113,51 +113,6 @@ async fn operation_repository_rejects_operation_id_reuse_across_kinds() {
         .await
         .expect("deploy replay succeeds");
     assert_eq!(page.events.len(), 1);
-}
-
-#[tokio::test]
-async fn operation_repository_backup_submit_is_durable() {
-    let nats = test_nats().await;
-    let repository = operation_repository(&nats.jetstream).await;
-
-    let first = repository
-        .submit_backup(backup_submission("op_backup"))
-        .await
-        .expect("first backup accepted");
-
-    assert!(first.should_start_execution);
-    assert_eq!(first.operation_id, operation_id("op_backup"));
-    assert_eq!(
-        repository
-            .records()
-            .get(&operation_id("op_backup"))
-            .await
-            .expect("status lookup succeeds"),
-        Some(OperationStatus::backup_accepted(
-            operation_id("op_backup"),
-            first.start_sequence,
-        ))
-    );
-
-    let page = repository
-        .replay_operation_events(OperationEventReplayRequest {
-            operation_id: operation_id("op_backup"),
-            start_sequence: first.start_sequence,
-            limit: event_replay_limit(10),
-        })
-        .await
-        .expect("backup replay succeeds");
-
-    let [event] = page.events.as_slice() else {
-        panic!("expected one backup event");
-    };
-    assert_eq!(
-        event.event,
-        OperationEvent::BackupCreateSubmitted {
-            operation_id: operation_id("op_backup"),
-            target: first.target,
-        }
-    );
 }
 
 #[tokio::test]

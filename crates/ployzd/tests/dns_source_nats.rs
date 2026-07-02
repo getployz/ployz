@@ -7,7 +7,9 @@ use ployz_core::state::{
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{machine_id, revision_id, route_hostname, route_port, service_id};
+use ployz_test_support::ids::{
+    machine_id, namespace_id, revision_id, route_hostname, route_port, service_id,
+};
 use ployzd::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState,
     project_dns,
@@ -120,6 +122,7 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
         .await
         .expect("open raw core bucket");
     let payload = serde_json::to_vec(&ActiveRouteState {
+        namespace_id: namespace_id("default"),
         target: route_target("api.example.com", 443),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
@@ -248,6 +251,7 @@ fn active_route_commit(
     endpoint_port: u16,
 ) -> ActiveRouteCommitRequest {
     ActiveRouteCommitRequest {
+        namespace_id: namespace_id("default"),
         target: route_target(hostname, public_port),
         endpoint_port: route_port(endpoint_port),
         expected_current: ExpectedActiveRoute::Absent,

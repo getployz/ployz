@@ -639,6 +639,7 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
+            substrate_versions: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),
@@ -679,6 +680,8 @@ fn deploy_target(service_id: &str) -> DeployRequest {
 fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
         active: ActiveServiceState {
+            namespace_id: ployz_core::ids::NamespaceId::try_new("default")
+                .expect("valid namespace id"),
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
         },

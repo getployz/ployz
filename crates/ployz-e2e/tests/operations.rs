@@ -645,6 +645,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .expect("open core state store");
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname.clone(), route_port),
             endpoint_port: self::route_port(second_upstream.port()),
             expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {

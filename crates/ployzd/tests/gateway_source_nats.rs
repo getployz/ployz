@@ -9,8 +9,8 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
-    step_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
+    service_id, step_id,
 };
 use ployzd::gateway::{
     GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,
@@ -35,6 +35,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
 
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
@@ -91,6 +92,7 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
 
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
@@ -150,6 +152,7 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
         .await
         .expect("open raw core bucket");
     let payload = serde_json::to_vec(&ActiveRouteState {
+        namespace_id: namespace_id("default"),
         target: route_target("api.example.com", 443),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),

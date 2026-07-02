@@ -6,6 +6,7 @@ pub mod api_client;
 pub mod bootstrap_command;
 mod client_ids;
 pub mod commands;
+mod compose;
 pub mod config;
 pub mod keeper_install;
 pub mod remote_machine_runtime;

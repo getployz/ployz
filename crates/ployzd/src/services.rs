@@ -27,9 +27,9 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 14] = [
     OperationApiEndpoint::ServiceInspect,
     OperationApiEndpoint::RuntimeSnapshot,
     OperationApiEndpoint::LogsTail,
+    OperationApiEndpoint::OpsList,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
-    OperationApiEndpoint::BackupCreate,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

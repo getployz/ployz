@@ -7,21 +7,21 @@ use crate::service_runtime::{
 use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
-    AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
-    InitFirstMachineActivated, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
-    MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
-    MachineListResult, MachineSnapshot, OperationApiResponse, OpsStatusError, OpsStatusRequest,
-    OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineListError,
+    MachineListRequest, MachineListResult, MachineSnapshot, OperationApiResponse, OpsListError,
+    OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceSnapshot,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
-        ServiceListApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -59,13 +59,6 @@ impl OperationApiClient {
         self.request_api::<DeploySubmitApi>(request).await
     }
 
-    pub async fn backup_create(
-        &self,
-        request: &BackupCreateRequest,
-    ) -> Result<AcceptedOperation, OperationApiClientError<BackupCreateError>> {
-        self.request_api::<BackupCreateApi>(request).await
-    }
-
     pub async fn init_first_machine_activate(
         &self,
         request: &InitFirstMachineActivateRequest,
@@ -80,6 +73,13 @@ impl OperationApiClient {
         request: &OpsStatusRequest,
     ) -> Result<OperationStatusSnapshot, OperationApiClientError<OpsStatusError>> {
         self.request_api::<OpsStatusApi>(request).await
+    }
+
+    pub async fn ops_list(
+        &self,
+        request: &OpsListRequest,
+    ) -> Result<OpsListResult, OperationApiClientError<OpsListError>> {
+        self.request_api::<OpsListApi>(request).await
     }
 
     pub async fn machine_add(

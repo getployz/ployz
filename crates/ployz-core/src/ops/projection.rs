@@ -1,12 +1,10 @@
-use super::backup;
 use super::classification::{
     CertEvent, ClassifiedOperationEvent, DeployEvent, MachineAddEvent, OperationSubjectRef,
 };
 use super::{
-    BackupOperationState, BackupTransition, CertId, CertOperationState, CertRunningStage,
-    CertTransition, DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition,
-    EventSequence, MachineId, OperationEvent, OperationId, OperationKind, OperationStatus,
-    ServiceId,
+    CertId, CertOperationState, CertRunningStage, CertTransition, DeployEvidence,
+    DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, MachineId,
+    OperationEvent, OperationId, OperationKind, OperationStatus, ServiceId,
 };
 use crate::machine::{MachineAddOperationState, MachineName};
 use crate::roles::InstallRolePolicy;
@@ -53,7 +51,6 @@ pub enum ProjectionOperationState {
     Deploy(DeployOperationState),
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
-    Backup(BackupOperationState),
 }
 
 /// What a piece of deploy evidence requires of the operation state to count
@@ -308,12 +305,6 @@ pub fn project_operation_event(
             };
             project_machine_add_event(fields, subject, event, event_sequence)
         }
-        ClassifiedOperationEvent::Backup { event, .. } => {
-            let OperationStatus::Backup { id, state, .. } = current else {
-                return Err(kind_mismatch(current, OperationKind::Backup));
-            };
-            backup::project_event(id, state, event, event_sequence)
-        }
         ClassifiedOperationEvent::Cancelled {
             operation_id: _,
             reason,
@@ -355,12 +346,6 @@ pub fn project_operation_event(
                     state,
                 },
                 MachineAddOperationState::Cancelled { reason },
-                event_sequence,
-            ),
-            OperationStatus::Backup { id, state, .. } => backup::transition_projection(
-                id,
-                state,
-                BackupTransition::Cancelled { reason },
                 event_sequence,
             ),
         },

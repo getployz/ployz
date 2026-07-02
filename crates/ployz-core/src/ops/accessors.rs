@@ -4,10 +4,7 @@ impl OperationStatus {
     #[must_use]
     pub const fn id(&self) -> &OperationId {
         match self {
-            Self::Deploy { id, .. }
-            | Self::Cert { id, .. }
-            | Self::MachineAdd { id, .. }
-            | Self::Backup { id, .. } => id,
+            Self::Deploy { id, .. } | Self::Cert { id, .. } | Self::MachineAdd { id, .. } => id,
         }
     }
 
@@ -17,7 +14,6 @@ impl OperationStatus {
             Self::Deploy { .. } => OperationKind::Deploy,
             Self::Cert { .. } => OperationKind::Cert,
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
-            Self::Backup { .. } => OperationKind::Backup,
         }
     }
 
@@ -33,10 +29,6 @@ impl OperationStatus {
                 ..
             }
             | Self::MachineAdd {
-                last_event_sequence,
-                ..
-            }
-            | Self::Backup {
                 last_event_sequence,
                 ..
             } => *last_event_sequence,
