@@ -54,6 +54,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             core_state: core_state.clone(),
             observations,
             controllers: controllers.clone(),
+            namespace_lock_lost: None,
         },
         DeployOperationPorts {
             dataplane: &mut wireguard_ebpf,
@@ -122,6 +123,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             core_state: core_state.clone(),
             observations,
             controllers: controllers.clone(),
+            namespace_lock_lost: None,
         },
         DeployOperationPorts {
             dataplane: &mut wireguard_ebpf,
@@ -186,6 +188,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             core_state: core_state.clone(),
             observations,
             controllers: controllers.clone(),
+            namespace_lock_lost: None,
         },
         DeployOperationPorts {
             dataplane: &mut wireguard_ebpf,
@@ -261,6 +264,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
             core_state: core_state.clone(),
             observations,
             controllers: controllers.clone(),
+            namespace_lock_lost: None,
         },
         DeployOperationPorts {
             dataplane: &mut wireguard_ebpf,
@@ -338,6 +342,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
             core_state,
             observations: missing_observations,
             controllers: controllers.clone(),
+            namespace_lock_lost: None,
         },
         DeployOperationPorts {
             dataplane: &mut wireguard_ebpf,

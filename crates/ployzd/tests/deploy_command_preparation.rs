@@ -1,6 +1,5 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationError, DeployRequest, DeployServiceSpec,
-    ImageReference, ReplicaCount,
+    DeployCleanupContainer, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::StepId;
 use ployz_core::machine_runtime::{
@@ -12,8 +11,7 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, operation_id, revision_id, service_id,
 };
 use ployzd::deploy_worker::{
-    DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
-    prepare_deploy_execution_command,
+    DeployExecutionFacts, DeployServiceExecutionFacts, prepare_deploy_execution_command,
 };
 use std::time::Duration;
 
@@ -58,7 +56,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 }
 
 #[tokio::test]
-async fn uses_active_service_revision_and_target_replicas() {
+async fn reuses_running_target_revision_and_marks_service_containers_for_cleanup() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         services: vec![DeployServiceExecutionFacts {
@@ -97,40 +95,6 @@ async fn uses_active_service_revision_and_target_replicas() {
         command.cleanup_candidates(),
         [cleanup_container("machine_a", "ctr_target", "rev_2")]
     );
-}
-
-#[tokio::test]
-async fn rejects_active_state_for_a_different_service() {
-    let request = deploy_request();
-    let error = prepare_deploy_execution_command(
-        operation_id("op_123"),
-        request,
-        DeployExecutionFacts {
-            services: vec![DeployServiceExecutionFacts {
-                active_service: Some(ActiveServiceState {
-                    namespace_id: namespace_id("default"),
-                    service_id: service_id("svc_worker"),
-                    active_revision: revision_id("rev_1"),
-                }),
-                active_route: None,
-            }],
-            eligible_machines: vec![machine_id("machine_a")],
-            dataplane_machines: Vec::new(),
-            observed_machines: Vec::new(),
-            namespace_cleanup_candidates: Vec::new(),
-            step_timeout: Duration::from_secs(5),
-        },
-    )
-    .expect_err("active state for a different service is invalid");
-
-    assert!(matches!(
-        error,
-        DeployCommandPreparationError::Service(DeployPreparationError::ActiveServiceMismatch {
-            expected_service_id,
-            actual_service_id,
-        }) if expected_service_id == service_id("svc_api")
-            && actual_service_id == service_id("svc_worker")
-    ));
 }
 
 fn deploy_request() -> DeployRequest {

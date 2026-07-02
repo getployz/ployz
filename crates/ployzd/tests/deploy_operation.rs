@@ -420,7 +420,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             },
         )]
     );
-    assert_eq!(active_state.removals, vec![service_id("svc_api")]);
+    assert!(active_state.removals.is_empty());
     assert!(runtime.requests.is_empty());
     assert_eq!(health.checked, Vec::<Vec<DeployContainerForAssert>>::new());
     assert_eq!(
@@ -1247,5 +1247,54 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
                 }
             }),
         ]
+    );
+}
+
+#[tokio::test]
+async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_before_commit() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = LostLockActiveState;
+
+    let error = execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("lost namespace lock fails the operation through the worker path");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            source,
+            failure: DeployOperationFailure::ControlPlaneCommitFailed { .. },
+            ..
+        } if matches!(
+            *source,
+            DeployExecutionError::CommitActiveService(
+                ployzd::deploy_worker::ActiveServiceCommitError::NamespaceLockLost
+            )
+        )
+    ));
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Failed {
+            failure: DeployOperationFailure::ControlPlaneCommitFailed {
+                service_id: service_id("svc_api"),
+                revision_id: revision_id("rev_2"),
+                message: failure_message("namespace lock was lost before active service commit"),
+                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+            }
+        }))
     );
 }

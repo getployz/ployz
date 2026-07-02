@@ -475,7 +475,7 @@ fn release_manifest_url() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReleaseManifest, cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
+        cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
         public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
     };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;

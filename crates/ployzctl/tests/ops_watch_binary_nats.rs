@@ -2,7 +2,7 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ployz_core::deploy::{ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::RevisionId;
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, OperationEvent, OperationEventReplayPage,
@@ -17,7 +17,7 @@ use ployz_sdk_types::{
     OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
-use ployz_test_support::ids::{event_sequence, operation_id, service_id};
+use ployz_test_support::ids::{event_sequence, namespace_id, operation_id, service_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
@@ -190,11 +190,14 @@ fn replayed(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
 
 fn deploy_request() -> ployz_core::deploy::DeployRequest {
     ployz_core::deploy::DeployRequest {
-        service_id: service_id("svc_api"),
+        namespace_id: namespace_id("default"),
         target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
-        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-        route: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
+        }],
     }
 }
 

@@ -13,32 +13,33 @@ use ployz_test_support::ids::{
 };
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
-    start_gateway_process_runtime_with_client,
+    GatewayHttpFailure, GatewayProcessAttempt, start_gateway_process_runtime_with_client,
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
-async fn gateway_process_fails_fast_before_projection_sources_exist() {
+async fn gateway_process_reports_unavailable_before_projection_sources_exist() {
     let nats = TestNats::start_without_buckets().await;
-    let result = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         machine_id("machine_7"),
     )
-    .await;
-    let Err(error) = result else {
-        panic!("gateway runtime should fail before buckets exist");
-    };
+    .await
+    .expect("gateway runtime starts before buckets exist");
 
-    assert!(matches!(
-        error,
-        GatewayProcessRuntimeError::OpenCoreState(_)
-            | GatewayProcessRuntimeError::OpenObservations(_)
-    ));
+    wait_until(Duration::from_secs(2), || {
+        matches!(
+            runtime.health().last_attempt,
+            Some(GatewayProcessAttempt::Failed { .. })
+        )
+    })
+    .await;
+
+    runtime.shutdown().await;
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
+    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
     DataplanePreparer, DeployCommandPreparationError, DeployContainer, DeployExecutionError,
     DeployExecutionMachineScope, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
     DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, execute_deploy_operation,
@@ -22,6 +23,8 @@ use ployz_nats::operations::{
     RecordOperationEventError,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -43,6 +46,7 @@ where
         core_state,
         observations,
         controllers,
+        namespace_lock_lost,
     } = stores;
     let DeployOperationPorts {
         dataplane,
@@ -93,22 +97,39 @@ where
         }
     };
     let mut recorder = controllers;
-    let mut route_state = core_state.clone();
-    let mut active_state = core_state;
-
-    execute_deploy_operation(
-        command,
-        DeployExecutionPorts {
-            recorder: &mut recorder,
-            dataplane,
-            machine_runtime,
-            health_checker,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
-        },
-    )
-    .await
-    .map_err(DeployOperationRunError::Execute)
+    if let Some(lock_lost) = namespace_lock_lost {
+        let mut route_state = LockCheckedCoreState::new(core_state.clone(), Arc::clone(&lock_lost));
+        let mut active_state = LockCheckedCoreState::new(core_state, lock_lost);
+        execute_deploy_operation(
+            command,
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                dataplane,
+                machine_runtime,
+                health_checker,
+                route_state: &mut route_state,
+                active_state: &mut active_state,
+            },
+        )
+        .await
+        .map_err(DeployOperationRunError::Execute)
+    } else {
+        let mut route_state = core_state.clone();
+        let mut active_state = core_state;
+        execute_deploy_operation(
+            command,
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                dataplane,
+                machine_runtime,
+                health_checker,
+                route_state: &mut route_state,
+                active_state: &mut active_state,
+            },
+        )
+        .await
+        .map_err(DeployOperationRunError::Execute)
+    }
 }
 
 async fn record_operation_failure(
@@ -149,12 +170,74 @@ pub struct DeployOperationStores {
     pub core_state: AsyncNatsCoreStateStore,
     pub observations: AsyncNatsObservationStore,
     pub controllers: OperationControllers,
+    pub namespace_lock_lost: Option<Arc<AtomicBool>>,
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
+}
+
+struct LockCheckedCoreState {
+    core_state: AsyncNatsCoreStateStore,
+    namespace_lock_lost: Arc<AtomicBool>,
+}
+
+impl LockCheckedCoreState {
+    fn new(core_state: AsyncNatsCoreStateStore, namespace_lock_lost: Arc<AtomicBool>) -> Self {
+        Self {
+            core_state,
+            namespace_lock_lost,
+        }
+    }
+
+    fn lock_is_lost(&self) -> bool {
+        self.namespace_lock_lost.load(Ordering::Relaxed)
+    }
+}
+
+impl ActiveRouteCommitter for LockCheckedCoreState {
+    async fn replace_active_route(
+        &mut self,
+        state: ployz_core::state::ActiveRouteState,
+    ) -> Result<(), ActiveRouteCommitError> {
+        if self.lock_is_lost() {
+            return Err(ActiveRouteCommitError::NamespaceLockLost);
+        }
+
+        AsyncNatsCoreStateStore::replace_active_route(&self.core_state, &state)
+            .await
+            .map_err(ActiveRouteCommitError::Store)
+    }
+}
+
+impl ActiveServiceCommitter for LockCheckedCoreState {
+    async fn replace_active_service(
+        &mut self,
+        state: ployz_core::state::ActiveServiceState,
+    ) -> Result<(), ActiveServiceCommitError> {
+        if self.lock_is_lost() {
+            return Err(ActiveServiceCommitError::NamespaceLockLost);
+        }
+
+        AsyncNatsCoreStateStore::replace_active_service(&self.core_state, &state)
+            .await
+            .map_err(ActiveServiceCommitError::Store)
+    }
+
+    async fn remove_active_service(
+        &mut self,
+        service_id: ployz_core::ids::ServiceId,
+    ) -> Result<(), ActiveServiceCommitError> {
+        if self.lock_is_lost() {
+            return Err(ActiveServiceCommitError::NamespaceLockLost);
+        }
+
+        AsyncNatsCoreStateStore::remove_active_service(&self.core_state, &service_id)
+            .await
+            .map_err(ActiveServiceCommitError::Store)
+    }
 }
 
 #[derive(Debug)]
@@ -165,7 +248,6 @@ pub enum DeployOperationRunError {
         message: String,
     },
     NamespaceLock(CoreStateStoreError),
-    NamespaceLockLost,
     LoadFacts {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
@@ -245,22 +327,23 @@ impl DeployOperationRuntime {
 
         let namespace_id = accepted.target.namespace_id.clone();
         let operation_id = accepted.operation_id.clone();
-        let target = accepted.target.clone();
-        let controllers = self.controllers.clone();
+        let lock_lost = Arc::new(AtomicBool::new(false));
         let renew_core_state = self.core_state.clone();
         let run_core_state = self.core_state.clone();
-        let renew = renew_namespace_lock_until_lost(
+        let renew_task = tokio::spawn(renew_namespace_lock_until_lost(
             renew_core_state,
             namespace_id.clone(),
             operation_id.clone(),
-        );
-        let run = run_deploy_operation(
+            Arc::clone(&lock_lost),
+        ));
+        let result = run_deploy_operation(
             accepted,
             self.machine_scope,
             DeployOperationStores {
                 core_state: run_core_state,
                 observations: self.observations,
                 controllers: self.controllers,
+                namespace_lock_lost: Some(lock_lost),
             },
             DeployOperationPorts {
                 dataplane: &mut dataplane,
@@ -268,31 +351,10 @@ impl DeployOperationRuntime {
                 health_checker: &mut health_checker,
             },
             self.step_timeout,
-        );
-        tokio::pin!(run);
-        tokio::pin!(renew);
-
-        let result = tokio::select! {
-            outcome = &mut run => outcome,
-            outcome = &mut renew => outcome,
-        };
-        if matches!(result, Err(DeployOperationRunError::NamespaceLockLost)) {
-            let _ = controllers
-                .repository()
-                .record_deploy_transition(
-                    &operation_id,
-                    DeployTransition::Failed {
-                        failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                            service_id: target.status_service_id(),
-                            revision_id: target.target_revision,
-                            message: FailureMessage::try_new("namespace lock was lost")
-                                .expect("static namespace lock failure message is non-empty"),
-                            retained_artifacts: Vec::new(),
-                        },
-                    },
-                )
-                .await;
-        }
+        )
+        .await;
+        renew_task.abort();
+        let _ = renew_task.await;
         let _ = self
             .core_state
             .release_namespace_lock(&namespace_id, &operation_id)
@@ -305,17 +367,33 @@ async fn renew_namespace_lock_until_lost(
     core_state: AsyncNatsCoreStateStore,
     namespace_id: ployz_core::ids::NamespaceId,
     operation_id: ployz_core::ids::OperationId,
-) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
+    lock_lost: Arc<AtomicBool>,
+) {
     let mut interval =
         tokio::time::interval(Duration::from_millis(NAMESPACE_LOCK_RENEW_INTERVAL_MS));
+    let mut failures = 0_u8;
     loop {
         interval.tick().await;
         match core_state
-            .renew_namespace_lock(&namespace_id, &operation_id, current_unix_ms()?)
-            .await?
+            .renew_namespace_lock(
+                &namespace_id,
+                &operation_id,
+                current_unix_ms().unwrap_or(u64::MAX),
+            )
+            .await
         {
-            NamespaceLockRenew::Renewed => {}
-            NamespaceLockRenew::Lost => return Err(DeployOperationRunError::NamespaceLockLost),
+            Ok(NamespaceLockRenew::Renewed) => failures = 0,
+            Ok(NamespaceLockRenew::Lost) => {
+                lock_lost.store(true, Ordering::Relaxed);
+                return;
+            }
+            Err(_) => {
+                failures = failures.saturating_add(1);
+                if failures >= 3 {
+                    lock_lost.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
         }
     }
 }

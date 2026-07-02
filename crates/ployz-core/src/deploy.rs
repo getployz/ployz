@@ -231,15 +231,6 @@ pub enum DeployPlanError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployPreparationError {
-    #[error(
-        "active service state belongs to {}, not {}",
-        actual_service_id.as_str(),
-        expected_service_id.as_str()
-    )]
-    ActiveServiceMismatch {
-        expected_service_id: ServiceId,
-        actual_service_id: ServiceId,
-    },
     #[error("active route state belongs to {actual_route:?}, not {expected_route:?}")]
     ActiveRouteMismatch {
         expected_route: RouteTarget,

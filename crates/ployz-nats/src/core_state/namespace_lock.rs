@@ -106,7 +106,32 @@ impl AsyncNatsCoreStateStore {
         .await?
         {
             Ok(_) => Ok(NamespaceLockRenew::Renewed),
-            Err(_) => Ok(NamespaceLockRenew::Lost),
+            Err(error) => {
+                let Some(existing) = with_io_timeout(
+                    "namespace lock renew conflict read",
+                    self.bucket.entry(key.as_str()),
+                )
+                .await?
+                .map_err(|error| CoreStateStoreError::Get {
+                    key: key.as_str().to_owned(),
+                    message: error.to_string(),
+                })?
+                else {
+                    return Ok(NamespaceLockRenew::Lost);
+                };
+                let current = decode_namespace_lock(&key, &existing.value)?;
+                if current.operation_id != *operation_id {
+                    return Ok(NamespaceLockRenew::Lost);
+                }
+
+                if current.expires_at_unix_ms >= state.expires_at_unix_ms {
+                    return Ok(NamespaceLockRenew::Renewed);
+                }
+
+                Err(CoreStateStoreError::CasConflict {
+                    message: error.to_string(),
+                })
+            }
         }
     }
 

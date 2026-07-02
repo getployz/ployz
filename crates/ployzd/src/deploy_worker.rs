@@ -312,11 +312,6 @@ where
         .await;
     }
     let cleanup = cleanup_superseded_containers(command, &mut *ports.machine_runtime, &plan).await;
-    if command.services().is_empty() {
-        remove_inactive_services(command, &cleanup, &mut *ports.active_state)
-            .await
-            .map_err(|source| run.fail(source))?;
-    }
     let terminal_event = record_terminal_state(command, &mut *ports.recorder, &cleanup).await;
 
     let outcome = DeployExecutionOutcome {
@@ -328,36 +323,6 @@ where
     };
 
     Ok(outcome)
-}
-
-async fn remove_inactive_services<A>(
-    command: &DeployExecutionCommand,
-    cleanup: &[DeployCleanupResult],
-    active_state: &mut A,
-) -> Result<(), DeployExecutionError>
-where
-    A: ActiveServiceCommitter,
-{
-    let mut service_ids = cleanup
-        .iter()
-        .filter_map(|result| match result {
-            DeployCleanupResult::Removed(target) => Some(target.service_id.clone()),
-            DeployCleanupResult::Failed { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    service_ids.sort();
-    service_ids.dedup();
-
-    for service_id in service_ids {
-        with_step_timeout(
-            command,
-            DeployExecutionStep::CommitActiveService,
-            active_state.remove_active_service(service_id),
-        )
-        .await?;
-    }
-
-    Ok(())
 }
 
 async fn cleanup_superseded_containers<N>(
