@@ -22,10 +22,13 @@ impl TestUpstream {
         let addr = listener.local_addr().expect("upstream local addr");
         let (request_tx, request_rx) = tokio::sync::mpsc::channel(expected_requests);
         tokio::spawn(async move {
-            for _ in 0..expected_requests {
+            let mut received_requests = 0;
+            while received_requests < expected_requests {
                 let (mut stream, _) = listener.accept().await.expect("accept upstream");
                 let mut request = Vec::new();
-                read_until_http_head(&mut stream, &mut request).await;
+                if !read_until_http_head(&mut stream, &mut request).await {
+                    continue;
+                }
                 let _ = request_tx
                     .send(String::from_utf8(request).expect("request is utf8"))
                     .await;
@@ -33,6 +36,7 @@ impl TestUpstream {
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
                     .await
                     .expect("write upstream response");
+                received_requests += 1;
             }
         });
 
@@ -74,9 +78,10 @@ pub async fn http_get_with_host(
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
     let mut client = TcpStream::connect(addr).await?;
     client
-        .write_all(format!("GET /smoke HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+        .write_all(
+            format!("GET /smoke HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
         .await?;
-    client.shutdown().await?;
     let mut response = String::new();
     client.read_to_string(&mut response).await?;
     Ok(response)
@@ -89,21 +94,23 @@ pub async fn free_loopback_port() -> Result<u16, std::io::Error> {
     Ok(port)
 }
 
-async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) {
+async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) -> bool {
     let mut chunk = [0; 1024];
     loop {
         let read = stream
             .read(&mut chunk)
             .await
             .expect("read upstream request");
-        assert!(read > 0, "client closed before complete HTTP head");
+        if read == 0 {
+            return false;
+        }
         request.extend_from_slice(
             chunk
                 .get(..read)
                 .expect("read byte count is within buffer length"),
         );
         if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            return;
+            return true;
         }
     }
 }
