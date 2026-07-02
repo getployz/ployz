@@ -6,6 +6,7 @@ use crate::controllers::OperationControllers;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::OperationStatus;
+use ployz_core::state::SubstrateVersions;
 use ployz_nats::operations::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -160,7 +161,7 @@ async fn activate_reported_machine(
     machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
-    let active_machine = active_machine_from_completed_add(
+    let mut active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
@@ -169,6 +170,10 @@ async fn activate_reported_machine(
     .map_err(|_| MachineJoinReportError::Unavailable {
         source: MachineJoinReportUnavailableSource::OperationCorrupt,
     })?;
+    active_machine.substrate_versions = Some(SubstrateVersions {
+        ployzd: Some(env!("CARGO_PKG_VERSION").to_owned()),
+        keeper: None,
+    });
     handlers
         .core_state
         .replace_active_machine(&active_machine)

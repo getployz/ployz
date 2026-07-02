@@ -399,7 +399,6 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
         nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
-        ployzd::backup_adapters::BackupAdapterRegistry::s3_default(),
     )
     .await;
 
@@ -656,7 +655,6 @@ async fn control_runtime_refuses_bootstrap_resource_drift() {
         nats.connected.controller.clone(),
         &config,
         nats.reload_runner(),
-        ployzd::backup_adapters::BackupAdapterRegistry::s3_default(),
     )
     .await
     {
@@ -688,6 +686,7 @@ fn active_machine(value: &str) -> ActiveMachineState {
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
+        substrate_versions: None,
     }
 }
 

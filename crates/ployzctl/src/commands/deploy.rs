@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::PathBuf;
+
 use clap::Args;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
@@ -18,11 +21,10 @@ const DEFAULT_REPLICA_COUNT: u16 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommand {
     pub operation_id: OperationId,
-    pub service_id: ServiceId,
-    pub revision_id: RevisionId,
-    pub image: ImageReference,
-    pub replicas: ReplicaCount,
-    pub route: Option<DeployRoute>,
+    pub namespace_id: NamespaceId,
+    pub target_revision: RevisionId,
+    pub services: Vec<DeployServiceSpec>,
+    pub detach: bool,
 }
 
 impl DeployCommand {
@@ -31,16 +33,16 @@ impl DeployCommand {
         DeploySubmitRequest {
             operation_id: self.operation_id,
             target: DeployRequest {
-                namespace_id: NamespaceId::try_new("default").expect("default namespace is valid"),
-                target_revision: self.revision_id,
-                services: vec![DeployServiceSpec {
-                    service_id: self.service_id,
-                    image: self.image,
-                    replicas: self.replicas,
-                    route: self.route,
-                }],
+                namespace_id: self.namespace_id,
+                target_revision: self.target_revision,
+                services: self.services,
             },
         }
+    }
+
+    #[must_use]
+    pub fn first_service(&self) -> Option<&DeployServiceSpec> {
+        self.services.first()
     }
 }
 
@@ -71,7 +73,8 @@ impl DeployOutput {
 /// intent (R11), and explicit flags override the derived values (R12).
 pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCliError> {
     let DeployCli {
-        operation,
+        file,
+        namespace,
         service,
         revision,
         image,
@@ -80,9 +83,66 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         route_hostname,
         route_port,
         endpoint_port,
+        detach,
     } = parsed;
 
+    if let Some(file) = file {
+        if image.is_some()
+            || service.is_some()
+            || replicas.is_some()
+            || route.is_some()
+            || route_hostname.is_some()
+            || route_port.is_some()
+            || endpoint_port.is_some()
+        {
+            return Err(cli_error(
+                "deploy -f conflicts with --image, --service, --replicas, and route flags",
+            ));
+        }
+        let source = fs::read_to_string(&file)
+            .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
+        let namespace_override = namespace
+            .map(NamespaceId::try_new)
+            .transpose()
+            .map_err(|error| invalid_value("--namespace", error))?;
+        let mut request = crate::compose::parse_deploy_file(&source, namespace_override)?;
+        let service_id = request
+            .services
+            .first()
+            .map(|service| service.service_id.clone())
+            .ok_or_else(|| cli_error("compose file must define at least one service"))?;
+        let generated_ids = generate_client_deploy_id(&service_id).map_err(|error| {
+            cli_error(format!("could not generate client operation ids: {error}"))
+        })?;
+        let operation_id = generated_ids.operation_id;
+        request.target_revision = match revision {
+            Some(value) => {
+                RevisionId::try_new(value).map_err(|error| invalid_value("--revision", error))?
+            }
+            None => RevisionId::try_new(format!(
+                "rev_{}_{}",
+                sanitize_id_fragment(request.namespace_id.as_str()),
+                generated_ids.suffix
+            ))
+            .expect("generated revision id uses subject-token characters"),
+        };
+
+        return Ok(DeployCommand {
+            operation_id,
+            namespace_id: request.namespace_id,
+            target_revision: request.target_revision,
+            services: request.services,
+            detach,
+        });
+    }
+
+    let image = image.ok_or_else(|| cli_error("--image is required unless -f is used"))?;
     let image = ImageReference::try_new(image).map_err(|error| invalid_value("--image", error))?;
+    let namespace_id = namespace
+        .map(NamespaceId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--namespace", error))?
+        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
     let service_id = match service {
         Some(value) => {
             ServiceId::try_new(value).map_err(|error| invalid_value("--service", error))?
@@ -97,12 +157,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         }
         None => derive_revision_id(&image, &generated_ids.suffix),
     };
-    let operation_id = match operation {
-        Some(value) => {
-            OperationId::try_new(value).map_err(|error| invalid_value("--operation", error))?
-        }
-        None => generated_ids.operation_id,
-    };
+    let operation_id = generated_ids.operation_id;
     let replicas = match replicas {
         Some(value) => parse_replicas(value)?,
         None => ReplicaCount::try_new(DEFAULT_REPLICA_COUNT)
@@ -126,24 +181,30 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
 
     Ok(DeployCommand {
         operation_id,
-        service_id,
-        revision_id,
-        image,
-        replicas,
-        route,
+        namespace_id,
+        target_revision: revision_id,
+        services: vec![DeployServiceSpec {
+            service_id,
+            image,
+            replicas,
+            route,
+        }],
+        detach,
     })
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct DeployCli {
-    #[arg(long)]
-    operation: Option<String>,
-    #[arg(long)]
+    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    file: Option<PathBuf>,
+    #[arg(short = 'n', long = "namespace")]
+    namespace: Option<String>,
+    #[arg(long, hide = true)]
     service: Option<String>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     revision: Option<String>,
     #[arg(long)]
-    image: String,
+    image: Option<String>,
     #[arg(long)]
     replicas: Option<String>,
     /// Route HOST on public HTTP port 80 to container endpoint PORT.
@@ -159,6 +220,8 @@ pub(crate) struct DeployCli {
     route_port: Option<String>,
     #[arg(long, requires_all = ["route_hostname", "route_port"])]
     endpoint_port: Option<String>,
+    #[arg(long)]
+    detach: bool,
 }
 
 /// Repository leaf and tag of an image reference, with any `@digest`
@@ -228,7 +291,7 @@ fn sanitize_id_fragment(fragment: &str) -> String {
 
 /// Parses the `--route HOST:PORT` shorthand (KTD8): HOST becomes the public
 /// route hostname on HTTP port 80 and PORT is the container endpoint port.
-fn parse_route_shorthand(value: &str) -> Result<DeployRoute, PloyzctlCliError> {
+pub(crate) fn parse_route_shorthand(value: &str) -> Result<DeployRoute, PloyzctlCliError> {
     let Some((host, port)) = value.rsplit_once(':') else {
         return Err(PloyzctlCliError::InvalidValue {
             flag: "--route",

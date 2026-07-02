@@ -50,6 +50,18 @@ pub struct ActiveMachineState {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub activated_by: OperationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substrate_versions: Option<SubstrateVersions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct SubstrateVersions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ployzd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

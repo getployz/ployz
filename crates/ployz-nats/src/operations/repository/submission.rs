@@ -1,4 +1,3 @@
-use ployz_core::backup::BackupTarget;
 use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
@@ -95,34 +94,6 @@ impl SubmitKind for CertOperationSubmission {
     }
 }
 
-impl SubmitKind for BackupOperationSubmission {
-    type Payload = BackupTarget;
-    const KIND: OperationKind = OperationKind::Backup;
-
-    fn submitted_event(operation_id: OperationId, target: Self::Payload) -> OperationEventAppend {
-        OperationEventAppend::backup_submitted(operation_id, target)
-    }
-
-    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::BackupCreateSubmitted {
-            operation_id,
-            target,
-        } = event
-        else {
-            return None;
-        };
-        Some((operation_id, target))
-    }
-
-    fn accepted_status(
-        operation_id: OperationId,
-        _target: &Self::Payload,
-        sequence: EventSequence,
-    ) -> OperationStatus {
-        OperationStatus::backup_accepted(operation_id, sequence)
-    }
-}
-
 impl AsyncNatsOperationRepository {
     pub async fn submit_deploy(
         &self,
@@ -160,26 +131,6 @@ impl AsyncNatsOperationRepository {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
             cert_id: submitted.payload,
-        })
-    }
-
-    pub async fn submit_backup(
-        &self,
-        submission: BackupOperationSubmission,
-    ) -> Result<AcceptedBackupSubmission, SubmitOperationError> {
-        let BackupOperationSubmission {
-            operation_id,
-            target,
-        } = submission;
-        let submitted = self
-            .submit_operation::<BackupOperationSubmission>(operation_id, target)
-            .await?;
-
-        Ok(AcceptedBackupSubmission {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            target: submitted.payload,
-            should_start_execution: submitted.should_start_execution,
         })
     }
 
@@ -516,12 +467,6 @@ pub struct MachineAddOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupOperationSubmission {
-    pub operation_id: OperationId,
-    pub target: BackupTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -548,15 +493,7 @@ pub struct AcceptedMachineAddSubmission {
     pub raw_join_token: RawJoinToken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedBackupSubmission {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub target: BackupTarget,
-    pub should_start_execution: bool,
-}
-
-/// How a deploy, cert, or backup submission fails inside the repository.
+/// How a deploy or cert submission fails inside the repository.
 #[derive(Debug)]
 pub enum SubmitOperationError {
     InvalidDeployTarget,

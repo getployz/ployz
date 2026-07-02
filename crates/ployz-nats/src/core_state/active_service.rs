@@ -292,12 +292,14 @@ mod tests {
         let rev_2 = revision_id("rev_2");
         let existing = LoadedActiveServiceState {
             state: ActiveServiceState {
+                namespace_id: namespace_id(),
                 service_id: service_id.clone(),
                 active_revision: rev_1.clone(),
             },
             revision: CoreStateRevision::new(7),
         };
         let attempted = ActiveServiceState {
+            namespace_id: namespace_id(),
             service_id,
             active_revision: rev_2,
         };
@@ -322,12 +324,14 @@ mod tests {
         let rev_3 = revision_id("rev_3");
         let current = LoadedActiveServiceState {
             state: ActiveServiceState {
+                namespace_id: namespace_id(),
                 service_id: service_id.clone(),
                 active_revision: rev_2.clone(),
             },
             revision: CoreStateRevision::new(8),
         };
         let attempted = ActiveServiceState {
+            namespace_id: namespace_id(),
             service_id,
             active_revision: rev_3.clone(),
         };
@@ -352,5 +356,9 @@ mod tests {
 
     fn revision_id(value: &str) -> RevisionId {
         RevisionId::try_new(value).expect("valid revision id")
+    }
+
+    fn namespace_id() -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new("default").expect("valid namespace id")
     }
 }

@@ -15,15 +15,14 @@ pub use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
 };
 pub use repository::{
-    AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
-    AcceptedMachineAddSubmission, AsyncNatsOperationRepository, BackupOperationSubmission,
-    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinRedemption, OperationStatusWrite, RecordBackupEventError, RecordCertEventError,
-    RecordDeployEvidenceError, RecordDeployTransitionError, RecordLifecycleEventError,
-    RecordMachineAddEventError, RecordMachineJoinReportError, RecordOperationEventError,
-    RecordedMachineJoinReport, RedeemMachineJoinTokenError, RedeemedMachineJoin,
-    ReplayOperationEventsError, StoredEventMismatchKind, SubmitMachineAddError,
-    SubmitOperationError,
+    AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
+    AsyncNatsOperationRepository, CertOperationSubmission, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineJoinRedemption, OperationStatusWrite,
+    RecordCertEventError, RecordDeployEvidenceError, RecordDeployTransitionError,
+    RecordLifecycleEventError, RecordMachineAddEventError, RecordMachineJoinReportError,
+    RecordOperationEventError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
+    RedeemedMachineJoin, ReplayOperationEventsError, StoredEventMismatchKind,
+    SubmitMachineAddError, SubmitOperationError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,

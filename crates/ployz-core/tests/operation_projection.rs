@@ -4,10 +4,9 @@ use ployz_core::machine::{
     MachineAddOperationState, MachineReadinessCheck, MachineReadinessEvidence,
 };
 use ployz_core::ops::{
-    BackupOperationState, BackupRunningStage, DeployCompletionOutcome, DeployOperationState,
-    DeployRunningStage, DeployTransition, FailureMessage, OperationEvent, OperationProjection,
-    OperationStatus, ProjectionOperationState, StatusProjectionError, project_deploy_transition,
-    project_operation_event,
+    DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
+    FailureMessage, OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
+    StatusProjectionError, project_deploy_transition, project_operation_event,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{
@@ -785,71 +784,6 @@ fn machine_add_completed_before_join_is_rejected() {
     );
 }
 
-#[test]
-fn backup_manifest_write_before_snapshot_is_rejected() {
-    let accepted = OperationStatus::backup_accepted(operation_id("op_backup"), event_sequence(1));
-
-    assert_eq!(
-        project_operation_event(
-            &accepted,
-            OperationEvent::BackupRunning {
-                operation_id: operation_id("op_backup"),
-                stage: BackupRunningStage::WritingManifest {
-                    artifact: backup_artifact(),
-                },
-            },
-            event_sequence(2),
-        ),
-        Err(StatusProjectionError::InvalidTransition {
-            operation_id: operation_id("op_backup"),
-            current: Box::new(ProjectionOperationState::Backup(
-                BackupOperationState::Accepted
-            )),
-            attempted: Box::new(ProjectionOperationState::Backup(
-                BackupOperationState::Running {
-                    stage: BackupRunningStage::WritingManifest {
-                        artifact: backup_artifact(),
-                    },
-                }
-            )),
-        })
-    );
-}
-
-#[test]
-fn backup_completion_before_manifest_write_is_rejected() {
-    let snapshotting = OperationStatus::Backup {
-        id: operation_id("op_backup"),
-        state: BackupOperationState::Running {
-            stage: BackupRunningStage::SnapshottingControlPlane,
-        },
-        last_event_sequence: event_sequence(2),
-    };
-    let manifest = ployz_core::backup::BackupManifest::single_core_control_plane();
-
-    assert_eq!(
-        project_operation_event(
-            &snapshotting,
-            OperationEvent::BackupCompleted {
-                operation_id: operation_id("op_backup"),
-                manifest: manifest.clone(),
-            },
-            event_sequence(3),
-        ),
-        Err(StatusProjectionError::InvalidTransition {
-            operation_id: operation_id("op_backup"),
-            current: Box::new(ProjectionOperationState::Backup(
-                BackupOperationState::Running {
-                    stage: BackupRunningStage::SnapshottingControlPlane,
-                }
-            )),
-            attempted: Box::new(ProjectionOperationState::Backup(
-                BackupOperationState::Completed { manifest }
-            )),
-        })
-    );
-}
-
 fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
     MachineReadinessEvidence {
         nats_connection: MachineReadinessCheck::Confirmed,
@@ -858,21 +792,6 @@ fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
         },
         machine_inspect: MachineReadinessCheck::Confirmed,
     }
-}
-
-fn backup_artifact() -> ployz_core::backup::BackupArtifact {
-    ployz_core::backup::BackupArtifact::new(
-        ployz_core::backup::BackupArtifactLocation::s3(
-            "ployz-backups",
-            "backups/op_backup/control-plane-bundle.json",
-            "us-east-1",
-            None,
-            ployz_core::backup::S3AddressingStyle::VirtualHosted,
-        ),
-        ployz_core::backup::BackupArtifactKind::ControlPlaneBundle,
-        128,
-        "0123456789abcdef",
-    )
 }
 
 fn active_service_running() -> DeployRunningStage {

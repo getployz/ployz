@@ -1,21 +1,33 @@
 use clap::Args;
-use ployz_core::backup::BackupArtifactLocation;
 use ployz_core::ids::OperationId;
 use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
-    BackupOperationState, BackupRunningStage, CertOperationState, CertRunningStage,
-    DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    OperationEvent, OperationEventReplayLimit, OperationEventReplayRequest, OperationStatus,
-    OperationStatusSnapshot, ReplayedOperationEvent,
+    CertOperationState, CertRunningStage, DeployOperationState, DeployRunningStage, EventSequence,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayLimit,
+    OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::roles::{DnsRole, GatewayRole};
-use ployz_sdk_types::OpsStatusRequest;
+use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 
 use crate::commands::PloyzctlCliError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsStatusCommand {
     pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpsListCommand {
+    pub active_only: bool,
+}
+
+impl OpsListCommand {
+    #[must_use]
+    pub const fn into_request(self) -> OpsListRequest {
+        OpsListRequest {
+            active_only: self.active_only,
+        }
+    }
 }
 
 impl OpsStatusCommand {
@@ -59,6 +71,12 @@ pub(crate) fn ops_status_command(
     Ok(OpsStatusCommand { operation_id })
 }
 
+pub(crate) const fn ops_list_command(parsed: OpsListCli) -> OpsListCommand {
+    OpsListCommand {
+        active_only: parsed.active,
+    }
+}
+
 pub(crate) fn ops_watch_command(parsed: OpsWatchCli) -> Result<OpsWatchCommand, PloyzctlCliError> {
     let operation_id = parse_operation_id(&parsed.operation_id)?;
 
@@ -78,6 +96,12 @@ pub(crate) struct OpsStatusCli {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct OpsListCli {
+    #[arg(long)]
+    active: bool,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct OpsWatchCli {
     operation_id: String,
     #[arg(long)]
@@ -94,6 +118,42 @@ fn parse_operation_id(operation_id: &str) -> Result<OperationId, PloyzctlCliErro
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusOutput {
     pub snapshot: OperationStatusSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListOutput {
+    pub result: OpsListResult,
+}
+
+impl ListOutput {
+    #[must_use]
+    pub const fn from_result(result: OpsListResult) -> Self {
+        Self { result }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        let rendered = self
+            .result
+            .operations
+            .iter()
+            .map(|operation| {
+                format!(
+                    "{} {} {} {}",
+                    operation.operation_id.as_str(),
+                    operation.kind,
+                    operation.subject,
+                    operation.state,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if rendered.is_empty() {
+            rendered
+        } else {
+            rendered + "\n"
+        }
+    }
 }
 
 impl StatusOutput {
@@ -151,8 +211,7 @@ fn operation_id(status: &OperationStatus) -> &OperationId {
     match status {
         OperationStatus::Deploy { id, .. }
         | OperationStatus::Cert { id, .. }
-        | OperationStatus::MachineAdd { id, .. }
-        | OperationStatus::Backup { id, .. } => id,
+        | OperationStatus::MachineAdd { id, .. } => id,
     }
 }
 
@@ -161,7 +220,6 @@ const fn operation_kind(status: &OperationStatus) -> &'static str {
         OperationStatus::Deploy { .. } => "deploy",
         OperationStatus::Cert { .. } => "cert",
         OperationStatus::MachineAdd { .. } => "machine-add",
-        OperationStatus::Backup { .. } => "backup",
     }
 }
 
@@ -185,7 +243,6 @@ fn operation_subject(status: &OperationStatus) -> String {
             gateway_role(roles.gateway),
             dns_role(roles.dns)
         ),
-        OperationStatus::Backup { .. } => "backup control-plane".to_owned(),
     }
 }
 
@@ -194,7 +251,6 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::Deploy { state, .. } => deploy_state(state).to_owned(),
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
-        OperationStatus::Backup { state, .. } => backup_state(state),
     }
 }
 
@@ -209,10 +265,6 @@ const fn last_event_sequence(status: &OperationStatus) -> EventSequence {
             ..
         }
         | OperationStatus::MachineAdd {
-            last_event_sequence,
-            ..
-        }
-        | OperationStatus::Backup {
             last_event_sequence,
             ..
         } => *last_event_sequence,
@@ -299,36 +351,6 @@ const fn machine_add_state(state: &MachineAddOperationState) -> &'static str {
     }
 }
 
-fn backup_state(state: &BackupOperationState) -> String {
-    match state {
-        BackupOperationState::Accepted => "accepted".to_owned(),
-        BackupOperationState::Running { stage } => backup_running_stage(stage),
-        BackupOperationState::Completed { .. } => "completed".to_owned(),
-        BackupOperationState::Failed { .. } => "failed".to_owned(),
-        BackupOperationState::Cancelled { .. } => "cancelled".to_owned(),
-    }
-}
-
-fn backup_running_stage(stage: &BackupRunningStage) -> String {
-    match stage {
-        BackupRunningStage::SnapshottingControlPlane => {
-            "running:snapshotting-control-plane".to_owned()
-        }
-        BackupRunningStage::WritingManifest { artifact } => {
-            format!(
-                "running:writing-manifest:{}",
-                backup_artifact_location(&artifact.location)
-            )
-        }
-    }
-}
-
-fn backup_artifact_location(location: &BackupArtifactLocation) -> String {
-    match location {
-        BackupArtifactLocation::S3 { bucket, key, .. } => format!("s3://{bucket}/{key}"),
-    }
-}
-
 fn render_replayed_event_text(event: &ReplayedOperationEvent) -> String {
     format!(
         "{} {}",
@@ -379,10 +401,6 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         },
         OperationEvent::MachineAddCompleted { .. } => "machine.add.completed",
         OperationEvent::MachineAddFailed { .. } => "machine.add.failed",
-        OperationEvent::BackupCreateSubmitted { .. } => "backup.submitted",
-        OperationEvent::BackupRunning { .. } => "backup.running",
-        OperationEvent::BackupCompleted { .. } => "backup.completed",
-        OperationEvent::BackupFailed { .. } => "backup.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

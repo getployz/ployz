@@ -364,6 +364,7 @@ pub fn active_machine_from_completed_add(
         machine_id,
         name,
         activated_by: operation_id,
+        substrate_versions: None,
     })
 }
 
@@ -391,6 +392,7 @@ pub fn activate_joined_machine(
             machine_id: reservation.machine_id,
             name: reservation.name,
             activated_by: reservation.operation_id,
+            substrate_versions: None,
         },
     }
 }

@@ -167,6 +167,7 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(
         active_state.requests,
         vec![ActiveServiceCommitRequest {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             expected_current: ExpectedActiveService::Absent,
             target_revision: revision_id("rev_2"),
@@ -1041,6 +1042,7 @@ async fn routed_deploy_commits_route_before_completion() {
     assert_eq!(
         route_state.requests,
         vec![ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,

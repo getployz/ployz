@@ -1,6 +1,5 @@
-use super::backup::BackupEvent;
 use super::{
-    BackupTransition, CertId, CertRunningStage, CertTransition, DeployEvidence, DeployTransition,
+    CertId, CertRunningStage, CertTransition, DeployEvidence, DeployTransition,
     MachineAddOperationState, MachineId, OperationEvent, OperationId,
 };
 use crate::ops::CancellationReason;
@@ -26,10 +25,6 @@ pub(super) enum ClassifiedOperationEvent {
         subject: OperationSubjectRef,
         event: MachineAddEvent,
     },
-    Backup {
-        operation_id: OperationId,
-        event: BackupEvent,
-    },
     Cancelled {
         operation_id: OperationId,
         reason: CancellationReason,
@@ -42,7 +37,6 @@ impl ClassifiedOperationEvent {
             Self::Deploy { operation_id, .. }
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
-            | Self::Backup { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -217,34 +211,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Failed { failure }),
-            },
-            OperationEvent::BackupCreateSubmitted { operation_id, .. } => Self::Backup {
-                operation_id,
-                event: BackupEvent::Submitted,
-            },
-            OperationEvent::BackupRunning {
-                operation_id,
-                stage,
-                ..
-            } => Self::Backup {
-                operation_id,
-                event: BackupEvent::Transition(BackupTransition::Running { stage }),
-            },
-            OperationEvent::BackupCompleted {
-                operation_id,
-                manifest,
-                ..
-            } => Self::Backup {
-                operation_id,
-                event: BackupEvent::Transition(BackupTransition::Completed { manifest }),
-            },
-            OperationEvent::BackupFailed {
-                operation_id,
-                failure,
-                ..
-            } => Self::Backup {
-                operation_id,
-                event: BackupEvent::Transition(BackupTransition::Failed { failure }),
             },
             OperationEvent::Cancelled {
                 operation_id,

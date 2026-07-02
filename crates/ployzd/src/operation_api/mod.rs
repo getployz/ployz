@@ -10,11 +10,10 @@ pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use queries::{
     LogsQueryRuntime, MachineQueryRuntime, RuntimeSnapshotQueryRuntime, ServiceQueryRuntime,
-    ops_status, ops_status_missing, ops_watch,
+    ops_list, ops_status, ops_status_missing, ops_watch,
 };
-pub use submit::{backup_create, deploy_submit, machine_add, owned_operation};
+pub use submit::{deploy_submit, machine_add, owned_operation};
 
-use crate::backup_runtime::BackupOperationRuntime;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::machine_runtime::client::NatsMachineLogsTailer;
@@ -27,7 +26,6 @@ use std::sync::Arc;
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_runtime: Arc<DeployOperationRuntime>,
-    backup_runtime: Arc<BackupOperationRuntime>,
     machine_mint: Arc<MachineCredentialMintRuntime>,
     /// Cluster-truth store for the writes this layer owns (machine
     /// activation on join completion) and the first-machine idempotency
@@ -44,7 +42,6 @@ impl OperationApiHandlers {
     pub fn execute_operations(
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,
-        backup_runtime: BackupOperationRuntime,
         machine_mint: MachineCredentialMintRuntime,
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
@@ -58,7 +55,6 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_runtime: Arc::new(deploy_runtime),
-            backup_runtime: Arc::new(backup_runtime),
             machine_mint: Arc::new(machine_mint),
             core_state,
             machine_query: Arc::new(machine_query),

@@ -15,7 +15,6 @@ use crate::state::ExpectedActiveService;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 mod accessors;
-mod backup;
 mod classification;
 mod events;
 mod projection;
@@ -23,9 +22,6 @@ mod replay;
 mod routes;
 mod text;
 
-pub use backup::{
-    BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
-};
 pub use classification::OperationSubjectRef;
 pub use events::{OperationEvent, OperationSubject};
 pub use projection::{
@@ -89,7 +85,6 @@ pub enum OperationKind {
     Deploy,
     Cert,
     MachineAdd,
-    Backup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,11 +317,6 @@ pub enum OperationStatus {
         state: MachineAddOperationState,
         last_event_sequence: EventSequence,
     },
-    Backup {
-        id: OperationId,
-        state: BackupOperationState,
-        last_event_sequence: EventSequence,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,21 +378,11 @@ impl OperationStatus {
     }
 
     #[must_use]
-    pub fn backup_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
-        Self::Backup {
-            id,
-            state: BackupOperationState::Accepted,
-            last_event_sequence: event_sequence,
-        }
-    }
-
-    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
-            Self::Backup { state, .. } => state.is_terminal(),
         }
     }
 }

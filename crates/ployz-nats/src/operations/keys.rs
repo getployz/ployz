@@ -7,6 +7,7 @@ pub fn operation_status_key(operation_id: &OperationId) -> String {
     format!("ops.{}", operation_id.as_str())
 }
 
+pub const OPERATION_STATUS_KEY_PREFIX: &str = "ops.";
 pub const MACHINE_ADD_SUBMISSION_KEY_PREFIX: &str = "machine_add_submissions.";
 const MACHINE_ADD_CLAIM_KEY_PREFIX: &str = "machine_add_claims.";
 

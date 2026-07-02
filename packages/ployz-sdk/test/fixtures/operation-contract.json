@@ -4,25 +4,6 @@
     "start_sequence": "1",
     "watch_subject": "plz.v1.op.op_123.>"
   },
-  "backup_create_request": {
-    "operation_id": "op_backup",
-    "target": {
-      "addressing_style": "virtual_hosted",
-      "bucket": "ployz-backups",
-      "endpoint_url": null,
-      "key_prefix": "clusters/dev",
-      "kind": "s3",
-      "region": "us-east-1"
-    }
-  },
-  "backup_create_response": {
-    "status": "ok",
-    "value": {
-      "operation_id": "op_backup",
-      "start_sequence": "3",
-      "watch_subject": "plz.v1.op.op_backup.>"
-    }
-  },
   "cloud_bootstrap_callback_accepted": {
     "accepted_at_unix_seconds": 1893456060
   },

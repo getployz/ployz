@@ -126,11 +126,11 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, };
 
-export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", machine_id: MachineId, } | { "kind": "backup" };
+export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", machine_id: MachineId, };
 
 export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -160,11 +160,7 @@ export type CertOperationState = { "state": "accepted" } | { "state": "running",
 
 export type CertRunningStage = "challenge_published" | "validation_started";
 
-export type BackupOperationState = { "state": "accepted" } | { "state": "running", stage: BackupRunningStage, } | { "state": "completed", manifest: BackupManifest, } | { "state": "failed", failure: BackupOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
-
-export type BackupRunningStage = { "stage": "snapshotting_control_plane" } | { "stage": "writing_manifest", artifact: BackupArtifact, };
-
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, target: BackupTarget, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -214,48 +210,6 @@ export type DeployOperationFailure = { "kind": "planning_failed", service_id: Se
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
-export type BackupOperationFailure = { "kind": "snapshot_failed", message: FailureMessage, } | { "kind": "manifest_write_failed", message: FailureMessage, };
-
-export type BackupItem = "core_state_kv" | "operation_state_kv" | "observation_state_kv" | "lock_state_kv" | "backup_manifest" | "nats_credentials" | "nats_server_config" | "ployz_domain_config" | "operation_event_streams" | "docker_images" | "application_volumes" | "container_runtime_state" | "machine_local_cache";
-
-export type BackupPolicy = "included" | "excluded";
-
-export type BackupScopeEntry = { item: BackupItem, policy: BackupPolicy, };
-
-export type BackupTargetValidationField = "bucket" | "key_prefix" | "region" | "endpoint_url";
-
-export type BackupTargetValidationFailure = "empty";
-
-export type S3AddressingStyle = "virtual_hosted" | "path";
-
-export type S3BackupTarget = { bucket: string, key_prefix: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
-export type BackupTarget = { "kind": "s3", bucket: string, key_prefix: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
-export type S3BackupRestoreSource = { bucket: string, manifest_key: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
-export type BackupRestoreSource = { "kind": "s3", bucket: string, manifest_key: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
-export type BackupArtifactKind = "control_plane_bundle";
-
-export type BackupArtifactLocation = { "kind": "s3", bucket: string, key: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
-export type BackupArtifact = { location: BackupArtifactLocation, kind: BackupArtifactKind, byte_count: number, sha256_digest: string, };
-
-export type BackupManifestVersion = "v1";
-
-export type KvEntrySnapshot = { key: string, revision: number, value: Array<number>, };
-
-export type KvBucketSnapshot = { name: string, entries: Array<KvEntrySnapshot>, };
-
-export type ControlPlaneKvSnapshot = { format_version: BackupManifestVersion, buckets: Array<KvBucketSnapshot>, };
-
-export type BackupBundle = { format_version: BackupManifestVersion, control_plane: ControlPlaneKvSnapshot, };
-
-export type BackupManifest = { format_version: BackupManifestVersion, scope: Array<BackupScopeEntry>, restore_contract: Array<RestoreStep>, artifacts: Array<BackupArtifact>, };
-
-export type RestoreStep = "recreate_control_plane_authority" | "restore_jet_stream_state" | "wait_for_machine_reconnects" | "rebuild_observations_from_reality";
-
 export type OperatorHint = Brand<string, "OperatorHint">;
 
 export type CertValidAt = Brand<string, "CertValidAt">;
@@ -276,7 +230,7 @@ export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle
 
 export type ExpectedActiveService = "absent" | { "revision": RevisionId };
 
-export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, };
+export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, substrate_versions?: SubstrateVersions | null, };
 
 export type ActiveRouteState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: RevisionId, };
 
@@ -285,6 +239,8 @@ export type ActiveServiceState = { namespace_id: NamespaceId, service_id: Servic
 export type ActiveServiceCommitRequest = { namespace_id: NamespaceId, service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
 
 export type MachinePublicIpObservation = { machine_id: MachineId, public_ip: string, };
+
+export type SubstrateVersions = { ployzd?: string | null, keeper?: string | null, };
 
 export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
 
@@ -299,8 +255,6 @@ export type InitFirstMachineActivated = { operation_id: OperationId, machine_id:
 export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "machine_seed_write", message: FailureMessage, };
 
 export type DeploySubmitRequest = { operation_id: OperationId, target: DeployRequest, };
-
-export type BackupCreateRequest = { operation_id: OperationId, target: BackupTarget, };
 
 export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, };
 
@@ -424,6 +378,14 @@ export type MachineJoinReportError = { "error": "invalid_join_token" } | { "erro
 
 export type MachineJoinReportUnavailableSource = { "source": "core_state" } | { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "operation_corrupt" };
 
+export type OpsListRequest = { active_only: boolean, };
+
+export type OpsListResult = { operations: Array<OpsListItem>, };
+
+export type OpsListItem = { operation_id: OperationId, kind: string, subject: string, state: string, started_at_unix_seconds?: number | null, finished_at_unix_seconds?: number | null, };
+
+export type OpsListError = { "error": "unavailable", source: OpsStatusUnavailableSource, };
+
 export type OpsStatusRequest = { operation_id: OperationId, };
 
 export type AcceptedOperation = { operation_id: OperationId, watch_subject: string, start_sequence: EventSequence, };
@@ -431,8 +393,6 @@ export type AcceptedOperation = { operation_id: OperationId, watch_subject: stri
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
 export type DeploySubmitError = { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type BackupCreateError = { "error": "invalid_target", operation_id: OperationId, field: BackupTargetValidationField, failure: BackupTargetValidationFailure, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type OperationSubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, };
 
@@ -482,13 +442,13 @@ export type RuntimeSnapshotResponse = OperationApiResponse<RuntimeSnapshotResult
 
 export type LogsTailResponse = OperationApiResponse<LogsTailResult, LogsTailError>;
 
+export type OpsListResponse = OperationApiResponse<OpsListResult, OpsListError>;
+
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 export type OpsWatchRequest = OperationEventReplayRequest;
 
 export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
-
-export type BackupCreateResponse = OperationApiResponse<AcceptedOperation, BackupCreateError>;
 
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
@@ -502,9 +462,9 @@ export const OPERATION_API_CONTRACTS = [
   { name: "service.inspect", subject: "plz.v1.svc.api.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
   { name: "runtime.snapshot", subject: "plz.v1.svc.api.runtime.snapshot", execution: "query", request: "RuntimeSnapshotRequest", success: "RuntimeSnapshotResult", error: "RuntimeSnapshotError", response: "RuntimeSnapshotResponse" },
   { name: "logs.tail", subject: "plz.v1.svc.api.logs.tail", execution: "query", request: "LogsTailRequest", success: "LogsTailResult", error: "LogsTailError", response: "LogsTailResponse" },
+  { name: "ops.list", subject: "plz.v1.svc.api.ops.list", execution: "query", request: "OpsListRequest", success: "OpsListResult", error: "OpsListError", response: "OpsListResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
-  { name: "backup.create", subject: "plz.v1.svc.api.backup.create", execution: "accepts_operation", request: "BackupCreateRequest", success: "AcceptedOperation", error: "BackupCreateError", response: "BackupCreateResponse" },
 ] as const;
 
 export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
@@ -521,9 +481,9 @@ export type OperationApiRequestByEndpoint = {
   "service.inspect": ServiceInspectRequest;
   "runtime.snapshot": RuntimeSnapshotRequest;
   "logs.tail": LogsTailRequest;
+  "ops.list": OpsListRequest;
   "ops.status": OpsStatusRequest;
   "ops.watch": OpsWatchRequest;
-  "backup.create": BackupCreateRequest;
 };
 
 export type OperationApiResponseByEndpoint = {
@@ -538,7 +498,7 @@ export type OperationApiResponseByEndpoint = {
   "service.inspect": ServiceInspectResponse;
   "runtime.snapshot": RuntimeSnapshotResponse;
   "logs.tail": LogsTailResponse;
+  "ops.list": OpsListResponse;
   "ops.status": OpsStatusResponse;
   "ops.watch": OpsWatchResponse;
-  "backup.create": BackupCreateResponse;
 };

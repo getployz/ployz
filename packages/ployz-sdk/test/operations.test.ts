@@ -5,7 +5,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  backupCreateRequest,
   certBundleRef,
   containerId,
   deploySubmitRequest,
@@ -22,6 +21,7 @@ import {
   machineName,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
   machineId,
+  namespaceId,
   OPERATION_API_CONTRACTS,
   operationId,
   operationEventReplayLimit,
@@ -35,8 +35,6 @@ import {
 } from "../src/index.ts";
 import type {
   AcceptedOperation,
-  BackupCreateResponse,
-  BackupCreateRequest,
   DeploySubmitResponse,
   DeploySubmitRequest,
   InitFirstMachineActivateRequest,
@@ -61,11 +59,11 @@ import type {
   OperationEventReplayPage,
   OperationStatusSnapshot,
   OperationSubject,
+  OpsListRequest,
   OpsStatusResponse,
   OpsStatusRequest,
   OpsWatchResponse,
   OpsWatchRequest,
-  PloyzBackupCreateInput,
   PloyzOperationTransport,
   PloyzApiEndpoint,
   RuntimeSnapshot,
@@ -124,18 +122,6 @@ test("machine add returns an operation handle with bootstrap material", async ()
   assert.deepEqual(transport.machineAddRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_machine" }]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
-});
-
-test("backup create returns a normal operation handle", async () => {
-  const transport = new RecordingTransport(defaultFixture());
-  const client = new PloyzClient(transport);
-  const input = backupCreateInput();
-  const request = backupCreateRequest(input);
-
-  const handle = await client.backupCreate(input);
-
-  assert.equal(handle.operationId, "op_backup");
-  assert.deepEqual(transport.backupCreateRequests, [request]);
 });
 
 test("first-machine activation returns a status-capable operation reference", async () => {
@@ -390,66 +376,7 @@ test("sdk maps raw machine add input to the wire request", () => {
   );
 });
 
-test("sdk maps raw backup and current-state query inputs to wire requests", () => {
-  assert.deepEqual(backupCreateRequest(backupCreateInput()), {
-    operation_id: "op_backup",
-    target: {
-      kind: "s3",
-      bucket: "ployz-backups",
-      key_prefix: "clusters/dev",
-      region: "us-east-1",
-      endpoint_url: null,
-      addressing_style: "virtual_hosted",
-    },
-  });
-  assert.throws(
-    () =>
-      backupCreateRequest(
-        backupCreateInput({
-          target: {
-            ...backupCreateInput().target,
-            bucket: " ",
-          },
-        }),
-      ),
-    /backup S3 bucket/,
-  );
-  assert.throws(
-    () =>
-      backupCreateRequest(
-        backupCreateInput({
-          target: {
-            ...backupCreateInput().target,
-            keyPrefix: "",
-          },
-        }),
-      ),
-    /backup S3 key prefix/,
-  );
-  assert.throws(
-    () =>
-      backupCreateRequest(
-        backupCreateInput({
-          target: {
-            ...backupCreateInput().target,
-            region: "\t",
-          },
-        }),
-      ),
-    /backup S3 region/,
-  );
-  assert.throws(
-    () =>
-      backupCreateRequest(
-        backupCreateInput({
-          target: {
-            ...backupCreateInput().target,
-            endpointUrl: "\n",
-          },
-        }),
-      ),
-    /backup S3 endpoint URL/,
-  );
+test("sdk maps current-state query inputs to wire requests", () => {
   assert.deepEqual(machineListRequest(), {});
   assert.deepEqual(machineInspectRequest({ machineId: "machine_2" }), { machine_id: "machine_2" });
   assert.deepEqual(machineInspectRequest("machine_2"), { machine_id: "machine_2" });
@@ -469,10 +396,6 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
       machine_id: "machine_a",
       tail_lines: logsTailLines(25),
     },
-  );
-  assert.throws(
-    () => backupCreateRequest(backupCreateInput({ operationId: "op.backup" })),
-    /operation id/,
   );
   assert.throws(() => machineInspectRequest("machine.2"), /machine id/);
   assert.throws(() => serviceInspectRequest("svc.api"), /service id/);
@@ -612,6 +535,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "LogsTailResponse",
     },
     {
+      name: "ops.list",
+      subject: "plz.v1.svc.api.ops.list",
+      execution: "query",
+      request: "OpsListRequest",
+      success: "OpsListResult",
+      error: "OpsListError",
+      response: "OpsListResponse",
+    },
+    {
       name: "ops.status",
       subject: "plz.v1.svc.api.ops.status",
       execution: "query",
@@ -628,15 +560,6 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "OperationEventReplayPage",
       error: "OpsWatchError",
       response: "OpsWatchResponse",
-    },
-    {
-      name: "backup.create",
-      subject: "plz.v1.svc.api.backup.create",
-      execution: "accepts_operation",
-      request: "BackupCreateRequest",
-      success: "AcceptedOperation",
-      error: "BackupCreateError",
-      response: "BackupCreateResponse",
     },
   ]);
 });
@@ -659,7 +582,6 @@ test("sdk helpers enforce public primitive boundaries", () => {
 class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
   readonly initFirstMachineActivateRequests: InitFirstMachineActivateRequest[] = [];
-  readonly backupCreateRequests: BackupCreateRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
   readonly machineListRequests: MachineListRequest[] = [];
   readonly machineInspectRequests: MachineInspectRequest[] = [];
@@ -668,11 +590,11 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly serviceInspectRequests: ServiceInspectRequest[] = [];
   readonly runtimeSnapshotRequests: RuntimeSnapshotRequest[] = [];
   readonly logsTailRequests: LogsTailRequest[] = [];
+  readonly opsListRequests: OpsListRequest[] = [];
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
   readonly firstMachineActivated: InitFirstMachineActivated;
-  readonly backupAccepted: AcceptedOperation;
   readonly machineAddAccepted: MachineAddAccepted;
   readonly machineSnapshots: MachineSnapshot[];
   readonly machineJoinRedeemed: MachineJoinRedeemed;
@@ -683,7 +605,6 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly replayPages: OperationEventReplayPage[] = [];
   deployResponse?: DeploySubmitResponse;
   initFirstMachineActivateResponse?: InitFirstMachineActivateResponse;
-  backupCreateResponse?: BackupCreateResponse;
   machineAddResponse?: MachineAddResponse;
   machineListResponse?: MachineListResponse;
   machineInspectResponse?: MachineInspectResponse;
@@ -698,7 +619,6 @@ class RecordingTransport implements PloyzOperationTransport {
   constructor(fixture: OperationFixture) {
     this.accepted = fixture.accepted_operation;
     this.firstMachineActivated = fixture.init_first_machine_activate_response.value;
-    this.backupAccepted = acceptedOperation("op_backup");
     this.machineAddAccepted = fixture.machine_add_response.value;
     this.machineSnapshots = fixture.machine_snapshots;
     this.machineJoinRedeemed = fixture.machine_join_redeem_response.value;
@@ -722,9 +642,6 @@ class RecordingTransport implements PloyzOperationTransport {
           status: "ok",
           value: this.firstMachineActivated,
         }) as OperationApiResponseByEndpoint[E];
-      case "backup.create":
-        this.backupCreateRequests.push(request as BackupCreateRequest);
-        return (this.backupCreateResponse ?? { status: "ok", value: this.backupAccepted }) as OperationApiResponseByEndpoint[E];
       case "machine.add":
         this.machineAddRequests.push(request as MachineAddRequest);
         return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as OperationApiResponseByEndpoint[E];
@@ -779,6 +696,12 @@ class RecordingTransport implements PloyzOperationTransport {
           },
         }) as OperationApiResponseByEndpoint[E];
       }
+      case "ops.list":
+        this.opsListRequests.push(request as OpsListRequest);
+        return ({
+          status: "ok",
+          value: { operations: [] },
+        } as unknown) as OperationApiResponseByEndpoint[E];
       case "ops.status":
         this.statusRequests.push(request as OpsStatusRequest);
         return (this.statusResponse ?? { status: "ok", value: this.status }) as OperationApiResponseByEndpoint[E];
@@ -857,6 +780,7 @@ function defaultFixture(): OperationFixture {
     service_snapshots: [
       {
         active: {
+          namespace_id: namespaceId("default"),
           service_id: serviceId("svc_api"),
           active_revision: revisionId("rev_2"),
         },
@@ -878,6 +802,7 @@ function defaultFixture(): OperationFixture {
       services: [
         {
           active: {
+            namespace_id: namespaceId("default"),
             service_id: serviceId("svc_api"),
             active_revision: revisionId("rev_2"),
           },
@@ -885,8 +810,21 @@ function defaultFixture(): OperationFixture {
       ],
       routes: [],
       containers: [],
-      revisions: [{ service_id: serviceId("svc_api"), revision_id: revisionId("rev_2") }],
-      releases: [{ service_id: serviceId("svc_api"), revision_id: revisionId("rev_2"), routes: [] }],
+      revisions: [
+        {
+          namespace_id: namespaceId("default"),
+          service_id: serviceId("svc_api"),
+          revision_id: revisionId("rev_2"),
+        },
+      ],
+      releases: [
+        {
+          namespace_id: namespaceId("default"),
+          service_id: serviceId("svc_api"),
+          revision_id: revisionId("rev_2"),
+          routes: [],
+        },
+      ],
       instances: [],
       projection_sources: {
         core_state: { read_at_unix_seconds: 1 },
@@ -930,23 +868,6 @@ function machineAddInput() {
     machineId: "machine_2",
     name: "edge_2",
     roles: gatewaySkippedRoles(),
-  };
-}
-
-function backupCreateInput(overrides: Partial<PloyzBackupCreateInput> = {}) {
-  return { ...backupCreateInputBase(), ...overrides };
-}
-
-function backupCreateInputBase(): PloyzBackupCreateInput {
-  return {
-    operationId: "op_backup",
-    target: {
-      kind: "s3" as const,
-      bucket: "ployz-backups",
-      keyPrefix: "clusters/dev",
-      region: "us-east-1",
-      addressingStyle: "virtual_hosted" as const,
-    },
   };
 }
 

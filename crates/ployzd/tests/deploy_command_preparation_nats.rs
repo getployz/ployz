@@ -33,6 +33,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
 
     core_state
         .commit_active_service(&ActiveServiceCommitRequest {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             expected_current: ExpectedActiveService::Absent,
             target_revision: revision_id("rev_1"),
@@ -249,6 +250,7 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let (core_state, observations) = nats.stores();
     let key = ActiveServiceStateKey::from_service_id(&service_id("svc_api"));
     let wrong_service_state = ActiveServiceState {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),
         active_revision: revision_id("rev_1"),
     };
@@ -455,6 +457,7 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
+        substrate_versions: None,
     }
 }
 

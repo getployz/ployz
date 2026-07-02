@@ -6,7 +6,9 @@ use ployz_core::state::{
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{machine_id, revision_id, route_hostname, route_port, service_id};
+use ployz_test_support::ids::{
+    machine_id, namespace_id, revision_id, route_hostname, route_port, service_id,
+};
 use ployzd::dns::DnsAnswer;
 use ployzd::dns_process_runtime::{
     DnsProcessAttempt, RunningDnsProcessRuntime, start_dns_process_runtime_with_client,
@@ -123,6 +125,7 @@ impl TestNats {
             .expect("open core state store");
         routes
             .commit_active_route(&ActiveRouteCommitRequest {
+                namespace_id: namespace_id("default"),
                 target: RouteTarget::new(route_hostname(hostname), route_port(443)),
                 endpoint_port: route_port(8080),
                 expected_current: ExpectedActiveRoute::Absent,

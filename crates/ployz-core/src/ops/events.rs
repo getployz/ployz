@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::backup::{BackupManifest, BackupTarget};
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
@@ -13,7 +12,6 @@ use crate::machine::{
 };
 use crate::roles::InstallRolePolicy;
 
-use super::backup::{BackupOperationFailure, BackupRunningStage};
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
@@ -27,7 +25,6 @@ pub enum OperationSubject {
     Deploy { service_id: ServiceId },
     Cert { cert_id: CertId },
     MachineAdd { machine_id: MachineId },
-    Backup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,22 +117,6 @@ pub enum OperationEvent {
         operation_id: OperationId,
         machine_id: MachineId,
         failure: MachineAddFailure,
-    },
-    BackupCreateSubmitted {
-        operation_id: OperationId,
-        target: BackupTarget,
-    },
-    BackupRunning {
-        operation_id: OperationId,
-        stage: BackupRunningStage,
-    },
-    BackupCompleted {
-        operation_id: OperationId,
-        manifest: BackupManifest,
-    },
-    BackupFailed {
-        operation_id: OperationId,
-        failure: BackupOperationFailure,
     },
     Cancelled {
         operation_id: OperationId,

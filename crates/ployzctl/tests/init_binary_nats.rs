@@ -57,7 +57,13 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
         .env_remove("XDG_CONFIG_HOME")
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
-        .args(["init", "activate-first-machine", "--machine", "core_1"])
+        .args([
+            "internal",
+            "init",
+            "activate-first-machine",
+            "--machine",
+            "core_1",
+        ])
         .output()
         .expect("ployzctl binary runs");
 
@@ -99,7 +105,13 @@ async fn binary_loads_cluster_context_when_flag_and_env_are_absent() {
         .env_remove(PLOYZ_NATS_CA_FILE_ENV)
         .env_remove(PLOYZ_NATS_NKEY_SEED_FILE_ENV)
         .env("XDG_CONFIG_HOME", config_home.path())
-        .args(["init", "activate-first-machine", "--machine", "core_1"])
+        .args([
+            "internal",
+            "init",
+            "activate-first-machine",
+            "--machine",
+            "core_1",
+        ])
         .output()
         .expect("ployzctl binary runs");
 
@@ -141,7 +153,13 @@ async fn binary_env_nats_url_overrides_cluster_context() {
         .env(PLOYZ_NATS_URL_ENV, server.server.client_url().as_str())
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
-        .args(["init", "activate-first-machine", "--machine", "core_1"])
+        .args([
+            "internal",
+            "init",
+            "activate-first-machine",
+            "--machine",
+            "core_1",
+        ])
         .output()
         .expect("ployzctl binary runs");
 

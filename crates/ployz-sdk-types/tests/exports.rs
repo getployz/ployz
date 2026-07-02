@@ -1,9 +1,8 @@
 use ployz_core::subjects::{OPERATION_API_ENDPOINTS, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
-    AcmeHttp01Challenge, ActiveCertState, BackupCreateError, BackupCreateRequest,
-    BackupCreateResponse, CertBundleRef, CertId, CertOperationState, CertRunningStage,
-    CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapAttemptId,
+    AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertId, CertOperationState,
+    CertRunningStage, CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapAttemptId,
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
@@ -23,16 +22,17 @@ use ployz_sdk_types::{
     OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount,
-    ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceSnapshot, SubjectTokenError,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId, ServiceInspectError,
+    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
+    ServiceSnapshot, SubjectTokenError,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
-        ServiceListApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -313,7 +313,6 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     .expect("fixture is json");
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
-    assert_fixture::<BackupCreateRequest>(&fixture, "backup_create_request");
     assert_fixture::<InitFirstMachineActivateRequest>(
         &fixture,
         "init_first_machine_activate_request",
@@ -335,7 +334,6 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
-    assert_fixture::<BackupCreateResponse>(&fixture, "backup_create_response");
     assert_fixture::<OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>>(
         &fixture,
         "init_first_machine_activate_response",
@@ -392,6 +390,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         MachineJoinReported,
         MachineJoinReportError,
     >();
+    assert_contract::<OpsListApi, OpsListRequest, OpsListResult, OpsListError>();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
         OpsWatchApi,
@@ -399,8 +398,6 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         OperationEventReplayPage,
         ployz_sdk_types::OpsWatchError,
     >();
-    assert_contract::<BackupCreateApi, BackupCreateRequest, AcceptedOperation, BackupCreateError>();
-
     assert_eq!(operation_api_contract_endpoints(), OPERATION_API_ENDPOINTS);
     assert_eq!(
         operation_api_contract_rows(),
@@ -505,6 +502,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "LogsTailResponse",
             ),
             (
+                "ops.list",
+                "plz.v1.svc.api.ops.list",
+                OperationApiEndpointExecution::Query,
+                "OpsListRequest".to_owned(),
+                "OpsListResult".to_owned(),
+                "OpsListError".to_owned(),
+                "OpsListResponse",
+            ),
+            (
                 "ops.status",
                 "plz.v1.svc.api.ops.status",
                 OperationApiEndpointExecution::Query,
@@ -521,15 +527,6 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "OperationEventReplayPage".to_owned(),
                 "OpsWatchError".to_owned(),
                 "OpsWatchResponse",
-            ),
-            (
-                "backup.create",
-                "plz.v1.svc.api.backup.create",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "BackupCreateRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "BackupCreateError".to_owned(),
-                "BackupCreateResponse",
             ),
         ]
     );

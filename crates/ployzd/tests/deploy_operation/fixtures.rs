@@ -263,12 +263,14 @@ impl RecordingRouteState {
             outcome: ActiveRouteCommit::ActiveRouteChanged {
                 expected_current: ExpectedActiveRoute::Absent,
                 current: Some(ActiveRouteState {
+                    namespace_id: namespace_id("default"),
                     target: route.clone(),
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_other"),
                     revision_id: revision_id("rev_other"),
                 }),
                 attempted: ActiveRouteState {
+                    namespace_id: namespace_id("default"),
                     target: route,
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),

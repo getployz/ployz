@@ -206,27 +206,20 @@ pub async fn execute_command(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     match command {
         PloyzctlCommand::Deploy(command) => {
-            render_api_call(
-                config,
-                async |api| api.deploy_submit(&command.into_request()).await,
-                |accepted| crate::commands::deploy::DeployOutput::from_accepted(accepted).render(),
-            )
-            .await
+            let detach = command.detach;
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .deploy_submit(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            if detach {
+                return Ok(PloyzctlExecutionOutput::stdout(
+                    crate::commands::deploy::DeployOutput::from_accepted(accepted).render(),
+                ));
+            }
+            watch_accepted_operation(&api, accepted.operation_id, config).await
         }
-        PloyzctlCommand::BackupCreate(command) => {
-            render_api_call(
-                config,
-                async |api| api.backup_create(&command.into_request()).await,
-                |accepted| {
-                    crate::commands::backup::BackupCreateOutput::from_accepted(accepted).render()
-                },
-            )
-            .await
-        }
-        PloyzctlCommand::BackupRestorePlan(_) => Ok(PloyzctlExecutionOutput::stdout(
-            crate::commands::backup::BackupRestorePlanOutput::single_core().render(),
-        )),
-        PloyzctlCommand::Init(command) => match &command.mode {
+        PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunKeeperInstall {
                 keeper_install,
                 keeper_binary,
@@ -323,6 +316,14 @@ pub async fn execute_command(
             )
             .await
         }
+        PloyzctlCommand::OpsList(command) => {
+            render_api_call(
+                config,
+                async |api| api.ops_list(&command.into_request()).await,
+                |result| crate::commands::ops::ListOutput::from_result(result).render(),
+            )
+            .await
+        }
         PloyzctlCommand::OpsWatch(command) => {
             let api = operation_api_client(config).await?;
             let output = command.output;
@@ -340,6 +341,34 @@ pub async fn execute_command(
             ))
         }
     }
+}
+
+async fn watch_accepted_operation(
+    api: &OperationApiClient,
+    operation_id: OperationId,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let events = watch_operation_until_terminal(
+        api,
+        OperationEventReplayRequest {
+            operation_id,
+            start_sequence: EventSequence::try_new(1).expect("one is a valid event sequence"),
+            limit: ployz_core::ops::OperationEventReplayLimit::try_new(
+                ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
+            )
+            .expect("max replay limit is valid"),
+        },
+        config.ops_watch_timeout(),
+        config.ops_watch_poll_interval(),
+    )
+    .await?;
+    Ok(PloyzctlExecutionOutput::stdout(
+        crate::commands::ops::WatchOutput {
+            events,
+            output: crate::commands::ops::OpsWatchOutput::Text,
+        }
+        .render(),
+    ))
 }
 
 /// Connects, issues one operation API request, and renders the success value

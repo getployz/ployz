@@ -8,8 +8,8 @@ use ployz_core::state::{ActiveRouteCommitRequest, ExpectedActiveRoute, GatewaySe
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
-    step_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
+    service_id, step_id,
 };
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
@@ -55,6 +55,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
         .expect("open observation store");
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
@@ -122,6 +123,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
 
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", runtime.listen_addr().port()),
             endpoint_port: route_port(upstream.port()),
             expected_current: ExpectedActiveRoute::Absent,
@@ -190,6 +192,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
 
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,

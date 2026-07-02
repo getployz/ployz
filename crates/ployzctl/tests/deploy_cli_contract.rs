@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
-use ployz_core::deploy::{DeployRoute, ImageReference, ReplicaCount};
-use ployz_core::ids::{RevisionId, ServiceId};
+use ployz_core::deploy::{DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::ids::{NamespaceId, RevisionId, ServiceId};
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
@@ -15,7 +15,7 @@ fn cli_dispatches_deploy_request() {
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
     };
-    assert_eq!(command, deploy_command_fixture());
+    assert_deploy_fixture(&command);
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn cli_dispatches_deploy_request_with_route() {
         panic!("expected deploy command");
     };
     assert_eq!(
-        command.route,
+        first_service(&command).route,
         Some(DeployRoute {
             target: RouteTarget {
                 hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
@@ -67,8 +67,6 @@ fn cli_accepts_deploy_submit_request() {
         "ghcr.io/acme/api:rev-2",
         "--replicas",
         "1",
-        "--operation",
-        "op_deploy",
     ]
     .map(str::to_owned);
 
@@ -76,7 +74,7 @@ fn cli_accepts_deploy_submit_request() {
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
     };
-    assert_eq!(command, deploy_command_fixture());
+    assert_deploy_fixture(&command);
 }
 
 // ---------------------------------------------------------------------------
@@ -94,19 +92,19 @@ fn cli_deploy_shorthand_derives_full_request() {
         panic!("expected deploy command");
     };
     assert_eq!(
-        command.service_id,
+        first_service(&command).service_id,
         ServiceId::try_new("web").expect("valid service id")
     );
     assert_eq!(
-        command.image,
+        first_service(&command).image,
         ImageReference::try_new("ghcr.io/acme/web:latest").expect("valid image")
     );
     assert_eq!(
-        command.replicas,
+        first_service(&command).replicas,
         ReplicaCount::try_new(1).expect("valid replicas")
     );
     assert_eq!(
-        command.route,
+        first_service(&command).route,
         Some(DeployRoute {
             target: RouteTarget {
                 hostname: RouteHostname::try_new("app.example.com").expect("valid route hostname"),
@@ -116,9 +114,9 @@ fn cli_deploy_shorthand_derives_full_request() {
         })
     );
     assert!(
-        command.revision_id.as_str().starts_with("rev_latest_"),
+        command.target_revision.as_str().starts_with("rev_latest_"),
         "derived revision id carries the image tag: {}",
-        command.revision_id.as_str()
+        command.target_revision.as_str()
     );
     assert!(
         command.operation_id.as_str().starts_with("op_deploy_web_"),
@@ -134,7 +132,7 @@ fn cli_deploy_shorthand_generates_collision_resistant_ids() {
     let second = shorthand_deploy_command(quick_start_deploy_args());
 
     assert_ne!(first.operation_id, second.operation_id);
-    assert_ne!(first.revision_id, second.revision_id);
+    assert_ne!(first.target_revision, second.target_revision);
 }
 
 /// R12: explicit expert flags override every derived value.
@@ -146,8 +144,6 @@ fn cli_explicit_flags_override_shorthand_derivations() {
             "svc_custom",
             "--revision",
             "rev_pinned",
-            "--operation",
-            "op_pinned",
             "--replicas",
             "3",
         ]
@@ -157,16 +153,15 @@ fn cli_explicit_flags_override_shorthand_derivations() {
     let command = shorthand_deploy_command(args);
 
     assert_eq!(
-        command.service_id,
+        first_service(&command).service_id,
         ServiceId::try_new("svc_custom").expect("valid service id")
     );
     assert_eq!(
-        command.revision_id,
+        command.target_revision,
         RevisionId::try_new("rev_pinned").expect("valid revision id")
     );
-    assert_eq!(command.operation_id, operation_id("op_pinned"));
     assert_eq!(
-        command.replicas,
+        first_service(&command).replicas,
         ReplicaCount::try_new(3).expect("valid replicas")
     );
 }
@@ -288,7 +283,7 @@ fn cli_deploy_shorthand_derives_service_from_image_shapes() {
     for (image, expected_service) in cases {
         let command = shorthand_deploy_command(["deploy", "--image", image].map(str::to_owned));
         assert_eq!(
-            command.service_id,
+            first_service(&command).service_id,
             ServiceId::try_new(expected_service).expect("valid service id"),
             "image {image} derives service {expected_service}"
         );
@@ -302,9 +297,9 @@ fn cli_deploy_shorthand_derives_revision_for_untagged_image() {
         shorthand_deploy_command(["deploy", "--image", "ghcr.io/acme/web"].map(str::to_owned));
 
     assert!(
-        command.revision_id.as_str().starts_with("rev_"),
+        command.target_revision.as_str().starts_with("rev_"),
         "derived revision id is rev-prefixed: {}",
-        command.revision_id.as_str()
+        command.target_revision.as_str()
     );
 }
 
@@ -317,9 +312,9 @@ fn cli_deploy_shorthand_sanitizes_dotted_tag_into_revision() {
     );
 
     assert!(
-        command.revision_id.as_str().starts_with("rev_1-2-3_"),
+        command.target_revision.as_str().starts_with("rev_1-2-3_"),
         "dotted tag is sanitized: {}",
-        command.revision_id.as_str()
+        command.target_revision.as_str()
     );
 }
 
@@ -347,7 +342,7 @@ fn cli_deploy_shorthand_with_dotted_leaf_suggests_service_flag() {
         .map(str::to_owned),
     );
     assert_eq!(
-        command.service_id,
+        first_service(&command).service_id,
         ServiceId::try_new("my-app").expect("valid service id")
     );
 }
@@ -429,15 +424,35 @@ fn deploy_prints_operation_id_without_runtime_details() {
     );
 }
 
-fn deploy_command_fixture() -> DeployCommand {
-    DeployCommand {
-        operation_id: operation_id("op_deploy"),
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
-        revision_id: RevisionId::try_new("rev_2").expect("valid revision id"),
-        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-        replicas: ReplicaCount::try_new(1).expect("valid replicas"),
-        route: None,
-    }
+fn assert_deploy_fixture(command: &DeployCommand) {
+    assert!(
+        command
+            .operation_id
+            .as_str()
+            .starts_with("op_deploy_svc_api_")
+    );
+    assert_eq!(
+        command.namespace_id,
+        NamespaceId::try_new("default").expect("valid namespace id")
+    );
+    assert_eq!(
+        command.target_revision,
+        RevisionId::try_new("rev_2").expect("valid revision id")
+    );
+    assert_eq!(
+        command.services,
+        vec![DeployServiceSpec {
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+            replicas: ReplicaCount::try_new(1).expect("valid replicas"),
+            route: None,
+        }]
+    );
+    assert!(!command.detach);
+}
+
+fn first_service(command: &DeployCommand) -> &DeployServiceSpec {
+    command.first_service().expect("deploy has a service")
 }
 
 fn deploy_args() -> impl Iterator<Item = String> {
@@ -468,8 +483,6 @@ fn deploy_arg_refs() -> impl Iterator<Item = &'static str> {
         "ghcr.io/acme/api:rev-2",
         "--replicas",
         "1",
-        "--operation",
-        "op_deploy",
     ]
     .into_iter()
 }

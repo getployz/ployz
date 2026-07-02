@@ -376,6 +376,29 @@ pub(crate) fn machine_add_command(
     }
 }
 
+pub(crate) fn machine_add_remote_command(
+    parsed: MachineAddRemoteCli,
+) -> Result<MachineAddRemoteCommand, PloyzctlCliError> {
+    let MachineAddRemoteCli {
+        target,
+        name,
+        roles,
+        installer_script,
+    } = parsed;
+    let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
+    let identity_override = name
+        .as_deref()
+        .map(MachineIdentity::from_name_override)
+        .transpose()
+        .map_err(|error| invalid_value("--name", error))?;
+    Ok(MachineAddRemoteCommand {
+        target,
+        identity_override,
+        roles: roles.into_policy(),
+        installer_script: validate_installer_script(installer_script)?,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MachineAddCliMode {
     Remote {
@@ -408,6 +431,18 @@ pub(crate) struct MachineAddCli {
     #[command(flatten)]
     roles: RolePolicyCli,
     #[arg(long, requires = "target")]
+    installer_script: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MachineAddRemoteCli {
+    /// Remote machine to join (`user@host`).
+    target: String,
+    #[arg(long)]
+    name: Option<String>,
+    #[command(flatten)]
+    roles: RolePolicyCli,
+    #[arg(long)]
     installer_script: Option<String>,
 }
 
@@ -647,25 +682,38 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
+            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\nsubstrate {}\n",
             self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
             render_public_ip(&self.machine),
             render_gateway(&self.machine),
             self.machine.observed_container_count,
+            render_substrate_versions(&self.machine),
         )
     }
 }
 
 fn render_machine_summary(machine: &MachineSnapshot) -> String {
     format!(
-        "{} {} public-ip {} gateway {} containers {}",
+        "{} {} public-ip {} gateway {} containers {} substrate {}",
         machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
         render_public_ip(machine),
         render_gateway(machine),
         machine.observed_container_count,
+        render_substrate_versions(machine),
+    )
+}
+
+fn render_substrate_versions(machine: &MachineSnapshot) -> String {
+    let Some(versions) = &machine.active.substrate_versions else {
+        return "ployzd unknown keeper unknown".to_owned();
+    };
+    format!(
+        "ployzd {} keeper {}",
+        versions.ployzd.as_deref().unwrap_or("unknown"),
+        versions.keeper.as_deref().unwrap_or("unknown")
     )
 }
 

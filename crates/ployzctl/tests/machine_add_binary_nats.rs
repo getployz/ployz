@@ -81,8 +81,8 @@ async fn binary_machine_add_calls_nats_service() {
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .env(PLOYZ_JOIN_NKEY_SEED_FILE_ENV, env.join_seed_path())
         .args([
-            "machine",
-            "add",
+            "internal",
+            "machine-add",
             "--machine",
             "machine_2",
             "--name",

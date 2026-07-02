@@ -31,7 +31,12 @@ async fn binary_deploy_calls_nats_service() {
         .bind_endpoint(endpoint, |request| async move {
             let request: DeploySubmitRequest =
                 serde_json::from_slice(&request.payload).expect("deploy request decodes");
-            assert_eq!(request.operation_id, operation_id("op_deploy"));
+            assert!(
+                request
+                    .operation_id
+                    .as_str()
+                    .starts_with("op_deploy_svc_api_")
+            );
             assert_eq!(
                 request.target.services[0].service_id,
                 ServiceId::try_new("svc_api").expect("valid service id")
@@ -50,7 +55,7 @@ async fn binary_deploy_calls_nats_service() {
             );
 
             let response: DeploySubmitResponse = OperationApiResponse::Ok {
-                value: accepted_operation("op_deploy"),
+                value: accepted_operation(request.operation_id.as_str()),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
@@ -75,10 +80,8 @@ async fn binary_deploy_calls_nats_service() {
         stdout(&output),
         stderr(&output)
     );
-    assert_eq!(
-        stdout(&output),
-        "operation op_deploy\nwatch ployzctl ops watch op_deploy\n"
-    );
+    assert!(stdout(&output).starts_with("operation op_deploy_svc_api_"));
+    assert!(stdout(&output).contains("watch ployzctl ops watch op_deploy_svc_api_"));
     assert_eq!(stderr(&output), "");
 }
 
@@ -134,7 +137,7 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     }
 }
 
-fn deploy_args() -> [&'static str; 11] {
+fn deploy_args() -> [&'static str; 10] {
     [
         "deploy",
         "--service",
@@ -145,8 +148,7 @@ fn deploy_args() -> [&'static str; 11] {
         "ghcr.io/acme/api:rev-2",
         "--replicas",
         "1",
-        "--operation",
-        "op_deploy",
+        "--detach",
     ]
 }
 

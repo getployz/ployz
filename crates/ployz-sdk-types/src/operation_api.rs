@@ -1,16 +1,16 @@
 //! User-facing operation API contract registry.
 
 use crate::{
-    AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
-    InitFirstMachineActivated, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
-    MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
-    MachineListResult, MachineSnapshot, OperationStatusSnapshot, OpsStatusError, OpsStatusRequest,
-    OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineListError,
+    MachineListRequest, MachineListResult, MachineSnapshot, OperationStatusSnapshot, OpsListError,
+    OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -40,9 +40,9 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::ServiceInspectApi,
             $crate::operation_api::RuntimeSnapshotApi,
             $crate::operation_api::LogsTailApi,
+            $crate::operation_api::OpsListApi,
             $crate::operation_api::OpsStatusApi,
-            $crate::operation_api::OpsWatchApi,
-            $crate::operation_api::BackupCreateApi
+            $crate::operation_api::OpsWatchApi
         );
     };
 }
@@ -57,18 +57,6 @@ impl OperationApiContract for DeploySubmitApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeploySubmit;
     const RESPONSE_ALIAS: &'static str = "DeploySubmitResponse";
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BackupCreateApi;
-
-impl OperationApiContract for BackupCreateApi {
-    type Request = BackupCreateRequest;
-    type Success = AcceptedOperation;
-    type Error = BackupCreateError;
-
-    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::BackupCreate;
-    const RESPONSE_ALIAS: &'static str = "BackupCreateResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +189,18 @@ impl OperationApiContract for OpsStatusApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::OpsStatus;
     const RESPONSE_ALIAS: &'static str = "OpsStatusResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpsListApi;
+
+impl OperationApiContract for OpsListApi {
+    type Request = OpsListRequest;
+    type Success = OpsListResult;
+    type Error = OpsListError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::OpsList;
+    const RESPONSE_ALIAS: &'static str = "OpsListResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
