@@ -306,6 +306,24 @@ impl ActiveServiceCommitter for HangingActiveState {
     }
 }
 
+pub(super) struct LostLockActiveState;
+
+impl ActiveServiceCommitter for LostLockActiveState {
+    async fn replace_active_service(
+        &mut self,
+        _state: ActiveServiceState,
+    ) -> Result<(), ActiveServiceCommitError> {
+        Err(ActiveServiceCommitError::NamespaceLockLost)
+    }
+
+    async fn remove_active_service(
+        &mut self,
+        _service_id: ServiceId,
+    ) -> Result<(), ActiveServiceCommitError> {
+        Err(ActiveServiceCommitError::NamespaceLockLost)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RecordingHealth {
     pub(super) checked: Vec<Vec<DeployContainerForAssert>>,

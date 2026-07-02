@@ -679,6 +679,8 @@ fn deploy_target(service_id: &str) -> DeployRequest {
 fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
         active: ActiveServiceState {
+            namespace_id: ployz_core::ids::NamespaceId::try_new("default")
+                .expect("valid namespace id"),
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
         },

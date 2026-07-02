@@ -355,6 +355,13 @@ impl ActiveRouteCommitError {
                 },
                 retained_artifacts,
             },
+            Self::NamespaceLockLost => DeployOperationFailure::RouteCutoverFailed {
+                route: route.target,
+                reason: RouteCutoverFailureReason::StateStoreFailed {
+                    message: failure_message("namespace lock was lost before route cutover"),
+                },
+                retained_artifacts,
+            },
         }
     }
 }
@@ -368,6 +375,7 @@ impl From<ActiveServiceCommitError> for DeployExecutionError {
 #[derive(Debug)]
 pub enum ActiveServiceCommitError {
     Store(CoreStateStoreError),
+    NamespaceLockLost,
 }
 
 impl ActiveServiceCommitError {
@@ -381,6 +389,12 @@ impl ActiveServiceCommitError {
                 service_id: failure_service_id(command),
                 revision_id: failure_revision_id(command),
                 message: failure_message("active service state could not be committed"),
+                retained_artifacts,
+            },
+            Self::NamespaceLockLost => DeployOperationFailure::ControlPlaneCommitFailed {
+                service_id: failure_service_id(command),
+                revision_id: failure_revision_id(command),
+                message: failure_message("namespace lock was lost before active service commit"),
                 retained_artifacts,
             },
         }

@@ -131,6 +131,7 @@ impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
 #[derive(Debug)]
 pub enum ActiveRouteCommitError {
     Store(ActiveRouteStoreError),
+    NamespaceLockLost,
 }
 
 impl ActiveServiceCommitter for AsyncNatsCoreStateStore {

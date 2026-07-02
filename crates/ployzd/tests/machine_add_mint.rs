@@ -17,7 +17,9 @@ use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest,
 };
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 mod support;
 
@@ -25,11 +27,22 @@ use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
+static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+
+async fn lock_machine_add_mint_test() -> OwnedMutexGuard<()> {
+    MACHINE_ADD_MINT_TEST_LOCK
+        .get_or_init(|| Arc::new(Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await
+}
+
 /// The machine-add handler returns its operation id + join material before
 /// any reload occurs; minting runs as owned operation work afterwards and
 /// produces a usable per-machine NKey seed.
 #[tokio::test]
 async fn machine_add_accepts_before_reload_then_mints_material() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let reload = RecordingReload::gated_signal(nats.server().server_pid());
     let config = nats.control_config();
@@ -91,6 +104,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
 /// Two machine-adds mint distinct credentials.
 #[tokio::test]
 async fn machine_add_mints_unique_credentials_per_machine() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
@@ -118,6 +132,7 @@ async fn machine_add_mints_unique_credentials_per_machine() {
 /// the rendered `authorized-users.conf`.
 #[tokio::test]
 async fn concurrent_machine_adds_both_render_their_keys() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
@@ -155,6 +170,7 @@ async fn concurrent_machine_adds_both_render_their_keys() {
 /// render does not shrink the file.
 #[tokio::test]
 async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     // Plant an unknown principal in the recovery-evidence file before
     // control ever runs (KV is empty: fresh JetStream).
@@ -220,6 +236,7 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
 /// not a retry loop.
 #[tokio::test]
 async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let reload = RecordingReload::failing();
     let config = nats.control_config();
@@ -264,6 +281,7 @@ async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
 /// makes the resumed run converge on the partially minted material.
 #[tokio::test]
 async fn control_restart_resumes_stranded_mint_to_material_ready() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     // Gate the reload so the mint cannot reach material-ready while the
     // first control process is alive.
@@ -323,6 +341,7 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
 /// not-ready response, and the keeper-style bounded retry succeeds later.
 #[tokio::test]
 async fn machine_join_redeem_waits_for_material_ready() {
+    let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let reload = RecordingReload::gated_signal(nats.server().server_pid());
     let config = nats.control_config();
