@@ -583,11 +583,8 @@ mod tests {
     async fn host_preparer_rejects_text_with_ployz_tc_symbol_names() {
         let path =
             std::env::temp_dir().join(format!("ployz-ebpf-bytecode-test-{}", std::process::id()));
-        std::fs::write(
-            &path,
-            b"ployz_egress\0ployz_ingress\0ROUTES\0WG_IFINDEX\0OBSERVE_FLAG\0EVENTS\0",
-        )
-        .expect("write test bytecode");
+        std::fs::write(&path, b"ployz_egress\0ployz_ingress\0ROUTES\0WG_IFINDEX\0")
+            .expect("write test bytecode");
         let preparer = PloyzNativeMeshPreparer::with_command_plans(
             machine_id("machine_a"),
             [HostCommandPlan::readiness_ployz_tc_bytecode(&path)],

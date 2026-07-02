@@ -4,10 +4,9 @@ use ployz_core::ids::{
     ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
 };
 use ployz_core::ops::{
-    ActiveServiceCommitFailure, DeployOperationFailure, FailureMessage, HealthCheckFailure,
-    OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
+    DeployOperationFailure, FailureMessage, HealthCheckFailure, OperatorHint, RetainedArtifact,
+    RouteCutoverFailureReason,
 };
-use ployz_core::state::{ActiveRouteState, ExpectedActiveRoute, ExpectedActiveService};
 use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use std::future::Future;
@@ -163,16 +162,6 @@ pub enum DeployExecutionError {
     WaitHealthy(DeployHealthCheckError),
     CommitRoute(ActiveRouteCommitError),
     CommitActiveService(ActiveServiceCommitError),
-    ActiveRouteCommitRejected {
-        expected_current: ExpectedActiveRoute,
-        current: Option<ActiveRouteState>,
-        attempted: ActiveRouteState,
-    },
-    ActiveServiceCommitRejected {
-        expected_current: ExpectedActiveService,
-        current_revision: Option<RevisionId>,
-        attempted_revision: RevisionId,
-    },
     Failed {
         failure: DeployOperationFailure,
         source: Box<DeployExecutionError>,
@@ -316,29 +305,6 @@ impl DeployExecutionError {
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
             Self::CommitRoute(error) => error.deploy_failure(command, retained_artifacts),
             Self::CommitActiveService(error) => error.deploy_failure(command, retained_artifacts),
-            Self::ActiveRouteCommitRejected { attempted, .. } => {
-                DeployOperationFailure::RouteCutoverFailed {
-                    route: attempted.target.clone(),
-                    reason: RouteCutoverFailureReason::RouteRejected {
-                        message: failure_message("route changed before cutover"),
-                    },
-                    retained_artifacts,
-                }
-            }
-            Self::ActiveServiceCommitRejected {
-                expected_current,
-                current_revision,
-                attempted_revision,
-            } => DeployOperationFailure::ActiveServiceCommitRejected {
-                service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
-                reason: ActiveServiceCommitFailure::ActiveServiceChanged {
-                    expected_current: expected_current.clone(),
-                    current_revision: current_revision.clone(),
-                    attempted_revision: attempted_revision.clone(),
-                },
-                retained_artifacts,
-            },
             Self::Failed { failure, .. } => failure.clone(),
         }
     }
@@ -689,9 +655,6 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
             retained_artifacts, ..
         }
         | DeployOperationFailure::ControlPlaneCommitFailed {
-            retained_artifacts, ..
-        }
-        | DeployOperationFailure::ActiveServiceCommitRejected {
             retained_artifacts, ..
         }
         | DeployOperationFailure::RouteCutoverFailed {

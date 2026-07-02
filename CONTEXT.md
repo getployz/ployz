@@ -196,6 +196,10 @@ _Avoid_: Magic link, dashboard token, login token, route session
 A future recovery operation that rebuilds JetStream-backed indexes after JetStream loss or reset by collecting fresh facts from machines and role processes, then adopting only unambiguous state.
 _Avoid_: Automatic recovery
 
+**State Migration**:
+An explicit operation that moves persisted control-plane state from one schema to another so current runtime code can read it. It does not rewrite operation history or machine Local Authority unless that is part of a separate machine-local migration.
+_Avoid_: Legacy compatibility, runtime fallback, silent upgrade
+
 **Control-Plane Epoch**:
 A monotonically increasing cluster-local generation for the current Control-Plane Core endpoint. Machines use it to reject stale endpoint updates after recovery.
 _Avoid_: Recovery version, failover counter

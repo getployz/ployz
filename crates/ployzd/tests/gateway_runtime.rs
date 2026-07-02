@@ -27,7 +27,7 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
 
     assert_eq!(
         tick.state,
-        GatewayProjectionState::Current(GatewayProjection {
+        current_state(GatewayProjection {
             routes: vec![api.clone()],
         })
     );
@@ -50,12 +50,12 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
 
     assert_eq!(
         tick.state,
-        GatewayProjectionState::ProjectionFailedRetained {
-            retained: GatewayProjection {
+        failed_state(
+            GatewayProjection {
                 routes: vec![api.clone()],
             },
-            error: source_unavailable(),
-        }
+            source_unavailable(),
+        )
     );
     assert_eq!(runtime.route_table().routes(), &[api]);
 }
@@ -75,12 +75,12 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
 
     assert_eq!(
         tick.state,
-        GatewayProjectionState::ProjectionFailedRetained {
-            retained: GatewayProjection {
+        failed_state(
+            GatewayProjection {
                 routes: vec![api.clone()],
             },
-            error: invalid_source(),
-        }
+            invalid_source(),
+        )
     );
     assert_eq!(runtime.route_table().routes(), &[api]);
 }
@@ -106,7 +106,7 @@ fn gateway_runtime_applies_later_route_changes_after_outage() {
 
     assert_eq!(
         tick.state,
-        GatewayProjectionState::Current(GatewayProjection {
+        current_state(GatewayProjection {
             routes: vec![api_v2.clone()],
         })
     );
@@ -123,8 +123,9 @@ fn gateway_runtime_has_no_served_routes_before_first_valid_source() {
 
     assert_eq!(
         tick.state,
-        GatewayProjectionState::ProjectionFailedUnavailable {
-            error: source_unavailable(),
+        GatewayProjectionState {
+            last_good: None,
+            last_error: Some(source_unavailable()),
         }
     );
     assert!(runtime.route_table().routes().is_empty());
@@ -292,5 +293,22 @@ fn invalid_source() -> GatewayProjectionError {
 fn source_unavailable() -> GatewayProjectionError {
     GatewayProjectionError::SourceUnavailable {
         message: "nats unavailable".to_owned(),
+    }
+}
+
+fn current_state(projection: GatewayProjection) -> GatewayProjectionState {
+    GatewayProjectionState {
+        last_good: Some(projection),
+        last_error: None,
+    }
+}
+
+fn failed_state(
+    projection: GatewayProjection,
+    error: GatewayProjectionError,
+) -> GatewayProjectionState {
+    GatewayProjectionState {
+        last_good: Some(projection),
+        last_error: Some(error),
     }
 }

@@ -28,7 +28,6 @@ pub enum PloyzctlCommand {
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineInit(machine::MachineInitCommand),
-    MachineAdd(machine::MachineAddCommand),
     MachineAddRemote(machine::MachineAddRemoteCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
@@ -159,14 +158,7 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
             }
             MachineCli::Add(command) => {
-                machine::machine_add_command(command).map(|parsed| match parsed {
-                    machine::ParsedMachineAdd::Explicit(command) => {
-                        PloyzctlCommand::MachineAdd(command)
-                    }
-                    machine::ParsedMachineAdd::Remote(command) => {
-                        PloyzctlCommand::MachineAddRemote(command)
-                    }
-                })
+                machine::machine_add_command(command).map(PloyzctlCommand::MachineAddRemote)
             }
             MachineCli::List(command) => Ok(PloyzctlCommand::MachineList(
                 machine::machine_list_command(command),

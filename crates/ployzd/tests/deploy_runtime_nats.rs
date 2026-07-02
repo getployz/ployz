@@ -15,7 +15,9 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
-use ployzd::controllers::{DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers};
+use ployzd::controllers::{
+    DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
+};
 use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
@@ -376,6 +378,45 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     ));
 }
 
+#[tokio::test]
+async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation() {
+    let nats = test_nats().await;
+    let controllers = operation_controllers(&nats.jetstream).await;
+    controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_first"),
+            target: deploy_request(1),
+        })
+        .await
+        .expect("first deploy operation accepted");
+
+    let error = controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_second"),
+            target: deploy_request(1),
+        })
+        .await
+        .expect_err("second deploy is rejected while namespace is locked");
+
+    assert!(matches!(
+        error,
+        SubmitCommandError::NamespaceBusy {
+            namespace_id: locked_namespace_id,
+            owner,
+        } if locked_namespace_id == namespace_id("default")
+            && owner == operation_id("op_first")
+    ));
+    assert!(
+        controllers
+            .repository()
+            .records()
+            .get(&operation_id("op_second"))
+            .await
+            .expect("operation status reads")
+            .is_none()
+    );
+}
+
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-runtime side.
@@ -459,6 +500,9 @@ async fn operation_controllers(jetstream: &jetstream::Context) -> OperationContr
         AsyncNatsOperationStatusStore::from_jetstream(jetstream)
             .await
             .expect("open operation status store"),
+        AsyncNatsCoreStateStore::from_jetstream(jetstream)
+            .await
+            .expect("open core state store"),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),

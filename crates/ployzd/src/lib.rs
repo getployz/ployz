@@ -7,7 +7,6 @@
 //! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
 
 pub mod api_runtime;
-pub mod app;
 pub mod backup_adapters;
 pub mod backup_restore;
 pub mod backup_runtime;
@@ -33,7 +32,6 @@ pub mod nats_authorization;
 pub mod nats_process;
 pub mod operation_api;
 pub mod process_support;
-pub mod projection;
 pub mod role;
 pub mod services;
 pub mod tasks;

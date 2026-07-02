@@ -154,24 +154,6 @@ pub enum BackupTarget {
 }
 
 impl BackupTarget {
-    #[must_use]
-    pub fn s3(target: S3BackupTarget) -> Self {
-        let S3BackupTarget {
-            bucket,
-            key_prefix,
-            region,
-            endpoint_url,
-            addressing_style,
-        } = target;
-        Self::S3 {
-            bucket,
-            key_prefix,
-            region,
-            endpoint_url,
-            addressing_style,
-        }
-    }
-
     pub fn validate_create(&self) -> Result<(), BackupTargetValidationError> {
         match self {
             Self::S3 {
@@ -182,45 +164,6 @@ impl BackupTarget {
                 ..
             } => validate_s3_backup_target(bucket, key_prefix, region, endpoint_url.as_deref()),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct S3BackupTarget {
-    pub bucket: String,
-    pub key_prefix: String,
-    pub region: String,
-    pub endpoint_url: Option<String>,
-    pub addressing_style: S3AddressingStyle,
-}
-
-impl S3BackupTarget {
-    #[must_use]
-    pub fn new(
-        bucket: impl Into<String>,
-        key_prefix: impl Into<String>,
-        region: impl Into<String>,
-        endpoint_url: Option<String>,
-        addressing_style: S3AddressingStyle,
-    ) -> Self {
-        Self {
-            bucket: bucket.into(),
-            key_prefix: key_prefix.into(),
-            region: region.into(),
-            endpoint_url,
-            addressing_style,
-        }
-    }
-
-    pub fn validate_create(&self) -> Result<(), BackupTargetValidationError> {
-        validate_s3_backup_target(
-            &self.bucket,
-            &self.key_prefix,
-            &self.region,
-            self.endpoint_url.as_deref(),
-        )
     }
 }
 
@@ -310,56 +253,6 @@ pub enum BackupRestoreSource {
         endpoint_url: Option<String>,
         addressing_style: S3AddressingStyle,
     },
-}
-
-impl BackupRestoreSource {
-    #[must_use]
-    pub fn s3(source: S3BackupRestoreSource) -> Self {
-        let S3BackupRestoreSource {
-            bucket,
-            manifest_key,
-            region,
-            endpoint_url,
-            addressing_style,
-        } = source;
-        Self::S3 {
-            bucket,
-            manifest_key,
-            region,
-            endpoint_url,
-            addressing_style,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct S3BackupRestoreSource {
-    pub bucket: String,
-    pub manifest_key: String,
-    pub region: String,
-    pub endpoint_url: Option<String>,
-    pub addressing_style: S3AddressingStyle,
-}
-
-impl S3BackupRestoreSource {
-    #[must_use]
-    pub fn new(
-        bucket: impl Into<String>,
-        manifest_key: impl Into<String>,
-        region: impl Into<String>,
-        endpoint_url: Option<String>,
-        addressing_style: S3AddressingStyle,
-    ) -> Self {
-        Self {
-            bucket: bucket.into(),
-            manifest_key: manifest_key.into(),
-            region: region.into(),
-            endpoint_url,
-            addressing_style,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -736,33 +736,10 @@ fn machine_add_accepts_dns_and_combined_role_opt_outs() {
         command.roles,
         InstallRolePolicy::install_all().without_dns()
     );
-
-    let PloyzctlCommand::MachineAdd(command) = parse(&[
-        "machine",
-        "add",
-        "--machine",
-        "edge_2",
-        "--name",
-        "edge_2",
-        "--operation",
-        "op_machine",
-        "--idempotency-key",
-        "idem_machine",
-        "--no-gateway",
-        "--no-dns",
-    ]) else {
-        panic!("expected explicit machine add command");
-    };
-    assert_eq!(
-        command.roles,
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns()
-    );
 }
 
 #[test]
-fn machine_add_explicit_flags_conflict_with_a_remote_target() {
+fn machine_add_rejects_deleted_explicit_flags() {
     assert!(
         parse_command(
             ["machine", "add", "root@203.0.113.11", "--machine", "edge_2"].map(str::to_owned)
@@ -772,14 +749,13 @@ fn machine_add_explicit_flags_conflict_with_a_remote_target() {
 }
 
 #[test]
-fn machine_add_without_target_still_requires_explicit_flags() {
+fn machine_add_requires_remote_target() {
     let error = parse_command(
         ["machine", "add", "--name", "edge_2", "--machine", "edge_2"].map(str::to_owned),
     )
-    .expect_err("missing operation id fails");
+    .expect_err("missing remote target fails");
     let rendered = error.to_string();
-    assert!(rendered.contains("--operation"));
-    assert!(rendered.contains("USER@HOST"));
+    assert!(rendered.contains("<TARGET>") || rendered.contains("unexpected argument"));
 }
 
 // --- Cloud bootstrap command rendering ---

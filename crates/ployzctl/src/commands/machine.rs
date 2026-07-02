@@ -6,12 +6,11 @@ use clap::Args;
 use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
 use ployz_core::install::{MachineJoinBundle, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::GatewayServingStatus;
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineInspectRequest,
-    MachineListRequest, MachineListResult, MachineSnapshot,
+    AcceptedOperation, MachineAddAccepted, MachineInspectRequest, MachineListRequest,
+    MachineListResult, MachineSnapshot,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -201,28 +200,6 @@ impl MachineAddRemoteOutput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineAddCommand {
-    pub operation_id: OperationId,
-    pub idempotency_key: OperationIdempotencyKey,
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub roles: InstallRolePolicy,
-}
-
-impl MachineAddCommand {
-    #[must_use]
-    pub fn into_request(self) -> MachineAddRequest {
-        MachineAddRequest {
-            operation_id: self.operation_id,
-            idempotency_key: self.idempotency_key,
-            machine_id: self.machine_id,
-            name: self.name,
-            roles: self.roles,
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq)]
 pub struct MachineAddOutput {
     pub machine_id: MachineId,
@@ -324,137 +301,39 @@ impl fmt::Debug for MachineAddOutput {
     }
 }
 
-/// `machine add` keeps both shapes: the quick-start remote-target mode
-/// (`machine add root@host`) and the low-level explicit mode for tests and
-/// automation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ParsedMachineAdd {
-    Explicit(MachineAddCommand),
-    Remote(MachineAddRemoteCommand),
-}
-
 pub(crate) fn machine_add_command(
     parsed: MachineAddCli,
-) -> Result<ParsedMachineAdd, PloyzctlCliError> {
-    match parsed.into_mode()? {
-        MachineAddCliMode::Remote {
-            target,
-            name,
-            roles,
-            installer_script,
-        } => {
-            let target =
-                SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
-            let identity_override = name
-                .as_deref()
-                .map(MachineIdentity::from_name_override)
-                .transpose()
-                .map_err(|error| invalid_value("--name", error))?;
-            Ok(ParsedMachineAdd::Remote(MachineAddRemoteCommand {
-                target,
-                identity_override,
-                roles,
-                installer_script: validate_installer_script(installer_script)?,
-            }))
-        }
-        MachineAddCliMode::Explicit {
-            operation,
-            idempotency_key,
-            machine,
-            name,
-            roles,
-        } => Ok(ParsedMachineAdd::Explicit(MachineAddCommand {
-            operation_id: OperationId::try_new(operation)
-                .map_err(|error| invalid_value("--operation", error))?,
-            idempotency_key: OperationIdempotencyKey::try_new(idempotency_key)
-                .map_err(|error| invalid_value("--idempotency-key", error))?,
-            machine_id: MachineId::try_new(machine)
-                .map_err(|error| invalid_value("--machine", error))?,
-            name: MachineName::try_new(name).map_err(|error| invalid_value("--name", error))?,
-            roles,
-        })),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MachineAddCliMode {
-    Remote {
-        target: String,
-        name: Option<String>,
-        roles: InstallRolePolicy,
-        installer_script: Option<String>,
-    },
-    Explicit {
-        operation: String,
-        idempotency_key: String,
-        machine: String,
-        name: String,
-        roles: InstallRolePolicy,
-    },
+) -> Result<MachineAddRemoteCommand, PloyzctlCliError> {
+    let MachineAddCli {
+        target,
+        name,
+        roles,
+        installer_script,
+    } = parsed;
+    let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
+    let identity_override = name
+        .as_deref()
+        .map(MachineIdentity::from_name_override)
+        .transpose()
+        .map_err(|error| invalid_value("--name", error))?;
+    Ok(MachineAddRemoteCommand {
+        target,
+        identity_override,
+        roles: roles.into_policy(),
+        installer_script: validate_installer_script(installer_script)?,
+    })
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct MachineAddCli {
-    /// Remote machine to join (`user@host`); the quick-start mode.
-    target: Option<String>,
+    /// Remote machine to join (`user@host`).
+    target: String,
     #[arg(long)]
     name: Option<String>,
-    #[arg(long, conflicts_with = "target")]
-    machine: Option<String>,
-    #[arg(long, conflicts_with = "target")]
-    operation: Option<String>,
-    #[arg(long, conflicts_with = "target")]
-    idempotency_key: Option<String>,
     #[command(flatten)]
     roles: RolePolicyCli,
-    #[arg(long, requires = "target")]
+    #[arg(long)]
     installer_script: Option<String>,
-}
-
-impl MachineAddCli {
-    fn into_mode(self) -> Result<MachineAddCliMode, PloyzctlCliError> {
-        let Self {
-            target,
-            name,
-            machine,
-            operation,
-            idempotency_key,
-            roles,
-            installer_script,
-        } = self;
-        let roles = roles.into_policy();
-
-        if let Some(target) = target {
-            return Ok(MachineAddCliMode::Remote {
-                target,
-                name,
-                roles,
-                installer_script,
-            });
-        }
-
-        Ok(MachineAddCliMode::Explicit {
-            operation: require_explicit_machine_add_value(operation, "--operation")?,
-            idempotency_key: require_explicit_machine_add_value(
-                idempotency_key,
-                "--idempotency-key",
-            )?,
-            machine: require_explicit_machine_add_value(machine, "--machine")?,
-            name: require_explicit_machine_add_value(name, "--name")?,
-            roles,
-        })
-    }
-}
-
-fn require_explicit_machine_add_value(
-    value: Option<String>,
-    flag: &'static str,
-) -> Result<String, PloyzctlCliError> {
-    value.ok_or_else(|| {
-        crate::commands::cli_error(format!(
-            "{flag} is required (or pass USER@HOST for a remote machine add)"
-        ))
-    })
 }
 
 pub(crate) fn machine_init_command(

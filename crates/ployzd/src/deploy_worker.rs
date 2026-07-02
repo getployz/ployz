@@ -274,7 +274,7 @@ where
     if command
         .services()
         .iter()
-        .any(|service| service.active_route_commit_request().is_some())
+        .any(|service| service.active_route_state().is_some())
     {
         record_running_stage(
             command,
@@ -592,26 +592,12 @@ async fn commit_active_service<A>(
 where
     A: ActiveServiceCommitter,
 {
-    let outcome = with_step_timeout(
+    with_step_timeout(
         command,
         DeployExecutionStep::CommitActiveService,
-        active_state.commit_active_service(service.active_service_commit_request()),
+        active_state.replace_active_service(service.active_service_state()),
     )
-    .await?;
-
-    match outcome {
-        ployz_core::state::ActiveServiceCommit::Stored { .. }
-        | ployz_core::state::ActiveServiceCommit::AlreadyCommitted { .. } => Ok(()),
-        ployz_core::state::ActiveServiceCommit::ActiveServiceChanged {
-            expected_current,
-            current_revision,
-            attempted_revision,
-        } => Err(DeployExecutionError::ActiveServiceCommitRejected {
-            expected_current,
-            current_revision,
-            attempted_revision,
-        }),
-    }
+    .await
 }
 
 pub(super) async fn cutover_route<C>(
@@ -622,32 +608,18 @@ pub(super) async fn cutover_route<C>(
 where
     C: ActiveRouteCommitter,
 {
-    let Some(request) = service.active_route_commit_request() else {
+    let Some(state) = service.active_route_state() else {
         return Ok(());
     };
 
-    let outcome = with_step_timeout(
+    with_step_timeout(
         command,
         DeployExecutionStep::CommitRoute {
-            route: request.target.clone(),
+            route: state.target.clone(),
         },
-        route_state.commit_active_route(request),
+        route_state.replace_active_route(state),
     )
-    .await?;
-
-    match outcome {
-        ployz_core::state::ActiveRouteCommit::Stored { .. }
-        | ployz_core::state::ActiveRouteCommit::AlreadyCommitted { .. } => Ok(()),
-        ployz_core::state::ActiveRouteCommit::ActiveRouteChanged {
-            expected_current,
-            current,
-            attempted,
-        } => Err(DeployExecutionError::ActiveRouteCommitRejected {
-            expected_current,
-            current,
-            attempted,
-        }),
-    }
+    .await
 }
 
 async fn prepare_dataplane<D>(

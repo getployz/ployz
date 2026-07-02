@@ -4,16 +4,16 @@ use ployz_core::machine_runtime::{
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{ActiveRouteCommitRequest, ExpectedActiveRoute, GatewayServingStatus};
+use ployz_core::state::{ActiveRouteState, GatewayServingStatus};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
-    step_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
+    service_id, step_id,
 };
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayStatusPublishFailure,
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
     start_gateway_process_runtime_with_client,
 };
 use std::time::{Duration, Instant};
@@ -21,82 +21,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
-async fn gateway_process_starts_before_projection_sources_exist() {
+async fn gateway_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start_without_buckets().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let result = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         machine_id("machine_7"),
     )
-    .await
-    .expect("gateway runtime starts");
-    wait_until(Duration::from_secs(1), || {
-        runtime.health().last_attempt.is_some()
-    })
     .await;
-
-    assert!(matches!(
-        runtime.health().last_attempt,
-        Some(GatewayProcessAttempt::Failed { .. })
-    ));
-    assert!(matches!(
-        runtime.health().last_status_publish_failure,
-        Some(GatewayStatusPublishFailure::Write { .. })
-    ));
-
-    nats.create_gateway_buckets().await;
-    let jetstream = jetstream::new(nats.client.clone());
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
-        .await
-        .expect("open observation store");
-    routes
-        .commit_active_route(&ActiveRouteCommitRequest {
-            target: route_target("api.example.com", 443),
-            endpoint_port: route_port(8080),
-            expected_current: ExpectedActiveRoute::Absent,
-            service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
-        })
-        .await
-        .expect("route stores");
-    observations
-        .replace_machine_containers(&machine_snapshot(
-            "machine_7",
-            [managed_observation("machine_7", "ctr_7")],
-        ))
-        .await
-        .expect("observation stores");
-
-    wait_until(Duration::from_secs(2), || {
-        gateway_serves_route(&runtime, "10.0.0.7", 8080)
-    })
-    .await;
-
-    let projection = runtime
-        .served_projection()
-        .expect("gateway serves projection");
-    let [route] = projection.routes.as_slice() else {
-        panic!("expected one gateway route, got {:?}", projection.routes);
+    let Err(error) = result else {
+        panic!("gateway runtime should fail before buckets exist");
     };
-    assert_eq!(
-        route.upstreams,
-        vec![GatewayUpstream {
-            machine_id: machine_id("machine_7"),
-            container_id: container_id("ctr_7"),
-            endpoint: endpoint("10.0.0.7", 8080),
-        }]
-    );
-    assert_eq!(
-        runtime.health().last_attempt,
-        Some(GatewayProcessAttempt::Current { route_count: 1 })
-    );
-    assert_eq!(runtime.health().last_status_publish_failure, None);
 
-    runtime.shutdown().await;
+    assert!(matches!(
+        error,
+        GatewayProcessRuntimeError::OpenCoreState(_)
+            | GatewayProcessRuntimeError::OpenObservations(_)
+    ));
 }
 
 #[tokio::test]
@@ -121,10 +63,10 @@ async fn gateway_process_serves_http_from_nats_projection() {
         .expect("open observation store");
 
     routes
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", runtime.listen_addr().port()),
             endpoint_port: route_port(upstream.port()),
-            expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         })
@@ -175,12 +117,12 @@ async fn gateway_process_serves_http_from_nats_projection() {
 }
 
 #[tokio::test]
-async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll() {
+async fn gateway_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
-        Duration::from_secs(60),
+        Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         machine_id("machine_7"),
     )
@@ -195,10 +137,10 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
         .expect("open observation store");
 
     routes
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
+            namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
-            expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         })

@@ -6,10 +6,7 @@ use std::num::NonZeroU16;
 use crate::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId};
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use crate::ops::{RoutePort, RouteTarget};
-use crate::state::{
-    ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceState, ExpectedActiveRoute,
-    ExpectedActiveRouteRevision, ExpectedActiveService,
-};
+use crate::state::{ActiveRouteState, ActiveServiceState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -128,8 +125,7 @@ pub struct DeployPreparationInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeploy {
     pub request: DeployServiceRequest,
-    pub expected_active: ExpectedActiveService,
-    pub route_commit: Option<ActiveRouteCommitRequest>,
+    pub route_commit: Option<ActiveRouteState>,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -254,39 +250,17 @@ pub enum DeployPreparationError {
 pub fn prepare_deploy(
     input: DeployPreparationInput,
 ) -> Result<PreparedDeploy, DeployPreparationError> {
-    let expected_active = expected_active_service(&input.request, input.active_service)?;
     let route_commit = active_route_commit_request(&input.request, input.active_route)?;
     let existing_replicas = existing_replicas(&input.request, &input.observed_machines);
     let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_machines);
 
     Ok(PreparedDeploy {
         request: input.request,
-        expected_active,
         route_commit,
         eligible_machines: input.eligible_machines,
         existing_replicas,
         cleanup_candidates,
     })
-}
-
-fn expected_active_service(
-    request: &DeployServiceRequest,
-    active_service: Option<ActiveServiceState>,
-) -> Result<ExpectedActiveService, DeployPreparationError> {
-    let Some(active_service) = active_service else {
-        return Ok(ExpectedActiveService::Absent);
-    };
-
-    if active_service.service_id != request.service_id {
-        return Err(DeployPreparationError::ActiveServiceMismatch {
-            expected_service_id: request.service_id.clone(),
-            actual_service_id: active_service.service_id,
-        });
-    }
-
-    Ok(ExpectedActiveService::Revision(
-        active_service.active_revision,
-    ))
 }
 
 fn existing_replicas(
@@ -348,35 +322,26 @@ fn reusable_for_route(
 fn active_route_commit_request(
     request: &DeployServiceRequest,
     active_route: Option<ActiveRouteState>,
-) -> Result<Option<ActiveRouteCommitRequest>, DeployPreparationError> {
+) -> Result<Option<ActiveRouteState>, DeployPreparationError> {
     let Some(route) = request.route.clone() else {
         return Ok(None);
     };
     let target = route.target;
     let endpoint_port = route.endpoint_port;
 
-    let expected_current = match active_route {
-        Some(route) => {
-            if route.target != target {
-                return Err(DeployPreparationError::ActiveRouteMismatch {
-                    expected_route: target,
-                    actual_route: route.target,
-                });
-            }
-            ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
-                service_id: route.service_id,
-                revision_id: route.revision_id,
-                endpoint_port: route.endpoint_port,
-            })
-        }
-        None => ExpectedActiveRoute::Absent,
-    };
+    if let Some(route) = active_route
+        && route.target != target
+    {
+        return Err(DeployPreparationError::ActiveRouteMismatch {
+            expected_route: target,
+            actual_route: route.target,
+        });
+    }
 
-    Ok(Some(ActiveRouteCommitRequest {
+    Ok(Some(ActiveRouteState {
         namespace_id: request.namespace_id.clone(),
         target,
         endpoint_port,
-        expected_current,
         service_id: request.service_id.clone(),
         revision_id: request.target_revision.clone(),
     }))

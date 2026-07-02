@@ -22,10 +22,7 @@ use ployz_core::ops::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
     OperationStatus, RouteTarget,
 };
-use ployz_core::state::{
-    ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
-    MachinePublicIpObservation,
-};
+use ployz_core::state::{ActiveRouteState, MachinePublicIpObservation};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
@@ -50,8 +47,8 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 use ployz_test_support::ids::{container_id, step_id};
 use ployz_test_support::ids::{
-    event_replay_limit, event_sequence, machine_id, operation_id, revision_id, route_hostname,
-    route_port, service_id,
+    event_replay_limit, event_sequence, machine_id, namespace_id, operation_id, revision_id,
+    route_hostname, route_port, service_id,
 };
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
@@ -648,14 +645,10 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .await
         .expect("open core state store");
     routes
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
+            namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname.clone(), route_port),
             endpoint_port: self::route_port(second_upstream.port()),
-            expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
-                service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_2"),
-                endpoint_port: self::route_port(first_upstream_port),
-            }),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
         })
