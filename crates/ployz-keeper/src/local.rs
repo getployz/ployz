@@ -380,7 +380,7 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         &mut self,
         target: &ArtifactTarget,
     ) -> Result<AcquiredArtifact, FailureMessage> {
-        match target.source.view() {
+        match target.source_view() {
             ArtifactSourceView::LocalPath(path) => Ok(AcquiredArtifact::local(path.to_path_buf())),
             ArtifactSourceView::RemoteUrl(url) => {
                 let artifact = AcquiredArtifact::downloaded()?;

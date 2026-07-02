@@ -1,9 +1,8 @@
 use ployz_core::backup::{
     BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupItem, BackupManifest,
     BackupPolicy, BackupRestoreSource, BackupTarget, BackupTargetValidationFailure,
-    BackupTargetValidationField, RestoreStep, S3AddressingStyle, S3BackupRestoreSource,
-    S3BackupTarget, control_plane_backup_scope, current_control_plane_bundle_scope,
-    single_core_restore_contract,
+    BackupTargetValidationField, RestoreStep, S3AddressingStyle, control_plane_backup_scope,
+    current_control_plane_bundle_scope, single_core_restore_contract,
 };
 
 #[test]
@@ -70,20 +69,20 @@ fn current_backup_bundle_scope_is_honest_about_captured_artifacts() {
 
 #[test]
 fn backup_target_artifact_and_restore_source_have_stable_s3_wire_shape() {
-    let target = BackupTarget::s3(S3BackupTarget::new(
-        "ployz-backups",
-        "clusters/dev",
-        "us-east-1",
-        None,
-        S3AddressingStyle::VirtualHosted,
-    ));
-    let source = BackupRestoreSource::s3(S3BackupRestoreSource::new(
-        "ployz-backups",
-        "clusters/dev/op_backup/manifest.json",
-        "us-east-1",
-        Some("https://s3.example.test".to_owned()),
-        S3AddressingStyle::Path,
-    ));
+    let target = BackupTarget::S3 {
+        bucket: "ployz-backups".to_owned(),
+        key_prefix: "clusters/dev".to_owned(),
+        region: "us-east-1".to_owned(),
+        endpoint_url: None,
+        addressing_style: S3AddressingStyle::VirtualHosted,
+    };
+    let source = BackupRestoreSource::S3 {
+        bucket: "ployz-backups".to_owned(),
+        manifest_key: "clusters/dev/op_backup/manifest.json".to_owned(),
+        region: "us-east-1".to_owned(),
+        endpoint_url: Some("https://s3.example.test".to_owned()),
+        addressing_style: S3AddressingStyle::Path,
+    };
     let artifact = BackupArtifact::new(
         BackupArtifactLocation::s3(
             "ployz-backups",
@@ -125,43 +124,43 @@ fn backup_target_artifact_and_restore_source_have_stable_s3_wire_shape() {
 fn backup_target_rejects_empty_s3_create_preconditions() {
     let cases = [
         (
-            BackupTarget::s3(S3BackupTarget::new(
-                " ",
-                "clusters/dev",
-                "us-east-1",
-                None,
-                S3AddressingStyle::VirtualHosted,
-            )),
+            BackupTarget::S3 {
+                bucket: " ".to_owned(),
+                key_prefix: "clusters/dev".to_owned(),
+                region: "us-east-1".to_owned(),
+                endpoint_url: None,
+                addressing_style: S3AddressingStyle::VirtualHosted,
+            },
             BackupTargetValidationField::Bucket,
         ),
         (
-            BackupTarget::s3(S3BackupTarget::new(
-                "ployz-backups",
-                "\t",
-                "us-east-1",
-                None,
-                S3AddressingStyle::VirtualHosted,
-            )),
+            BackupTarget::S3 {
+                bucket: "ployz-backups".to_owned(),
+                key_prefix: "\t".to_owned(),
+                region: "us-east-1".to_owned(),
+                endpoint_url: None,
+                addressing_style: S3AddressingStyle::VirtualHosted,
+            },
             BackupTargetValidationField::KeyPrefix,
         ),
         (
-            BackupTarget::s3(S3BackupTarget::new(
-                "ployz-backups",
-                "clusters/dev",
-                "",
-                None,
-                S3AddressingStyle::VirtualHosted,
-            )),
+            BackupTarget::S3 {
+                bucket: "ployz-backups".to_owned(),
+                key_prefix: "clusters/dev".to_owned(),
+                region: "".to_owned(),
+                endpoint_url: None,
+                addressing_style: S3AddressingStyle::VirtualHosted,
+            },
             BackupTargetValidationField::Region,
         ),
         (
-            BackupTarget::s3(S3BackupTarget::new(
-                "ployz-backups",
-                "clusters/dev",
-                "us-east-1",
-                Some("\n".to_owned()),
-                S3AddressingStyle::VirtualHosted,
-            )),
+            BackupTarget::S3 {
+                bucket: "ployz-backups".to_owned(),
+                key_prefix: "clusters/dev".to_owned(),
+                region: "us-east-1".to_owned(),
+                endpoint_url: Some("\n".to_owned()),
+                addressing_style: S3AddressingStyle::VirtualHosted,
+            },
             BackupTargetValidationField::EndpointUrl,
         ),
     ];

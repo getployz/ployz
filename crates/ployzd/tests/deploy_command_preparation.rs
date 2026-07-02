@@ -7,7 +7,7 @@ use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
 };
-use ployz_core::state::{ActiveServiceState, ExpectedActiveService};
+use ployz_core::state::ActiveServiceState;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, operation_id, revision_id, service_id,
 };
@@ -55,7 +55,6 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         command.cleanup_candidates(),
         [cleanup_container("machine_a", "ctr_old", "rev_old")]
     );
-    assert_eq!(command.expected_active(), &ExpectedActiveService::Absent);
 }
 
 #[tokio::test]
@@ -64,6 +63,7 @@ async fn uses_active_service_revision_and_target_replicas() {
     let facts = DeployExecutionFacts {
         services: vec![DeployServiceExecutionFacts {
             active_service: Some(ActiveServiceState {
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 active_revision: revision_id("rev_1"),
             }),
@@ -90,10 +90,6 @@ async fn uses_active_service_revision_and_target_replicas() {
         .expect("deploy command preparation succeeds");
 
     assert_eq!(
-        command.expected_active(),
-        &ExpectedActiveService::Revision(revision_id("rev_1"))
-    );
-    assert_eq!(
         command.existing_replicas(),
         vec![existing_service_replica("machine_a", "ctr_target")]
     );
@@ -112,6 +108,7 @@ async fn rejects_active_state_for_a_different_service() {
         DeployExecutionFacts {
             services: vec![DeployServiceExecutionFacts {
                 active_service: Some(ActiveServiceState {
+                    namespace_id: namespace_id("default"),
                     service_id: service_id("svc_worker"),
                     active_revision: revision_id("rev_1"),
                 }),

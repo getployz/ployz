@@ -1,13 +1,14 @@
 use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    ActiveRouteCommitRequest, ActiveRouteState, ExpectedActiveRoute, GatewayServingStatus,
-    GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveRouteState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{machine_id, revision_id, route_hostname, route_port, service_id};
+use ployz_test_support::ids::{
+    machine_id, namespace_id, revision_id, route_hostname, route_port, service_id,
+};
 use ployzd::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState,
     project_dns,
@@ -26,11 +27,11 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .expect("open observation store");
 
     routes
-        .commit_active_route(&active_route_commit("api.example.com", 443, 8080))
+        .replace_active_route(&active_route_state("api.example.com", 443, 8080))
         .await
         .expect("api route stores");
     routes
-        .commit_active_route(&active_route_commit("www.example.com", 443, 8080))
+        .replace_active_route(&active_route_state("www.example.com", 443, 8080))
         .await
         .expect("www route stores");
     let gateway_1 = nats.machine_observations("gateway_1").await;
@@ -120,6 +121,7 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
         .await
         .expect("open raw core bucket");
     let payload = serde_json::to_vec(&ActiveRouteState {
+        namespace_id: namespace_id("default"),
         target: route_target("api.example.com", 443),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
@@ -153,7 +155,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let hostname = route_hostname("api.example.com");
 
     routes
-        .commit_active_route(&active_route_commit("api.example.com", 443, 8080))
+        .replace_active_route(&active_route_state("api.example.com", 443, 8080))
         .await
         .expect("route stores");
     let gateway_1 = nats.machine_observations("gateway_1").await;
@@ -242,15 +244,11 @@ async fn test_nats() -> TestNats {
     }
 }
 
-fn active_route_commit(
-    hostname: &str,
-    public_port: u16,
-    endpoint_port: u16,
-) -> ActiveRouteCommitRequest {
-    ActiveRouteCommitRequest {
+fn active_route_state(hostname: &str, public_port: u16, endpoint_port: u16) -> ActiveRouteState {
+    ActiveRouteState {
+        namespace_id: namespace_id("default"),
         target: route_target(hostname, public_port),
         endpoint_port: route_port(endpoint_port),
-        expected_current: ExpectedActiveRoute::Absent,
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
     }

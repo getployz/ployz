@@ -12,14 +12,17 @@ use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_nats::core_state::{
+    AsyncNatsCoreStateStore, CoreStateStoreError, NAMESPACE_LOCK_RENEW_INTERVAL_MS,
+    NamespaceLockRenew,
+};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
@@ -158,6 +161,11 @@ pub struct DeployOperationPorts<'a, D, N, H> {
 pub enum DeployOperationRunError {
     AlreadyStarted,
     ClaimStart(RecordDeployTransitionError),
+    Clock {
+        message: String,
+    },
+    NamespaceLock(CoreStateStoreError),
+    NamespaceLockLost,
     LoadFacts {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
@@ -167,6 +175,12 @@ pub enum DeployOperationRunError {
         failure_record_error: Option<RecordDeployTransitionError>,
     },
     Execute(DeployExecutionError),
+}
+
+impl From<CoreStateStoreError> for DeployOperationRunError {
+    fn from(value: CoreStateStoreError) -> Self {
+        Self::NamespaceLock(value)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -229,11 +243,22 @@ impl DeployOperationRuntime {
         let mut health_checker =
             ObservationHealthChecker::new(self.observations.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
 
-        run_deploy_operation(
+        let namespace_id = accepted.target.namespace_id.clone();
+        let operation_id = accepted.operation_id.clone();
+        let target = accepted.target.clone();
+        let controllers = self.controllers.clone();
+        let renew_core_state = self.core_state.clone();
+        let run_core_state = self.core_state.clone();
+        let renew = renew_namespace_lock_until_lost(
+            renew_core_state,
+            namespace_id.clone(),
+            operation_id.clone(),
+        );
+        let run = run_deploy_operation(
             accepted,
             self.machine_scope,
             DeployOperationStores {
-                core_state: self.core_state,
+                core_state: run_core_state,
                 observations: self.observations,
                 controllers: self.controllers,
             },
@@ -243,9 +268,67 @@ impl DeployOperationRuntime {
                 health_checker: &mut health_checker,
             },
             self.step_timeout,
-        )
-        .await
+        );
+        tokio::pin!(run);
+        tokio::pin!(renew);
+
+        let result = tokio::select! {
+            outcome = &mut run => outcome,
+            outcome = &mut renew => outcome,
+        };
+        if matches!(result, Err(DeployOperationRunError::NamespaceLockLost)) {
+            let _ = controllers
+                .repository()
+                .record_deploy_transition(
+                    &operation_id,
+                    DeployTransition::Failed {
+                        failure: DeployOperationFailure::ControlPlaneCommitFailed {
+                            service_id: target.status_service_id(),
+                            revision_id: target.target_revision,
+                            message: FailureMessage::try_new("namespace lock was lost")
+                                .expect("static namespace lock failure message is non-empty"),
+                            retained_artifacts: Vec::new(),
+                        },
+                    },
+                )
+                .await;
+        }
+        let _ = self
+            .core_state
+            .release_namespace_lock(&namespace_id, &operation_id)
+            .await;
+        result
     }
+}
+
+async fn renew_namespace_lock_until_lost(
+    core_state: AsyncNatsCoreStateStore,
+    namespace_id: ployz_core::ids::NamespaceId,
+    operation_id: ployz_core::ids::OperationId,
+) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
+    let mut interval =
+        tokio::time::interval(Duration::from_millis(NAMESPACE_LOCK_RENEW_INTERVAL_MS));
+    loop {
+        interval.tick().await;
+        match core_state
+            .renew_namespace_lock(&namespace_id, &operation_id, current_unix_ms()?)
+            .await?
+        {
+            NamespaceLockRenew::Renewed => {}
+            NamespaceLockRenew::Lost => return Err(DeployOperationRunError::NamespaceLockLost),
+        }
+    }
+}
+
+fn current_unix_ms() -> Result<u64, DeployOperationRunError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| DeployOperationRunError::Clock {
+            message: error.to_string(),
+        })?
+        .as_millis();
+
+    Ok(u64::try_from(millis).unwrap_or(u64::MAX))
 }
 
 async fn claim_deploy_execution(

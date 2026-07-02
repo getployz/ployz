@@ -1,21 +1,23 @@
 use ployz_core::backup::{
     BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupManifest, BackupRestoreSource,
     BackupTarget, BackupTargetValidationFailure, BackupTargetValidationField,
-    ControlPlaneKvSnapshot, S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
+    ControlPlaneKvSnapshot, S3AddressingStyle,
 };
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     BackupOperationState, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayRequest, OperationStatus,
 };
-use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
+use ployz_core::state::ActiveServiceState;
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateError, BackupCreateRequest, OpsStatusError, OpsStatusRequest};
-use ployz_test_support::ids::{event_sequence, machine_id, operation_id, revision_id, service_id};
+use ployz_test_support::ids::{
+    event_sequence, machine_id, namespace_id, operation_id, revision_id, service_id,
+};
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::backup_adapters::{BackupAdapterError, InMemoryBackupAdapter, backup_object_key};
 use ployzd::backup_restore::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
@@ -133,13 +135,13 @@ async fn backup_create_rejects_empty_s3_target_before_recording_operation() {
     let error = api
         .backup_create(&BackupCreateRequest {
             operation_id: operation_id.clone(),
-            target: BackupTarget::s3(S3BackupTarget::new(
-                "",
-                "clusters/dev",
-                "us-east-1",
-                None,
-                S3AddressingStyle::VirtualHosted,
-            )),
+            target: BackupTarget::S3 {
+                bucket: String::new(),
+                key_prefix: "clusters/dev".to_owned(),
+                region: "us-east-1".to_owned(),
+                endpoint_url: None,
+                addressing_style: S3AddressingStyle::VirtualHosted,
+            },
         })
         .await
         .expect_err("empty bucket is rejected");
@@ -235,10 +237,10 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
         .await
         .expect("source core state opens");
     source_core
-        .commit_active_service(&ActiveServiceCommitRequest {
+        .replace_active_service(&ActiveServiceState {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            expected_current: ExpectedActiveService::Absent,
-            target_revision: revision_id("rev_2"),
+            active_revision: revision_id("rev_2"),
         })
         .await
         .expect("active service stores before backup");
@@ -386,6 +388,9 @@ async fn seed_controllers(nats: &TestNats) -> OperationControllers {
     OperationControllers::new(
         event_log,
         status_store,
+        AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+            .await
+            .expect("core state store opens"),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),
@@ -454,21 +459,21 @@ fn assert_snapshot_contains_control_buckets(snapshot: &ControlPlaneKvSnapshot) {
 }
 
 fn backup_target(prefix: &str) -> BackupTarget {
-    BackupTarget::s3(S3BackupTarget::new(
-        "ployz-backups",
-        prefix,
-        "us-east-1",
-        None,
-        S3AddressingStyle::VirtualHosted,
-    ))
+    BackupTarget::S3 {
+        bucket: "ployz-backups".to_owned(),
+        key_prefix: prefix.to_owned(),
+        region: "us-east-1".to_owned(),
+        endpoint_url: None,
+        addressing_style: S3AddressingStyle::VirtualHosted,
+    }
 }
 
 fn backup_restore_source(prefix: &str, operation: &str) -> BackupRestoreSource {
-    BackupRestoreSource::s3(S3BackupRestoreSource::new(
-        "ployz-backups",
-        backup_object_key(prefix, &operation_id(operation), "manifest.json"),
-        "us-east-1",
-        None,
-        S3AddressingStyle::VirtualHosted,
-    ))
+    BackupRestoreSource::S3 {
+        bucket: "ployz-backups".to_owned(),
+        manifest_key: backup_object_key(prefix, &operation_id(operation), "manifest.json"),
+        region: "us-east-1".to_owned(),
+        endpoint_url: None,
+        addressing_style: S3AddressingStyle::VirtualHosted,
+    }
 }

@@ -314,9 +314,8 @@ impl TestNats {
         }
     }
 
-    /// Assures the production single-core resource manifest (KV buckets,
-    /// streams, object buckets) on the fixture server — no parallel
-    /// test-only resource recipes.
+    /// Assures the production single-core resource manifest on the fixture
+    /// server — no parallel test-only resource recipes.
     pub async fn bootstrap_resources(&self) {
         let plan = BootstrapPlan::for_single_server_client(&self.controller)
             .expect("bootstrap plan builds");

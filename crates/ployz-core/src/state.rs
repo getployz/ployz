@@ -15,6 +15,7 @@ pub const KV_OBS_BUCKET: &str = "KV_OBS";
 
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
+pub const NAMESPACE_LOCK_STATE_PREFIX: &str = "namespace_locks";
 /// `KV_CORE` prefix of the durable NATS authorized-principal records
 /// (ADR-0001: their recovery evidence is `authorized-users.conf`).
 pub const NATS_AUTHORIZED_USER_PREFIX: &str = "nats_authorized_user";
@@ -50,6 +51,15 @@ pub struct ActiveMachineState {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub activated_by: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct NamespaceLockState {
+    pub namespace_id: NamespaceId,
+    pub operation_id: OperationId,
+    pub expires_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,99 +120,7 @@ fn route_hostname_key_token(target: &RouteTarget) -> String {
 }
 
 id_prefixed_state_key! { pub struct ActiveMachineStateKey; prefix: ACTIVE_MACHINE_STATE_PREFIX; fn from_machine_id(&MachineId); }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoreStateRevision(u64);
-
-impl CoreStateRevision {
-    #[must_use]
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ActiveServiceCommitRequest {
-    pub namespace_id: NamespaceId,
-    pub service_id: ServiceId,
-    pub expected_current: ExpectedActiveService,
-    pub target_revision: RevisionId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ActiveRouteCommitRequest {
-    pub namespace_id: NamespaceId,
-    pub target: RouteTarget,
-    pub endpoint_port: RoutePort,
-    pub expected_current: ExpectedActiveRoute,
-    pub service_id: ServiceId,
-    pub revision_id: RevisionId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum ExpectedActiveService {
-    Absent,
-    Revision(RevisionId),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum ExpectedActiveRoute {
-    Absent,
-    ServiceRevision(ExpectedActiveRouteRevision),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ExpectedActiveRouteRevision {
-    pub service_id: ServiceId,
-    pub revision_id: RevisionId,
-    pub endpoint_port: RoutePort,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveServiceCommit {
-    Stored {
-        revision: CoreStateRevision,
-    },
-    AlreadyCommitted {
-        current_revision: RevisionId,
-    },
-    ActiveServiceChanged {
-        expected_current: ExpectedActiveService,
-        current_revision: Option<RevisionId>,
-        attempted_revision: RevisionId,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveRouteCommit {
-    Stored {
-        revision: CoreStateRevision,
-    },
-    AlreadyCommitted {
-        service_id: ServiceId,
-        revision_id: RevisionId,
-    },
-    ActiveRouteChanged {
-        expected_current: ExpectedActiveRoute,
-        current: Option<ActiveRouteState>,
-        attempted: ActiveRouteState,
-    },
-}
+id_prefixed_state_key! { pub struct NamespaceLockStateKey; prefix: NAMESPACE_LOCK_STATE_PREFIX; fn from_namespace_id(&NamespaceId); }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

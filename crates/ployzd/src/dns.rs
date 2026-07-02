@@ -2,8 +2,6 @@
 
 use ployz_core::ops::RouteHostname;
 
-use crate::projection::ProjectionState;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -83,7 +81,21 @@ pub enum DnsProjectionUpdate {
     SourceUnavailable,
 }
 
-pub type DnsProjectionState = ProjectionState<DnsProjection, DnsProjectionError>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsProjectionState {
+    pub last_good: Option<DnsProjection>,
+    pub last_error: Option<DnsProjectionError>,
+}
+
+impl DnsProjectionState {
+    #[must_use]
+    pub const fn unavailable() -> Self {
+        Self {
+            last_good: None,
+            last_error: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DnsProjectionError {
@@ -96,11 +108,29 @@ pub fn apply_dns_update(
     update: DnsProjectionUpdate,
 ) -> DnsProjectionState {
     match update {
-        DnsProjectionUpdate::SourceAvailable(input) => {
-            DnsProjectionState::Current(project_dns(input))
+        DnsProjectionUpdate::SourceAvailable(input) => DnsProjectionState {
+            last_good: Some(project_dns(input)),
+            last_error: None,
+        },
+        DnsProjectionUpdate::SourceInvalid(error) => DnsProjectionState {
+            last_error: Some(error),
+            ..previous
+        },
+        DnsProjectionUpdate::SourceUnavailable => {
+            if previous.last_good.is_some() {
+                if previous.last_error.is_some() {
+                    return previous;
+                }
+                DnsProjectionState {
+                    last_error: Some(DnsProjectionError::InvalidSource {
+                        message: "DNS source unavailable".to_owned(),
+                    }),
+                    ..previous
+                }
+            } else {
+                previous
+            }
         }
-        DnsProjectionUpdate::SourceInvalid(error) => previous.source_failed(error),
-        DnsProjectionUpdate::SourceUnavailable => previous.source_unavailable(),
     }
 }
 
@@ -135,7 +165,7 @@ impl DnsRuntime {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            state: DnsProjectionState::Unavailable,
+            state: DnsProjectionState::unavailable(),
             answers: DnsAnswerTable::empty(),
         }
     }
@@ -151,7 +181,7 @@ impl DnsRuntime {
     }
 
     pub fn apply_source_update(&mut self, update: DnsProjectionUpdate) -> DnsRuntimeTick {
-        let previous = std::mem::replace(&mut self.state, DnsProjectionState::Unavailable);
+        let previous = std::mem::replace(&mut self.state, DnsProjectionState::unavailable());
         self.state = apply_dns_update(previous, update);
 
         if let Some(projection) = projection_to_serve(&self.state) {
@@ -232,38 +262,21 @@ impl DnsAnswerTable {
 }
 
 fn projection_to_serve(state: &DnsProjectionState) -> Option<&DnsProjection> {
-    match state {
-        DnsProjectionState::Current(projection)
-        | DnsProjectionState::LastKnownGood(projection)
-        | DnsProjectionState::ProjectionFailedRetained {
-            retained: projection,
-            ..
-        } => Some(projection),
-        DnsProjectionState::ProjectionFailedUnavailable { .. }
-        | DnsProjectionState::Unavailable => None,
-    }
+    state.last_good.as_ref()
 }
 
 fn dns_serving_state_from_projection_state(state: &DnsProjectionState) -> DnsServingState {
-    match state {
-        DnsProjectionState::Current(projection) => DnsServingState::Current {
+    match (&state.last_good, &state.last_error) {
+        (Some(projection), None) => DnsServingState::Current {
             record_count: projection.records.len(),
         },
-        DnsProjectionState::LastKnownGood(projection) => DnsServingState::LastKnownGood {
+        (Some(projection), Some(error)) => DnsServingState::LastKnownGood {
             record_count: projection.records.len(),
-            error: DnsProjectionError::InvalidSource {
-                message: "DNS source unavailable".to_owned(),
-            },
+            error: error.clone(),
         },
-        DnsProjectionState::ProjectionFailedRetained { retained, error } => {
-            DnsServingState::LastKnownGood {
-                record_count: retained.records.len(),
-                error: error.clone(),
-            }
-        }
-        DnsProjectionState::ProjectionFailedUnavailable { error } => DnsServingState::Unavailable {
+        (None, Some(error)) => DnsServingState::Unavailable {
             error: Some(error.clone()),
         },
-        DnsProjectionState::Unavailable => DnsServingState::Unavailable { error: None },
+        (None, None) => DnsServingState::Unavailable { error: None },
     }
 }

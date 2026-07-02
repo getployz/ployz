@@ -257,24 +257,6 @@ pub async fn execute_command(
         PloyzctlCommand::MachineAddRemote(command) => {
             execute_machine_add_remote(command, config).await
         }
-        PloyzctlCommand::MachineAdd(command) => {
-            let config = config.clone().with_cluster_context_from_disk()?;
-            let nats_connect = nats_connect_config(&config)?;
-            // The install line embeds the cluster-static Join seed
-            // (deliberately low-privilege) — read it before submitting so
-            // a missing seed fails fast without creating an operation.
-            let join_seed = read_join_seed(&config)?;
-            let api = operation_api_client_with_connect(&config, nats_connect).await?;
-            let accepted = api
-                .machine_add(&command.into_request())
-                .await
-                .map_err(api_error)?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::machine::MachineAddOutput::from_accepted(accepted, join_seed)
-                    .render(),
-            ))
-        }
         PloyzctlCommand::MachineList(command) => {
             render_api_call(
                 config,
