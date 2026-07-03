@@ -149,7 +149,6 @@ pub struct DeployCleanupContainer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput {
     pub request: DeployServiceRequest,
-    pub serving_target_entry: Option<ServingTargetEntry>,
     pub eligible_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }

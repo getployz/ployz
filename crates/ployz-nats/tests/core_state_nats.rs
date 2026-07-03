@@ -344,7 +344,7 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
         .await
         .expect_err("wrong route payload is rejected");
     match error {
-        RouteBindingStoreError::CorruptActiveRouteState {
+        RouteBindingStoreError::CorruptRouteBindingState {
             key: actual_key,
             expected_target,
             actual_target,

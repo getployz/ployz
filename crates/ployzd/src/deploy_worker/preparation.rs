@@ -5,7 +5,7 @@ use ployz_core::deploy::{
     namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
 };
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
+use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::time::Duration;
 
@@ -13,7 +13,6 @@ use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionFacts {
-    pub services: Vec<DeployServiceExecutionFacts>,
     pub namespace_route_bindings: Vec<RouteBindingState>,
     pub namespace_serving_entries: Vec<ServingTargetEntry>,
     pub eligible_machines: Vec<MachineId>,
@@ -23,17 +22,12 @@ pub struct DeployExecutionFacts {
     pub step_timeout: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeployServiceExecutionFacts {
-    pub serving_target_entry: Option<ServingTargetEntry>,
-    pub route_bindings: Vec<RouteBindingState>,
-}
-
+#[must_use]
 pub fn prepare_deploy_execution_command(
     operation_id: OperationId,
     request: DeployRequest,
     facts: DeployExecutionFacts,
-) -> Result<DeployExecutionCommand, DeployCommandPreparationError> {
+) -> DeployExecutionCommand {
     let service_requests = request.service_requests();
     let namespace_declared_targets = request
         .services
@@ -56,15 +50,10 @@ pub fn prepare_deploy_execution_command(
         &declared_services,
         &facts.namespace_serving_entries,
     );
-    let mut service_facts = facts.services.into_iter();
     let mut services = Vec::new();
     for service_request in service_requests {
-        let Some(service_facts) = service_facts.next() else {
-            return Err(DeployCommandPreparationError::ServiceFactsMissing);
-        };
         let prepared = prepare_deploy(DeployPreparationInput {
             request: service_request,
-            serving_target_entry: service_facts.serving_target_entry,
             eligible_machines: facts.eligible_machines.clone(),
             observed_machines: facts.observed_machines.clone(),
         });
@@ -79,18 +68,14 @@ pub fn prepare_deploy_execution_command(
 
     // Manifest omission removes a service: its containers are cleanup
     // candidates on every deploy, not only when the manifest is empty.
-    // Only this namespace's containers qualify - a deploy must never
-    // remove another namespace's workloads.
+    // The candidates are already namespace-scoped at collection.
     let namespace_cleanup_candidates = facts
         .namespace_cleanup_candidates
         .into_iter()
-        .filter(|candidate| {
-            candidate.identity.namespace_id == request.namespace_id
-                && !declared_services.contains(&candidate.identity.service_id)
-        })
+        .filter(|candidate| !declared_services.contains(&candidate.identity.service_id))
         .collect();
 
-    Ok(DeployExecutionCommand {
+    DeployExecutionCommand {
         operation_id,
         request,
         services,
@@ -99,22 +84,19 @@ pub fn prepare_deploy_execution_command(
         namespace_cleanup_candidates,
         dataplane_machines: facts.dataplane_machines,
         step_timeout: facts.step_timeout,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DeployCommandPreparationError {
-    #[error("deploy service facts are missing")]
-    ServiceFactsMissing,
+    }
 }
 
 pub fn namespace_cleanup_candidates(
+    namespace_id: &ployz_core::ids::NamespaceId,
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
     observed_machines
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
-        .filter(|container| container.is_running_service())
+        .filter(|container| {
+            container.is_running_service() && container.identity.namespace_id == *namespace_id
+        })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),

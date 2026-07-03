@@ -1223,8 +1223,10 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                    service_id: service_id("svc_api"),
-                    namespace_revision_entry_id: target_namespace_revision_entry_id(),
+                    scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                        service_id: service_id("svc_api"),
+                        namespace_revision_entry_id: target_namespace_revision_entry_id(),
+                    },
                     message: failure_message("serving target commit timed out after 1ms"),
                     retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
                 }
@@ -1265,7 +1267,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         } if matches!(
             *source,
             DeployExecutionError::CommitServingTarget(
-                ployzd::deploy_worker::ServingTargetCommitError::NamespaceLockLost
+                ployzd::deploy_worker::ServingTargetCommitError::NamespaceLockLost { .. }
             )
         )
     ));
@@ -1273,8 +1275,10 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: service_id("svc_api"),
-                namespace_revision_entry_id: target_namespace_revision_entry_id(),
+                scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                    service_id: service_id("svc_api"),
+                    namespace_revision_entry_id: target_namespace_revision_entry_id(),
+                },
                 message: failure_message("namespace lock was lost before serving target commit"),
                 retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
             }

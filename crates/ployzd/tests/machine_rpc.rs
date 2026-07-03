@@ -584,9 +584,8 @@ fn image(value: &str) -> ImageReference {
 
 #[test]
 fn container_run_request_wire_shape_survived_run_spec_dissolution() {
-    // The run RPC used to carry a per-RPC MachineContainerRunSpec with
-    // exactly these six fields; it now carries ManagedContainerIdentity
-    // directly. This pin proves the dissolution changed no wire bytes.
+    // The run RPC's container field is the managed container identity,
+    // serialized flat; this pin is the wire contract for that shape.
     let request = run_request();
     let json = serde_json::to_value(&request).expect("run request serializes");
 

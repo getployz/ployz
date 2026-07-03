@@ -288,6 +288,11 @@ fn derive_runtime_revisions(
         ));
     }
     for container in containers {
+        // Hook containers (predeploy, job) are operation evidence, not
+        // service instances; only service containers evidence a revision.
+        if container.identity.kind != ManagedContainerKind::Service {
+            continue;
+        }
         revisions.insert((
             container.identity.namespace_id.clone(),
             container.identity.service_id.clone(),
@@ -316,7 +321,10 @@ fn derive_runtime_releases(
     let mut active_revisions = BTreeMap::new();
     for service in services {
         active_revisions.insert(
-            service.active.service_id.clone(),
+            (
+                service.active.namespace_id.clone(),
+                service.active.service_id.clone(),
+            ),
             service.active.namespace_revision_entry_id.clone(),
         );
         releases
@@ -330,7 +338,9 @@ fn derive_runtime_releases(
     for route in routes {
         // Route bindings are service references (ADR 0024); the served
         // entry identity comes from the serving target, not the binding.
-        let Some(namespace_revision_entry_id) = active_revisions.get(&route.service_id) else {
+        let Some(namespace_revision_entry_id) =
+            active_revisions.get(&(route.namespace_id.clone(), route.service_id.clone()))
+        else {
             continue;
         };
         releases
@@ -382,18 +392,28 @@ fn missing_runtime_links(
     routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> usize {
-    let service_ids = services
+    let serving = services
         .iter()
-        .map(|service| service.active.service_id.clone())
+        .map(|service| {
+            (
+                service.active.namespace_id.clone(),
+                service.active.service_id.clone(),
+            )
+        })
         .collect::<BTreeSet<_>>();
 
     routes
         .iter()
-        .filter(|route| !service_ids.contains(&route.service_id))
+        .filter(|route| !serving.contains(&(route.namespace_id.clone(), route.service_id.clone())))
         .count()
         + containers
             .iter()
-            .filter(|container| !service_ids.contains(&container.identity.service_id))
+            .filter(|container| {
+                !serving.contains(&(
+                    container.identity.namespace_id.clone(),
+                    container.identity.service_id.clone(),
+                ))
+            })
             .count()
 }
 
@@ -682,16 +702,20 @@ pub async fn ops_watch(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_runtime_instances, derive_runtime_revisions};
+    use super::{
+        ServiceSnapshot, derive_runtime_instances, derive_runtime_releases,
+        derive_runtime_revisions,
+    };
+    use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+    use ployz_core::state::{RouteBindingState, ServingTargetEntry};
     use ployz_test_support::containers;
-    use ployz_test_support::ids::{namespace_id, service_id};
+    use ployz_test_support::ids::{namespace_id, namespace_revision_entry_id, service_id};
 
     /// Containers whose service has no serving target entry still surface
-    /// as instances and revisions under their own identity namespace.
-    /// Before identity consolidation they were silently dropped by a
-    /// namespace-lookup join; Docker is execution reality, so orphaned
-    /// containers are evidence, not noise (missing_link_count separately
-    /// reports the mismatch).
+    /// as instances and revisions under their own identity namespace:
+    /// Docker is execution reality, so orphaned containers are evidence,
+    /// not noise (missing_link_count separately reports the mismatch).
     #[test]
     fn orphaned_containers_surface_as_instances_and_revisions() {
         let orphan = containers::observation("machine_a", "ctr_orphan")
@@ -711,5 +735,82 @@ mod tests {
             panic!("orphaned container is projected as a revision");
         };
         assert_eq!(revision.namespace_id, namespace_id("team-a"));
+    }
+
+    /// Hook containers are operation evidence, not service instances:
+    /// they never fabricate a service revision.
+    #[test]
+    fn hook_containers_do_not_evidence_revisions() {
+        let job = containers::observation("machine_a", "ctr_job")
+            .with(containers::identity("svc_api").kind(ManagedContainerKind::Job))
+            .running_unroutable()
+            .build();
+
+        assert!(derive_runtime_revisions(&[], &[job]).is_empty());
+    }
+
+    /// A route for a namespace with no serving entry is a missing link
+    /// even when another namespace serves the same service name.
+    #[test]
+    fn missing_links_are_namespace_scoped() {
+        let serving = ServiceSnapshot {
+            active: ServingTargetEntry {
+                namespace_id: namespace_id("team-a"),
+                service_id: service_id("web"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_a"),
+            },
+        };
+        let dangling_route = RouteBindingState {
+            namespace_id: namespace_id("team-b"),
+            target: RouteTarget::new(
+                RouteHostname::try_new("b.example.com").expect("valid route hostname"),
+                RoutePort::try_new(443).expect("valid route port"),
+            ),
+            endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
+            service_id: service_id("web"),
+        };
+
+        assert_eq!(
+            super::missing_runtime_links(&[serving], &[dangling_route], &[]),
+            1
+        );
+    }
+
+    /// Two namespaces sharing a service name must not cross-attribute
+    /// route releases: the lookup is namespace-scoped, so team-b's route
+    /// resolves team-b's entry even when team-a inserted last.
+    #[test]
+    fn releases_resolve_entries_per_namespace() {
+        let serving = |namespace: &str, entry: &str| ServiceSnapshot {
+            active: ServingTargetEntry {
+                namespace_id: namespace_id(namespace),
+                service_id: service_id("web"),
+                namespace_revision_entry_id: namespace_revision_entry_id(entry),
+            },
+        };
+        let route = RouteBindingState {
+            namespace_id: namespace_id("team-b"),
+            target: RouteTarget::new(
+                RouteHostname::try_new("b.example.com").expect("valid route hostname"),
+                RoutePort::try_new(443).expect("valid route port"),
+            ),
+            endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
+            service_id: service_id("web"),
+        };
+
+        let releases = derive_runtime_releases(
+            &[serving("team-b", "entry_b"), serving("team-a", "entry_a")],
+            &[route],
+        );
+
+        let release = releases
+            .iter()
+            .find(|release| !release.routes.is_empty())
+            .expect("team-b's route lands on one release");
+        assert_eq!(release.namespace_id, namespace_id("team-b"));
+        assert_eq!(
+            release.namespace_revision_entry_id,
+            namespace_revision_entry_id("entry_b")
+        );
     }
 }

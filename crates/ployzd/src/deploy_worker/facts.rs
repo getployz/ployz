@@ -9,8 +9,8 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
 use std::time::Duration;
 
+use super::DeployExecutionFacts;
 use super::preparation::namespace_cleanup_candidates;
-use super::{DeployExecutionFacts, DeployServiceExecutionFacts};
 
 const MAX_CONCURRENT_OBSERVATION_READS: usize = 16;
 
@@ -37,57 +37,39 @@ pub async fn load_deploy_execution_facts_from_nats(
     observations: &AsyncNatsObservationStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let service_requests = request.service_requests();
-    let route_bindings = core_state.route_bindings().await.map_err(|source| {
-        DeployFactLoadError::RouteBindingsRead {
-            message: source.to_string(),
-        }
-    })?;
+    let route_bindings = async {
+        core_state
+            .route_bindings()
+            .await
+            .map_err(|source| DeployFactLoadError::RouteBindingsRead {
+                message: source.to_string(),
+            })
+    };
+    let serving_entries = async {
+        core_state.serving_target_entries().await.map_err(|source| {
+            DeployFactLoadError::ServingTargetEntriesRead {
+                message: source.to_string(),
+            }
+        })
+    };
+    let machine_scope = load_active_machine_scope(core_state, machine_scope);
+    let (route_bindings, serving_entries, machine_scope) =
+        tokio::try_join!(route_bindings, serving_entries, machine_scope)?;
     let namespace_route_bindings = route_bindings
-        .iter()
+        .into_iter()
         .filter(|binding| binding.namespace_id == request.namespace_id)
-        .cloned()
         .collect::<Vec<_>>();
-    let namespace_serving_entries = core_state
-        .serving_target_entries()
-        .await
-        .map_err(|source| DeployFactLoadError::ServingTargetEntriesRead {
-            message: source.to_string(),
-        })?
+    let namespace_serving_entries = serving_entries
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let mut service_facts = Vec::new();
-    for service in &service_requests {
-        let serving_target_entry = core_state
-            .serving_target_entry(&service.namespace_id, &service.service_id)
-            .await
-            .map_err(|source| DeployFactLoadError::ServingTargetEntryRead {
-                service_id: service.service_id.clone(),
-                message: source.to_string(),
-            })?;
-        let route_bindings = route_bindings
-            .iter()
-            .filter(|route| {
-                route.namespace_id == service.namespace_id && route.service_id == service.service_id
-            })
-            .cloned()
-            .collect();
-        service_facts.push(DeployServiceExecutionFacts {
-            serving_target_entry,
-            route_bindings,
-        });
-    }
-    let machine_scope = load_active_machine_scope(core_state, machine_scope).await?;
     let observed_machines =
         load_machine_snapshots(observations, &machine_scope.observed_machine_ids).await?;
-    let dataplane_machines = routed_dataplane_machines(
-        &service_requests,
-        machine_scope.observed_machine_ids.clone(),
-    );
-    let namespace_cleanup_candidates = namespace_cleanup_candidates(&observed_machines);
+    let dataplane_machines =
+        routed_dataplane_machines(request, machine_scope.observed_machine_ids.clone());
+    let namespace_cleanup_candidates =
+        namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
-        services: service_facts,
         namespace_route_bindings,
         namespace_serving_entries,
         eligible_machines: machine_scope.eligible_machines,
@@ -99,10 +81,14 @@ pub async fn load_deploy_execution_facts_from_nats(
 }
 
 fn routed_dataplane_machines(
-    services: &[ployz_core::deploy::DeployServiceRequest],
+    request: &DeployRequest,
     fallback_machines: Vec<MachineId>,
 ) -> Vec<MachineId> {
-    if services.iter().all(|service| service.routes.is_empty()) {
+    if request
+        .services
+        .iter()
+        .all(|service| service.routes.is_empty())
+    {
         return Vec::new();
     }
 

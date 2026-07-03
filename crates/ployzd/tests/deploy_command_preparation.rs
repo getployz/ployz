@@ -12,9 +12,7 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     operation_id, service_id,
 };
-use ployzd::deploy_worker::{
-    DeployExecutionFacts, DeployServiceExecutionFacts, prepare_deploy_execution_command,
-};
+use ployzd::deploy_worker::{DeployExecutionFacts, prepare_deploy_execution_command};
 use std::time::Duration;
 
 #[tokio::test]
@@ -23,10 +21,6 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
     let facts = DeployExecutionFacts {
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
-        services: vec![DeployServiceExecutionFacts {
-            serving_target_entry: None,
-            route_bindings: Vec::new(),
-        }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![
@@ -49,8 +43,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         step_timeout: Duration::from_secs(5),
     };
 
-    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts)
-        .expect("deploy command preparation succeeds");
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
     assert!(command.existing_replicas().is_empty());
     assert_eq!(
@@ -65,14 +58,6 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
     let facts = DeployExecutionFacts {
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
-        services: vec![DeployServiceExecutionFacts {
-            serving_target_entry: Some(ServingTargetEntry {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_api"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-            }),
-            route_bindings: Vec::new(),
-        }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![
@@ -90,8 +75,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
         step_timeout: Duration::from_secs(5),
     };
 
-    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts)
-        .expect("deploy command preparation succeeds");
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
     assert_eq!(
         command.existing_replicas(),
@@ -147,21 +131,17 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_worker"),
             },
         ],
-        services: vec![DeployServiceExecutionFacts {
-            serving_target_entry: None,
-            route_bindings: Vec::new(),
-        }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![omitted_container.clone()],
-        namespace_cleanup_candidates: ployzd::deploy_worker::namespace_cleanup_candidates(&[
-            omitted_container,
-        ]),
+        namespace_cleanup_candidates: ployzd::deploy_worker::namespace_cleanup_candidates(
+            &namespace_id("default"),
+            &[omitted_container],
+        ),
         step_timeout: Duration::from_secs(5),
     };
 
-    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts)
-        .expect("deploy command preparation succeeds");
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
     assert_eq!(command.route_binding_removals(), [omitted_target]);
     assert_eq!(
