@@ -41,7 +41,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     let mut service_facts = Vec::new();
     for service in &service_requests {
         let active_service = core_state
-            .active_service(&service.service_id)
+            .active_service(&service.namespace_id, &service.service_id)
             .await
             .map_err(|source| DeployFactLoadError::ActiveServiceRead {
                 service_id: service.service_id.clone(),
@@ -69,7 +69,8 @@ pub async fn load_deploy_execution_facts_from_nats(
         &service_requests,
         machine_scope.observed_machine_ids.clone(),
     );
-    let namespace_cleanup_candidates = namespace_cleanup_candidates(&observed_machines);
+    let namespace_cleanup_candidates =
+        namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
         services: service_facts,
         eligible_machines: machine_scope.eligible_machines,

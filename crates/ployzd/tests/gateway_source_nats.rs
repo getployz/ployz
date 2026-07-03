@@ -221,6 +221,7 @@ fn managed_observation(
     ManagedContainerObservation {
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
+        namespace_id: namespace_id("default"),
         service_id: service_id(service_id_value),
         revision_id: revision_id(revision_id_value),
         operation_id: operation_id("op_123"),

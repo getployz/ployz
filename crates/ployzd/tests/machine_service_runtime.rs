@@ -11,7 +11,8 @@ use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, operation_id, revision_id, service_id, step_id,
+    container_id, failure_message, machine_id, namespace_id, operation_id, revision_id, service_id,
+    step_id,
 };
 use ployzd::deploy_worker::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
@@ -1153,6 +1154,7 @@ fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
 
 fn managed_container_spec() -> MachineContainerRunSpec {
     MachineContainerRunSpec {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_2"),
         operation_id: operation_id("op_123"),
@@ -1186,6 +1188,7 @@ fn existing_container_with_state(
 
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_2"),
         operation_id: operation_id("op_123"),

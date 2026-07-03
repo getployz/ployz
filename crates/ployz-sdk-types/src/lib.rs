@@ -186,6 +186,7 @@ pub struct ServiceListRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInspectRequest {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
 }
 
