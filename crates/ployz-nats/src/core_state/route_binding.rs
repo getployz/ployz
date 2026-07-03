@@ -40,7 +40,7 @@ impl AsyncNatsCoreStateStore {
             return Ok(None);
         };
 
-        decode_active_route_state(target, &key, &payload).map(Some)
+        decode_route_binding_state(target, &key, &payload).map(Some)
     }
 
     pub async fn remove_route_binding(
@@ -77,7 +77,7 @@ impl AsyncNatsCoreStateStore {
         .map_err(RouteBindingStoreError::from)
     }
 
-    pub async fn watch_active_route_changes(
+    pub async fn watch_route_binding_changes(
         &self,
     ) -> Result<async_nats::jetstream::kv::Watch, RouteBindingStoreError> {
         let route_key_filter = format!("{}.>", ployz_core::state::ROUTE_BINDING_STATE_PREFIX);
@@ -114,7 +114,7 @@ pub enum RouteBindingStoreError {
     Watch {
         message: String,
     },
-    CorruptActiveRouteState {
+    CorruptRouteBindingState {
         key: String,
         expected_target: RouteTarget,
         actual_target: RouteTarget,
@@ -138,7 +138,7 @@ impl fmt::Display for RouteBindingStoreError {
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::ListKeys { message } => write!(formatter, "list route binding keys: {message}"),
             Self::Watch { message } => write!(formatter, "watch route binding keys: {message}"),
-            Self::CorruptActiveRouteState {
+            Self::CorruptRouteBindingState {
                 key,
                 expected_target,
                 actual_target,
@@ -175,7 +175,7 @@ impl From<KvListError> for RouteBindingStoreError {
     }
 }
 
-fn decode_active_route_state(
+fn decode_route_binding_state(
     expected_target: &RouteTarget,
     key: &RouteBindingStateKey,
     payload: &[u8],
@@ -183,7 +183,7 @@ fn decode_active_route_state(
     let state: RouteBindingState =
         serde_json::from_slice(payload).map_err(RouteBindingStoreError::Decode)?;
     if state.target != *expected_target {
-        return Err(RouteBindingStoreError::CorruptActiveRouteState {
+        return Err(RouteBindingStoreError::CorruptRouteBindingState {
             key: key.as_str().to_owned(),
             expected_target: expected_target.clone(),
             actual_target: state.target,

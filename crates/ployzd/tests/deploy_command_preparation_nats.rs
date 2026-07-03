@@ -341,7 +341,6 @@ async fn prepare_command_from_nats(
     .await
     .expect("deploy facts load from nats");
     prepare_deploy_execution_command(operation_id, request, facts)
-        .expect("deploy command prepares from loaded facts")
 }
 
 struct TestNats {

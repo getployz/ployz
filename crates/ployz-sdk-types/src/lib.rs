@@ -62,8 +62,9 @@ pub use ployz_core::ops::{
     RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
 };
 pub use ployz_core::ops::{
-    CertOperationFailure, CertOperationState, CertRunningStage, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployRunningStage,
+    CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,
+    DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
+    DeployRunningStage,
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{

@@ -202,11 +202,6 @@ fn deploy_plan_requires_eligible_machine() {
 fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(2),
-        serving_target_entry: Some(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-        }),
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         observed_machines: vec![observed_machine(
             "machine_b",
@@ -272,7 +267,6 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
-        serving_target_entry: None,
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         observed_machines: vec![observed_machine(
             "machine_b",
@@ -316,7 +310,6 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
-        serving_target_entry: None,
         eligible_machines: vec![machine_id("machine_a")],
         observed_machines: Vec::new(),
     });
@@ -411,7 +404,6 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
-        serving_target_entry: None,
         eligible_machines: Vec::new(),
         observed_machines: Vec::new(),
     });
@@ -474,7 +466,6 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
     foreign.identity.namespace_id = namespace_id("other");
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(1),
-        serving_target_entry: None,
         eligible_machines: vec![machine_id("machine_a")],
         observed_machines: vec![observed_machine("machine_a", [foreign])],
     });

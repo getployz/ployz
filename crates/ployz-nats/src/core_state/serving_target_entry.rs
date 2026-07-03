@@ -43,7 +43,7 @@ impl AsyncNatsCoreStateStore {
             return Ok(None);
         };
 
-        decode_active_service_state(service_id, &key, &payload).map(Some)
+        decode_serving_target_entry(service_id, &key, &payload).map(Some)
     }
 
     pub async fn remove_serving_target_entry(
@@ -51,14 +51,6 @@ impl AsyncNatsCoreStateStore {
         namespace_id: &NamespaceId,
         service_id: &ServiceId,
     ) -> Result<(), CoreStateStoreError> {
-        if self
-            .serving_target_entry(namespace_id, service_id)
-            .await?
-            .is_none()
-        {
-            return Ok(());
-        }
-
         let key = ServingTargetEntryKey::from_namespace_service(namespace_id, service_id);
         with_io_timeout(
             "serving target entry state delete",
@@ -94,7 +86,7 @@ impl AsyncNatsCoreStateStore {
     }
 }
 
-fn decode_active_service_state(
+fn decode_serving_target_entry(
     expected_service_id: &ServiceId,
     key: &ServingTargetEntryKey,
     payload: &[u8],

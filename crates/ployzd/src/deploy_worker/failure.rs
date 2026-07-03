@@ -1,12 +1,11 @@
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
-    StepId, SubjectTokenError,
+    ContainerId, MachineId, NamespaceRevisionId, OperationId, ServiceId, StepId, SubjectTokenError,
 };
 use ployz_core::ops::{
-    DeployOperationFailure, FailureMessage, HealthCheckFailure, OperatorHint, RetainedArtifact,
-    RouteCutoverFailureReason,
+    ControlPlaneCommitScope, DeployOperationFailure, FailureMessage, HealthCheckFailure,
+    OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
 };
 use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionError};
@@ -27,19 +26,41 @@ fn failure_namespace_revision_id(command: &DeployExecutionCommand) -> NamespaceR
     command.request.namespace_revision_id.clone()
 }
 
-fn failure_namespace_revision_entry_id(
+/// Scope for the serving-target unpublish of one omitted service: the
+/// removed entry's own identity when the command still carries it, else
+/// namespace scope.
+fn removed_serving_target_scope(
     command: &DeployExecutionCommand,
-) -> NamespaceRevisionEntryId {
-    // Empty-manifest deploys (remove everything) have no service entry;
-    // failure evidence falls back to the namespace revision id, mirroring
-    // `DeployRequest::status_service_id`.
-    let Some(service) = command.services().first() else {
-        return NamespaceRevisionEntryId::try_new(
-            command.request.namespace_revision_id.as_str().to_owned(),
-        )
-        .expect("namespace revision id is a valid entry id fallback");
+    service_id: &ServiceId,
+) -> ControlPlaneCommitScope {
+    let Some(entry) = command
+        .serving_target_removals()
+        .iter()
+        .find(|entry| entry.service_id == *service_id)
+    else {
+        return ControlPlaneCommitScope::Namespace {
+            namespace_revision_id: command.request.namespace_revision_id.clone(),
+        };
     };
-    service.request.namespace_revision_entry_id.clone()
+    ControlPlaneCommitScope::ServiceEntry {
+        service_id: entry.service_id.clone(),
+        namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
+    }
+}
+
+/// Scope for a control-plane commit failure. Empty-manifest deploys commit
+/// no service entry, so their record failures are namespace-scoped instead
+/// of borrowing a counterfeit entry digest.
+fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitScope {
+    let Some(service) = command.services().first() else {
+        return ControlPlaneCommitScope::Namespace {
+            namespace_revision_id: command.request.namespace_revision_id.clone(),
+        };
+    };
+    ControlPlaneCommitScope::ServiceEntry {
+        service_id: service.request.service_id.clone(),
+        namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+    }
 }
 
 #[derive(Debug)]
@@ -249,22 +270,19 @@ impl DeployExecutionStep {
                 }
             }
             Self::CommitServingTarget => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: failure_service_id(command),
-                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                scope: failure_commit_scope(command),
                 message: timeout_failure_message("serving target commit", timeout),
                 retained_artifacts,
             },
             Self::RemoveServingTarget { service_id } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
-                    service_id: service_id.clone(),
-                    namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                    scope: removed_serving_target_scope(command, service_id),
                     message: timeout_failure_message("serving target unpublish", timeout),
                     retained_artifacts,
                 }
             }
             Self::RecordOperationEvent => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: failure_service_id(command),
-                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                scope: failure_commit_scope(command),
                 message: timeout_failure_message(self.as_str(), timeout),
                 retained_artifacts,
             },
@@ -278,8 +296,7 @@ impl DeployExecutionError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         DeployOperationFailure::ControlPlaneCommitFailed {
-            service_id: failure_service_id(command),
-            namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+            scope: failure_commit_scope(command),
             message: failure_message("operation progress could not be recorded"),
             retained_artifacts,
         }
@@ -320,8 +337,8 @@ impl DeployExecutionError {
             Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
-            Self::CommitRoute(error) => error.deploy_failure(command, retained_artifacts),
-            Self::CommitServingTarget(error) => error.deploy_failure(command, retained_artifacts),
+            Self::CommitRoute(error) => error.deploy_failure(retained_artifacts),
+            Self::CommitServingTarget(error) => error.deploy_failure(retained_artifacts),
             Self::Failed { failure, .. } => failure.clone(),
         }
     }
@@ -358,11 +375,7 @@ impl From<RouteBindingCommitError> for DeployExecutionError {
 }
 
 impl RouteBindingCommitError {
-    fn deploy_failure(
-        &self,
-        _command: &DeployExecutionCommand,
-        retained_artifacts: Vec<RetainedArtifact>,
-    ) -> DeployOperationFailure {
+    fn deploy_failure(&self, retained_artifacts: Vec<RetainedArtifact>) -> DeployOperationFailure {
         match self {
             Self::Store { target, error } => DeployOperationFailure::RouteCutoverFailed {
                 route: target.clone(),
@@ -390,26 +403,27 @@ impl From<ServingTargetCommitError> for DeployExecutionError {
 
 #[derive(Debug)]
 pub enum ServingTargetCommitError {
-    Store(CoreStateStoreError),
-    NamespaceLockLost,
+    Store {
+        scope: ControlPlaneCommitScope,
+        error: CoreStateStoreError,
+    },
+    NamespaceLockLost {
+        scope: ControlPlaneCommitScope,
+    },
 }
 
 impl ServingTargetCommitError {
-    fn deploy_failure(
-        &self,
-        command: &DeployExecutionCommand,
-        retained_artifacts: Vec<RetainedArtifact>,
-    ) -> DeployOperationFailure {
+    fn deploy_failure(&self, retained_artifacts: Vec<RetainedArtifact>) -> DeployOperationFailure {
         match self {
-            Self::Store(_) => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: failure_service_id(command),
-                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
-                message: failure_message("serving target entry state could not be committed"),
+            Self::Store { scope, error } => DeployOperationFailure::ControlPlaneCommitFailed {
+                scope: scope.clone(),
+                message: failure_message(format!(
+                    "serving target entry state could not be committed: {error}"
+                )),
                 retained_artifacts,
             },
-            Self::NamespaceLockLost => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: failure_service_id(command),
-                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+            Self::NamespaceLockLost { scope } => DeployOperationFailure::ControlPlaneCommitFailed {
+                scope: scope.clone(),
                 message: failure_message("namespace lock was lost before serving target commit"),
                 retained_artifacts,
             },

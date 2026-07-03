@@ -28,9 +28,9 @@ pub(crate) use ployz_test_support::ids::{
 use ployzd::deploy_worker::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
-    DeployServiceExecutionFacts, MachineContainerRuntime, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason, RouteBindingCommitError, RouteBindingCommitter,
-    ServingTargetCommitError, ServingTargetCommitter, prepare_deploy_execution_command,
+    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitError,
+    ServingTargetCommitter, prepare_deploy_execution_command,
 };
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
@@ -293,10 +293,9 @@ impl ServingTargetCommitter for RecordingActiveState {
 
     async fn remove_serving_target_entry(
         &mut self,
-        _namespace_id: NamespaceId,
-        service_id: ServiceId,
+        entry: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
-        self.removals.push(service_id);
+        self.removals.push(entry.service_id);
         Ok(())
     }
 }
@@ -314,8 +313,7 @@ impl ServingTargetCommitter for HangingActiveState {
 
     async fn remove_serving_target_entry(
         &mut self,
-        _namespace_id: NamespaceId,
-        _service_id: ServiceId,
+        _entry: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
@@ -327,17 +325,26 @@ pub(super) struct LostLockActiveState;
 impl ServingTargetCommitter for LostLockActiveState {
     async fn replace_serving_target_entry(
         &mut self,
-        _state: ServingTargetEntry,
+        state: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
-        Err(ServingTargetCommitError::NamespaceLockLost)
+        Err(ServingTargetCommitError::NamespaceLockLost {
+            scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                service_id: state.service_id,
+                namespace_revision_entry_id: state.namespace_revision_entry_id,
+            },
+        })
     }
 
     async fn remove_serving_target_entry(
         &mut self,
-        _namespace_id: NamespaceId,
-        _service_id: ServiceId,
+        entry: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
-        Err(ServingTargetCommitError::NamespaceLockLost)
+        Err(ServingTargetCommitError::NamespaceLockLost {
+            scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                service_id: entry.service_id,
+                namespace_revision_entry_id: entry.namespace_revision_entry_id,
+            },
+        })
     }
 }
 
@@ -646,10 +653,6 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
         DeployExecutionFacts {
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
-            services: vec![DeployServiceExecutionFacts {
-                serving_target_entry: None,
-                route_bindings: Vec::new(),
-            }],
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
@@ -657,7 +660,6 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             step_timeout: Duration::from_secs(5),
         },
     )
-    .expect("routed deploy command preparation succeeds")
 }
 
 pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployExecutionCommand {
@@ -726,10 +728,6 @@ fn prepared_deploy_command(
         DeployExecutionFacts {
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
-            services: vec![DeployServiceExecutionFacts {
-                serving_target_entry: None,
-                route_bindings: Vec::new(),
-            }],
             dataplane_machines: Vec::new(),
             eligible_machines,
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
@@ -737,7 +735,6 @@ fn prepared_deploy_command(
             step_timeout: Duration::from_secs(5),
         },
     )
-    .expect("deploy command preparation succeeds")
 }
 
 pub(super) fn empty_deploy_command_with_running_container(
@@ -776,7 +773,6 @@ pub(super) fn empty_deploy_command_with_running_container(
                 service_id: service_id("svc_api"),
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
             }],
-            services: Vec::new(),
             dataplane_machines: Vec::new(),
             eligible_machines: vec![self::machine_id("machine_a")],
             namespace_cleanup_candidates,
@@ -784,13 +780,12 @@ pub(super) fn empty_deploy_command_with_running_container(
             step_timeout: Duration::from_secs(5),
         },
     )
-    .expect("empty deploy command preparation succeeds")
 }
 
 fn namespace_cleanup_candidates(
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
-    ployzd::deploy_worker::namespace_cleanup_candidates(observed_machines)
+    ployzd::deploy_worker::namespace_cleanup_candidates(&namespace_id("default"), observed_machines)
 }
 
 fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
