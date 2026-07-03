@@ -26,7 +26,7 @@ const VERIFY_RETRY_DELAY: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedAuthorization {
     pub user_count: usize,
-    pub reload: NatsReloadEvidence,
+    pub reload: Option<NatsReloadEvidence>,
 }
 
 /// Why reading the on-disk authorized-users file failed. A missing file is
@@ -255,20 +255,32 @@ async fn adopt_authorized_users_from_file(
 fn read_authorized_users_file(
     path: &Path,
 ) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersFileError> {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(AuthorizedUsersFileError::Read {
-                path: path.to_path_buf(),
-                message: error.to_string(),
-            });
-        }
+    let contents = read_authorized_users_contents(path)?;
+    parse_authorized_users_contents(path, contents.as_deref())
+}
+
+fn parse_authorized_users_contents(
+    path: &Path,
+    contents: Option<&str>,
+) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersFileError> {
+    let Some(contents) = contents else {
+        return Ok(Vec::new());
     };
-    parse_authorized_users(&contents).map_err(|source| AuthorizedUsersFileError::Parse {
+    parse_authorized_users(contents).map_err(|source| AuthorizedUsersFileError::Parse {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn read_authorized_users_contents(path: &Path) -> Result<Option<String>, AuthorizedUsersFileError> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AuthorizedUsersFileError::Read {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }),
+    }
 }
 
 async fn handle_render_request(
@@ -283,7 +295,9 @@ async fn handle_render_request(
             message: error.to_string(),
         })
     })?;
-    let on_disk = read_authorized_users_file(path)
+    let current_contents = read_authorized_users_contents(path)
+        .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
+    let on_disk = parse_authorized_users_contents(path, current_contents.as_deref())
         .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
 
     let desired_principals: BTreeSet<String> = desired
@@ -299,7 +313,18 @@ async fn handle_render_request(
         return Err(prepare(RenderPrepareFailure::RefusedShrink { missing }));
     }
 
-    write_file_atomically(path, &render_authorized_users(&desired)).map_err(prepare)?;
+    let rendered_on_disk = render_authorized_users(&on_disk);
+    if same_authorized_users(&desired, &on_disk)
+        && current_contents.as_deref() == Some(rendered_on_disk.as_str())
+    {
+        return Ok(RenderedAuthorization {
+            user_count: desired.len(),
+            reload: None,
+        });
+    }
+
+    let rendered = render_authorized_users(&desired);
+    write_file_atomically(path, &rendered).map_err(prepare)?;
 
     let reload_outcome = tokio::time::timeout(
         RELOAD_COMMAND_TIMEOUT,
@@ -335,8 +360,12 @@ async fn handle_render_request(
 
     Ok(RenderedAuthorization {
         user_count: desired.len(),
-        reload: evidence,
+        reload: Some(evidence),
     })
+}
+
+fn same_authorized_users(left: &[NatsAuthorizedUser], right: &[NatsAuthorizedUser]) -> bool {
+    left.len() == right.len() && left.iter().all(|user| right.contains(user))
 }
 
 async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailure> {
