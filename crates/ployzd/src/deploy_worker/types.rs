@@ -56,17 +56,6 @@ impl DeployExecutionCommand {
         &self.route_binding_removals
     }
 
-    /// Whether this deploy commits or detaches any route binding - the
-    /// gate for the route cutover stage.
-    #[must_use]
-    pub fn has_route_changes(&self) -> bool {
-        !self.route_binding_removals.is_empty()
-            || self
-                .services
-                .iter()
-                .any(|service| !service.route_commits.is_empty())
-    }
-
     #[must_use]
     pub fn serving_target_removals(&self) -> &[ServingTargetEntry] {
         &self.serving_target_removals

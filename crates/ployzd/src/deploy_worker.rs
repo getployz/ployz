@@ -270,7 +270,12 @@ where
         }
     }
 
-    if command.has_route_changes() {
+    if !command.route_binding_removals().is_empty()
+        || command
+            .services()
+            .iter()
+            .any(|service| !service.route_binding_states().is_empty())
+    {
         record_running_stage(
             command,
             &mut *ports.recorder,
