@@ -12,8 +12,8 @@ use ployz_core::deploy::{
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
-    OperatorHint, RetainedArtifact,
+    ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
+    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 pub use facts::{
@@ -614,7 +614,10 @@ where
         with_step_timeout(
             command,
             DeployExecutionStep::RemoveServingTarget {
-                service_id: entry.service_id.clone(),
+                scope: ControlPlaneCommitScope::ServiceEntry {
+                    service_id: entry.service_id.clone(),
+                    namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
+                },
             },
             active_state.remove_serving_target_entry(entry.clone()),
         )

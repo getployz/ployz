@@ -37,7 +37,6 @@ pub async fn load_deploy_execution_facts_from_nats(
     observations: &AsyncNatsObservationStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let service_requests = request.service_requests();
     let route_bindings = async {
         core_state
             .route_bindings()
@@ -66,10 +65,8 @@ pub async fn load_deploy_execution_facts_from_nats(
         .collect::<Vec<_>>();
     let observed_machines =
         load_machine_snapshots(observations, &machine_scope.observed_machine_ids).await?;
-    let dataplane_machines = routed_dataplane_machines(
-        &service_requests,
-        machine_scope.observed_machine_ids.clone(),
-    );
+    let dataplane_machines =
+        routed_dataplane_machines(request, machine_scope.observed_machine_ids.clone());
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
@@ -84,10 +81,14 @@ pub async fn load_deploy_execution_facts_from_nats(
 }
 
 fn routed_dataplane_machines(
-    services: &[ployz_core::deploy::DeployServiceRequest],
+    request: &DeployRequest,
     fallback_machines: Vec<MachineId>,
 ) -> Vec<MachineId> {
-    if services.iter().all(|service| service.routes.is_empty()) {
+    if request
+        .services
+        .iter()
+        .all(|service| service.routes.is_empty())
+    {
         return Vec::new();
     }
 
