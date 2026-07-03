@@ -13,11 +13,11 @@ type: feat
 
 ## Goal Capsule
 
-- **Objective:** Make deploy planning decide whether each service container needs replacement by comparing normalized namespace revision entry identity, not by treating every namespace revision id change as container drift.
-- **Authority:** `VISION.md`, `CONTEXT.md`, `AGENTS.md`, `docs/plans/2026-06-30-001-feat-namespace-deploy-spine-plan.md`, ADR 0004, ADR 0008, ADR 0009.
-- **Execution profile:** Focused follow-up. Keep the deploy worker shape and current operation evidence; change the identity and planning inputs that decide usable service containers.
-- **Stop conditions:** Stop if the work grows into dependency phases, canaries, mutable in-place Docker updates, route-protection changes, or a generic diff engine.
-- **Tail ownership:** Rust core owns runtime deploy planning. Cloud may supply deploy input, but core derives namespace revision entry identity and decides replacement.
+- **Objective:** Make deploy planning decide whether each service container needs replacement by comparing namespace revision entry identity (a versioned per-service digest of replacement-requiring fields), make routed endpoint port changes an endpoint reroute instead of a replacement, and make route bindings multi-domain.
+- **Authority:** `VISION.md`, `CONTEXT.md`, `AGENTS.md`, `docs/plans/2026-06-30-001-feat-namespace-deploy-spine-plan.md`, ADR 0004, ADR 0008, ADR 0009, ADR 0022, ADR 0023.
+- **Execution profile:** Focused follow-up. Keep the deploy worker shape and current operation evidence; change the identity, route state, and gateway matching inputs that decide usable service containers and serveable upstreams.
+- **Stop conditions:** Stop if the work grows into dependency phases, canaries, standalone route operations outside deploy manifests, health-gated reroutes, registry digest resolution, or a generic diff engine. (In-place endpoint reroute and multi-domain routes are in scope by explicit decision; mutable Docker *resource* updates such as CPU/memory remain out.)
+- **Tail ownership:** Rust core owns runtime deploy planning. Cloud renders deploy manifests (including domains and ports) and submits them; core derives namespace revision entry identity and decides replacement. Ployz is deliberately dumb about where route changes come from.
 
 ---
 
@@ -27,68 +27,86 @@ type: feat
 
 Ployz should decide whether a service container is already usable for a deploy by comparing the container's observed namespace revision entry identity to the desired namespace revision entry. A namespace revision can change because another service changed; unchanged services should not restart just because the namespace-level graph id changed.
 
-This follows the useful Uncloud shape: compare current normalized service spec to the requested service spec, then choose leave, replace, or cleanup. The first Ployz version only needs leave-or-replace; in-place updates and mutable Docker resource updates stay deferred.
+Route state is not container state. A routed endpoint port change is an endpoint reroute — a route-level state commit inside the deploy — not a container replacement, because gateways dial a container's observed IP on the route's endpoint port (ADR 0023). A service can bind any number of domains, each with its own endpoint port, and several domains may share one port.
+
+This follows the useful Uncloud shape (compare current normalized state to requested state, then leave or replace) but goes one step further than Uncloud's current shipped behavior on ports: Uncloud still recreates on port changes only because their ingress port state lives in container labels; their own code marks that as a TODO to lift once port state moves out of labels. Ployz's route state already lives in KV, so we lift it now.
 
 ### Problem Frame
 
 The current deploy planner already has a reuse step: `UseExistingContainer` is emitted when an observed container is running for the requested service and target revision. That is too coarse once namespace deploys become the public model. If the request uses one namespace revision id for every service, then changing `api` can make `web` appear stale even when `web`'s service definition did not change.
 
-Reusing an old namespace-revision container as a new namespace-revision container is not safe either. Gateway projection keys serving eligibility by service id, revision id, and endpoint port, so a plan that pretends old labels satisfy a new revision can complete while routes find no matching upstreams.
+Three couplings make this worse today:
+
+1. Gateway projection (`GatewayUpstreamKey`) requires the container's own observed port to equal the route's declared port, so port changes force container churn even though the gateway could simply dial a different port.
+2. Containers only join the gateway endpoint network when a route existed at creation, so a later route attach cannot reach reused containers at any port.
+3. Deploy input carries at most one route per service, so multiple domains cannot bind to one service at all.
 
 ### Requirements
 
 **Namespace revision entry identity**
 
-- R1. Core must derive a stable namespace revision entry identity from normalized service deploy input.
-- R2. A namespace revision entry identity must change when a field that requires container replacement changes, including the service image reference or routed endpoint port.
-- R3. A namespace revision entry identity must remain stable when unrelated services in the same namespace change.
-- R4. Namespace revision identity may still describe the full normalized namespace graph, but service containers must be reusable by namespace revision entry identity.
+- R1. Core must derive a namespace revision entry identity as a hex-encoded sha256 digest over a versioned canonical encoding of service id and image reference (ADR 0022).
+- R2. The identity must change when the service image reference changes, and must fold in service id so two services never share an identity.
+- R3. The identity must remain stable when unrelated services in the same namespace change, when replica count changes, and when route targets or endpoint ports change.
+- R4. The canonical encoding must carry an explicit format version so future field additions are a deliberate version bump, not silent hash drift.
+
+**Routes and endpoint reroute**
+
+- R5. Deploy input must accept any number of routes per service (`routes: Vec<DeployRoute>`), each with an independent target and endpoint port; an empty list means the service has no routes.
+- R6. Active route state must be stored one record per route target, all referencing the owning service; deploy input is the single declarative writer of route state.
+- R7. A deploy that changes only a route's endpoint port must commit the new route state and leave matching containers in place (endpoint reroute); no container replacement, plan step, or machine action may be required for it.
+- R8. Every service container must join the gateway endpoint network at creation, regardless of routes (ADR 0023).
 
 **Planning behavior**
 
-- R5. Deploy planning must classify a running observed service container as usable only when service id, namespace revision entry identity, and running state match the desired namespace revision entry.
-- R6. Deploy planning must emit `UseExistingContainer` for usable containers before scheduling new containers.
-- R7. Deploy planning must emit `RunContainer` and cleanup for containers whose namespace revision entry identity no longer matches the desired namespace revision entry.
-- R8. Deploy planning must not require eligible machines when all desired replicas are already satisfied by usable observed containers.
-- R9. Deploy planning must not infer replacement need from stale passive observations alone; operation-owned runtime snapshots remain the planning input.
+- R9. Deploy planning must classify a running observed service container as usable exactly when service id, namespace revision entry identity, and running state match the desired namespace revision entry. Planner outcomes stay two-way: usable or replace.
+- R10. Deploy planning must emit `UseExistingContainer` for usable containers before scheduling new containers, and `RunContainer` plus cleanup for containers whose identity no longer matches.
+- R11. Deploy planning must not require eligible machines when all desired replicas are already satisfied by usable observed containers.
+- R12. Deploy planning must not infer replacement need from stale passive observations alone; operation-owned runtime snapshots remain the planning input.
 
 **Runtime evidence**
 
-- R10. Machine-created service containers must carry enough labels to reconstruct namespace revision entry identity in runtime observations.
-- R11. Managed container observations must expose the namespace revision entry identity needed by the planner and passive projections.
-- R12. Gateway and route projections must continue matching the same identity that serving targets publish for service entries.
-- R13. Public Rust and TypeScript wire fields must use `namespace_revision_id` for namespace graph identity and `namespace_revision_entry_id` for service entry identity.
+- R13. Machine-created service containers must carry labels sufficient to reconstruct namespace revision entry identity in runtime observations; the endpoint-port container label is removed along with its role in network attachment and upstream matching.
+- R14. Managed container observations must expose the namespace revision entry identity needed by the planner and passive projections, and the container's endpoint network IP whenever it is running.
+- R15. Gateway upstream matching must select containers by service id and namespace revision entry identity and dial the container IP on the route's endpoint port; the container's own declared port must not participate in matching.
+- R16. Public Rust and TypeScript wire fields must use `namespace_revision_id` for namespace graph identity and `namespace_revision_entry_id` for service entry identity, with no `target_revision` aliases.
 
 **Scope control**
 
-- R14. This plan must not implement Docker in-place updates for mutable resources.
-- R15. This plan must not resolve mutable image tags by querying registries unless deploy input already contains an immutable image reference.
-- R16. This plan must not add a generic service-spec diff engine beyond the current deploy input fields.
+- R17. This plan must not resolve mutable image tags by querying registries; string-equal image references compare as unchanged (AE7).
+- R18. This plan must not add health gating to endpoint reroutes; route port changes apply directly, and a port nothing listens on fails at the traffic layer (accepted in ADR 0023).
+- R19. This plan must not add standalone route operations; route changes arrive only as rendered deploy manifests.
+- R20. This plan must not add a generic service-spec diff engine beyond the current deploy input fields.
 
 ### Acceptance Examples
 
-- AE1. **Unchanged service in changed namespace:** Given a namespace currently runs `web` and `api`, when a deploy changes only `api`, then the planner reuses healthy matching `web` containers and replaces only `api` containers.
+- AE1. **Unchanged service in changed namespace:** Given a namespace currently runs `web` and `api`, when a deploy changes only `api`, then the planner reuses running matching `web` containers and replaces only `api` containers.
 - AE2. **Changed image:** Given `api` currently runs `ghcr.io/acme/api:old`, when deploy input asks for `ghcr.io/acme/api:new`, then `api` containers are not usable and replacements are planned.
-- AE3. **Changed route endpoint:** Given `web` currently exposes endpoint port `3000`, when deploy input requires endpoint port `8080`, then `web` gets a new namespace revision entry id and existing `web` containers are replaced.
-- AE4. **Scaled replicas:** Given two usable `worker` containers and deploy input asks for three replicas, then the planner reuses two and schedules one new container.
-- AE5. **Fully satisfied deploy:** Given all desired replicas already have usable containers, when no eligible machines are available, then planning succeeds with only `UseExistingContainer` steps.
-- AE6. **Mutable tag limitation:** Given deploy input still says `nginx:latest` and no digest or pull-always policy is present, when the remote tag changes, then Ployz does not claim to detect that change.
+- AE3. **Endpoint reroute:** Given `web` runs with a route on endpoint port `3000`, when deploy input declares the same image with endpoint port `8080`, then existing `web` containers are reused, route state commits port `8080`, and the gateway dials the same containers on `8080` with no container replacement.
+- AE4. **Route attach to a running service:** Given `worker` runs with no routes, when deploy input adds a route, then existing `worker` containers are reused and become gateway upstreams, because they already joined the endpoint network at creation.
+- AE5. **Multi-domain:** Given deploy input binds `example.com` and `www.example.com` to `web` on the same endpoint port, then both routes serve from the same usable containers; detaching one domain in the next manifest removes only that route.
+- AE6. **Scaled replicas:** Given two usable `worker` containers and deploy input asks for three replicas, then the planner reuses two and schedules one new container.
+- AE7. **Mutable tag limitation:** Given deploy input still says `nginx:latest` and no digest is present, when the remote tag changes, then Ployz does not claim to detect that change.
+- AE8. **Fully satisfied deploy:** Given all desired replicas already have usable containers, when no eligible machines are available, then planning succeeds with only `UseExistingContainer` steps.
 
 ### Scope Boundaries
 
 #### In Scope
 
-- Stable normalized namespace revision entry identity for the current deploy service fields.
-- Service container labels and observations that carry that identity.
+- Versioned per-service namespace revision entry identity digest (ADR 0022).
+- Unconditional endpoint network attachment at container creation and gateway dialing by route port (ADR 0023).
+- Multi-domain route bindings: `Vec<DeployRoute>` deploy input, per-target active route records, multi-route commit and cleanup.
+- Endpoint reroute as a route-level commit inside ordinary deploys.
+- Service container labels and observations that carry entry identity; removal of the endpoint-port label.
 - Planner reuse and cleanup decisions based on usable service container rules.
-- Serving target and gateway identity alignment so reused containers remain routeable.
-- Focused tests around unchanged service reuse, changed service replacement, endpoint mismatch, and scale changes.
+- Focused tests around unchanged-service reuse, changed-service replacement, reroute, route attach/detach via manifest, multi-domain, and scale changes.
 
 #### Deferred to Follow-Up Work
 
-- Pull-policy support such as `always` or `if-not-present`.
-- Registry digest resolution for mutable tags.
-- Mutable Docker resource updates that do not recreate a container.
+- Standalone route operations outside deploy manifests (attach/detach commands with cert gating per ADR 0002); they must write the same per-target route state this plan defines.
+- Health-gated or verified reroutes.
+- Pull-policy support such as `always` or `if-not-present`; registry digest resolution for mutable tags.
+- Mutable Docker resource updates (CPU, memory, ulimits) that do not recreate a container.
 - Dependency-derived phases and canary rollout.
 - Rich Compose adapter equivalence for volumes, configs, commands, environment, hooks, and placement once those fields exist.
 
@@ -98,6 +116,7 @@ Reusing an old namespace-revision container as a new namespace-revision containe
 - Background reconciliation that silently mutates cluster truth.
 - A generic operation engine or generic spec-diff framework.
 - Cloud-side runtime diffing.
+- Machine-local port-override ledgers (rejected in ADR 0023).
 
 ---
 
@@ -106,72 +125,57 @@ Reusing an old namespace-revision container as a new namespace-revision containe
 ### Key Technical Decisions
 
 - KTD1. **Use namespace revision entry identity for container usability.** Namespace revision identity is too broad for unchanged-service reuse because one service change would invalidate every container in the namespace.
-- KTD2. **Keep namespace revision entry derivation in `ployz-core`.** The same normalized identity must drive labels, observations, planner reuse, serving target entries, SDK types, and tests.
-- KTD3. **Start with replace-only decisions.** Uncloud has `up-to-date`, `needs-update`, and `needs-recreate`; Ployz should implement `usable` vs. `replace` first because current machine runtime creates or removes containers, not in-place resource updates.
-- KTD4. **Do not detect mutable tag drift without immutable input.** If callers deploy `latest` repeatedly, Ployz can compare only the image reference string unless deploy input carries a resolved digest or pull policy.
-- KTD5. **Gateway identity must match planner identity.** A container reused by the planner must be eligible for the serving target without label rewriting or route sleight of hand.
-- KTD6. **Replace generic revision ids with named revision ids.** Use `NamespaceRevisionId` for the full namespace graph and `NamespaceRevisionEntryId` for one service entry so Rust types expose the domain split.
-- KTD7. **Rename wire fields without compatibility aliases.** This greenfield reset should expose `namespace_revision_id` and `namespace_revision_entry_id` directly instead of preserving `target_revision`.
+- KTD2. **Keep namespace revision entry derivation in `ployz-core`.** The same identity must drive labels, observations, planner reuse, serving target entries, SDK types, and tests. It is a versioned sha256 hex digest folding in service id (ADR 0022), following the existing `sha2` convention in `machine.rs`.
+- KTD3. **Planner outcomes stay two-way.** Uncloud's third outcome (`needs-update`) turned out to be route-level for the port case: once gateways dial route ports, a port change leaves every container usable and only route state moves. No per-container update step exists in this plan.
+- KTD4. **Route state is not container state.** Identity excludes route targets and endpoint ports; `ActiveRouteState` is stored per target; deploy manifests are the single declarative writer. Endpoint reroute is a KV commit, applied directly without a health gate (ADR 0023).
+- KTD5. **Containers always join the endpoint network.** Matches Uncloud (`EndpointsConfig` is unconditional in their container create path); kills the "reused container is unreachable after route attach" class entirely. The `plz.endpoint_port` label loses both jobs (network decision, upstream match) and is deleted.
+- KTD6. **Do not detect mutable tag drift without immutable input.** If callers deploy `latest` repeatedly, Ployz compares only the image reference string.
+- KTD7. **Replace generic revision ids with named revision ids.** `NamespaceRevisionId` for the full namespace graph and `NamespaceRevisionEntryId` for one service entry; rename wire fields without compatibility aliases (greenfield reset).
 
 ### High-Level Technical Design
 
 ```mermaid
 flowchart TB
-  A["Deploy input service"] --> B["Normalize service entry"]
-  B --> C["Derive namespace revision entry id"]
+  A["Deploy input service (image, replicas, routes[])"] --> B["Normalize service entry"]
+  B --> C["Derive namespace revision entry id\n(versioned digest: service id + image)"]
+  A --> R["Commit per-target active route state\n(target, endpoint port)"]
   C --> D["Run container labels"]
-  D --> E["Machine observation"]
+  D --> E["Machine observation (identity + IP)"]
   C --> F["Desired service entry"]
-  E --> G{"usable for replica?"}
+  E --> G{"running + service id + entry id match?"}
   F --> G
   G -->|yes| H["UseExistingContainer"]
   G -->|no| I["RunContainer + cleanup old"]
   H --> J["Serving target service entry"]
   I --> J
-  J --> K["Gateway matches fresh observations by same identity"]
-```
-
-```mermaid
-flowchart TB
-  A["Observed service container"] --> B{"running service?"}
-  B -->|no| Z["not usable"]
-  B -->|yes| C{"service id matches?"}
-  C -->|no| Z
-  C -->|yes| D{"namespace revision entry id matches?"}
-  D -->|no| Z
-  D -->|yes| U["usable service container"]
+  R --> K
+  J --> K["Gateway: match upstreams by entry id,\ndial container IP : route endpoint port"]
 ```
 
 ### Assumptions
 
-- The current deploy service fields are service id, image reference, replica count, and optional route endpoint; namespace revision entry identity should cover only fields that describe one service container's runtime shape, including routed endpoint port.
+- Current deploy service fields are service id, image reference, replica count, and routes; only service id and image reference affect the entry identity.
 - Replica count belongs to the desired namespace revision entry but not to one container's identity.
-- Route target hostname is a binding concern; endpoint port is part of namespace revision entry identity because current labels and gateway matching need that port.
-- Replace the current generic `RevisionId` with explicit `NamespaceRevisionId` and `NamespaceRevisionEntryId` types instead of preserving a transition alias.
+- KV shape changes (per-target route records, renamed fields) need no migration: alpha resets per ADR 0021.
+- Docker same-network connectivity is unrestricted by exposed ports, so dialing a port other than the created one works at the network layer (verified against Docker docs and Railway's private-networking model).
 
 ### Risks & Dependencies
 
-- **Rename churn:** The code currently uses `RevisionId` and `target_revision` broadly. Implementation must update call sites, labels, gateway input, tests, and generated TypeScript together.
-- **Wire contract churn:** Public SDK types already expose `DeployRequest.target_revision`. Rename it without aliases and cover Rust and TypeScript fixtures in the same change.
-- **Gateway mismatch:** If serving targets publish namespace revision while observations publish namespace revision entry identity, reused containers will not route.
-- **Digest ambiguity:** Operators may expect `latest` to refresh. The plan must document that string-equal mutable tags are unchanged until pull policy or digest resolution exists.
+- **Rename churn:** `RevisionId` and `target_revision` are used broadly. Implementation must update call sites, labels, gateway input, tests, and generated TypeScript together.
+- **Unverified reroute:** a route port nothing listens on fails at the traffic layer with no deploy-time evidence. Accepted deliberately (ADR 0023); document it, do not silently mitigate it.
+- **Silent revert via manifests:** because deploy input is the single declarative writer, a manifest that still declares an old port or omits a domain will revert or detach it. This is by design (Cloud re-renders complete manifests); the CLI contract should make the declarative semantics obvious.
+- **Gateway mismatch:** serving targets, observations, and gateway matching must all move to entry identity in the same change or reused containers stop routing.
+- **Network capacity:** every container now consumes an endpoint-network address. Trivial at small-cluster scale; noted for completeness.
 
 ### Sources & Research
 
-- `VISION.md`
-- `CONTEXT.md`
-- `STRATEGY.md`
+- `VISION.md`, `CONTEXT.md`, `STRATEGY.md`
 - `docs/plans/2026-06-30-001-feat-namespace-deploy-spine-plan.md`
-- `docs/brainstorms/2026-06-07-namespace-succeed-or-die-operations-requirements.md`
-- `docs/adr/0004-deploys-are-namespace-reconciliation-attempts.md`
-- `docs/adr/0008-deploy-replacement-is-explicit-policy-with-failure-evidence.md`
-- `docs/adr/0009-serving-eligibility-uses-fresh-observations.md`
-- `crates/ployz-core/src/deploy.rs`
-- `crates/ployz-core/src/machine_runtime.rs`
-- `crates/ployzd/src/deploy_worker.rs`
-- `crates/ployzd/src/gateway.rs`
-- `crates/ployzd/src/machine_runtime/runner.rs`
-- Uncloud reference: `pkg/client/deploy/container.go`
+- ADR 0002, ADR 0004, ADR 0008, ADR 0009, ADR 0018, ADR 0021, ADR 0022, ADR 0023
+- `crates/ployz-core/src/deploy.rs`, `crates/ployz-core/src/machine_runtime.rs`, `crates/ployz-core/src/state.rs`
+- `crates/ployzd/src/deploy_worker.rs`, `crates/ployzd/src/gateway.rs`, `crates/ployzd/src/docker/runner.rs`, `crates/ployzd/src/docker/labels.rs`
+- Uncloud reference: `pkg/client/deploy/container.go` (EvalContainerSpecChange; port-recreate TODO), `internal/machine/docker/server.go` (unconditional network attach), `internal/proxy/proxy.go`
+- Docker networking docs (EXPOSE is metadata, not access control); Railway private networking (no port mapping layer; dial the listening port)
 
 ---
 
@@ -179,32 +183,50 @@ flowchart TB
 
 ### U1. Add Namespace Revision Entry Identity
 
-- **Goal:** Add a stable normalized identity for one desired service container shape.
-- **Requirements:** R1, R2, R3, R4, R14, AE1, AE2, AE6, KTD1, KTD2, KTD4.
+- **Goal:** Add the versioned per-service digest identity for one desired service container shape.
+- **Requirements:** R1, R2, R3, R4, AE1, AE2, AE7, KTD1, KTD2, KTD6, KTD7.
 - **Dependencies:** None.
 - **Files:**
   - `crates/ployz-core/src/ids.rs`
   - `crates/ployz-core/src/deploy.rs`
   - `crates/ployz-core/tests/deploy_planner.rs`
   - `crates/ployz-core/tests/wire_contract.rs`
-  - `packages/ployz-sdk/src/generated.ts`
-  - `packages/ployz-sdk/test/operations.test.ts`
-- **Approach:** Replace the generic `RevisionId` with `NamespaceRevisionId` and `NamespaceRevisionEntryId`, then derive a namespace revision entry id from normalized service fields that affect container replacement. Keep replica count outside that id. Keep image comparison string-based for now.
-- **Execution note:** Start with core tests that prove unchanged service identity survives unrelated namespace changes.
-- **Patterns to follow:** Typed id wrappers and `serde(deny_unknown_fields)` in `DeployRequest`, `ImageReference`, and `ReplicaCount`.
+- **Approach:** Replace the generic `RevisionId` with `NamespaceRevisionId` and `NamespaceRevisionEntryId`. Derive the entry id as a sha256 hex digest (existing `sha2` convention) over a versioned canonical encoding of service id and image reference. Replica count and routes stay outside the id. Image comparison stays string-based.
+- **Execution note:** Start with core tests that prove unchanged service identity survives unrelated namespace changes and all route changes.
+- **Patterns to follow:** Typed id wrappers, `JoinTokenFingerprint` digest construction in `machine.rs`, `serde(deny_unknown_fields)`.
 - **Test scenarios:**
-  - Two normalized services with the same service id, image, and endpoint requirement derive the same namespace revision entry id.
-  - Changing only another service in the namespace does not change this service's namespace revision entry id.
-  - Changing image reference changes this service's namespace revision entry id.
-  - Changing replica count does not change one container's namespace revision entry id.
-  - Changing routed endpoint port changes namespace revision entry id.
-  - Repeating `nginx:latest` derives the same id when no digest or pull policy exists.
-- **Verification:** Core tests prove equivalence is stable where replacement is unnecessary and changes where replacement is required by current fields.
+  - Same service id + image derive the same entry id; encoding version participates in the digest.
+  - Different service ids with identical images derive different entry ids.
+  - Changing only another service in the namespace does not change this service's entry id.
+  - Changing image reference changes the entry id; repeating `nginx:latest` does not.
+  - Changing replica count, route target, or endpoint port does not change the entry id.
+- **Verification:** Core tests prove equivalence is stable where replacement is unnecessary and changes exactly when replacement is required.
 
-### U2. Carry Entry Identity Through Labels And Observations
+### U2. Multi-Domain Routes And Route State
 
-- **Goal:** Ensure machine-created containers publish the identity deploy planning needs on the next operation.
-- **Requirements:** R10, R11, R12, AE1, AE2, AE3, KTD2, KTD5.
+- **Goal:** Deploy input carries any number of routes per service; active route state is one record per target; deploy is the single declarative writer.
+- **Requirements:** R5, R6, R7, AE3, AE5, KTD4.
+- **Dependencies:** U1 (renamed ids flow through route state).
+- **Files:**
+  - `crates/ployz-core/src/deploy.rs`
+  - `crates/ployz-core/src/state.rs`
+  - `crates/ployz-nats/src/core_state/active_route.rs`
+  - `crates/ployzd/src/deploy_worker/preparation.rs`
+  - `crates/ployzctl/src/commands/deploy.rs`
+  - `crates/ployz-core/tests/deploy_planner.rs`
+  - `crates/ployzd/tests/deploy_command_preparation.rs`
+- **Approach:** `DeployServiceSpec.route: Option<DeployRoute>` becomes `routes: Vec<DeployRoute>` (empty = no routes). Store `ActiveRouteState` keyed per route target; route commit upserts declared targets, updates changed endpoint ports in place (endpoint reroute), and removes records for targets the manifest no longer declares. Drop the single-route `ActiveRouteMismatch` shape in favor of per-target reconciliation. CLI `--route` may repeat.
+- **Test scenarios:**
+  - Two targets on one service, same port, both committed; removing one from the manifest removes only that record.
+  - Port-only change updates the existing target record and produces no container replacement or plan step.
+  - Empty `routes` removes all route records for the service.
+  - Two targets with different endpoint ports on one service both commit.
+- **Verification:** Preparation tests prove route state reconciles per target and reroutes commit without touching container plans.
+
+### U3. Always-Attach Networking And Label Cleanup
+
+- **Goal:** Every service container joins the endpoint network at creation; entry identity replaces revision + port labels.
+- **Requirements:** R8, R13, R14, AE4, KTD5.
 - **Dependencies:** U1.
 - **Files:**
   - `crates/ployz-core/src/machine_runtime.rs`
@@ -212,25 +234,22 @@ flowchart TB
   - `crates/ployzd/src/docker/runner.rs`
   - `crates/ployzd/src/machine_runtime/runner.rs`
   - `crates/ployzd/src/machine_runtime/protocol.rs`
-  - `crates/ployzd/src/machine_runtime/process.rs`
   - `crates/ployzd/tests/machine_service_runtime.rs`
   - `crates/ployzd/tests/docker_observer.rs`
   - `crates/ployzd/tests/machine_rpc.rs`
-- **Approach:** Add the namespace revision entry id to managed container labels, machine run requests, and managed container observations. Existing Docker summaries already become `ExistingManagedContainer` through label parsing; extend that path so observation snapshots carry the same identity used by core planning.
-- **Patterns to follow:** `ManagedContainerLabels::render`, `ManagedContainerLabels::parse`, `managed_container_labels`, and `publish_machine_observation_snapshot`.
+- **Approach:** `create_body` attaches every service container to `ENDPOINT_NETWORK_NAME` unconditionally (Uncloud parity) and stops deriving `exposed_ports`/network config from the route port. Delete `ENDPOINT_PORT_LABEL`; add the namespace revision entry id label. Observations report the container's network IP whenever running (`ContainerEndpoint` becomes IP-only or port moves out of it), plus the entry id parsed from labels.
 - **Test scenarios:**
-  - Creating a managed service container renders the namespace revision entry label.
-  - Parsing Docker labels rejects missing or invalid namespace revision entry values for managed service containers.
-  - Machine observation snapshots include namespace revision entry id for running and stopped managed service containers.
-  - NATS machine RPC run request round-trips the namespace revision entry id.
-  - Existing operation-step conflict behavior still compares operation and step identity separately from namespace revision entry identity.
-- **Verification:** Machine runtime tests prove new containers and future observations preserve namespace revision entry evidence.
+  - A service container created with no routes joins the endpoint network and reports an IP.
+  - Labels render and parse the entry id; missing/invalid entry id labels are rejected for managed service containers.
+  - Machine observation snapshots carry entry id and IP for running containers.
+  - Machine RPC run request round-trips the entry id and no longer carries an endpoint port.
+- **Verification:** Machine runtime tests prove new containers and observations preserve entry identity and are always reachable on the endpoint network.
 
-### U3. Plan Usable Service Containers By Entry Identity
+### U4. Plan Usable Service Containers By Entry Identity
 
-- **Goal:** Update deploy preparation and planning so usable containers are selected by namespace revision entry identity.
-- **Requirements:** R5, R6, R7, R8, R9, AE1, AE2, AE3, AE4, AE5, KTD1, KTD3.
-- **Dependencies:** U1, U2.
+- **Goal:** Deploy preparation and planning select usable containers by entry identity; outcomes stay two-way.
+- **Requirements:** R9, R10, R11, R12, AE1, AE2, AE6, AE8, KTD1, KTD3.
+- **Dependencies:** U1, U3.
 - **Files:**
   - `crates/ployz-core/src/deploy.rs`
   - `crates/ployz-core/tests/deploy_planner.rs`
@@ -238,24 +257,23 @@ flowchart TB
   - `crates/ployzd/src/deploy_worker/facts.rs`
   - `crates/ployzd/tests/deploy_command_preparation.rs`
   - `crates/ployzd/tests/deploy_command_preparation_nats.rs`
-- **Approach:** Replace the current target-revision-only reusable check with a `UsableServiceContainer` check that requires running state, service id, and namespace revision entry id. Keep the existing round-robin scheduling for missing replicas and existing cleanup candidate behavior for stale service containers.
+- **Approach:** Replace `is_running_service_revision` + `reusable_for_route` with a usable-service-container check on running state, service id, and entry id only (route port no longer gates reuse). Keep round-robin scheduling for missing replicas and cleanup candidates for stale service containers.
 - **Execution note:** Add planner tests before changing preparation; this is the smallest proof that unchanged services do not restart.
-- **Patterns to follow:** Current `existing_replicas`, `reusable_for_route`, `plan_deploy_service`, and duplicate-observation deduping in `deploy.rs`.
 - **Test scenarios:**
-  - Unchanged `web` service is reused when `api` has a different namespace revision entry id.
-  - Changed image for `api` causes `api` run steps and cleanup candidates for old `api` containers.
-  - Endpoint port change prevents reuse by changing the namespace revision entry id.
-  - Two usable containers and desired three replicas produce two `UseExistingContainer` steps and one `RunContainer`.
-  - Desired replicas fully satisfied by usable containers succeeds with no eligible machines.
-  - Duplicate observations for the same usable container count once.
-  - A passive stale observation alone is not accepted as an operation-owned runtime snapshot input.
+  - Unchanged `web` is reused when `api` has a different entry id.
+  - Changed image for `api` causes `api` run steps and cleanup for old `api` containers.
+  - Route and port changes alone never produce run or cleanup steps.
+  - Two usable containers, desired three replicas: two `UseExistingContainer`, one `RunContainer`.
+  - Fully satisfied replicas succeed with no eligible machines.
+  - Duplicate observations for the same container count once.
+  - A passive stale observation alone is not accepted as planning input.
 - **Verification:** Planner and preparation tests prove leave-or-replace decisions match the current runtime snapshot.
 
-### U4. Align Serving Target And Gateway Matching
+### U5. Gateway Dials Route Ports By Entry Identity
 
-- **Goal:** Make the identity published by serving targets match the identity carried by reusable containers.
-- **Requirements:** R4, R12, AE1, AE3, KTD5.
-- **Dependencies:** U1, U2, U3.
+- **Goal:** Gateway matches upstreams by entry identity and dials container IP on the route's endpoint port.
+- **Requirements:** R15, AE3, AE4, AE5, KTD4, KTD5.
+- **Dependencies:** U1, U2, U3, U4.
 - **Files:**
   - `crates/ployz-core/src/state.rs`
   - `crates/ployzd/src/deploy_worker/types.rs`
@@ -265,33 +283,32 @@ flowchart TB
   - `crates/ployzd/tests/deploy_operation.rs`
   - `crates/ployzd/tests/gateway_projection.rs`
   - `crates/ployzd/tests/gateway_process_runtime.rs`
-- **Approach:** Ensure active service or future namespace serving-target entries reference the desired namespace revision entry identity for each service entry. Update `UseExistingContainer` execution records so reused containers keep their observed identity and still satisfy health and gateway projection. Do not rewrite Docker labels on reused containers.
-- **Patterns to follow:** `GatewayUpstreamKey`, `DeployContainer`, `active_service_state`, and current gateway projection tests.
+- **Approach:** `GatewayUpstreamKey` drops `endpoint_port` and keys on service id + entry id; upstream dial address is container observed IP + route endpoint port. Serving-target entries reference the desired entry identity per service. Reused containers keep their observed identity; no label rewriting.
 - **Test scenarios:**
-  - A reused container appears as a healthy upstream after serving target commit.
-  - A container with matching service id but different namespace revision entry id is ignored by gateway projection.
-  - A container with the old endpoint port is ignored because it has the old namespace revision entry id.
-  - Deploy operation health checks include reused containers under the identity gateway will use.
-- **Verification:** Deploy and gateway tests prove reused containers remain serveable without relabeling.
+  - A reused container projects as a serveable upstream after serving target commit.
+  - After a port-only reroute, the same container is dialed on the new port with no replacement.
+  - Two domains on one service both project upstreams from the same containers.
+  - A container with matching service id but different entry id is ignored.
+  - Deploy and gateway projection use the same entry identity for reused containers.
+- **Verification:** Deploy and gateway tests prove reused containers remain serveable through reroutes and multi-domain bindings without relabeling.
 
-### U5. Refresh Public Contract And Operator Documentation
+### U6. Refresh Public Contract And Operator Documentation
 
-- **Goal:** Make the API contract and docs clear about what Ployz can and cannot detect.
-- **Requirements:** R13, R14, R15, AE6, KTD3, KTD4.
-- **Dependencies:** U1, U2, U3, U4.
+- **Goal:** The API contract and docs state exactly what Ployz detects and what applies without verification.
+- **Requirements:** R16, R17, R18, R19, AE7, KTD6, KTD7.
+- **Dependencies:** U1–U5.
 - **Files:**
   - `crates/ployz-core/tests/wire_contract.rs`
+  - `crates/ployz-sdk-types/src/lib.rs`
   - `crates/ployz-sdk-types/tests/exports.rs`
   - `packages/ployz-sdk/src/generated.ts`
+  - `packages/ployz-sdk/test/operations.test.ts`
   - `README.md`
-  - `docs/plans/2026-06-30-001-feat-namespace-deploy-spine-plan.md`
-- **Approach:** Rename generated SDK fields to `namespace_revision_id` and `namespace_revision_entry_id` with no old-name aliases. Add a short note to the namespace deploy spine plan or README that mutable tag refresh is deferred until pull policy or digest resolution exists. Avoid broad documentation rewrites.
-- **Patterns to follow:** Existing SDK export fixture tests and concise README wording.
+- **Approach:** Rename wire fields to `namespace_revision_id` / `namespace_revision_entry_id` with no aliases; `routes` replaces `route` in SDK types. Document: mutable tags compare as strings (no drift detection); endpoint reroutes apply directly without a health gate; deploy manifests are the single declarative writer of route state.
 - **Test scenarios:**
-  - Wire contract rejects unknown or malformed namespace revision entry identity fields.
-  - Wire contract rejects old `target_revision` fields.
-  - TypeScript generated types expose `namespace_revision_id` and `namespace_revision_entry_id`.
-  - Documentation states that same image reference means unchanged unless a future digest or pull-policy feature says otherwise.
+  - Wire contract rejects unknown or malformed entry identity fields and old `target_revision` / singular `route` fields.
+  - TypeScript generated types expose `namespace_revision_id`, `namespace_revision_entry_id`, and `routes`.
+  - Docs state the mutable-tag and unverified-reroute limitations.
 - **Verification:** Contract tests and docs show deploy update decisions are explicit and not over-promised.
 
 ---
@@ -300,21 +317,22 @@ flowchart TB
 
 | Gate | Applies to | Done signal |
 |---|---|---|
-| `cargo test -p ployz-core deploy_planner wire_contract` | U1, U3, U5 | Core equivalence, planning, and wire behavior pass focused tests. |
-| `cargo test -p ployzd machine_service_runtime machine_rpc docker_observer` | U2 | Machine runtime labels, RPC, and observations preserve namespace revision entry evidence. |
-| `cargo test -p ployzd deploy_operation gateway_projection gateway_process_runtime` | U4 | Reused containers remain serveable through the gateway projection path. |
-| `cargo test -p ployz-sdk-types` plus SDK package tests | U1, U5 | Generated TypeScript contract matches Rust. |
+| `cargo test -p ployz-core deploy_planner wire_contract` | U1, U2, U4, U6 | Core identity, route reconciliation, planning, and wire behavior pass focused tests. |
+| `cargo test -p ployzd machine_service_runtime machine_rpc docker_observer` | U3 | Labels, RPC, network attach, and observations preserve entry identity evidence. |
+| `cargo test -p ployzd deploy_command_preparation deploy_command_preparation_nats` | U2, U4 | Preparation reconciles routes per target and selects usable containers by entry id. |
+| `cargo test -p ployzd deploy_operation gateway_projection gateway_process_runtime` | U5 | Reused containers remain serveable through reroutes and multi-domain routes. |
+| `cargo test -p ployz-sdk-types` plus SDK package tests | U1, U6 | Generated TypeScript contract matches Rust. |
 | `cargo clippy --all-targets --all-features --locked -- -D warnings` | All units | Rust changes meet workspace lint policy. |
 
 ---
 
 ## Definition of Done
 
-- Core derives namespace revision entry identity from normalized deploy service input.
-- Machine labels and observations carry namespace revision entry identity for managed service containers.
-- Deploy planning reuses unchanged service containers when another service in the namespace changes.
-- Deploy planning replaces containers when current supported service fields change.
-- Gateway projection uses the same identity as the deploy planner and serving target.
-- Mutable image tag drift is documented as unsupported until pull policy or digest resolution exists.
+- Core derives the versioned per-service entry identity digest from normalized deploy service input (ADR 0022).
+- Machine labels and observations carry entry identity; the endpoint-port label is gone; every service container joins the endpoint network at creation (ADR 0023).
+- Deploy planning reuses unchanged service containers when another service in the namespace changes; route and port changes alone never replace containers.
+- Deploy input carries multi-domain routes; route state reconciles per target; endpoint reroutes commit route state without touching containers.
+- Gateway projection matches by entry identity and dials route ports; reused containers stay serveable through reroutes.
+- Mutable image tag drift and unverified reroutes are documented as accepted limitations.
 - All Verification Contract gates pass or any unrelated pre-existing failure is recorded.
 - Dead compatibility shims and experimental code are removed from the final diff.

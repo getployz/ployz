@@ -1,0 +1,7 @@
+# Namespace Revision Entry Identity Is A Versioned Per-Service Digest
+
+Deploy planning decides service container reuse by comparing a namespace revision entry identity: a hex-encoded sha256 digest over a versioned canonical encoding of the fields that require container replacement — currently service id and image reference. Service id is folded into the digest so two services never share an identity even when their container shape is otherwise identical, which keeps the id safe to use as a standalone lookup key in labels, projections, and evidence. The encoding carries an explicit format version so a future change to which fields the identity covers is a deliberate, detectable version bump instead of silent hash drift that would mass-replace every running container after an upgrade.
+
+The identity deliberately excludes replica count, route targets, and routed endpoint ports (ADR 0023 makes endpoint ports route state, not container state). It also excludes registry-resolved image digests: mutable tags like `latest` compare as unchanged strings until deploy input carries an immutable reference or a pull policy exists.
+
+We chose an opaque digest over Uncloud-style field-by-field spec comparison (`EvalContainerSpecChange`) because Ployz needs the identity to travel through immutable Docker labels and machine observations and be compared by components that never see the full deploy input; field-by-field comparison stays possible later, but only for outcomes that do not need to round-trip through labels.
