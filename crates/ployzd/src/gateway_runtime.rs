@@ -19,7 +19,7 @@ impl GatewayRuntime {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            state: GatewayProjectionState::Unavailable,
+            state: GatewayProjectionState::unavailable(),
             route_table: GatewayRouteTable::empty(),
         }
     }
@@ -35,7 +35,7 @@ impl GatewayRuntime {
     }
 
     pub fn apply_source_update(&mut self, update: GatewayProjectionUpdate) -> GatewayRuntimeTick {
-        let previous = std::mem::replace(&mut self.state, GatewayProjectionState::Unavailable);
+        let previous = std::mem::replace(&mut self.state, GatewayProjectionState::unavailable());
         self.state = apply_gateway_update(previous, update);
 
         if let Some(projection) = projection_to_serve(&self.state) {
@@ -156,40 +156,21 @@ pub async fn refresh_gateway_runtime_from_nats(
 }
 
 fn projection_to_serve(state: &GatewayProjectionState) -> Option<&GatewayProjection> {
-    match state {
-        GatewayProjectionState::Current(projection)
-        | GatewayProjectionState::LastKnownGood(projection)
-        | GatewayProjectionState::ProjectionFailedRetained {
-            retained: projection,
-            ..
-        } => Some(projection),
-        GatewayProjectionState::ProjectionFailedUnavailable { .. }
-        | GatewayProjectionState::Unavailable => None,
-    }
+    state.last_good.as_ref()
 }
 
 fn serving_state_from_projection_state(state: &GatewayProjectionState) -> GatewayServingState {
-    match state {
-        GatewayProjectionState::Current(projection) => GatewayServingState::Current {
+    match (&state.last_good, &state.last_error) {
+        (Some(projection), None) => GatewayServingState::Current {
             route_count: projection.routes.len(),
         },
-        GatewayProjectionState::LastKnownGood(projection) => GatewayServingState::LastKnownGood {
+        (Some(projection), Some(error)) => GatewayServingState::LastKnownGood {
             route_count: projection.routes.len(),
-            error: GatewayProjectionError::SourceUnavailable {
-                message: "gateway source unavailable".to_owned(),
-            },
+            error: error.clone(),
         },
-        GatewayProjectionState::ProjectionFailedRetained { retained, error } => {
-            GatewayServingState::LastKnownGood {
-                route_count: retained.routes.len(),
-                error: error.clone(),
-            }
-        }
-        GatewayProjectionState::ProjectionFailedUnavailable { error } => {
-            GatewayServingState::Unavailable {
-                error: Some(error.clone()),
-            }
-        }
-        GatewayProjectionState::Unavailable => GatewayServingState::Unavailable { error: None },
+        (None, Some(error)) => GatewayServingState::Unavailable {
+            error: Some(error.clone()),
+        },
+        (None, None) => GatewayServingState::Unavailable { error: None },
     }
 }

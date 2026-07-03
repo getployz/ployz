@@ -4,7 +4,7 @@ pub mod cert;
 
 use ployz_core::backup::{BackupTarget, BackupTargetValidationError};
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::install::{
     MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery, MachineJoinTemplate,
 };
@@ -13,6 +13,7 @@ use ployz_core::machine::{
 };
 use ployz_core::ops::OperationStatusSnapshot;
 use ployz_core::roles::InstallRolePolicy;
+use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire};
 use ployz_nats::operations::{
     AcceptedBackupSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
@@ -109,6 +110,7 @@ impl MachineAddBootstrapConfig {
 #[derive(Debug, Clone)]
 pub struct OperationControllers {
     repository: AsyncNatsOperationRepository,
+    core_state: AsyncNatsCoreStateStore,
     machine_bootstrap: MachineAddBootstrapConfig,
 }
 
@@ -117,10 +119,12 @@ impl OperationControllers {
     pub fn new(
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
+        core_state: AsyncNatsCoreStateStore,
         machine_bootstrap: MachineAddBootstrapConfig,
     ) -> Self {
         Self {
             repository: AsyncNatsOperationRepository::new(event_log, status_store),
+            core_state,
             machine_bootstrap,
         }
     }
@@ -129,10 +133,12 @@ impl OperationControllers {
     pub fn for_test(
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
+        core_state: AsyncNatsCoreStateStore,
     ) -> Self {
         Self::new(
             event_log,
             status_store,
+            core_state,
             MachineAddBootstrapConfig::new(
                 MachineBootstrapUrl::try_new(crate::config::DEFAULT_MACHINE_BOOTSTRAP_URL)
                     .expect("default machine bootstrap URL is valid"),
@@ -144,13 +150,41 @@ impl OperationControllers {
         &self,
         command: DeploySubmitCommand,
     ) -> Result<AcceptedDeploySubmission, SubmitCommandError> {
-        Ok(self
+        let operation_id = command.operation_id;
+        let target = command.target;
+        let namespace_id = target.namespace_id.clone();
+        match self
+            .core_state
+            .acquire_namespace_lock(&namespace_id, &operation_id, current_unix_ms()?)
+            .await?
+        {
+            NamespaceLockAcquire::Acquired => {}
+            NamespaceLockAcquire::Busy { owner } => {
+                return Err(SubmitCommandError::NamespaceBusy {
+                    namespace_id,
+                    owner,
+                });
+            }
+        }
+
+        let submitted = self
             .repository
             .submit_deploy(DeployOperationSubmission {
-                operation_id: command.operation_id,
-                target: command.target,
+                operation_id: operation_id.clone(),
+                target,
             })
-            .await?)
+            .await;
+
+        match submitted {
+            Ok(accepted) => Ok(accepted),
+            Err(error) => {
+                let _ = self
+                    .core_state
+                    .release_namespace_lock(&namespace_id, &operation_id)
+                    .await;
+                Err(SubmitCommandError::Submit(error))
+            }
+        }
     }
 
     pub async fn submit_machine_add(
@@ -256,12 +290,26 @@ impl OperationControllers {
 /// How a submit command fails at the controller.
 #[derive(Debug)]
 pub enum SubmitCommandError {
+    Clock {
+        message: String,
+    },
+    NamespaceBusy {
+        namespace_id: NamespaceId,
+        owner: OperationId,
+    },
+    NamespaceLock(CoreStateStoreError),
     Submit(SubmitOperationError),
 }
 
 impl From<SubmitOperationError> for SubmitCommandError {
     fn from(value: SubmitOperationError) -> Self {
         Self::Submit(value)
+    }
+}
+
+impl From<CoreStateStoreError> for SubmitCommandError {
+    fn from(value: CoreStateStoreError) -> Self {
+        Self::NamespaceLock(value)
     }
 }
 
@@ -313,6 +361,17 @@ fn current_unix_seconds() -> Result<u64, String> {
         .as_secs();
 
     Ok(seconds)
+}
+
+fn current_unix_ms() -> Result<u64, SubmitCommandError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| SubmitCommandError::Clock {
+            message: error.to_string(),
+        })?
+        .as_millis();
+
+    Ok(u64::try_from(millis).unwrap_or(u64::MAX))
 }
 
 fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenError> {

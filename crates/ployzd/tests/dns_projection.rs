@@ -39,19 +39,24 @@ fn dns_keeps_last_good_projection_when_source_is_unavailable() {
 
     assert_eq!(
         apply_dns_update(
-            DnsProjectionState::Current(last_good),
+            current_state(last_good),
             DnsProjectionUpdate::SourceUnavailable,
         ),
-        DnsProjectionState::LastKnownGood(DnsProjection {
-            records: vec![record("api.example.com", ["203.0.113.10"])],
-        })
+        failed_state(
+            DnsProjection {
+                records: vec![record("api.example.com", ["203.0.113.10"])],
+            },
+            DnsProjectionError::InvalidSource {
+                message: "DNS source unavailable".to_owned(),
+            },
+        )
     );
     assert_eq!(
         apply_dns_update(
-            DnsProjectionState::Unavailable,
+            DnsProjectionState::unavailable(),
             DnsProjectionUpdate::SourceUnavailable,
         ),
-        DnsProjectionState::Unavailable
+        DnsProjectionState::unavailable()
     );
 }
 
@@ -66,15 +71,15 @@ fn dns_retains_last_good_projection_when_source_is_invalid() {
 
     assert_eq!(
         apply_dns_update(
-            DnsProjectionState::Current(last_good),
+            current_state(last_good),
             DnsProjectionUpdate::SourceInvalid(error.clone()),
         ),
-        DnsProjectionState::ProjectionFailedRetained {
-            retained: DnsProjection {
+        failed_state(
+            DnsProjection {
                 records: vec![record("api.example.com", ["203.0.113.10"])],
             },
             error,
-        }
+        )
     );
 }
 
@@ -88,18 +93,18 @@ fn dns_keeps_failure_evidence_when_invalid_source_then_disappears() {
     };
 
     let failed = apply_dns_update(
-        DnsProjectionState::Current(last_good),
+        current_state(last_good),
         DnsProjectionUpdate::SourceInvalid(error.clone()),
     );
 
     assert_eq!(
         apply_dns_update(failed, DnsProjectionUpdate::SourceUnavailable),
-        DnsProjectionState::ProjectionFailedRetained {
-            retained: DnsProjection {
+        failed_state(
+            DnsProjection {
                 records: vec![record("api.example.com", ["203.0.113.10"])],
             },
             error,
-        }
+        )
     );
 }
 
@@ -159,5 +164,19 @@ fn record<const N: usize>(hostname: &str, answers: [&str; N]) -> DnsRecordSet {
             .into_iter()
             .map(|answer| DnsAnswer::try_new(answer).expect("valid DNS answer"))
             .collect(),
+    }
+}
+
+fn current_state(projection: DnsProjection) -> DnsProjectionState {
+    DnsProjectionState {
+        last_good: Some(projection),
+        last_error: None,
+    }
+}
+
+fn failed_state(projection: DnsProjection, error: DnsProjectionError) -> DnsProjectionState {
+    DnsProjectionState {
+        last_good: Some(projection),
+        last_error: Some(error),
     }
 }

@@ -2,7 +2,8 @@ use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
     active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
     inbox_subscribe_scope, kv_read_js_api_subjects, machine_observation_kv_write_subjects,
-    nats_authorized_user_kv_write_scope, operation_status_kv_write_scope,
+    namespace_lock_state_kv_write_scope, nats_authorized_user_kv_write_scope,
+    operation_status_kv_write_scope,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
@@ -86,6 +87,7 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             active_service_state_kv_write_scope(),
             active_route_state_kv_write_scope(),
             active_machine_state_kv_write_scope(),
+            namespace_lock_state_kv_write_scope(),
             nats_authorized_user_kv_write_scope(),
             operation_status_kv_write_scope(),
         ]

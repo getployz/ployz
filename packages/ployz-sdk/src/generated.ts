@@ -204,13 +204,11 @@ export type EbpfForwardingReady = { evidence: Array<EbpfForwardingReadyEvidence>
 
 export type EbpfForwardingReadyEvidence = { "kind": "host_path", path: string, } | { "kind": "command", program: string, args: Array<string>, } | { "kind": "ployz_tc_bytecode", path: string, symbols: Array<string>, };
 
-export type ActiveServiceCommitFailure = { "reason": "active_service_changed", expected_current: ExpectedActiveService, current_revision: RevisionId | null, attempted_revision: RevisionId, };
-
 export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, };
 
 export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
-export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
@@ -228,11 +226,7 @@ export type BackupTargetValidationFailure = "empty";
 
 export type S3AddressingStyle = "virtual_hosted" | "path";
 
-export type S3BackupTarget = { bucket: string, key_prefix: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
 export type BackupTarget = { "kind": "s3", bucket: string, key_prefix: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
-
-export type S3BackupRestoreSource = { bucket: string, manifest_key: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
 
 export type BackupRestoreSource = { "kind": "s3", bucket: string, manifest_key: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
 
@@ -274,15 +268,11 @@ export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChalleng
 
 export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
 
-export type ExpectedActiveService = "absent" | { "revision": RevisionId };
-
 export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, };
 
 export type ActiveRouteState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: RevisionId, };
 
 export type ActiveServiceState = { namespace_id: NamespaceId, service_id: ServiceId, active_revision: RevisionId, };
-
-export type ActiveServiceCommitRequest = { namespace_id: NamespaceId, service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
 
 export type MachinePublicIpObservation = { machine_id: MachineId, public_ip: string, };
 
@@ -430,7 +420,7 @@ export type AcceptedOperation = { operation_id: OperationId, watch_subject: stri
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
-export type DeploySubmitError = { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type DeploySubmitError = { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type BackupCreateError = { "error": "invalid_target", operation_id: OperationId, field: BackupTargetValidationField, failure: BackupTargetValidationFailure, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 

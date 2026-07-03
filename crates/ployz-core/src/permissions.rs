@@ -15,7 +15,8 @@ use crate::security::NatsPrincipal;
 use crate::state::{
     ACTIVE_MACHINE_STATE_PREFIX, ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX,
     GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
-    MachineContainerObservationKey, MachinePublicIpObservationKey, NATS_AUTHORIZED_USER_PREFIX,
+    MachineContainerObservationKey, MachinePublicIpObservationKey, NAMESPACE_LOCK_STATE_PREFIX,
+    NATS_AUTHORIZED_USER_PREFIX,
 };
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
@@ -63,6 +64,11 @@ pub fn active_route_state_kv_write_scope() -> String {
 #[must_use]
 pub fn active_machine_state_kv_write_scope() -> String {
     format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_MACHINE_STATE_PREFIX}.*")
+}
+
+#[must_use]
+pub fn namespace_lock_state_kv_write_scope() -> String {
+    format!("$KV.{KV_CORE_BUCKET}.{NAMESPACE_LOCK_STATE_PREFIX}.*")
 }
 
 /// Control's writes of the durable authorized-principal set.
@@ -224,6 +230,7 @@ fn controller_publications() -> SubjectPermissions {
         active_service_state_kv_write_scope(),
         active_route_state_kv_write_scope(),
         active_machine_state_kv_write_scope(),
+        namespace_lock_state_kv_write_scope(),
         nats_authorized_user_kv_write_scope(),
         operation_status_kv_write_scope(),
     ]);

@@ -21,9 +21,8 @@ use ployz_core::ops::{
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
-    ActiveMachineState, ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveRoute,
-    ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation,
-    MachinePublicIpObservation,
+    ActiveMachineState, ActiveRouteState, ActiveServiceState, GatewayServingStatus,
+    GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::connect_authenticated;
@@ -269,11 +268,10 @@ async fn control_runtime_serves_active_service_queries() {
         .await
         .expect("open core state");
     core_state
-        .commit_active_service(&ActiveServiceCommitRequest {
+        .replace_active_service(&ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            expected_current: ExpectedActiveService::Absent,
-            target_revision: revision_id("rev_2"),
+            active_revision: revision_id("rev_2"),
         })
         .await
         .expect("service state stores");
@@ -321,20 +319,18 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("active machine stores");
     core_state
-        .commit_active_service(&ActiveServiceCommitRequest {
+        .replace_active_service(&ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            expected_current: ExpectedActiveService::Absent,
-            target_revision: revision_id("rev_2"),
+            active_revision: revision_id("rev_2"),
         })
         .await
         .expect("active service stores");
     core_state
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
             endpoint_port: route_port(8080),
-            expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
         })

@@ -274,7 +274,7 @@ where
     if command
         .services()
         .iter()
-        .any(|service| service.active_route_commit_request().is_some())
+        .any(|service| service.active_route_state().is_some())
     {
         record_running_stage(
             command,
@@ -312,11 +312,6 @@ where
         .await;
     }
     let cleanup = cleanup_superseded_containers(command, &mut *ports.machine_runtime, &plan).await;
-    if command.services().is_empty() {
-        remove_inactive_services(command, &cleanup, &mut *ports.active_state)
-            .await
-            .map_err(|source| run.fail(source))?;
-    }
     let terminal_event = record_terminal_state(command, &mut *ports.recorder, &cleanup).await;
 
     let outcome = DeployExecutionOutcome {
@@ -328,36 +323,6 @@ where
     };
 
     Ok(outcome)
-}
-
-async fn remove_inactive_services<A>(
-    command: &DeployExecutionCommand,
-    cleanup: &[DeployCleanupResult],
-    active_state: &mut A,
-) -> Result<(), DeployExecutionError>
-where
-    A: ActiveServiceCommitter,
-{
-    let mut service_ids = cleanup
-        .iter()
-        .filter_map(|result| match result {
-            DeployCleanupResult::Removed(target) => Some(target.service_id.clone()),
-            DeployCleanupResult::Failed { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    service_ids.sort();
-    service_ids.dedup();
-
-    for service_id in service_ids {
-        with_step_timeout(
-            command,
-            DeployExecutionStep::CommitActiveService,
-            active_state.remove_active_service(service_id),
-        )
-        .await?;
-    }
-
-    Ok(())
 }
 
 async fn cleanup_superseded_containers<N>(
@@ -592,26 +557,12 @@ async fn commit_active_service<A>(
 where
     A: ActiveServiceCommitter,
 {
-    let outcome = with_step_timeout(
+    with_step_timeout(
         command,
         DeployExecutionStep::CommitActiveService,
-        active_state.commit_active_service(service.active_service_commit_request()),
+        active_state.replace_active_service(service.active_service_state()),
     )
-    .await?;
-
-    match outcome {
-        ployz_core::state::ActiveServiceCommit::Stored { .. }
-        | ployz_core::state::ActiveServiceCommit::AlreadyCommitted { .. } => Ok(()),
-        ployz_core::state::ActiveServiceCommit::ActiveServiceChanged {
-            expected_current,
-            current_revision,
-            attempted_revision,
-        } => Err(DeployExecutionError::ActiveServiceCommitRejected {
-            expected_current,
-            current_revision,
-            attempted_revision,
-        }),
-    }
+    .await
 }
 
 pub(super) async fn cutover_route<C>(
@@ -622,32 +573,18 @@ pub(super) async fn cutover_route<C>(
 where
     C: ActiveRouteCommitter,
 {
-    let Some(request) = service.active_route_commit_request() else {
+    let Some(state) = service.active_route_state() else {
         return Ok(());
     };
 
-    let outcome = with_step_timeout(
+    with_step_timeout(
         command,
         DeployExecutionStep::CommitRoute {
-            route: request.target.clone(),
+            route: state.target.clone(),
         },
-        route_state.commit_active_route(request),
+        route_state.replace_active_route(state),
     )
-    .await?;
-
-    match outcome {
-        ployz_core::state::ActiveRouteCommit::Stored { .. }
-        | ployz_core::state::ActiveRouteCommit::AlreadyCommitted { .. } => Ok(()),
-        ployz_core::state::ActiveRouteCommit::ActiveRouteChanged {
-            expected_current,
-            current,
-            attempted,
-        } => Err(DeployExecutionError::ActiveRouteCommitRejected {
-            expected_current,
-            current,
-            attempted,
-        }),
-    }
+    .await
 }
 
 async fn prepare_dataplane<D>(

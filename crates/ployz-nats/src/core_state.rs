@@ -3,12 +3,17 @@
 mod active_machine;
 mod active_route;
 mod active_service;
+mod namespace_lock;
 mod nats_authorized_user;
 
 use crate::kv::{KV_CORE_BUCKET, KvListError, NatsIoTimeout, with_io_timeout};
 pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};
 pub use active_route::ActiveRouteStoreError;
 use async_nats::jetstream;
+pub use namespace_lock::{
+    NAMESPACE_LOCK_RENEW_INTERVAL_MS, NAMESPACE_LOCK_TTL_MS, NamespaceLockAcquire,
+    NamespaceLockRenew,
+};
 use ployz_core::ids::ServiceId;
 use std::fmt;
 
@@ -43,6 +48,10 @@ pub enum CoreStateStoreError {
     },
     Encode(serde_json::Error),
     Decode(serde_json::Error),
+    Put {
+        key: String,
+        message: String,
+    },
     CasConflict {
         message: String,
     },
@@ -62,6 +71,10 @@ pub enum CoreStateStoreError {
         expected_service_id: ServiceId,
         actual_service_id: ServiceId,
     },
+    CorruptNamespaceLock {
+        key: String,
+        message: String,
+    },
     CorruptKey {
         key: String,
         actual_key: String,
@@ -79,6 +92,7 @@ impl fmt::Display for CoreStateStoreError {
             }
             Self::Encode(error) => write!(formatter, "encode active service state: {error}"),
             Self::Decode(error) => write!(formatter, "decode active service state: {error}"),
+            Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
             Self::CasConflict { message } => write!(formatter, "cas conflict: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
@@ -94,6 +108,9 @@ impl fmt::Display for CoreStateStoreError {
                 actual_service_id.as_str(),
                 expected_service_id.as_str()
             ),
+            Self::CorruptNamespaceLock { key, message } => {
+                write!(formatter, "namespace lock at {key} is corrupt: {message}")
+            }
             Self::CorruptKey { key, actual_key } => write!(
                 formatter,
                 "core state key {key} does not match canonical key {actual_key}"
