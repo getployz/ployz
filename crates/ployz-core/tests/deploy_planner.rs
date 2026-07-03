@@ -437,6 +437,31 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
 }
 
 #[test]
+fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
+    // Ported from the parallel namespace fix (PR #215): another
+    // namespace's running container with the same service id is neither a
+    // reusable replica nor a cleanup candidate.
+    let mut foreign = observed_container(
+        "machine_a",
+        "ctr_foreign",
+        "svc_api",
+        "entry_1",
+        ManagedContainerKind::Service,
+        ContainerRuntimeState::running_unroutable(),
+    );
+    foreign.namespace_id = namespace_id("other");
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request: deploy_request(1),
+        serving_target_entry: None,
+        eligible_machines: vec![machine_id("machine_a")],
+        observed_machines: vec![observed_machine("machine_a", [foreign])],
+    });
+
+    assert!(prepared.existing_replicas.is_empty());
+    assert!(prepared.cleanup_candidates.is_empty());
+}
+
+#[test]
 fn namespace_revision_entry_id_differs_across_namespaces() {
     // Two namespaces deploying the same service name and image must never
     // share an entry identity: the id travels through labels and gateway
