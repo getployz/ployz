@@ -1,4 +1,5 @@
 use super::fixtures::*;
+use futures_util::future::join_all;
 use ployz_core::ops::{
     DeployRunningStage, DeployTransition, OperationEventReplayCursor, OperationEventReplayRequest,
     OperationStatus,
@@ -25,6 +26,40 @@ async fn operation_repository_duplicate_operation_id_recovers_submit() {
     assert_eq!(duplicate.operation_id, operation_id("op_123"));
     assert_eq!(duplicate.start_sequence, first.start_sequence);
     assert_eq!(duplicate.target, first.target);
+}
+
+#[tokio::test]
+async fn operation_repository_concurrent_duplicate_operation_ids_converge() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+
+    let tasks = (0..32).map(|_| {
+        let repository = repository.clone();
+        tokio::spawn(async move {
+            repository
+                .submit_deploy(deploy_submission("op_concurrent", "svc_api"))
+                .await
+        })
+    });
+
+    let accepted = join_all(tasks)
+        .await
+        .into_iter()
+        .map(|result| {
+            result
+                .expect("submit task joins")
+                .expect("duplicate submit converges")
+        })
+        .collect::<Vec<_>>();
+    let Some((first, duplicates)) = accepted.split_first() else {
+        panic!("expected accepted submissions");
+    };
+
+    for duplicate in duplicates {
+        assert_eq!(duplicate.operation_id, first.operation_id);
+        assert_eq!(duplicate.start_sequence, first.start_sequence);
+        assert_eq!(duplicate.target, first.target);
+    }
 }
 
 #[tokio::test]

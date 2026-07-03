@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_nats::jetstream;
 use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
@@ -14,6 +16,9 @@ use super::keys::{
     machine_add_submission_key, operation_status_key,
 };
 use crate::kv::{NatsIoTimeout, bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
+
+const STATUS_CONFLICT_READ_ATTEMPTS: usize = 3;
+const STATUS_CONFLICT_READ_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone)]
 pub struct AsyncNatsOperationStatusStore {
@@ -428,39 +433,47 @@ impl AsyncNatsOperationStatusStore {
         attempted: &OperationStatus,
         error: impl ToString,
     ) -> Result<StatusStoreWrite, OperationStatusStoreError> {
-        let Some(existing) =
-            with_io_timeout("operation status conflict read", self.bucket.entry(key))
-                .await?
-                .map_err(|error| OperationStatusStoreError::GetStatus {
-                    message: error.to_string(),
-                })?
-        else {
-            return Err(OperationStatusStoreError::CasConflict {
-                message: error.to_string(),
-            });
-        };
+        let message = error.to_string();
+        for attempt in 1..=STATUS_CONFLICT_READ_ATTEMPTS {
+            let Some(existing) =
+                with_io_timeout("operation status conflict read", self.bucket.entry(key))
+                    .await?
+                    .map_err(|error| OperationStatusStoreError::GetStatus {
+                        message: error.to_string(),
+                    })?
+            else {
+                if attempt < STATUS_CONFLICT_READ_ATTEMPTS {
+                    tokio::time::sleep(STATUS_CONFLICT_READ_RETRY_DELAY).await;
+                    continue;
+                }
 
-        let current: OperationStatus = serde_json::from_slice(&existing.value)
-            .map_err(OperationStatusStoreError::DecodeStatus)?;
-        let current_sequence = current.last_event_sequence();
-        let attempted_sequence = attempted.last_event_sequence();
-        if current.kind() != attempted.kind() || current.is_terminal() {
-            return Ok(StatusStoreWrite::Stale {
+                return Err(OperationStatusStoreError::CasConflict { message });
+            };
+
+            let current: OperationStatus = serde_json::from_slice(&existing.value)
+                .map_err(OperationStatusStoreError::DecodeStatus)?;
+            let current_sequence = current.last_event_sequence();
+            let attempted_sequence = attempted.last_event_sequence();
+            if current.kind() != attempted.kind() || current.is_terminal() {
+                return Ok(StatusStoreWrite::Stale {
+                    current_sequence,
+                    attempted_sequence,
+                });
+            }
+            if current_sequence >= attempted_sequence {
+                return Ok(StatusStoreWrite::Stale {
+                    current_sequence,
+                    attempted_sequence,
+                });
+            }
+
+            return Ok(StatusStoreWrite::Contended {
                 current_sequence,
                 attempted_sequence,
             });
         }
-        if current_sequence >= attempted_sequence {
-            return Ok(StatusStoreWrite::Stale {
-                current_sequence,
-                attempted_sequence,
-            });
-        }
 
-        Ok(StatusStoreWrite::Contended {
-            current_sequence,
-            attempted_sequence,
-        })
+        Err(OperationStatusStoreError::CasConflict { message })
     }
 
     pub async fn get(
@@ -523,7 +536,6 @@ where
         }
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KvRevision(u64);
 
