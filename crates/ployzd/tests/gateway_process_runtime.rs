@@ -13,7 +13,8 @@ use ployz_test_support::ids::{
 };
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
-    GatewayHttpFailure, GatewayProcessAttempt, start_gateway_process_runtime_with_client,
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
+    start_gateway_process_runtime_with_client,
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -40,6 +41,33 @@ async fn gateway_process_reports_unavailable_before_projection_sources_exist() {
     .await;
 
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn gateway_process_reports_http_bind_failure_before_returning() {
+    let nats = TestNats::start_without_buckets().await;
+    let occupied_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind occupied listener");
+    let occupied_addr = occupied_listener
+        .local_addr()
+        .expect("read occupied listener address");
+
+    let result = start_gateway_process_runtime_with_client(
+        nats.machine_client.clone(),
+        Duration::from_millis(10),
+        occupied_addr,
+        machine_id("machine_7"),
+    )
+    .await;
+
+    let Err(error) = result else {
+        panic!("gateway runtime unexpectedly started on occupied address");
+    };
+    assert!(matches!(
+        error,
+        GatewayProcessRuntimeError::BindHttp { addr, .. } if addr == occupied_addr
+    ));
 }
 
 #[tokio::test]
