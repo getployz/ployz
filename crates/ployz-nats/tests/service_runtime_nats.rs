@@ -32,6 +32,14 @@ async fn test_nats() -> TestNats {
     }
 }
 
+async fn wait_for_requester_interest(client: &async_nats::Client) {
+    client
+        .flush()
+        .await
+        .expect("request client observes service interest");
+    tokio::task::yield_now().await;
+}
+
 #[tokio::test]
 async fn service_runtime_responds_to_bound_endpoint() {
     let nats = test_nats().await;
@@ -47,6 +55,7 @@ async fn service_runtime_responds_to_bound_endpoint() {
         })
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let response = nats
         .request_client
@@ -72,6 +81,7 @@ async fn request_json_round_trips_typed_payloads() {
         })
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let response: TestJsonPayload = request_json(
         &nats.request_client,
@@ -107,6 +117,7 @@ async fn request_json_returns_service_error_headers() {
         })
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let error = request_json::<_, TestJsonPayload>(
         &nats.request_client,
@@ -142,6 +153,7 @@ async fn service_runtime_returns_service_error_headers() {
         })
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let response = nats
         .request_client
@@ -180,6 +192,7 @@ async fn service_runtime_counts_domain_error_payloads_without_service_error_head
         })
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let response = nats
         .request_client
@@ -215,6 +228,7 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
         )
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let response = nats
         .request_client
@@ -261,6 +275,7 @@ async fn service_runtime_shutdown_waits_for_in_flight_request() {
         })
         .await
         .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
 
     let request = tokio::spawn({
         let client = nats.request_client.clone();

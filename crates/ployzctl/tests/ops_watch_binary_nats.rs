@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::RevisionId;
+use ployz_core::ids::{NamespaceId, RevisionId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, OperationEvent, OperationEventReplayPage,
     OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
@@ -17,7 +17,7 @@ use ployz_sdk_types::{
     OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
-use ployz_test_support::ids::{event_sequence, namespace_id, operation_id, service_id};
+use ployz_test_support::ids::{event_sequence, operation_id, service_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
@@ -190,7 +190,7 @@ fn replayed(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
 
 fn deploy_request() -> ployz_core::deploy::DeployRequest {
     ployz_core::deploy::DeployRequest {
-        namespace_id: namespace_id("default"),
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),

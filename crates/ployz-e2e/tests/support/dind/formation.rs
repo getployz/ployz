@@ -289,6 +289,7 @@ async fn product_init_core(
             .expect("valid bootstrap url"),
         cluster_name: MachineJoinClusterName::try_new("dind-e2e").expect("valid cluster name"),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
+        detach: false,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await
@@ -431,6 +432,7 @@ pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
         ),
         roles: InstallRolePolicy::install_all(),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
+        detach: false,
     };
     let output = execute_command(PloyzctlCommand::MachineAddRemote(command), &config)
         .await

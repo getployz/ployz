@@ -90,6 +90,7 @@ fn assert_join_template(template: MachineJoinTemplate) {
 
 fn init_join_template_args(artifact_spec: &Path, trusted_nats_ca_file: &Path) -> Vec<String> {
     [
+        "internal",
         "init",
         "join-template",
         "--cluster",

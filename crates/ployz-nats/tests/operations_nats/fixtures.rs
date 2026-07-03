@@ -1,4 +1,3 @@
-use ployz_core::backup::{BackupTarget, S3AddressingStyle};
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
@@ -11,8 +10,7 @@ use ployz_core::ops::{DeployOperationFailure, DeployRunningStage};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission,
+    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
 };
 
 pub(super) use async_nats::jetstream;
@@ -64,23 +62,6 @@ pub(super) fn cert_submission(operation_id: &str, cert_id: &str) -> CertOperatio
     CertOperationSubmission {
         operation_id: self::operation_id(operation_id),
         cert_id: self::cert_id(cert_id),
-    }
-}
-
-pub(super) fn backup_submission(operation_id: &str) -> BackupOperationSubmission {
-    BackupOperationSubmission {
-        operation_id: self::operation_id(operation_id),
-        target: backup_target("clusters/dev"),
-    }
-}
-
-pub(super) fn backup_target(key_prefix: &str) -> BackupTarget {
-    BackupTarget::S3 {
-        bucket: "ployz-backups".to_owned(),
-        key_prefix: key_prefix.to_owned(),
-        region: "us-east-1".to_owned(),
-        endpoint_url: None,
-        addressing_style: S3AddressingStyle::VirtualHosted,
     }
 }
 

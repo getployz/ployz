@@ -2,22 +2,21 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::backup::{BackupManifest, BackupTarget};
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
+use crate::install::InstallArtifactVersion;
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
     MachineName,
 };
 use crate::roles::InstallRolePolicy;
 
-use super::backup::{BackupOperationFailure, BackupRunningStage};
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage,
+    DeployRunningStage, MachineSubstrateVersions, MachineUpdateFailure,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,7 +26,7 @@ pub enum OperationSubject {
     Deploy { service_id: ServiceId },
     Cert { cert_id: CertId },
     MachineAdd { machine_id: MachineId },
-    Backup,
+    MachineUpdate { machine_id: MachineId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,21 +120,24 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: MachineAddFailure,
     },
-    BackupCreateSubmitted {
+    MachineUpdateSubmitted {
         operation_id: OperationId,
-        target: BackupTarget,
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
     },
-    BackupRunning {
+    MachineUpdateRunning {
         operation_id: OperationId,
-        stage: BackupRunningStage,
+        machine_id: MachineId,
     },
-    BackupCompleted {
+    MachineUpdateCompleted {
         operation_id: OperationId,
-        manifest: BackupManifest,
+        machine_id: MachineId,
+        reported: MachineSubstrateVersions,
     },
-    BackupFailed {
+    MachineUpdateFailed {
         operation_id: OperationId,
-        failure: BackupOperationFailure,
+        machine_id: MachineId,
+        failure: MachineUpdateFailure,
     },
     Cancelled {
         operation_id: OperationId,

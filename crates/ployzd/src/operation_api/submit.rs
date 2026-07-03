@@ -2,23 +2,23 @@
 //! and return the operation id + watch subject.
 
 use crate::controllers::{
-    BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
+    DeploySubmitCommand, MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError,
+    MachineAddSubmitCommand, MachineUpdateSubmitCommand, OperationControllers,
 };
 use crate::nats_authorization::MintRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;
 use ployz_sdk_types::{
-    AcceptedOperation, BackupCreateError, BackupCreateRequest, BootstrapMaterialFailure,
-    DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineAddUnavailableSource, MachineJoinToken,
+    AcceptedOperation, BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddUnavailableSource,
+    MachineJoinToken, MachineUpdateError, MachineUpdateRequest, MachineUpdateUnavailableSource,
 };
 
 use super::OperationApiHandlers;
 use super::error_map::{
-    backup_create_error_from_submit_error, bootstrap_material_failure,
-    deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
+    bootstrap_material_failure, deploy_submit_error_from_submit_error,
+    machine_add_error_from_submit_error,
 };
 
 #[must_use]
@@ -43,11 +43,12 @@ impl From<DeploySubmitRequest> for DeploySubmitCommand {
     }
 }
 
-impl From<BackupCreateRequest> for BackupCreateCommand {
-    fn from(value: BackupCreateRequest) -> Self {
+impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {
+    fn from(value: MachineUpdateRequest) -> Self {
         Self {
             operation_id: value.operation_id,
-            target: value.target,
+            machine_id: value.machine_id,
+            target_version: value.target_version,
         }
     }
 }
@@ -64,22 +65,6 @@ pub async fn deploy_submit(
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
     handlers.deploy_runtime.start(accepted);
-
-    Ok(operation)
-}
-
-pub async fn backup_create(
-    handlers: &OperationApiHandlers,
-    request: BackupCreateRequest,
-) -> Result<AcceptedOperation, BackupCreateError> {
-    let operation_id = request.operation_id.clone();
-    let accepted = handlers
-        .controllers
-        .submit_backup(request.into())
-        .await
-        .map_err(|error| backup_create_error_from_submit_error(operation_id, error))?;
-    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.backup_runtime.start(accepted);
 
     Ok(operation)
 }
@@ -140,6 +125,63 @@ pub async fn machine_add(
         join_token: raw_token,
         join_secret_delivery: material.join_secret_delivery,
     })
+}
+
+pub async fn machine_update(
+    handlers: &OperationApiHandlers,
+    request: MachineUpdateRequest,
+) -> Result<AcceptedOperation, MachineUpdateError> {
+    let operation_id = request.operation_id.clone();
+    if &request.machine_id == handlers.local_machine_id() {
+        return Err(MachineUpdateError::CurrentMachineUnsupported {
+            operation_id,
+            machine_id: request.machine_id,
+        });
+    }
+    let operation_id = request.operation_id.clone();
+    let target_machine = handlers
+        .core_state
+        .active_machine(&request.machine_id)
+        .await
+        .map_err(|_| MachineUpdateError::Unavailable {
+            operation_id: operation_id.clone(),
+            source: MachineUpdateUnavailableSource::CoreState,
+        })?;
+    if target_machine.is_none() {
+        return Err(MachineUpdateError::NoSuchMachine {
+            operation_id,
+            machine_id: request.machine_id,
+        });
+    }
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_machine_update(request.into())
+        .await
+        .map_err(|error| match super::error_map::submit_failure(error) {
+            super::error_map::SubmitFailure::InvalidDeployTarget => {
+                unreachable!("machine update submit is not deploy target")
+            }
+            super::error_map::SubmitFailure::ResourceBusy { .. } => {
+                unreachable!("machine update submit has no namespace lock")
+            }
+            super::error_map::SubmitFailure::Unavailable(source) => {
+                MachineUpdateError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    source: MachineUpdateUnavailableSource::OperationSubmit { failure: source },
+                }
+            }
+            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                MachineUpdateError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                }
+            }
+        })?;
+    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
+    handlers.machine_update_runtime().start(accepted);
+
+    Ok(operation)
 }
 
 async fn machine_add_bootstrap_material(

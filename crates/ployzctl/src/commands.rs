@@ -4,7 +4,6 @@ use std::fmt;
 
 use clap::{Args, Parser, Subcommand};
 
-pub mod backup;
 pub mod deploy;
 pub mod init;
 pub mod logs;
@@ -22,18 +21,19 @@ pub struct PloyzctlInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
     Deploy(deploy::DeployCommand),
-    BackupCreate(backup::BackupCreateCommand),
-    BackupRestorePlan(backup::BackupRestorePlanCommand),
-    Init(Box<init::FirstMachineInitCommand>),
+    InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineInit(machine::MachineInitCommand),
+    MachineAdd(machine::MachineAddCommand),
     MachineAddRemote(machine::MachineAddRemoteCommand),
+    MachineUpdate(machine::MachineUpdateCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
     ServiceList(service::ServiceListCommand),
     ServiceInspect(service::ServiceInspectCommand),
     LogsTail(logs::LogsTailCommand),
+    OpsList(ops::OpsListCommand),
     OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
 }
@@ -80,11 +80,9 @@ pub fn parse_command(
 #[derive(Debug, Subcommand)]
 enum CommandCli {
     Deploy(deploy::DeployCli),
-    Backup {
-        #[command(subcommand)]
-        command: BackupCli,
-    },
-    Init(InitRootCli),
+    #[command(name = "ls", alias = "list")]
+    List(service::EmptyCli),
+    Inspect(service::ServiceInspectCli),
     Machine {
         #[command(subcommand)]
         command: MachineCli,
@@ -98,12 +96,11 @@ enum CommandCli {
         #[command(subcommand)]
         command: OpsCli,
     },
-}
-
-#[derive(Debug, Subcommand)]
-enum BackupCli {
-    Create(backup::BackupCreateCli),
-    Restore(backup::BackupRestoreCli),
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalCli,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -124,7 +121,9 @@ enum InitCli {
 #[derive(Debug, Subcommand)]
 enum MachineCli {
     Init(machine::MachineInitCli),
-    Add(machine::MachineAddCli),
+    Add(machine::MachineAddRemoteCli),
+    Update(machine::MachineUpdateCli),
+    #[command(alias = "ls")]
     List(machine::EmptyCli),
     Inspect(machine::MachineInspectCli),
 }
@@ -137,28 +136,36 @@ enum ServiceCli {
 
 #[derive(Debug, Subcommand)]
 enum OpsCli {
+    #[command(alias = "ls")]
+    List(ops::OpsListCli),
     Status(ops::OpsStatusCli),
     Watch(ops::OpsWatchCli),
+}
+
+#[derive(Debug, Subcommand)]
+enum InternalCli {
+    Init(InitRootCli),
+    MachineAdd(machine::MachineAddCli),
 }
 
 fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliError> {
     match command {
         CommandCli::Deploy(command) => deploy::deploy_command(command).map(PloyzctlCommand::Deploy),
-        CommandCli::Backup { command } => match command {
-            BackupCli::Create(command) => {
-                backup::backup_create_command(command).map(PloyzctlCommand::BackupCreate)
-            }
-            BackupCli::Restore(command) => {
-                backup::backup_restore_command(command).map(PloyzctlCommand::BackupRestorePlan)
-            }
-        },
-        CommandCli::Init(command) => init_command_from_cli(command),
+        CommandCli::List(command) => Ok(PloyzctlCommand::ServiceList(
+            service::service_list_command(command),
+        )),
+        CommandCli::Inspect(command) => {
+            service::service_inspect_command(command).map(PloyzctlCommand::ServiceInspect)
+        }
         CommandCli::Machine { command } => match command {
             MachineCli::Init(command) => {
                 machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
             }
             MachineCli::Add(command) => {
-                machine::machine_add_command(command).map(PloyzctlCommand::MachineAddRemote)
+                machine::machine_add_remote_command(command).map(PloyzctlCommand::MachineAddRemote)
+            }
+            MachineCli::Update(command) => {
+                machine::machine_update_command(command).map(PloyzctlCommand::MachineUpdate)
             }
             MachineCli::List(command) => Ok(PloyzctlCommand::MachineList(
                 machine::machine_list_command(command),
@@ -179,11 +186,25 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             logs::logs_tail_command(command).map(PloyzctlCommand::LogsTail)
         }
         CommandCli::Ops { command } => match command {
+            OpsCli::List(command) => Ok(PloyzctlCommand::OpsList(ops::ops_list_command(command))),
             OpsCli::Status(command) => {
                 ops::ops_status_command(command).map(PloyzctlCommand::OpsStatus)
             }
             OpsCli::Watch(command) => {
                 ops::ops_watch_command(command).map(PloyzctlCommand::OpsWatch)
+            }
+        },
+        CommandCli::Internal { command } => match command {
+            InternalCli::Init(command) => init_command_from_cli(command),
+            InternalCli::MachineAdd(command) => {
+                machine::machine_add_command(command).map(|parsed| match parsed {
+                    machine::ParsedMachineAdd::Explicit(command) => {
+                        PloyzctlCommand::MachineAdd(command)
+                    }
+                    machine::ParsedMachineAdd::Remote(command) => {
+                        PloyzctlCommand::MachineAddRemote(command)
+                    }
+                })
             }
         },
     }
@@ -199,9 +220,8 @@ fn init_command_from_cli(command: InitRootCli) -> Result<PloyzctlCommand, Ployzc
             init::join_template::machine_join_template_command(subcommand)
                 .map(PloyzctlCommand::InitJoinTemplate)
         }
-        None => {
-            init::init_command(command.init).map(|command| PloyzctlCommand::Init(Box::new(command)))
-        }
+        None => init::init_command(command.init)
+            .map(|command| PloyzctlCommand::InternalInit(Box::new(command))),
     }
 }
 

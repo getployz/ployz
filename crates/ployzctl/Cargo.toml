@@ -18,6 +18,7 @@ ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

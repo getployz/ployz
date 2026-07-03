@@ -2,24 +2,24 @@
 
 pub mod cert;
 
-use ployz_core::backup::{BackupTarget, BackupTargetValidationError};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::install::{
-    MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery, MachineJoinTemplate,
+    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
+    MachineJoinTemplate,
 };
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
 };
-use ployz_core::ops::OperationStatusSnapshot;
+use ployz_core::ops::{OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire};
 use ployz_nats::operations::{
-    AcceptedBackupSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    BackupOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinRedemption, OperationStatusReadError, RedeemMachineJoinTokenError,
-    SubmitMachineAddError, SubmitOperationError,
+    AcceptedDeploySubmission, AcceptedMachineAddSubmission, AsyncNatsOperationEventLog,
+    AsyncNatsOperationRepository, AsyncNatsOperationStatusStore, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineJoinRedemption, MachineUpdateOperationSubmission,
+    OperationStatusReadError, RedeemMachineJoinTokenError, SubmitMachineAddError,
+    SubmitOperationError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -46,9 +46,10 @@ pub struct MachineAddSubmitCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupCreateCommand {
+pub struct MachineUpdateSubmitCommand {
     pub operation_id: OperationId,
-    pub target: BackupTarget,
+    pub machine_id: ployz_core::ids::MachineId,
+    pub target_version: InstallArtifactVersion,
 }
 
 /// Bootstrap material available at submit time.
@@ -206,19 +207,16 @@ impl OperationControllers {
             .await?)
     }
 
-    pub async fn submit_backup(
+    pub async fn submit_machine_update(
         &self,
-        command: BackupCreateCommand,
-    ) -> Result<AcceptedBackupSubmission, BackupSubmitCommandError> {
-        command
-            .target
-            .validate_create()
-            .map_err(BackupSubmitCommandError::InvalidTarget)?;
+        command: MachineUpdateSubmitCommand,
+    ) -> Result<ployz_nats::operations::AcceptedMachineUpdateSubmission, SubmitCommandError> {
         Ok(self
             .repository
-            .submit_backup(BackupOperationSubmission {
+            .submit_machine_update(MachineUpdateOperationSubmission {
                 operation_id: command.operation_id,
-                target: command.target,
+                machine_id: command.machine_id,
+                target_version: command.target_version,
             })
             .await?)
     }
@@ -285,6 +283,12 @@ impl OperationControllers {
             .operation_status_snapshot(operation_id)
             .await
     }
+
+    pub async fn operation_statuses(
+        &self,
+    ) -> Result<Vec<OperationStatus>, OperationStatusReadError> {
+        self.repository.records().list().await
+    }
 }
 
 /// How a submit command fails at the controller.
@@ -312,27 +316,6 @@ impl From<CoreStateStoreError> for SubmitCommandError {
         Self::NamespaceLock(value)
     }
 }
-
-/// Backup-create extends the shared submit command failure with target
-/// validation that must happen before an operation is recorded.
-#[derive(Debug)]
-pub enum BackupSubmitCommandError {
-    InvalidTarget(BackupTargetValidationError),
-    Submit(SubmitCommandError),
-}
-
-impl From<SubmitCommandError> for BackupSubmitCommandError {
-    fn from(value: SubmitCommandError) -> Self {
-        Self::Submit(value)
-    }
-}
-
-impl From<SubmitOperationError> for BackupSubmitCommandError {
-    fn from(value: SubmitOperationError) -> Self {
-        Self::Submit(SubmitCommandError::Submit(value))
-    }
-}
-
 /// Machine-add extends the shared submit command failure with join-token
 /// validation.
 #[derive(Debug)]

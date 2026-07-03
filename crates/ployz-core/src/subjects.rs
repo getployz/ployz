@@ -10,10 +10,12 @@ pub const MACHINE_SERVICE_SCOPE: &str = "plz.v1.svc.machine.>";
 
 pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
 pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
+pub const API_OPS_LIST: &str = "plz.v1.svc.api.ops.list";
 pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
 pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
 pub const API_INIT_FIRST_MACHINE_ACTIVATE: &str = "plz.v1.svc.api.init.first_machine.activate";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
+pub const API_MACHINE_UPDATE: &str = "plz.v1.svc.api.machine.update";
 pub const API_MACHINE_LIST: &str = "plz.v1.svc.api.machine.list";
 pub const API_MACHINE_INSPECT: &str = "plz.v1.svc.api.machine.inspect";
 pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
@@ -22,13 +24,12 @@ pub const API_SERVICE_LIST: &str = "plz.v1.svc.api.service.list";
 pub const API_SERVICE_INSPECT: &str = "plz.v1.svc.api.service.inspect";
 pub const API_RUNTIME_SNAPSHOT: &str = "plz.v1.svc.api.runtime.snapshot";
 pub const API_LOGS_TAIL: &str = "plz.v1.svc.api.logs.tail";
-pub const API_BACKUP_CREATE: &str = "plz.v1.svc.api.backup.create";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
+    MachineUpdate,
     MachineList,
     MachineInspect,
     MachineJoinRedeem,
@@ -37,27 +38,10 @@ pub enum OperationApiEndpoint {
     ServiceInspect,
     RuntimeSnapshot,
     LogsTail,
+    OpsList,
     OpsStatus,
     OpsWatch,
-    BackupCreate,
 }
-
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 14] = [
-    OperationApiEndpoint::DeploySubmit,
-    OperationApiEndpoint::InitFirstMachineActivate,
-    OperationApiEndpoint::MachineAdd,
-    OperationApiEndpoint::MachineList,
-    OperationApiEndpoint::MachineInspect,
-    OperationApiEndpoint::MachineJoinRedeem,
-    OperationApiEndpoint::MachineJoinReport,
-    OperationApiEndpoint::ServiceList,
-    OperationApiEndpoint::ServiceInspect,
-    OperationApiEndpoint::RuntimeSnapshot,
-    OperationApiEndpoint::LogsTail,
-    OperationApiEndpoint::OpsStatus,
-    OperationApiEndpoint::OpsWatch,
-    OperationApiEndpoint::BackupCreate,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpointExecution {
@@ -73,6 +57,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit => "deploy.submit",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
+            Self::MachineUpdate => "machine.update",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
             Self::MachineJoinRedeem => "machine.join.redeem",
@@ -81,9 +66,9 @@ impl OperationApiEndpoint {
             Self::ServiceInspect => "service.inspect",
             Self::RuntimeSnapshot => "runtime.snapshot",
             Self::LogsTail => "logs.tail",
+            Self::OpsList => "ops.list",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
-            Self::BackupCreate => "backup.create",
         }
     }
 
@@ -93,6 +78,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit => API_DEPLOY_SUBMIT,
             Self::InitFirstMachineActivate => API_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => API_MACHINE_ADD,
+            Self::MachineUpdate => API_MACHINE_UPDATE,
             Self::MachineList => API_MACHINE_LIST,
             Self::MachineInspect => API_MACHINE_INSPECT,
             Self::MachineJoinRedeem => API_MACHINE_JOIN_REDEEM,
@@ -101,16 +87,16 @@ impl OperationApiEndpoint {
             Self::ServiceInspect => API_SERVICE_INSPECT,
             Self::RuntimeSnapshot => API_RUNTIME_SNAPSHOT,
             Self::LogsTail => API_LOGS_TAIL,
+            Self::OpsList => API_OPS_LIST,
             Self::OpsStatus => API_OPS_STATUS,
             Self::OpsWatch => API_OPS_WATCH,
-            Self::BackupCreate => API_BACKUP_CREATE,
         }
     }
 
     #[must_use]
     pub const fn execution(self) -> OperationApiEndpointExecution {
         match self {
-            Self::DeploySubmit | Self::MachineAdd | Self::BackupCreate => {
+            Self::DeploySubmit | Self::MachineAdd | Self::MachineUpdate => {
                 OperationApiEndpointExecution::AcceptsOperation
             }
             Self::InitFirstMachineActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
@@ -122,6 +108,7 @@ impl OperationApiEndpoint {
             | Self::ServiceInspect
             | Self::RuntimeSnapshot
             | Self::LogsTail
+            | Self::OpsList
             | Self::OpsStatus
             | Self::OpsWatch => OperationApiEndpointExecution::Query,
         }
@@ -277,30 +264,29 @@ pub fn op_machine_add_failed(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
-pub fn op_backup_submitted(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.backup.submitted", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_backup_running(
-    operation_id: &OperationId,
-    stage: crate::ops::BackupRunningStage,
-) -> String {
+pub fn op_machine_update_submitted(operation_id: &OperationId) -> String {
     format!(
-        "plz.v1.op.{}.backup.running.{}",
-        operation_id.as_str(),
-        stage.as_subject(),
+        "plz.v1.op.{}.machine.update.submitted",
+        operation_id.as_str()
     )
 }
 
 #[must_use]
-pub fn op_backup_completed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.backup.completed", operation_id.as_str())
+pub fn op_machine_update_running(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.update.running", operation_id.as_str())
 }
 
 #[must_use]
-pub fn op_backup_failed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.backup.failed", operation_id.as_str())
+pub fn op_machine_update_completed(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.machine.update.completed",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn op_machine_update_failed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.update.failed", operation_id.as_str())
 }
 
 #[must_use]
@@ -341,16 +327,6 @@ impl DeployRunningStage {
     }
 }
 
-impl crate::ops::BackupRunningStage {
-    #[must_use]
-    pub const fn as_subject(&self) -> &'static str {
-        match self {
-            Self::SnapshottingControlPlane => "snapshotting_control_plane",
-            Self::WritingManifest { .. } => "writing_manifest",
-        }
-    }
-}
-
 #[must_use]
 pub fn machine_observation(machine_id: &MachineId, event: MachineObservationEvent) -> String {
     format!(
@@ -373,6 +349,8 @@ pub enum MachineServiceEndpoint {
     ContainerStop,
     ContainerRemove,
     DataplanePrepare,
+    SubstrateUpdate,
+    SubstrateReport,
     LogsTail,
 }
 
@@ -386,6 +364,8 @@ impl MachineServiceEndpoint {
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
             Self::DataplanePrepare => "dataplane.prepare",
+            Self::SubstrateUpdate => "substrate.update",
+            Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
         }
     }

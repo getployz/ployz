@@ -7,7 +7,7 @@ impl OperationStatus {
             Self::Deploy { id, .. }
             | Self::Cert { id, .. }
             | Self::MachineAdd { id, .. }
-            | Self::Backup { id, .. } => id,
+            | Self::MachineUpdate { id, .. } => id,
         }
     }
 
@@ -17,7 +17,7 @@ impl OperationStatus {
             Self::Deploy { .. } => OperationKind::Deploy,
             Self::Cert { .. } => OperationKind::Cert,
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
-            Self::Backup { .. } => OperationKind::Backup,
+            Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
         }
     }
 
@@ -36,7 +36,7 @@ impl OperationStatus {
                 last_event_sequence,
                 ..
             }
-            | Self::Backup {
+            | Self::MachineUpdate {
                 last_event_sequence,
                 ..
             } => *last_event_sequence,

@@ -13,12 +13,6 @@ pub const MAX_LOGS_TAIL_LINES: u16 = 1_000;
 pub mod operation_api;
 pub mod typescript;
 
-pub use ployz_core::backup::{
-    BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupItem,
-    BackupManifest, BackupManifestVersion, BackupPolicy, BackupRestoreSource, BackupScopeEntry,
-    BackupTarget, BackupTargetValidationFailure, BackupTargetValidationField,
-    ControlPlaneKvSnapshot, KvBucketSnapshot, KvEntrySnapshot, RestoreStep, S3AddressingStyle,
-};
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
@@ -57,9 +51,9 @@ pub use ployz_core::machine_runtime::{
 };
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
-    ArtifactUnavailableReason, BackupOperationFailure, BackupOperationState, BackupRunningStage,
-    CancellationReason, EventSequence, EventSequenceError, FailureMessage, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError, OperationEvent,
+    ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
+    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineSubstrateVersions,
+    MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
     OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationStatus, OperationStatusSnapshot, OperationSubject, OperatorHint,
@@ -84,15 +78,6 @@ pub struct DeploySubmitRequest {
 }
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct BackupCreateRequest {
-    pub operation_id: OperationId,
-    pub target: BackupTarget,
-}
-
-pub type BackupCreateResponse = OperationApiResponse<AcceptedOperation, BackupCreateError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +112,8 @@ pub type MachineListResponse = OperationApiResponse<MachineListResult, MachineLi
 
 pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
 
+pub type MachineUpdateResponse = OperationApiResponse<AcceptedOperation, MachineUpdateError>;
+
 pub type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;
 
 pub type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
@@ -142,6 +129,8 @@ pub type MachineJoinRedeemResponse =
 pub type MachineJoinReportResponse =
     OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
 
+pub type OpsListResponse = OperationApiResponse<OpsListResult, OpsListError>;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MachineAddAccepted {
@@ -155,12 +144,33 @@ pub struct MachineAddAccepted {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+pub struct OpsListRequest {
+    #[serde(default)]
+    pub active_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct OpsListResult {
+    pub operations: Vec<OperationStatusSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct MachineListRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MachineInspectRequest {
     pub machine_id: MachineId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineUpdateRequest {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -607,6 +617,36 @@ pub enum MachineAddError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUpdateError {
+    NoSuchMachine {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    CurrentMachineUnsupported {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    Unavailable {
+        operation_id: OperationId,
+        source: MachineUpdateUnavailableSource,
+    },
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUpdateUnavailableSource {
+    OperationSubmit {
+        failure: OperationSubmitUnavailableSource,
+    },
+    CoreState,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineAddUnavailableSource {
@@ -1018,26 +1058,8 @@ pub enum DeploySubmitError {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BackupCreateError {
-    InvalidTarget {
-        operation_id: OperationId,
-        field: BackupTargetValidationField,
-        failure: BackupTargetValidationFailure,
-    },
-    Unavailable {
-        operation_id: OperationId,
-        source: OperationSubmitUnavailableSource,
-    },
-    DuplicateSequenceMismatch {
-        operation_id: OperationId,
-        sequence: EventSequence,
-    },
-}
-
-/// The shared unavailable source for operation submits (deploy, backup,
-/// and the submit core of machine-add).
+/// The shared unavailable source for operation submits (deploy and the
+/// submit core of machine-add).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationSubmitUnavailableSource {
@@ -1096,6 +1118,12 @@ pub enum OpsStatusError {
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpsStatusUnavailableSource {
     StatusStore { failure: StatusReadFailure },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpsListError {
+    Unavailable { source: OpsStatusUnavailableSource },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
