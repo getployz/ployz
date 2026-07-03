@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::ids::{MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
 use crate::machine::MachineName;
-use crate::ops::{RoutePort, RouteTarget};
+use crate::ops::{MachineSubstrateVersions, RoutePort, RouteTarget};
 use crate::wire::id_prefixed_state_key;
 use std::net::{IpAddr, SocketAddr};
 
@@ -51,17 +51,7 @@ pub struct ActiveMachineState {
     pub name: MachineName,
     pub activated_by: OperationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub substrate_versions: Option<SubstrateVersions>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct SubstrateVersions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ployzd: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keeper: Option<String>,
+    pub substrate_versions: Option<MachineSubstrateVersions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,7 @@
 
 use crate::operation_api::{
     OperationApiHandlers, deploy_submit, init_first_machine_activate, machine_add,
-    machine_join_redeem, machine_join_report, ops_list, ops_status, ops_watch,
+    machine_join_redeem, machine_join_report, machine_update, ops_list, ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -15,8 +15,8 @@ use ployz_sdk_types::{
     operation_api::{
         DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi,
+        MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -36,7 +36,7 @@ pub async fn start_operation_api_service_with_handlers(
         .map_err(ApiServiceRuntimeError::Nats)?;
     let handlers = Arc::new(handlers);
 
-    for endpoint in IMPLEMENTED_OPERATION_API_ENDPOINTS {
+    for endpoint in IMPLEMENTED_OPERATION_API_ENDPOINTS.iter().copied() {
         bind_operation_endpoint(&mut runtime, Arc::clone(&handlers), endpoint).await?;
     }
 
@@ -62,6 +62,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { machine_add(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::MachineUpdate => {
+            bind_operation_contract::<MachineUpdateApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { machine_update(&handlers, request).await },
             )
             .await
         }

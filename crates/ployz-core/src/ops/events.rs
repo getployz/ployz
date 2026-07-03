@@ -6,6 +6,7 @@ use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
+use crate::install::InstallArtifactVersion;
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
     MachineName,
@@ -15,7 +16,7 @@ use crate::roles::InstallRolePolicy;
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage,
+    DeployRunningStage, MachineSubstrateVersions, MachineUpdateFailure,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,7 @@ pub enum OperationSubject {
     Deploy { service_id: ServiceId },
     Cert { cert_id: CertId },
     MachineAdd { machine_id: MachineId },
+    MachineUpdate { machine_id: MachineId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +119,25 @@ pub enum OperationEvent {
         operation_id: OperationId,
         machine_id: MachineId,
         failure: MachineAddFailure,
+    },
+    MachineUpdateSubmitted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
+    },
+    MachineUpdateRunning {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    MachineUpdateCompleted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        reported: MachineSubstrateVersions,
+    },
+    MachineUpdateFailed {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: MachineUpdateFailure,
     },
     Cancelled {
         operation_id: OperationId,

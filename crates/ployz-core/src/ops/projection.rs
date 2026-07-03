@@ -1,10 +1,13 @@
+mod machine_update;
+
 use super::classification::{
     CertEvent, ClassifiedOperationEvent, DeployEvent, MachineAddEvent, OperationSubjectRef,
 };
 use super::{
     CertId, CertOperationState, CertRunningStage, CertTransition, DeployEvidence,
     DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, MachineId,
-    OperationEvent, OperationId, OperationKind, OperationStatus, ServiceId,
+    MachineUpdateOperationState, OperationEvent, OperationId, OperationKind, OperationStatus,
+    ServiceId,
 };
 use crate::machine::{MachineAddOperationState, MachineName};
 use crate::roles::InstallRolePolicy;
@@ -51,6 +54,7 @@ pub enum ProjectionOperationState {
     Deploy(DeployOperationState),
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
+    MachineUpdate(MachineUpdateOperationState),
 }
 
 /// What a piece of deploy evidence requires of the operation state to count
@@ -305,6 +309,25 @@ pub fn project_operation_event(
             };
             project_machine_add_event(fields, subject, event, event_sequence)
         }
+        ClassifiedOperationEvent::MachineUpdate { subject, event, .. } => {
+            let OperationStatus::MachineUpdate {
+                id,
+                machine_id,
+                target_version,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::MachineUpdate));
+            };
+            let fields = machine_update::MachineUpdateFields {
+                id,
+                machine_id,
+                target_version,
+                state,
+            };
+            machine_update::project_event(fields, subject, event, event_sequence)
+        }
         ClassifiedOperationEvent::Cancelled {
             operation_id: _,
             reason,
@@ -348,6 +371,22 @@ pub fn project_operation_event(
                 MachineAddOperationState::Cancelled { reason },
                 event_sequence,
             ),
+            OperationStatus::MachineUpdate {
+                id,
+                machine_id,
+                target_version,
+                state,
+                ..
+            } => machine_update::project_state(
+                machine_update::MachineUpdateFields {
+                    id,
+                    machine_id,
+                    target_version,
+                    state,
+                },
+                MachineUpdateOperationState::Cancelled { reason },
+                event_sequence,
+            ),
         },
     }
 }
@@ -359,6 +398,18 @@ pub(super) fn kind_mismatch(
     StatusProjectionError::OperationKindMismatch {
         operation_id: current.id().clone(),
         expected: current.kind(),
+        actual,
+    }
+}
+
+pub(super) fn machine_update_mismatch(
+    operation_id: &OperationId,
+    expected_machine_id: &MachineId,
+    actual: OperationSubjectRef,
+) -> StatusProjectionError {
+    StatusProjectionError::OperationSubjectMismatch {
+        operation_id: operation_id.clone(),
+        expected: OperationSubjectRef::MachineUpdate(expected_machine_id.clone()),
         actual,
     }
 }

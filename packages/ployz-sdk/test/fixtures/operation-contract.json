@@ -210,6 +210,19 @@
       }
     }
   },
+  "machine_update_request": {
+    "machine_id": "machine_2",
+    "operation_id": "op_machine_update",
+    "target_version": "0.2.0"
+  },
+  "machine_update_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_machine_update",
+      "start_sequence": "9",
+      "watch_subject": "plz.v1.op.op_machine_update.>"
+    }
+  },
   "operation_event_replay_page": {
     "cursor": {
       "next_start_sequence": "2",

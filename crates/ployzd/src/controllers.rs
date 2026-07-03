@@ -5,7 +5,8 @@ pub mod cert;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::install::{
-    MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery, MachineJoinTemplate,
+    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
+    MachineJoinTemplate,
 };
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
@@ -15,8 +16,9 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, AsyncNatsOperationEventLog,
     AsyncNatsOperationRepository, AsyncNatsOperationStatusStore, DeployOperationSubmission,
-    MachineAddOperationSubmission, MachineJoinRedemption, OperationStatusReadError,
-    RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
+    MachineAddOperationSubmission, MachineJoinRedemption, MachineUpdateOperationSubmission,
+    OperationStatusReadError, RedeemMachineJoinTokenError, SubmitMachineAddError,
+    SubmitOperationError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +42,13 @@ pub struct MachineAddSubmitCommand {
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineUpdateSubmitCommand {
+    pub operation_id: OperationId,
+    pub machine_id: ployz_core::ids::MachineId,
+    pub target_version: InstallArtifactVersion,
 }
 
 /// Bootstrap material available at submit time.
@@ -160,6 +169,20 @@ impl OperationControllers {
                 join_token: command.join_token,
                 raw_join_token: command.raw_join_token,
                 idempotency_key: command.idempotency_key,
+            })
+            .await?)
+    }
+
+    pub async fn submit_machine_update(
+        &self,
+        command: MachineUpdateSubmitCommand,
+    ) -> Result<ployz_nats::operations::AcceptedMachineUpdateSubmission, SubmitCommandError> {
+        Ok(self
+            .repository
+            .submit_machine_update(MachineUpdateOperationSubmission {
+                operation_id: command.operation_id,
+                machine_id: command.machine_id,
+                target_version: command.target_version,
             })
             .await?)
     }

@@ -9,6 +9,7 @@ use crate::ids::{
     CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, SubjectToken,
     SubjectTokenError,
 };
+use crate::install::InstallArtifactVersion;
 use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
 use crate::roles::InstallRolePolicy;
 use crate::state::ExpectedActiveService;
@@ -85,6 +86,7 @@ pub enum OperationKind {
     Deploy,
     Cert,
     MachineAdd,
+    MachineUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +137,37 @@ impl CertOperationState {
             Self::Accepted | Self::Running { .. } => false,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUpdateOperationState {
+    Accepted,
+    Running,
+    Completed { reported: MachineSubstrateVersions },
+    Failed { failure: MachineUpdateFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl MachineUpdateOperationState {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        match self {
+            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Accepted | Self::Running => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineSubstrateVersions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ployzd: Option<InstallArtifactVersion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper: Option<InstallArtifactVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +246,29 @@ pub enum CertOperationFailure {
         validity: CertValidityWindow,
         message: FailureMessage,
         retained_active_cert: Option<ActiveCertState>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUpdateFailure {
+    MachineUnavailable {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    UpdateRejected {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    VersionNotReported {
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
+        reported: MachineSubstrateVersions,
+    },
+    StateCommitFailed {
+        machine_id: MachineId,
+        message: FailureMessage,
     },
 }
 
@@ -317,6 +373,13 @@ pub enum OperationStatus {
         state: MachineAddOperationState,
         last_event_sequence: EventSequence,
     },
+    MachineUpdate {
+        id: OperationId,
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
+        state: MachineUpdateOperationState,
+        last_event_sequence: EventSequence,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,11 +441,54 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn machine_update_accepted(
+        id: OperationId,
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::MachineUpdate {
+            id,
+            machine_id,
+            target_version,
+            state: MachineUpdateOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
+            Self::MachineUpdate { state, .. } => state.is_terminal(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineUpdateTransition {
+    Running,
+    Completed { reported: MachineSubstrateVersions },
+    Failed { failure: MachineUpdateFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl MachineUpdateTransition {
+    #[must_use]
+    pub fn state(&self) -> MachineUpdateOperationState {
+        match self {
+            Self::Running => MachineUpdateOperationState::Running,
+            Self::Completed { reported } => MachineUpdateOperationState::Completed {
+                reported: reported.clone(),
+            },
+            Self::Failed { failure } => MachineUpdateOperationState::Failed {
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => MachineUpdateOperationState::Cancelled {
+                reason: reason.clone(),
+            },
         }
     }
 }

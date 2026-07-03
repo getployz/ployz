@@ -12,16 +12,16 @@ use ployz_sdk_types::{
     LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineListError,
-    MachineListRequest, MachineListResult, MachineSnapshot, OperationApiResponse, OpsListError,
-    OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceSnapshot,
+    MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineUpdateRequest, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
+    ServiceListError, ServiceListRequest, ServiceListResult, ServiceSnapshot,
     operation_api::{
         DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi,
+        MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -87,6 +87,13 @@ impl OperationApiClient {
         request: &MachineAddRequest,
     ) -> Result<MachineAddAccepted, OperationApiClientError<MachineAddError>> {
         self.request_api::<MachineAddApi>(request).await
+    }
+
+    pub async fn machine_update(
+        &self,
+        request: &MachineUpdateRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<MachineUpdateError>> {
+        self.request_api::<MachineUpdateApi>(request).await
     }
 
     pub async fn machine_list(

@@ -9,15 +9,17 @@ pub use machine_join::{
 };
 pub use submission::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError,
+    AcceptedMachineUpdateSubmission, CertOperationSubmission, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineUpdateOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError,
 };
 
 use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::ops::{
-    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationProjection, OperationStatusSnapshot, StatusProjectionError, project_operation_event,
+    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
+    MachineSubstrateVersions, MachineUpdateFailure, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationProjection,
+    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
     validate_fresh_deploy_evidence,
 };
 
@@ -188,6 +190,47 @@ impl AsyncNatsOperationRepository {
         self.record_operation_event(
             operation_id,
             OperationEventAppend::machine_add_completed(operation_id, machine_id),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_update_running(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_update_running(operation_id, machine_id),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_update_completed(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        reported: MachineSubstrateVersions,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_update_completed(operation_id, machine_id, reported),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_update_failed(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        failure: MachineUpdateFailure,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_update_failed(operation_id, machine_id, failure),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -617,6 +660,10 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::MachineAddCredentialProvisioned { .. }
         | OperationEvent::MachineAddCompleted { .. }
         | OperationEvent::MachineAddFailed { .. }
+        | OperationEvent::MachineUpdateSubmitted { .. }
+        | OperationEvent::MachineUpdateRunning { .. }
+        | OperationEvent::MachineUpdateCompleted { .. }
+        | OperationEvent::MachineUpdateFailed { .. }
         | OperationEvent::Cancelled { .. } => None,
     }
 }

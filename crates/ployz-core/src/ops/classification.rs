@@ -1,6 +1,6 @@
 use super::{
     CertId, CertRunningStage, CertTransition, DeployEvidence, DeployTransition,
-    MachineAddOperationState, MachineId, OperationEvent, OperationId,
+    MachineAddOperationState, MachineId, MachineUpdateTransition, OperationEvent, OperationId,
 };
 use crate::ops::CancellationReason;
 
@@ -8,6 +8,7 @@ use crate::ops::CancellationReason;
 pub enum OperationSubjectRef {
     Cert(CertId),
     MachineAdd(MachineId),
+    MachineUpdate(MachineId),
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -25,6 +26,11 @@ pub(super) enum ClassifiedOperationEvent {
         subject: OperationSubjectRef,
         event: MachineAddEvent,
     },
+    MachineUpdate {
+        operation_id: OperationId,
+        subject: OperationSubjectRef,
+        event: MachineUpdateEvent,
+    },
     Cancelled {
         operation_id: OperationId,
         reason: CancellationReason,
@@ -37,6 +43,7 @@ impl ClassifiedOperationEvent {
             Self::Deploy { operation_id, .. }
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
+            | Self::MachineUpdate { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -212,6 +219,43 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Failed { failure }),
             },
+            OperationEvent::MachineUpdateSubmitted {
+                operation_id,
+                machine_id,
+                ..
+            } => Self::MachineUpdate {
+                operation_id,
+                subject: OperationSubjectRef::MachineUpdate(machine_id),
+                event: MachineUpdateEvent::Submitted,
+            },
+            OperationEvent::MachineUpdateRunning {
+                operation_id,
+                machine_id,
+            } => Self::MachineUpdate {
+                operation_id,
+                subject: OperationSubjectRef::MachineUpdate(machine_id),
+                event: MachineUpdateEvent::Transition(MachineUpdateTransition::Running),
+            },
+            OperationEvent::MachineUpdateCompleted {
+                operation_id,
+                machine_id,
+                reported,
+            } => Self::MachineUpdate {
+                operation_id,
+                subject: OperationSubjectRef::MachineUpdate(machine_id),
+                event: MachineUpdateEvent::Transition(MachineUpdateTransition::Completed {
+                    reported,
+                }),
+            },
+            OperationEvent::MachineUpdateFailed {
+                operation_id,
+                machine_id,
+                failure,
+            } => Self::MachineUpdate {
+                operation_id,
+                subject: OperationSubjectRef::MachineUpdate(machine_id),
+                event: MachineUpdateEvent::Transition(MachineUpdateTransition::Failed { failure }),
+            },
             OperationEvent::Cancelled {
                 operation_id,
                 reason,
@@ -239,4 +283,9 @@ pub(super) enum MachineAddEvent {
     Submitted,
     CredentialProvisioned,
     Transition(MachineAddOperationState),
+}
+
+pub(super) enum MachineUpdateEvent {
+    Submitted,
+    Transition(MachineUpdateTransition),
 }

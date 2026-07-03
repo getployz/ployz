@@ -12,8 +12,9 @@ use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
 use crate::client_ids::generate_client_machine_add_ids;
 use crate::commands::init::FirstMachineActivateCommand;
 use crate::commands::machine::{
-    MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteOutput, MachineIdentity,
-    MachineIdentityError, MachineInitCommand, MachineInitOutput,
+    MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteDetachedOutput,
+    MachineAddRemoteOutput, MachineIdentity, MachineIdentityError, MachineInitCommand,
+    MachineInitOutput,
 };
 use crate::config::{
     ClusterContextError, ClusterContextMaterial, default_cluster_context_path,
@@ -372,6 +373,16 @@ pub(crate) async fn execute_machine_add_remote(
                 operation_id,
                 source,
             },
+        ));
+    }
+
+    if command.detach {
+        return Ok(PloyzctlExecutionOutput::stdout(
+            MachineAddRemoteDetachedOutput {
+                operation_id,
+                machine_id: identity.machine_id,
+            }
+            .render(),
         ));
     }
 

@@ -37,6 +37,12 @@ pub(crate) fn generate_client_machine_add_ids(
     })
 }
 
+pub(crate) fn generate_client_machine_update_id(
+    machine_id: &MachineId,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id("update", machine_id.as_str())
+}
+
 fn generate_client_operation_id(
     action: &'static str,
     subject: &str,

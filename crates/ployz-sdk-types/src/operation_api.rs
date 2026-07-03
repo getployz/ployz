@@ -6,11 +6,11 @@ use crate::{
     LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineListError,
-    MachineListRequest, MachineListResult, MachineSnapshot, OperationStatusSnapshot, OpsListError,
-    OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceSnapshot,
+    MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineUpdateRequest, OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
+    ServiceListError, ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -32,6 +32,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
+            $crate::operation_api::MachineUpdateApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
             $crate::operation_api::MachineJoinRedeemApi,
@@ -81,6 +82,18 @@ impl OperationApiContract for MachineAddApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineAdd;
     const RESPONSE_ALIAS: &'static str = "MachineAddResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineUpdateApi;
+
+impl OperationApiContract for MachineUpdateApi {
+    type Request = MachineUpdateRequest;
+    type Success = AcceptedOperation;
+    type Error = MachineUpdateError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineUpdate;
+    const RESPONSE_ALIAS: &'static str = "MachineUpdateResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

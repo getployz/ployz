@@ -15,10 +15,11 @@ pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
 pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
 pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
-pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 14] = [
+pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
+    OperationApiEndpoint::MachineUpdate,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
     OperationApiEndpoint::MachineJoinRedeem,
@@ -123,6 +124,8 @@ pub fn machine_runtime_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateReport),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
         ],
     )
@@ -156,6 +159,8 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",
+        MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
+        MachineServiceEndpoint::SubstrateReport => "machine.substrate.report",
         MachineServiceEndpoint::LogsTail => "machine.logs.tail",
     }
 }

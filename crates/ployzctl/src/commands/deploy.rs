@@ -105,8 +105,8 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             .map(NamespaceId::try_new)
             .transpose()
             .map_err(|error| invalid_value("--namespace", error))?;
-        let mut request = crate::compose::parse_deploy_file(&source, namespace_override)?;
-        let service_id = request
+        let parsed = crate::compose::parse_deploy_file(&source, namespace_override)?;
+        let service_id = parsed
             .services
             .first()
             .map(|service| service.service_id.clone())
@@ -115,13 +115,13 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             cli_error(format!("could not generate client operation ids: {error}"))
         })?;
         let operation_id = generated_ids.operation_id;
-        request.target_revision = match revision {
+        let target_revision = match revision {
             Some(value) => {
                 RevisionId::try_new(value).map_err(|error| invalid_value("--revision", error))?
             }
             None => RevisionId::try_new(format!(
                 "rev_{}_{}",
-                sanitize_id_fragment(request.namespace_id.as_str()),
+                sanitize_id_fragment(parsed.namespace_id.as_str()),
                 generated_ids.suffix
             ))
             .expect("generated revision id uses subject-token characters"),
@@ -129,9 +129,9 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
 
         return Ok(DeployCommand {
             operation_id,
-            namespace_id: request.namespace_id,
-            target_revision: request.target_revision,
-            services: request.services,
+            namespace_id: parsed.namespace_id,
+            target_revision,
+            services: parsed.services,
             detach,
         });
     }

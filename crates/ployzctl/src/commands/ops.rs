@@ -3,8 +3,9 @@ use ployz_core::ids::OperationId;
 use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
     CertOperationState, CertRunningStage, DeployOperationState, DeployRunningStage, EventSequence,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayLimit,
-    OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineUpdateOperationState, OperationEvent,
+    OperationEventReplayLimit, OperationEventReplayRequest, OperationStatus,
+    OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::roles::{DnsRole, GatewayRole};
 use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
@@ -140,10 +141,10 @@ impl ListOutput {
             .map(|operation| {
                 format!(
                     "{} {} {} {}",
-                    operation.operation_id.as_str(),
-                    operation.kind,
-                    operation.subject,
-                    operation.state,
+                    operation_id(&operation.status).as_str(),
+                    operation_kind(&operation.status),
+                    operation_subject(&operation.status),
+                    operation_state(&operation.status),
                 )
             })
             .collect::<Vec<_>>()
@@ -211,7 +212,8 @@ fn operation_id(status: &OperationStatus) -> &OperationId {
     match status {
         OperationStatus::Deploy { id, .. }
         | OperationStatus::Cert { id, .. }
-        | OperationStatus::MachineAdd { id, .. } => id,
+        | OperationStatus::MachineAdd { id, .. }
+        | OperationStatus::MachineUpdate { id, .. } => id,
     }
 }
 
@@ -220,6 +222,7 @@ const fn operation_kind(status: &OperationStatus) -> &'static str {
         OperationStatus::Deploy { .. } => "deploy",
         OperationStatus::Cert { .. } => "cert",
         OperationStatus::MachineAdd { .. } => "machine-add",
+        OperationStatus::MachineUpdate { .. } => "machine-update",
     }
 }
 
@@ -243,6 +246,15 @@ fn operation_subject(status: &OperationStatus) -> String {
             gateway_role(roles.gateway),
             dns_role(roles.dns)
         ),
+        OperationStatus::MachineUpdate {
+            machine_id,
+            target_version,
+            ..
+        } => format!(
+            "machine {} target-version {}",
+            machine_id.as_str(),
+            target_version.as_str()
+        ),
     }
 }
 
@@ -251,6 +263,7 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::Deploy { state, .. } => deploy_state(state).to_owned(),
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
+        OperationStatus::MachineUpdate { state, .. } => machine_update_state(state).to_owned(),
     }
 }
 
@@ -265,6 +278,10 @@ const fn last_event_sequence(status: &OperationStatus) -> EventSequence {
             ..
         }
         | OperationStatus::MachineAdd {
+            last_event_sequence,
+            ..
+        }
+        | OperationStatus::MachineUpdate {
             last_event_sequence,
             ..
         } => *last_event_sequence,
@@ -351,6 +368,16 @@ const fn machine_add_state(state: &MachineAddOperationState) -> &'static str {
     }
 }
 
+const fn machine_update_state(state: &MachineUpdateOperationState) -> &'static str {
+    match state {
+        MachineUpdateOperationState::Accepted => "accepted",
+        MachineUpdateOperationState::Running => "running",
+        MachineUpdateOperationState::Completed { .. } => "completed",
+        MachineUpdateOperationState::Failed { .. } => "failed",
+        MachineUpdateOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
 fn render_replayed_event_text(event: &ReplayedOperationEvent) -> String {
     format!(
         "{} {}",
@@ -401,6 +428,10 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         },
         OperationEvent::MachineAddCompleted { .. } => "machine.add.completed",
         OperationEvent::MachineAddFailed { .. } => "machine.add.failed",
+        OperationEvent::MachineUpdateSubmitted { .. } => "machine.update.submitted",
+        OperationEvent::MachineUpdateRunning { .. } => "machine.update.running",
+        OperationEvent::MachineUpdateCompleted { .. } => "machine.update.completed",
+        OperationEvent::MachineUpdateFailed { .. } => "machine.update.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

@@ -12,12 +12,14 @@ pub use queries::{
     LogsQueryRuntime, MachineQueryRuntime, RuntimeSnapshotQueryRuntime, ServiceQueryRuntime,
     ops_list, ops_status, ops_status_missing, ops_watch,
 };
-pub use submit::{deploy_submit, machine_add, owned_operation};
+pub use submit::{deploy_submit, machine_add, machine_update, owned_operation};
 
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::machine_runtime::client::NatsMachineLogsTailer;
+use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::MachineCredentialMintRuntime;
+use ployz_core::ids::MachineId;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use std::sync::Arc;
@@ -26,7 +28,9 @@ use std::sync::Arc;
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_runtime: Arc<DeployOperationRuntime>,
+    machine_update_runtime: Arc<MachineUpdateOperationRuntime>,
     machine_mint: Arc<MachineCredentialMintRuntime>,
+    local_machine_id: MachineId,
     /// Cluster-truth store for the writes this layer owns (machine
     /// activation on join completion) and the first-machine idempotency
     /// read. The query runtimes stay genuinely read-only.
@@ -42,7 +46,9 @@ impl OperationApiHandlers {
     pub fn execute_operations(
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,
+        machine_update_runtime: MachineUpdateOperationRuntime,
         machine_mint: MachineCredentialMintRuntime,
+        local_machine_id: MachineId,
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
         logs_tailer: NatsMachineLogsTailer,
@@ -55,7 +61,9 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_runtime: Arc::new(deploy_runtime),
+            machine_update_runtime: Arc::new(machine_update_runtime),
             machine_mint: Arc::new(machine_mint),
+            local_machine_id,
             core_state,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
@@ -83,5 +91,13 @@ impl OperationApiHandlers {
 
     pub(crate) fn logs_query(&self) -> &LogsQueryRuntime {
         &self.logs_query
+    }
+
+    pub(crate) fn machine_update_runtime(&self) -> &MachineUpdateOperationRuntime {
+        &self.machine_update_runtime
+    }
+
+    pub(crate) fn local_machine_id(&self) -> &MachineId {
+        &self.local_machine_id
     }
 }
