@@ -332,15 +332,20 @@ fn cli_dispatches_service_list_request() {
 
 #[test]
 fn cli_dispatches_service_inspect_request() {
-    let command = parse_command(["service", "inspect", "svc_api"].map(str::to_owned))
+    let command = parse_command(["service", "inspect", "default", "svc_api"].map(str::to_owned))
         .expect("service inspect command parses");
 
     let PloyzctlCommand::ServiceInspect(command) = command else {
         panic!("expected service inspect command");
     };
 
+    let request = command.into_request();
     assert_eq!(
-        command.into_request().service_id,
+        request.namespace_id,
+        NamespaceId::try_new("default").expect("valid namespace id")
+    );
+    assert_eq!(
+        request.service_id,
         ServiceId::try_new("svc_api").expect("valid service id")
     );
 }

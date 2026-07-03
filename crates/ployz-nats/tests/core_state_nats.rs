@@ -27,7 +27,7 @@ async fn active_service_state_round_trips_through_kv_core() {
 
     assert_eq!(
         store
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state loads"),
         Some(state)
@@ -52,7 +52,7 @@ async fn active_service_replace_overwrites_current_revision() {
 
     assert_eq!(
         store
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state loads"),
         Some(second)
@@ -70,7 +70,7 @@ async fn active_service_replace_succeeds_after_delete_marker() {
         .await
         .expect("active state stores");
     store
-        .remove_active_service(&state.service_id)
+        .remove_active_service(&state.namespace_id, &state.service_id)
         .await
         .expect("active state removes");
     store
@@ -80,7 +80,7 @@ async fn active_service_replace_succeeds_after_delete_marker() {
 
     assert_eq!(
         store
-            .active_service(&state.service_id)
+            .active_service(&state.namespace_id, &state.service_id)
             .await
             .expect("active state loads"),
         Some(state)
@@ -103,7 +103,7 @@ async fn active_services_list_skips_deleted_keys() {
         .await
         .expect("worker service stores");
     store
-        .remove_active_service(&worker.service_id)
+        .remove_active_service(&worker.namespace_id, &worker.service_id)
         .await
         .expect("worker service removes");
 
@@ -119,7 +119,9 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
     let store = core_state_store(&nats).await;
     let target_service_id = service_id("svc_api");
     let other_service_id = service_id("svc_other");
-    let key = ActiveServiceStateKey::from_service_id(&target_service_id);
+    let target_namespace_id = namespace_id("default");
+    let key =
+        ActiveServiceStateKey::from_namespace_service(&target_namespace_id, &target_service_id);
     let bucket = nats
         .jetstream
         .get_key_value(KV_CORE_BUCKET)
@@ -138,7 +140,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         .expect("write corrupt active state");
 
     let error = store
-        .active_service(&target_service_id)
+        .active_service(&target_namespace_id, &target_service_id)
         .await
         .expect_err("wrong service payload is rejected");
     match error {
@@ -435,8 +437,12 @@ async fn namespace_lock_renew_and_release_are_owner_scoped() {
 #[test]
 fn active_service_state_key_matches_kv_core_path() {
     assert_eq!(
-        ActiveServiceStateKey::from_service_id(&service_id("svc_api")).as_str(),
-        "services.svc_api"
+        ActiveServiceStateKey::from_namespace_service(
+            &namespace_id("default"),
+            &service_id("svc_api")
+        )
+        .as_str(),
+        "services.default.svc_api"
     );
 }
 

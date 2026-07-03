@@ -91,7 +91,24 @@ pub enum GatewayServingStatus {
     Unavailable,
 }
 
-id_prefixed_state_key! { pub struct ActiveServiceStateKey; prefix: ACTIVE_SERVICE_STATE_PREFIX; fn from_service_id(&ServiceId); }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveServiceStateKey(String);
+
+impl ActiveServiceStateKey {
+    #[must_use]
+    pub fn from_namespace_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
+        Self(format!(
+            "{ACTIVE_SERVICE_STATE_PREFIX}.{}.{}",
+            namespace_id.as_str(),
+            service_id.as_str()
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRouteStateKey(String);

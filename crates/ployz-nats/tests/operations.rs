@@ -187,6 +187,7 @@ fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
     DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_old"),
         operation_id: operation_id("op_existing"),

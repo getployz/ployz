@@ -228,13 +228,14 @@ impl ActiveServiceCommitter for LockCheckedCoreState {
 
     async fn remove_active_service(
         &mut self,
+        namespace_id: ployz_core::ids::NamespaceId,
         service_id: ployz_core::ids::ServiceId,
     ) -> Result<(), ActiveServiceCommitError> {
         if self.lock_is_lost() {
             return Err(ActiveServiceCommitError::NamespaceLockLost);
         }
 
-        AsyncNatsCoreStateStore::remove_active_service(&self.core_state, &service_id)
+        AsyncNatsCoreStateStore::remove_active_service(&self.core_state, &namespace_id, &service_id)
             .await
             .map_err(ActiveServiceCommitError::Store)
     }
@@ -578,7 +579,9 @@ fn health_read_error(error: ObservationStoreError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::ids::{
+        ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId,
+    };
     use ployz_core::machine_runtime::{
         ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     };
@@ -690,6 +693,7 @@ mod tests {
         ManagedContainerObservation {
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
             operation_id: operation_id("op_123"),

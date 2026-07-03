@@ -102,7 +102,7 @@ export type DeployPlan = { namespace_id: NamespaceId, target_revision: RevisionI
 
 export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
 
-export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
+export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, namespace_id: NamespaceId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
 
 export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
 
@@ -112,7 +112,7 @@ export type ContainerEndpoint = { ip: string, port: RoutePort, };
 
 export type ContainerRuntimeState = { "state": "running", endpoint?: ContainerEndpoint | null, } | { "state": "exited" };
 
-export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, namespace_id: NamespaceId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
 
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
@@ -272,7 +272,7 @@ export type ServiceSnapshot = { active: ActiveServiceState, };
 
 export type ServiceListError = { "error": "unavailable", source: ServiceQueryUnavailableSource, };
 
-export type ServiceInspectRequest = { service_id: ServiceId, };
+export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
 
 export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", source: ServiceQueryUnavailableSource, };
 

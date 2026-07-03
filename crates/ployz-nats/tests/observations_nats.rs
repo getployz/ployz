@@ -8,7 +8,7 @@ use ployz_core::state::{
 };
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, service_id, step_id,
+    container_id, machine_id, namespace_id, operation_id, revision_id, service_id, step_id,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -317,6 +317,7 @@ fn managed_observation_for(
     ManagedContainerObservation {
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
         operation_id: operation_id("op_123"),

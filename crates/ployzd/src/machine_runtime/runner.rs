@@ -34,6 +34,7 @@ pub fn managed_container_labels(
     endpoint: Option<&ContainerEndpointRequest>,
 ) -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: spec.namespace_id.clone(),
         service_id: spec.service_id.clone(),
         revision_id: spec.revision_id.clone(),
         operation_id: spec.operation_id.clone(),
