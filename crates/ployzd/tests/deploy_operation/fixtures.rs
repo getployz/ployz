@@ -9,7 +9,7 @@ use ployz_core::deploy::{
     ReplicaCount,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
 use ployz_core::machine_runtime::{
