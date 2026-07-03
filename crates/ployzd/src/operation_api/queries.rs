@@ -697,11 +697,9 @@ mod tests {
     use ployz_test_support::ids::{namespace_id, namespace_revision_entry_id, service_id};
 
     /// Containers whose service has no serving target entry still surface
-    /// as instances and revisions under their own identity namespace.
-    /// Before identity consolidation they were silently dropped by a
-    /// namespace-lookup join; Docker is execution reality, so orphaned
-    /// containers are evidence, not noise (missing_link_count separately
-    /// reports the mismatch).
+    /// as instances and revisions under their own identity namespace:
+    /// Docker is execution reality, so orphaned containers are evidence,
+    /// not noise (missing_link_count separately reports the mismatch).
     #[test]
     fn orphaned_containers_surface_as_instances_and_revisions() {
         let orphan = containers::observation("machine_a", "ctr_orphan")

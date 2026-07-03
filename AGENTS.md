@@ -144,6 +144,14 @@ Transport adapters must not import product orchestration convenience types.
 - Booleans are only for obvious yes/no facts with no plausible third state.
 - Treat Clippy suppressions as a last resort; fix the shape first.
 
+## Comments
+
+- Comments are timeless: they describe what the code is and the invariants it
+  keeps, for every future reader across revisions. Never write comments about
+  the act of changing the code - what was just deleted, moved, renamed, or
+  why an edit was made. That narration belongs in commit messages and PR
+  descriptions; in the file it is stale the moment it lands.
+
 ## Code Reviews
 
 - When asked for a thermo-nuclear (or "thermodynamic") review, dispatch it as
