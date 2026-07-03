@@ -11,9 +11,8 @@ use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::ids::{
-    namespace_id,
-    container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
-    service_id, step_id,
+    container_id, failure_message, machine_id, namespace_id, namespace_revision_entry_id,
+    operation_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,

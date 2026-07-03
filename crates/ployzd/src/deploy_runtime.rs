@@ -2,11 +2,12 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
-    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitError, ServingTargetCommitter,
     DataplanePreparer, DeployCommandPreparationError, DeployContainer, DeployExecutionError,
     DeployExecutionMachineScope, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
-    DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, execute_deploy_operation,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, RouteBindingCommitError,
+    RouteBindingCommitter, ServingTargetCommitError, ServingTargetCommitter,
+    execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
 use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use crate::tasks::TaskRegistry;
@@ -478,20 +479,18 @@ impl DeployHealthChecker for ObservationHealthChecker {
                     .container(&container.machine_id, &container.container_id)
                     .await
                 {
-                    Ok(Some(observation)) => {
-                        match observed_container_health(&observation) {
-                            ObservedContainerHealth::Healthy => {
-                                memory.record_running(container);
-                            }
-                            ObservedContainerHealth::Failed(message) => {
-                                if memory.should_wait_for_fresh_start_observation(container) {
-                                    all_running = false;
-                                    continue;
-                                }
-                                return Err(unhealthy_container(container, message));
-                            }
+                    Ok(Some(observation)) => match observed_container_health(&observation) {
+                        ObservedContainerHealth::Healthy => {
+                            memory.record_running(container);
                         }
-                    }
+                        ObservedContainerHealth::Failed(message) => {
+                            if memory.should_wait_for_fresh_start_observation(container) {
+                                all_running = false;
+                                continue;
+                            }
+                            return Err(unhealthy_container(container, message));
+                        }
+                    },
                     Ok(None) => all_running = false,
                     Err(error) => {
                         return Err(unhealthy_container(container, health_read_error(error)));
@@ -590,13 +589,11 @@ mod tests {
     #[test]
     fn health_accepts_running_without_endpoint() {
         assert_eq!(
-            observed_container_health(
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::running_unroutable()
-                ),
-            ),
+            observed_container_health(&observation(
+                "machine_a",
+                "ctr_1",
+                ContainerRuntimeState::running_unroutable()
+            ),),
             ObservedContainerHealth::Healthy
         );
     }
@@ -604,13 +601,11 @@ mod tests {
     #[test]
     fn health_accepts_running_endpoint() {
         assert_eq!(
-            observed_container_health(
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-                ),
-            ),
+            observed_container_health(&observation(
+                "machine_a",
+                "ctr_1",
+                ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
+            ),),
             ObservedContainerHealth::Healthy
         );
     }
@@ -618,13 +613,11 @@ mod tests {
     #[test]
     fn health_accepts_running_endpoint_without_matching_route_port() {
         assert_eq!(
-            observed_container_health(
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-                ),
-            ),
+            observed_container_health(&observation(
+                "machine_a",
+                "ctr_1",
+                ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
+            ),),
             ObservedContainerHealth::Healthy
         );
     }
@@ -632,9 +625,11 @@ mod tests {
     #[test]
     fn health_fails_exited_container() {
         assert_eq!(
-            observed_container_health(
-                &observation("machine_a", "ctr_1", ContainerRuntimeState::Exited),
-            ),
+            observed_container_health(&observation(
+                "machine_a",
+                "ctr_1",
+                ContainerRuntimeState::Exited
+            ),),
             ObservedContainerHealth::Failed("container exited")
         );
     }

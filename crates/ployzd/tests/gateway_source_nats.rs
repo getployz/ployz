@@ -1,7 +1,7 @@
 use async_nats::jetstream;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};

@@ -4,8 +4,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
@@ -267,7 +266,6 @@ impl ObservingContainerRunner {
             })?;
         state.next_container_id()
     }
-
 }
 
 #[derive(Debug, Default)]

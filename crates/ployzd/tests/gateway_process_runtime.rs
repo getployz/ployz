@@ -1,10 +1,10 @@
 use async_nats::jetstream;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry, GatewayServingStatus};
+use ployz_core::state::{GatewayServingStatus, RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{

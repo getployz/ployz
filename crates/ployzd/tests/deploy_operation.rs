@@ -11,10 +11,10 @@ use ployz_core::ops::{
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::deploy_worker::{
-    RouteBindingCommitter, ServingTargetCommitter, DataplanePreparer, DeployCleanupResult,
-    DeployExecutionCommand, DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts,
-    DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
-    DeployTerminalEvent, MachineContainerRuntime, MachineContainerRuntimeError,
+    DataplanePreparer, DeployCleanupResult, DeployExecutionCommand, DeployExecutionError,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
+    DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
+    MachineContainerRuntimeError, RouteBindingCommitter, ServingTargetCommitter,
     execute_deploy_operation,
 };
 use ployzd::docker::labels::ManagedContainerIdentity;
@@ -731,8 +731,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
                     ployzd::machine_runtime::protocol::MachineContainerStopRpcRequest {
                         operation_id: operation_id("op_123"),
                         container_id,
-                        expected_identity: managed_container_labels(&request.container)
-                            .identity(),
+                        expected_identity: managed_container_labels(&request.container).identity(),
                     },
                 )
             })

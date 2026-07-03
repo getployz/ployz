@@ -114,7 +114,10 @@ fn cli_deploy_shorthand_derives_full_request() {
         }]
     );
     assert!(
-        command.namespace_revision_id.as_str().starts_with("rev_latest_"),
+        command
+            .namespace_revision_id
+            .as_str()
+            .starts_with("rev_latest_"),
         "derived revision id carries the image tag: {}",
         command.namespace_revision_id.as_str()
     );
@@ -312,7 +315,10 @@ fn cli_deploy_shorthand_sanitizes_dotted_tag_into_revision() {
     );
 
     assert!(
-        command.namespace_revision_id.as_str().starts_with("rev_1-2-3_"),
+        command
+            .namespace_revision_id
+            .as_str()
+            .starts_with("rev_1-2-3_"),
         "dotted tag is sanitized: {}",
         command.namespace_revision_id.as_str()
     );
