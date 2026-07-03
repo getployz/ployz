@@ -14,15 +14,15 @@ use ployz_core::deploy::{
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
     OperationStatus, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, MachinePublicIpObservation};
+use ployz_core::state::{MachinePublicIpObservation, RouteBindingState};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{

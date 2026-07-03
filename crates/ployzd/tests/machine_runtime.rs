@@ -5,8 +5,7 @@ use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    namespace_id,
-    machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
+    machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::docker::labels::ManagedContainerLabels;

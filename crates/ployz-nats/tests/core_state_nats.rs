@@ -5,14 +5,13 @@ use ployz_core::state::{
     ServingTargetEntry, ServingTargetEntryKey,
 };
 use ployz_nats::core_state::{
-    RouteBindingStoreError, AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire,
-    NamespaceLockRenew,
+    AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire, NamespaceLockRenew,
+    RouteBindingStoreError,
 };
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_test_support::ids::{
     machine_id, machine_name, namespace_id, namespace_revision_entry_id, operation_id,
-    route_hostname, route_port,
-    service_id,
+    route_hostname, route_port, service_id,
 };
 
 #[tokio::test]
@@ -161,7 +160,8 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
     let store = core_state_store(&nats).await;
     let target_service_id = service_id("svc_api");
     let other_service_id = service_id("svc_other");
-    let key = ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &target_service_id);
+    let key =
+        ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &target_service_id);
     let bucket = nats
         .jetstream
         .get_key_value(KV_CORE_BUCKET)
@@ -476,7 +476,11 @@ async fn namespace_lock_renew_and_release_are_owner_scoped() {
 #[test]
 fn active_service_state_key_matches_kv_core_path() {
     assert_eq!(
-        ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &service_id("svc_api")).as_str(),
+        ServingTargetEntryKey::from_namespace_service(
+            &namespace_id("default"),
+            &service_id("svc_api")
+        )
+        .as_str(),
         "services.default.svc_api"
     );
 }
@@ -523,7 +527,11 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
-fn active_route_state(target: &RouteTarget, service: &str, endpoint_port: u16) -> RouteBindingState {
+fn active_route_state(
+    target: &RouteTarget,
+    service: &str,
+    endpoint_port: u16,
+) -> RouteBindingState {
     RouteBindingState {
         namespace_id: namespace_id("default"),
         target: target.clone(),

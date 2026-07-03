@@ -69,8 +69,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         let route_bindings = route_bindings
             .iter()
             .filter(|route| {
-                route.namespace_id == service.namespace_id
-                    && route.service_id == service.service_id
+                route.namespace_id == service.namespace_id && route.service_id == service.service_id
             })
             .cloned()
             .collect();

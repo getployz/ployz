@@ -4,9 +4,8 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
-    namespace_id,
-    container_id, machine_id, namespace_revision_entry_id, operation_id, route_hostname,
-    route_port, service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
+    route_hostname, route_port, service_id, step_id,
 };
 use ployzd::gateway::{
     GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
@@ -420,9 +419,7 @@ fn serving_entry(
     GatewayServingEntry {
         namespace_id: namespace_id("default"),
         service_id: service_id(service_id_value),
-        namespace_revision_entry_id: namespace_revision_entry_id(
-            namespace_revision_entry_id_value,
-        ),
+        namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
     }
 }
 

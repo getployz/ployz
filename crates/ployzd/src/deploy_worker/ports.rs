@@ -4,7 +4,7 @@ use ployz_core::dataplane::{
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore};
+use ployz_nats::core_state::{AsyncNatsCoreStateStore, RouteBindingStoreError};
 use std::future::Future;
 
 use crate::machine_runtime::protocol::{
@@ -14,8 +14,8 @@ use crate::machine_runtime::protocol::{
 };
 
 use super::{
-    ServingTargetCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    MachineContainerRuntimeError,
+    DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
+    MachineContainerRuntimeError, ServingTargetCommitError,
 };
 
 pub trait DeployOperationRecorder {

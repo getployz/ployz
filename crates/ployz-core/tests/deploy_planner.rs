@@ -7,8 +7,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
@@ -20,14 +20,23 @@ use ployz_test_support::ids::{
 #[test]
 fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     let left = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
-    let right = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 }));
+    let right = service_spec(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        3,
+        Some(SpecRoute {
+            public_port: 443,
+            endpoint_port: 8080,
+        }),
+    );
 
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default")),
         right.namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
-        left.namespace_revision_entry_id(&namespace_id("default")).as_str(),
+        left.namespace_revision_entry_id(&namespace_id("default"))
+            .as_str(),
         "fd4d6147bc732c2c346e384ed64af5f31a61d47008b6ff7f03c2a9e97ddd5422"
     );
 }
@@ -38,7 +47,8 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
 
     assert_ne!(
         base.namespace_revision_entry_id(&namespace_id("default")),
-        service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None).namespace_revision_entry_id(&namespace_id("default"))
+        service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
+            .namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
@@ -48,7 +58,8 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
     );
     assert_ne!(
         base.namespace_revision_entry_id(&namespace_id("default")),
-        service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None).namespace_revision_entry_id(&namespace_id("default"))
+        service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
+            .namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
@@ -67,8 +78,18 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
         "807f86a22b5c896d141d935b6317008e62c0f73a2947775fe9ab98b11ddc6578"
     );
     assert_eq!(
-        service_spec("svc_api", "nginx:latest", 1, None).namespace_revision_entry_id(&namespace_id("default")),
-        service_spec("svc_api", "nginx:latest", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 })).namespace_revision_entry_id(&namespace_id("default"))
+        service_spec("svc_api", "nginx:latest", 1, None)
+            .namespace_revision_entry_id(&namespace_id("default")),
+        service_spec(
+            "svc_api",
+            "nginx:latest",
+            3,
+            Some(SpecRoute {
+                public_port: 443,
+                endpoint_port: 8080
+            })
+        )
+        .namespace_revision_entry_id(&namespace_id("default"))
     );
 }
 
@@ -491,7 +512,13 @@ fn service_spec(
         image: ImageReference::try_new(image).expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         routes: route
-            .map(|route| vec![deploy_route("api.example.com", route.public_port, route.endpoint_port)])
+            .map(|route| {
+                vec![deploy_route(
+                    "api.example.com",
+                    route.public_port,
+                    route.endpoint_port,
+                )]
+            })
             .unwrap_or_default(),
     }
 }

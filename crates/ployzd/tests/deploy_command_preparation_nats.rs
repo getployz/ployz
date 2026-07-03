@@ -244,7 +244,10 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    let key = ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &service_id("svc_api"));
+    let key = ServingTargetEntryKey::from_namespace_service(
+        &namespace_id("default"),
+        &service_id("svc_api"),
+    );
     let wrong_service_state = ServingTargetEntry {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),

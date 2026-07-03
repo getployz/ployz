@@ -21,14 +21,14 @@ pub use facts::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
-    ServingTargetCommitError, DeployExecutionError, DeployExecutionStep, DeployFailureRecordError,
-    DeployHealthCheckError, DeployOperationRecordError, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason,
+    DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
+    DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    ServingTargetCommitError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
-    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitter, DataplanePreparer,
-    DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
+    DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
+    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitter,
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
@@ -37,9 +37,8 @@ pub use preparation::{
 
 use crate::docker::labels::ManagedContainerIdentity;
 use crate::machine_runtime::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerRunSpec, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineContainerRunSpec,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
 };
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
@@ -200,7 +199,10 @@ where
                     slot,
                 } => containers.push(DeployContainer {
                     service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+                    namespace_revision_entry_id: service
+                        .request
+                        .namespace_revision_entry_id
+                        .clone(),
                     machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     step_id: deploy_step_id(*slot)
