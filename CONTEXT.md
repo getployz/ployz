@@ -12,6 +12,10 @@ _Avoid_: Environment
 The internal normalized service graph for a namespace at a point in time. Ployz derives a namespace revision from deploy input so it can plan, label service containers, record evidence, and advance serving targets.
 _Avoid_: User-supplied revision, service revision, active state
 
+**Namespace Revision Entry**:
+One service's normalized desired definition inside a namespace revision. A namespace revision entry can satisfy replicas only through service containers that are equivalent to that entry.
+_Avoid_: Service revision, service-equivalence identity, container spec hash
+
 **Serving Target**:
 The current serveable service set for a namespace. It tells gateways which services and namespace revision entries are eligible to serve when combined with route bindings and runtime observations.
 _Avoid_: Active service, active revision, completed phase pointer
