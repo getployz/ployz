@@ -108,7 +108,7 @@ impl ServiceInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "service {}\nactive-revision {}\n",
+            "service {}\nnamespace-revision-entry {}\n",
             self.service.active.service_id.as_str(),
             self.service.active.namespace_revision_entry_id.as_str(),
         )
@@ -117,7 +117,7 @@ impl ServiceInspectOutput {
 
 fn render_service_summary(service: &ServiceSnapshot) -> String {
     format!(
-        "{} active-revision {}",
+        "{} namespace-revision-entry {}",
         service.active.service_id.as_str(),
         service.active.namespace_revision_entry_id.as_str(),
     )

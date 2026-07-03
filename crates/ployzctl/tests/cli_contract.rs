@@ -940,7 +940,7 @@ fn service_list_renders_service_summaries() {
 
     assert_eq!(
         output,
-        "svc_api active-revision rev_2\nsvc_worker active-revision rev_1\n"
+        "svc_api namespace-revision-entry rev_2\nsvc_worker namespace-revision-entry rev_1\n"
     );
 }
 
@@ -958,7 +958,7 @@ fn service_list_renders_no_output_without_services() {
 fn service_inspect_renders_active_revision() {
     let output = ServiceInspectOutput::new(service_snapshot("svc_api", "rev_2")).render();
 
-    assert_eq!(output, "service svc_api\nactive-revision rev_2\n");
+    assert_eq!(output, "service svc_api\nnamespace-revision-entry rev_2\n");
 }
 
 fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOperationEvent {

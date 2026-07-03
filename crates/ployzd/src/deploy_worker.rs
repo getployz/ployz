@@ -30,8 +30,7 @@ pub use ports::{
     RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitter,
 };
 pub use preparation::{
-    DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
-    namespace_cleanup_candidates, prepare_deploy_execution_command,
+    DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 
 use crate::machine_runtime::protocol::{
@@ -271,12 +270,7 @@ where
         }
     }
 
-    if command
-        .services()
-        .iter()
-        .any(|service| !service.route_binding_states().is_empty())
-        || !command.route_binding_removals().is_empty()
-    {
+    if command.has_route_changes() {
         record_running_stage(
             command,
             &mut *ports.recorder,
@@ -622,8 +616,7 @@ where
             DeployExecutionStep::RemoveServingTarget {
                 service_id: entry.service_id.clone(),
             },
-            active_state
-                .remove_serving_target_entry(entry.namespace_id.clone(), entry.service_id.clone()),
+            active_state.remove_serving_target_entry(entry.clone()),
         )
         .await?;
     }

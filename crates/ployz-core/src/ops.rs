@@ -169,6 +169,22 @@ pub struct MachineSubstrateVersions {
     pub keeper: Option<InstallArtifactVersion>,
 }
 
+/// What a failed control-plane commit was writing. Empty-manifest deploys
+/// commit no service entry, so namespace-level record failures carry the
+/// namespace revision id instead of a counterfeit entry digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControlPlaneCommitScope {
+    ServiceEntry {
+        service_id: ServiceId,
+        namespace_revision_entry_id: NamespaceRevisionEntryId,
+    },
+    Namespace {
+        namespace_revision_id: NamespaceRevisionId,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -208,8 +224,7 @@ pub enum DeployOperationFailure {
         retained_artifacts: Vec<RetainedArtifact>,
     },
     ControlPlaneCommitFailed {
-        service_id: ServiceId,
-        namespace_revision_entry_id: NamespaceRevisionEntryId,
+        scope: ControlPlaneCommitScope,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },

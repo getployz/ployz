@@ -385,7 +385,7 @@ async fn open_gateway_change_watchers(
     let stores = open_gateway_process_stores(client).await?;
     let routes = stores
         .core_state
-        .watch_active_route_changes()
+        .watch_route_binding_changes()
         .await
         .map_err(GatewayProcessRuntimeError::WatchRoutes)?;
     let observations = stores
