@@ -650,9 +650,12 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
             "machine_a",
             [
                 containers::observation("machine_a", "ctr_after_control_down")
-                    .entry("rev_2")
-                    .operation("op_e2e_control_down_route")
-                    .step("step_after_control_down")
+                    .with(
+                        containers::identity("svc_api")
+                            .entry("rev_2")
+                            .operation("op_e2e_control_down_route")
+                            .step("step_after_control_down"),
+                    )
                     .running_at(endpoint_ip("127.0.0.1")),
             ],
         ))

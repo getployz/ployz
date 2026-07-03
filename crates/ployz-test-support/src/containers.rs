@@ -101,45 +101,12 @@ pub struct ManagedContainerObservationBuilder {
 }
 
 impl ManagedContainerObservationBuilder {
+    /// Replaces the observation's identity with the given builder - the one
+    /// identity surface, so a new identity field needs no lockstep setter
+    /// here.
     #[must_use]
-    pub fn namespace(mut self, namespace: &str) -> Self {
-        self.identity = self.identity.namespace(namespace);
-        self
-    }
-
-    #[must_use]
-    pub fn service(mut self, service: &str) -> Self {
-        self.identity = self.identity.service(service);
-        self
-    }
-
-    #[must_use]
-    pub fn entry(mut self, entry: &str) -> Self {
-        self.identity = self.identity.entry(entry);
-        self
-    }
-
-    #[must_use]
-    pub fn operation(mut self, operation: &str) -> Self {
-        self.identity = self.identity.operation(operation);
-        self
-    }
-
-    #[must_use]
-    pub fn step(mut self, step: &str) -> Self {
-        self.identity = self.identity.step(step);
-        self
-    }
-
-    #[must_use]
-    pub fn kind(mut self, kind: ManagedContainerKind) -> Self {
-        self.identity = self.identity.kind(kind);
-        self
-    }
-
-    #[must_use]
-    pub fn identity(mut self, identity: ManagedContainerIdentity) -> Self {
-        self.identity = ManagedContainerIdentityBuilder { identity };
+    pub fn with(mut self, identity: ManagedContainerIdentityBuilder) -> Self {
+        self.identity = identity;
         self
     }
 

@@ -49,7 +49,12 @@ type: refactor
   greenfield, no aliases, no deploy consumer exists yet (Cloud integrates
   bootstrap only).
 - R5. Query views (`RuntimeServiceInstance`, `RuntimeServiceRevision`,
-  `GatewayServingEntry`, ...) are untouched: views project, they do not embed.
+  `GatewayServingEntry`, ...) keep projecting flat fields: views project,
+  they do not embed. One deliberate output change: containers whose service
+  has no serving entry now surface as instances/revisions under their own
+  identity namespace (previously silently dropped by a namespace-lookup
+  join); Docker is execution reality, and `missing_link_count` still
+  reports the mismatch. Pinned by a unit test in `queries.rs`.
 - R6. `ployz-test-support` gains chained `#[must_use]` builders:
   an identity builder, an observation builder with defaults
   (`default` namespace, test provenance) and state finishers

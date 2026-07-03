@@ -594,7 +594,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::running_unroutable()
-            ),),
+            )),
             ObservedContainerHealth::Healthy
         );
     }
@@ -606,7 +606,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-            ),),
+            )),
             ObservedContainerHealth::Healthy
         );
     }
@@ -618,7 +618,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-            ),),
+            )),
             ObservedContainerHealth::Healthy
         );
     }
@@ -630,7 +630,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::Exited
-            ),),
+            )),
             ObservedContainerHealth::Failed("container exited")
         );
     }

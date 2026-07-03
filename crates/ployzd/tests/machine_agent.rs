@@ -1,5 +1,6 @@
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, namespace_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
@@ -10,7 +11,7 @@ use ployzd::machine_runtime::runner::{
 
 #[test]
 fn matching_operation_step_and_request_labels_reuse_existing_container() {
-    let expected = run_labels("op_123", "step_1");
+    let expected = run_identity("op_123", "step_1");
 
     assert_eq!(
         decide_container_run(
@@ -25,7 +26,7 @@ fn matching_operation_step_and_request_labels_reuse_existing_container() {
 
 #[test]
 fn same_operation_step_with_different_request_metadata_conflicts() {
-    let expected = run_labels("op_123", "step_1");
+    let expected = run_identity("op_123", "step_1");
     let mut conflicting_labels = expected.clone();
     conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_2");
 
@@ -47,8 +48,8 @@ fn same_operation_step_with_different_request_metadata_conflicts() {
 
 #[test]
 fn different_step_does_not_reuse_container() {
-    let expected = run_labels("op_123", "step_1");
-    let other_step = run_labels("op_123", "step_2");
+    let expected = run_identity("op_123", "step_1");
+    let other_step = run_identity("op_123", "step_2");
 
     assert_eq!(
         decide_container_run(&expected, [existing_container("ctr_other", other_step)]),
@@ -58,7 +59,7 @@ fn different_step_does_not_reuse_container() {
 
 #[test]
 fn stopped_matching_operation_step_starts_existing_container() {
-    let expected = run_labels("op_123", "step_1");
+    let expected = run_identity("op_123", "step_1");
 
     assert_eq!(
         decide_container_run(
@@ -77,7 +78,7 @@ fn stopped_matching_operation_step_starts_existing_container() {
 
 #[test]
 fn non_startable_matching_operation_step_reports_not_startable() {
-    let expected = run_labels("op_123", "step_1");
+    let expected = run_identity("op_123", "step_1");
 
     assert_eq!(
         decide_container_run(
@@ -101,7 +102,7 @@ fn non_startable_matching_operation_step_reports_not_startable() {
 
 #[test]
 fn duplicate_operation_step_matches_are_ambiguous() {
-    let expected = run_labels("op_123", "step_1");
+    let expected = run_identity("op_123", "step_1");
 
     assert_eq!(
         decide_container_run(
@@ -121,34 +122,31 @@ fn duplicate_operation_step_matches_are_ambiguous() {
 
 fn existing_container(
     container_id: &str,
-    labels: ManagedContainerIdentity,
+    identity: ManagedContainerIdentity,
 ) -> ExistingManagedContainer {
     existing_container_with_state(
         container_id,
-        labels,
+        identity,
         ExistingManagedContainerState::Running { ip: None },
     )
 }
 
 fn existing_container_with_state(
     container_id: &str,
-    labels: ManagedContainerIdentity,
+    identity: ManagedContainerIdentity,
     state: ExistingManagedContainerState,
 ) -> ExistingManagedContainer {
     ExistingManagedContainer {
         container_id: self::container_id(container_id),
-        identity: labels,
+        identity,
         state,
     }
 }
 
-fn run_labels(operation_id: &str, step_id: &str) -> ManagedContainerIdentity {
-    ManagedContainerIdentity {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        operation_id: self::operation_id(operation_id),
-        step_id: self::step_id(step_id),
-        kind: ManagedContainerKind::Service,
-    }
+fn run_identity(operation_id: &str, step_id: &str) -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_1")
+        .operation(operation_id)
+        .step(step_id)
+        .build()
 }

@@ -344,9 +344,12 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .replace_machine_containers(&containers::snapshot(
             "machine_a",
             [containers::observation("machine_a", "ctr_api")
-                .entry("entry_2")
-                .operation("op_deploy")
-                .step("step_run")
+                .with(
+                    containers::identity("svc_api")
+                        .entry("entry_2")
+                        .operation("op_deploy")
+                        .step("step_run"),
+                )
                 .running_unroutable()],
         ))
         .await

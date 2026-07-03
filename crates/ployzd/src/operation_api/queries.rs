@@ -679,3 +679,37 @@ pub async fn ops_watch(
         .await
         .map_err(|error| ops_watch_error_from_replay_error(operation_id, error))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{derive_runtime_instances, derive_runtime_revisions};
+    use ployz_test_support::containers;
+    use ployz_test_support::ids::{namespace_id, service_id};
+
+    /// Containers whose service has no serving target entry still surface
+    /// as instances and revisions under their own identity namespace.
+    /// Before identity consolidation they were silently dropped by a
+    /// namespace-lookup join; Docker is execution reality, so orphaned
+    /// containers are evidence, not noise (missing_link_count separately
+    /// reports the mismatch).
+    #[test]
+    fn orphaned_containers_surface_as_instances_and_revisions() {
+        let orphan = containers::observation("machine_a", "ctr_orphan")
+            .with(containers::identity("svc_orphan").namespace("team-a"))
+            .running_unroutable()
+            .build();
+
+        let instances = derive_runtime_instances(&[orphan.clone()]);
+        let [instance] = instances.as_slice() else {
+            panic!("orphaned container is projected as an instance");
+        };
+        assert_eq!(instance.namespace_id, namespace_id("team-a"));
+        assert_eq!(instance.service_id, service_id("svc_orphan"));
+
+        let revisions = derive_runtime_revisions(&[], &[orphan]);
+        let [revision] = revisions.as_slice() else {
+            panic!("orphaned container is projected as a revision");
+        };
+        assert_eq!(revision.namespace_id, namespace_id("team-a"));
+    }
+}
