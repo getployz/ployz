@@ -87,7 +87,7 @@ impl From<RouteBindingStoreError> for DnsSourceError {
             RouteBindingStoreError::Decode(error) => Self::Invalid {
                 message: format!("decode route binding state: {error}"),
             },
-            RouteBindingStoreError::CorruptActiveRouteState {
+            RouteBindingStoreError::CorruptRouteBindingState {
                 key,
                 expected_target,
                 actual_target,

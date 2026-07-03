@@ -508,8 +508,7 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
 #[test]
 fn managed_container_observation_wire_shape_nests_identity() {
     // Observations persist in KV with deny_unknown_fields: this pin is the
-    // contract for the nested identity shape introduced when the flattened
-    // six-tuple copies were consolidated.
+    // wire contract for the nested identity shape.
     let observation = ployz_core::machine_runtime::ManagedContainerObservation {
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_1"),
@@ -541,7 +540,8 @@ fn managed_container_observation_wire_shape_nests_identity() {
 
 #[test]
 fn deploy_cleanup_container_wire_shape_nests_identity() {
-    // Cleanup containers ride operation events; same nested-identity pin.
+    // Cleanup containers ride operation events; same nested-identity
+    // wire contract.
     let cleanup = ployz_core::deploy::DeployCleanupContainer {
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_old"),

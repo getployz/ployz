@@ -1,7 +1,8 @@
 use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
-use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, RouteBindingStoreError};
@@ -80,9 +81,15 @@ pub trait ServingTargetCommitter {
 
     fn remove_serving_target_entry(
         &mut self,
-        namespace_id: NamespaceId,
-        service_id: ServiceId,
+        entry: ServingTargetEntry,
     ) -> impl Future<Output = Result<(), ServingTargetCommitError>> + Send;
+}
+
+fn commit_scope(entry: &ServingTargetEntry) -> ControlPlaneCommitScope {
+    ControlPlaneCommitScope::ServiceEntry {
+        service_id: entry.service_id.clone(),
+        namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
+    }
 }
 
 pub trait RouteBindingCommitter {
@@ -160,18 +167,23 @@ impl ServingTargetCommitter for AsyncNatsCoreStateStore {
         &mut self,
         state: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
+        let scope = commit_scope(&state);
         AsyncNatsCoreStateStore::replace_serving_target_entry(self, &state)
             .await
-            .map_err(ServingTargetCommitError::Store)
+            .map_err(|error| ServingTargetCommitError::Store { scope, error })
     }
 
     async fn remove_serving_target_entry(
         &mut self,
-        namespace_id: NamespaceId,
-        service_id: ServiceId,
+        entry: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
-        AsyncNatsCoreStateStore::remove_serving_target_entry(self, &namespace_id, &service_id)
-            .await
-            .map_err(ServingTargetCommitError::Store)
+        let scope = commit_scope(&entry);
+        AsyncNatsCoreStateStore::remove_serving_target_entry(
+            self,
+            &entry.namespace_id,
+            &entry.service_id,
+        )
+        .await
+        .map_err(|error| ServingTargetCommitError::Store { scope, error })
     }
 }

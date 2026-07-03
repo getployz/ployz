@@ -2,12 +2,11 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
-    DataplanePreparer, DeployCommandPreparationError, DeployContainer, DeployExecutionError,
-    DeployExecutionMachineScope, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
-    DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, RouteBindingCommitError,
-    RouteBindingCommitter, ServingTargetCommitError, ServingTargetCommitter,
-    execute_deploy_operation, load_deploy_execution_facts_from_nats,
-    prepare_deploy_execution_command,
+    DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionMachineScope,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
+    DeployHealthChecker, MachineContainerRuntime, RouteBindingCommitError, RouteBindingCommitter,
+    ServingTargetCommitError, ServingTargetCommitter, execute_deploy_operation,
+    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
 use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use crate::tasks::TaskRegistry;
@@ -80,23 +79,8 @@ where
             });
         }
     };
-    let command = match prepare_deploy_execution_command(
-        accepted.operation_id.clone(),
-        request.clone(),
-        facts,
-    ) {
-        Ok(command) => command,
-        Err(source) => {
-            let failure_record_error =
-                record_operation_failure(&controllers, &accepted, preparation_failure(&request))
-                    .await
-                    .err();
-            return Err(DeployOperationRunError::PrepareCommand {
-                source,
-                failure_record_error,
-            });
-        }
-    };
+    let command =
+        prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
     if let Some(lock_lost) = namespace_lock_lost {
         let mut route_state = LockCheckedCoreState::new(core_state.clone(), Arc::clone(&lock_lost));
@@ -154,15 +138,6 @@ fn fact_load_failure(
         namespace_revision_id: request.namespace_revision_id.clone(),
         message: FailureMessage::try_new(source.to_string())
             .expect("rendered fact load failure message is non-empty"),
-    }
-}
-
-fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOperationFailure {
-    DeployOperationFailure::PlanningFailed {
-        service_id: request.status_service_id(),
-        namespace_revision_id: request.namespace_revision_id.clone(),
-        message: FailureMessage::try_new("deploy command could not be prepared")
-            .expect("static operation failure message is non-empty"),
     }
 }
 
@@ -232,31 +207,38 @@ impl ServingTargetCommitter for LockCheckedCoreState {
         &mut self,
         state: ployz_core::state::ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
+        let scope = ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+            service_id: state.service_id.clone(),
+            namespace_revision_entry_id: state.namespace_revision_entry_id.clone(),
+        };
         if self.lock_is_lost() {
-            return Err(ServingTargetCommitError::NamespaceLockLost);
+            return Err(ServingTargetCommitError::NamespaceLockLost { scope });
         }
 
         AsyncNatsCoreStateStore::replace_serving_target_entry(&self.core_state, &state)
             .await
-            .map_err(ServingTargetCommitError::Store)
+            .map_err(|error| ServingTargetCommitError::Store { scope, error })
     }
 
     async fn remove_serving_target_entry(
         &mut self,
-        namespace_id: ployz_core::ids::NamespaceId,
-        service_id: ployz_core::ids::ServiceId,
+        entry: ployz_core::state::ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
+        let scope = ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+            service_id: entry.service_id.clone(),
+            namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
+        };
         if self.lock_is_lost() {
-            return Err(ServingTargetCommitError::NamespaceLockLost);
+            return Err(ServingTargetCommitError::NamespaceLockLost { scope });
         }
 
         AsyncNatsCoreStateStore::remove_serving_target_entry(
             &self.core_state,
-            &namespace_id,
-            &service_id,
+            &entry.namespace_id,
+            &entry.service_id,
         )
         .await
-        .map_err(ServingTargetCommitError::Store)
+        .map_err(|error| ServingTargetCommitError::Store { scope, error })
     }
 }
 
@@ -270,10 +252,6 @@ pub enum DeployOperationRunError {
     NamespaceLock(CoreStateStoreError),
     LoadFacts {
         source: DeployFactLoadError,
-        failure_record_error: Option<RecordDeployTransitionError>,
-    },
-    PrepareCommand {
-        source: DeployCommandPreparationError,
         failure_record_error: Option<RecordDeployTransitionError>,
     },
     Execute(DeployExecutionError),
