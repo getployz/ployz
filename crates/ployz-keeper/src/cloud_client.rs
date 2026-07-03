@@ -60,10 +60,6 @@ impl CloudClient {
         validate_same_origin_url(&self.host, url)
     }
 
-    pub fn get_text(&self, url: &str) -> Result<String, CloudClientError> {
-        get_text_with_agent(&self.agent, url)
-    }
-
     fn post_request(
         &self,
         url: &str,

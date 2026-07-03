@@ -305,18 +305,6 @@ impl AsyncNatsOperationStatusStore {
         Ok(submissions)
     }
 
-    pub async fn machine_add_mint_claim(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
-        self.get_record(
-            "machine add mint claim get",
-            machine_add_mint_claim_key(idempotency_key),
-            OperationStatusStoreError::DecodeSubmission,
-        )
-        .await
-    }
-
     /// Create-only claim of minted credential material for one idempotency
     /// key. The first writer wins; later writers receive the winning claim
     /// and must continue with it instead of their own candidate.

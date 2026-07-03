@@ -275,7 +275,6 @@ fn write_substrate_update_evidence(
     write_durable_file(
         state_dir,
         SUBSTRATE_VERSION_FILE,
-        "substrate-version",
         FileMode::Plain,
         &contents,
     )

@@ -17,11 +17,6 @@ impl<W> KeeperTextRecorder<W> {
     pub const fn new(writer: W) -> Self {
         Self { writer }
     }
-
-    #[must_use]
-    pub const fn writer(&self) -> &W {
-        &self.writer
-    }
 }
 
 impl<W: Write> KeeperStepRecorder for KeeperTextRecorder<W> {

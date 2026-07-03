@@ -113,16 +113,6 @@ pub fn default_cluster_context_path() -> Option<PathBuf> {
     )
 }
 
-/// Loads the context from the default path. A missing file (or an
-/// environment without a config root) is `Ok(None)`; an unreadable or
-/// invalid file is an error so a recorded cluster is never silently ignored.
-pub fn load_default_cluster_context() -> Result<Option<ClusterContext>, ClusterContextError> {
-    let Some(path) = default_cluster_context_path() else {
-        return Ok(None);
-    };
-    load_cluster_context(&path)
-}
-
 pub fn load_cluster_context(path: &Path) -> Result<Option<ClusterContext>, ClusterContextError> {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,

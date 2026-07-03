@@ -25,10 +25,6 @@ pub(crate) fn parse_positive_u64_string(value: String) -> Result<u64, PositiveU6
     Ok(parsed)
 }
 
-pub(crate) fn format_u64_string(value: u64) -> String {
-    value.to_string()
-}
-
 /// Defines a positive-`u64` newtype that crosses the JSON wire as a decimal
 /// string. The expansion is the canonical wire-newtype scaffolding: `try_new`,
 /// a `const` accessor, `TryFrom<u64>`/`Into<u64>`, and the string wire codec.
@@ -102,7 +98,7 @@ macro_rules! positive_u64_wire_newtype {
 
         impl From<$name> for String {
             fn from(value: $name) -> Self {
-                $crate::wire::format_u64_string(value.$accessor())
+                value.$accessor().to_string()
             }
         }
     };

@@ -6,7 +6,6 @@ use std::fmt;
 
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{FailureMessage, OperationIdempotencyKey};
-use crate::roles::{InstallRolePolicy, JoinedMachineProcessSet, plan_joined_machine_process_set};
 use crate::state::ActiveMachineState;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -25,14 +24,6 @@ impl MachineName {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineReservation {
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub operation_id: OperationId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -127,22 +118,6 @@ impl IssuedJoinToken {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineAddCommand {
-    pub operation_id: OperationId,
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub join_token: IssuedJoinToken,
-    pub roles: InstallRolePolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineAddPlan {
-    pub reservation: MachineReservation,
-    pub operation: MachineAddOperationState,
-    pub process_set: JoinedMachineProcessSet,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstMachineActivationPlan {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
@@ -160,21 +135,6 @@ pub fn plan_first_machine_activation(
         ))?,
         name: MachineName::try_new(machine_id.as_str())?,
     })
-}
-
-#[must_use]
-pub fn plan_machine_add(command: MachineAddCommand) -> MachineAddPlan {
-    MachineAddPlan {
-        reservation: MachineReservation {
-            machine_id: command.machine_id.clone(),
-            name: command.name,
-            operation_id: command.operation_id.clone(),
-        },
-        operation: MachineAddOperationState::Pending {
-            join_token: command.join_token,
-        },
-        process_set: plan_joined_machine_process_set(&command.machine_id, command.roles),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,13 +253,6 @@ pub struct MachineTransitionRejected {
     pub current: MachineAddOperationStateName,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineJoinOutcome {
-    Redeemed(MachineAddOperationState),
-    Failed(MachineAddOperationState),
-    Rejected(MachineTransitionRejected),
-}
-
 pub fn redeem_pending_join_token(
     join_token: &IssuedJoinToken,
     presented: &JoinTokenFingerprint,
@@ -316,36 +269,6 @@ pub fn redeem_pending_join_token(
     }
 
     Ok(now)
-}
-
-#[must_use]
-pub fn redeem_join_token(
-    operation: MachineAddOperationState,
-    presented: &JoinTokenFingerprint,
-    now: JoinTokenRedeemedAt,
-) -> MachineJoinOutcome {
-    let MachineAddOperationState::Pending { join_token } = operation else {
-        return MachineJoinOutcome::Rejected(MachineTransitionRejected {
-            current: operation.name(),
-        });
-    };
-
-    match redeem_pending_join_token(&join_token, presented, now) {
-        Ok(joined_at) => {
-            MachineJoinOutcome::Redeemed(MachineAddOperationState::Joining { joined_at })
-        }
-        Err(failure) => MachineJoinOutcome::Failed(MachineAddOperationState::Failed { failure }),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineActivationOutcome {
-    Completed {
-        operation: MachineAddOperationState,
-        active_machine: ActiveMachineState,
-    },
-    Failed(MachineAddOperationState),
-    Rejected(MachineTransitionRejected),
 }
 
 pub fn active_machine_from_completed_add(
@@ -366,35 +289,6 @@ pub fn active_machine_from_completed_add(
         activated_by: operation_id,
         substrate_versions: None,
     })
-}
-
-#[must_use]
-pub fn activate_joined_machine(
-    reservation: MachineReservation,
-    operation: MachineAddOperationState,
-    evidence: MachineReadinessEvidence,
-) -> MachineActivationOutcome {
-    let MachineAddOperationState::Joining { .. } = operation else {
-        return MachineActivationOutcome::Rejected(MachineTransitionRejected {
-            current: operation.name(),
-        });
-    };
-
-    if !evidence.is_confirmed() {
-        return MachineActivationOutcome::Failed(MachineAddOperationState::Failed {
-            failure: MachineAddFailure::ReadinessFailed { evidence },
-        });
-    }
-
-    MachineActivationOutcome::Completed {
-        operation: MachineAddOperationState::Completed,
-        active_machine: ActiveMachineState {
-            machine_id: reservation.machine_id,
-            name: reservation.name,
-            activated_by: reservation.operation_id,
-            substrate_versions: None,
-        },
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -265,35 +265,6 @@ impl AsyncNatsObservationStore {
             message: error.to_string(),
         })
     }
-
-    pub async fn watch_machine_public_ip_changes(
-        &self,
-    ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
-        with_io_timeout(
-            "machine public ip watch",
-            self.bucket.watch_with_history(format!(
-                "{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}.*.public_ip"
-            )),
-        )
-        .await?
-        .map_err(|error| ObservationStoreError::Watch {
-            message: error.to_string(),
-        })
-    }
-
-    pub async fn watch_gateway_status_changes(
-        &self,
-    ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
-        with_io_timeout(
-            "gateway status watch",
-            self.bucket
-                .watch_with_history(format!("{GATEWAY_STATUS_OBSERVATION_PREFIX}.*.status")),
-        )
-        .await?
-        .map_err(|error| ObservationStoreError::Watch {
-            message: error.to_string(),
-        })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

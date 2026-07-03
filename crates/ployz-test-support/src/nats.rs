@@ -50,7 +50,6 @@ pub struct SecuredTestNats {
     controller_seed: NatsUserSeed,
     user_seed: NatsUserSeed,
     join_seed: NatsUserSeed,
-    system_seed: NatsUserSeed,
     machine_seeds: Vec<(MachineId, NatsUserSeed)>,
 }
 
@@ -145,7 +144,6 @@ impl SecuredTestNats {
             controller_seed: controller.seed,
             user_seed: user.seed,
             join_seed: join.seed,
-            system_seed: system.seed,
             machine_seeds: machine_users
                 .into_iter()
                 .map(|(machine_id, minted)| (machine_id, minted.seed))
@@ -207,11 +205,6 @@ impl SecuredTestNats {
     #[must_use]
     pub fn join_config(&self) -> NatsConnectConfig {
         self.config_with_seed(NatsPrincipal::Join, self.join_seed.clone())
-    }
-
-    #[must_use]
-    pub fn system_config(&self) -> NatsConnectConfig {
-        self.config_with_seed(NatsPrincipal::System, self.system_seed.clone())
     }
 
     /// The connect config for a machine minted via

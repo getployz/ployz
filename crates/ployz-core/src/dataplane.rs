@@ -183,27 +183,6 @@ pub struct PloyzNativeMeshPrepareRequest {
 
 impl PloyzNativeMeshPrepareRequest {
     #[must_use]
-    pub fn for_deploy_plan(
-        operation_id: OperationId,
-        plan: &DeployPlan,
-        dataplane_machines: &[MachineId],
-        peer_endpoints: &[WireGuardPeerEndpoint],
-    ) -> Self {
-        let machines = sorted_unique_machines(
-            plan.target_machines()
-                .into_iter()
-                .chain(dataplane_machines.iter().cloned()),
-        );
-        let requested = machines.iter().collect::<BTreeSet<_>>();
-        let peer_endpoints = peer_endpoints
-            .iter()
-            .filter(|peer| requested.contains(&peer.machine_id))
-            .cloned()
-            .collect();
-        Self::for_machines(operation_id, machines, peer_endpoints, Vec::new())
-    }
-
-    #[must_use]
     pub fn from_dataplane_request(
         request: DataplanePrepareRequest,
         peer_endpoints: Vec<WireGuardPeerEndpoint>,
@@ -231,25 +210,6 @@ impl PloyzNativeMeshPrepareRequest {
     pub fn with_peers(mut self, peers: Vec<WireGuardPeer>) -> Self {
         self.peers = peers;
         self
-    }
-
-    #[must_use]
-    fn for_machines(
-        operation_id: OperationId,
-        machines: Vec<MachineId>,
-        peer_endpoints: Vec<WireGuardPeerEndpoint>,
-        peers: Vec<WireGuardPeer>,
-    ) -> Self {
-        Self {
-            operation_id,
-            endpoint_routes: machines
-                .iter()
-                .map(WireGuardEbpfEndpointRoute::default_for_machine)
-                .collect(),
-            machines,
-            peer_endpoints,
-            peers,
-        }
     }
 }
 
@@ -600,46 +560,6 @@ mod tests {
         assert_eq!(
             default_endpoint_subnet(&machine_id("machine_255")),
             "10.42.1.0/24"
-        );
-    }
-
-    #[test]
-    fn deploy_prepare_request_carries_endpoint_routes_for_target_machines() {
-        let plan = DeployPlan {
-            namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
-            namespace_revision_id: crate::ids::NamespaceRevisionId::try_new("rev_1")
-                .expect("valid revision id"),
-            services: vec![crate::deploy::DeployServicePlan {
-                service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
-                steps: vec![
-                    crate::deploy::DeployPlanStep::RunContainer {
-                        machine_id: machine_id("edge_2"),
-                        slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
-                    },
-                    crate::deploy::DeployPlanStep::RunContainer {
-                        machine_id: machine_id("core_1"),
-                        slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
-                    },
-                ],
-            }],
-            cleanup_containers: Vec::new(),
-        };
-
-        let request =
-            PloyzNativeMeshPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[], &[]);
-
-        assert_eq!(
-            request.endpoint_routes,
-            vec![
-                WireGuardEbpfEndpointRoute {
-                    machine_id: machine_id("core_1"),
-                    endpoint_subnet: "10.42.1.0/24".to_owned(),
-                },
-                WireGuardEbpfEndpointRoute {
-                    machine_id: machine_id("edge_2"),
-                    endpoint_subnet: "10.42.2.0/24".to_owned(),
-                }
-            ]
         );
     }
 
