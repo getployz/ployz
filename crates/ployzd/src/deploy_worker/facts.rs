@@ -2,7 +2,7 @@
 
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::{MachineId, ServiceId};
+use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -155,10 +155,6 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
 /// carries the rendered store-error message as failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
-    ServingTargetEntryRead {
-        service_id: ServiceId,
-        message: String,
-    },
     RouteBindingsRead {
         message: String,
     },
@@ -177,15 +173,6 @@ pub enum DeployFactLoadError {
 impl fmt::Display for DeployFactLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ServingTargetEntryRead {
-                service_id,
-                message,
-            } => write!(
-                formatter,
-                "serving target entry state for {} could not be read: {}",
-                service_id.as_str(),
-                message
-            ),
             Self::RouteBindingsRead { message } => write!(
                 formatter,
                 "route binding state could not be read: {}",

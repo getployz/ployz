@@ -19,6 +19,14 @@ use tokio::time::timeout;
 
 pub type NatsClient = async_nats::Client;
 
+/// A service's subscriptions have a natural gap while its connection
+/// re-establishes them after a reconnect, and the server answers requests
+/// in that gap with no-responders. Requests retry briefly across the gap
+/// before reporting the service unavailable; every retry is bounded, never
+/// a wait-forever.
+const NO_RESPONDERS_RETRIES: usize = 4;
+const NO_RESPONDERS_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 pub async fn request_json<Request, Response>(
     client: &async_nats::Client,
     subject: String,
@@ -34,15 +42,27 @@ where
             message: error.to_string(),
         }
     })?;
-    let nats_request = async_nats::Request::new()
-        .payload(payload.into())
-        .timeout(Some(request_timeout));
-    let response = client
-        .send_request(subject, nats_request)
-        .await
-        .map_err(|error| NatsJsonServiceRequestError::Request {
-            failure: request_failure(error),
-        })?;
+    let mut attempts = 0;
+    let response = loop {
+        let nats_request = async_nats::Request::new()
+            .payload(payload.clone().into())
+            .timeout(Some(request_timeout));
+        match client.send_request(subject.clone(), nats_request).await {
+            Ok(response) => break response,
+            Err(error)
+                if error.kind() == async_nats::RequestErrorKind::NoResponders
+                    && attempts < NO_RESPONDERS_RETRIES =>
+            {
+                attempts += 1;
+                tokio::time::sleep(NO_RESPONDERS_RETRY_DELAY).await;
+            }
+            Err(error) => {
+                return Err(NatsJsonServiceRequestError::Request {
+                    failure: request_failure(error),
+                });
+            }
+        }
+    };
 
     match decode_nats_service_error(response.headers.as_ref()) {
         Ok(Some(failure)) => return Err(NatsJsonServiceRequestError::Service { failure }),
