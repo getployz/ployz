@@ -288,6 +288,11 @@ fn derive_runtime_revisions(
         ));
     }
     for container in containers {
+        // Hook containers (predeploy, job) are operation evidence, not
+        // service instances; only service containers evidence a revision.
+        if container.identity.kind != ManagedContainerKind::Service {
+            continue;
+        }
         revisions.insert((
             container.identity.namespace_id.clone(),
             container.identity.service_id.clone(),
@@ -701,6 +706,7 @@ mod tests {
         ServiceSnapshot, derive_runtime_instances, derive_runtime_releases,
         derive_runtime_revisions,
     };
+    use ployz_core::machine_runtime::ManagedContainerKind;
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
     use ployz_core::state::{RouteBindingState, ServingTargetEntry};
     use ployz_test_support::containers;
@@ -729,6 +735,18 @@ mod tests {
             panic!("orphaned container is projected as a revision");
         };
         assert_eq!(revision.namespace_id, namespace_id("team-a"));
+    }
+
+    /// Hook containers are operation evidence, not service instances:
+    /// they never fabricate a service revision.
+    #[test]
+    fn hook_containers_do_not_evidence_revisions() {
+        let job = containers::observation("machine_a", "ctr_job")
+            .with(containers::identity("svc_api").kind(ManagedContainerKind::Job))
+            .running_unroutable()
+            .build();
+
+        assert!(derive_runtime_revisions(&[], &[job]).is_empty());
     }
 
     /// A route for a namespace with no serving entry is a missing link
