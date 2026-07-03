@@ -143,3 +143,13 @@ Transport adapters must not import product orchestration convenience types.
 - Prefer variant-specific data over optional fields shared across variants.
 - Booleans are only for obvious yes/no facts with no plausible third state.
 - Treat Clippy suppressions as a last resort; fix the shape first.
+
+## Code Reviews
+
+- When asked for a thermo-nuclear (or "thermodynamic") review, dispatch it as
+  a subagent with fresh context and a deliberately minimal prompt: point it at
+  `.agents/skills/thermo-nuclear-code-quality-review/SKILL.md`, give it the
+  diff range, and say "report back your findings" - nothing else. Do not
+  paste the skill's rules into the prompt, add steering, pre-seed suspected
+  findings, or explain the design decisions behind the diff. The reviewer's
+  value is its cold read.
