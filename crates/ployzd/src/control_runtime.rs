@@ -9,7 +9,7 @@ use crate::machine_runtime::client::{NatsMachineLogsTailer, NatsMachineSubstrate
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
-    NatsAuthorizationStartError, NatsReloadRunner, SystemctlNatsReloadRunner,
+    NatsAuthorizationStartError, NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
 use crate::process_support::shutdown_signal;
@@ -100,6 +100,11 @@ pub async fn start_control_runtime_with_client_and_reload(
     )
     .await
     .map_err(ControlRuntimeError::StartNatsAuthorization)?;
+    authorization
+        .handle()
+        .render(None)
+        .await
+        .map_err(ControlRuntimeError::RenderNatsAuthorization)?;
     let deploy_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
@@ -189,6 +194,7 @@ pub enum ControlRuntimeError {
     OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     StartNatsAuthorization(NatsAuthorizationStartError),
+    RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
@@ -221,6 +227,9 @@ impl fmt::Display for ControlRuntimeError {
             }
             Self::StartNatsAuthorization(error) => {
                 write!(formatter, "failed to start NATS authorization: {error}")
+            }
+            Self::RenderNatsAuthorization(error) => {
+                write!(formatter, "failed to render NATS authorization: {error}")
             }
             Self::ResumeMachineAddMints(error) => {
                 write!(
