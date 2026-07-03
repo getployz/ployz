@@ -5,10 +5,9 @@ use sha2::{Digest, Sha256};
 use std::num::NonZeroU16;
 
 use crate::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, ServiceId, StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
 };
-use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
+use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry};
 
@@ -144,12 +143,7 @@ pub struct ExistingServiceReplica {
 pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
-    pub namespace_id: NamespaceId,
-    pub service_id: ServiceId,
-    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
-    pub operation_id: OperationId,
-    pub step_id: StepId,
-    pub kind: ManagedContainerKind,
+    pub identity: ManagedContainerIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,8 +321,9 @@ fn existing_replicas(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.namespace_id == request.namespace_id
-                && container.is_running_service_entry(
+            container.state.is_running()
+                && container.identity.is_service_entry(
+                    &request.namespace_id,
                     &request.service_id,
                     &request.namespace_revision_entry_id,
                 )
@@ -348,19 +343,14 @@ fn cleanup_candidates(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.namespace_id == request.namespace_id
-                && container.is_running_service()
-                && container.service_id == request.service_id
+            container.is_running_service()
+                && container.identity.namespace_id == request.namespace_id
+                && container.identity.service_id == request.service_id
         })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
-            namespace_id: container.namespace_id.clone(),
-            service_id: container.service_id.clone(),
-            namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
-            operation_id: container.operation_id.clone(),
-            step_id: container.step_id.clone(),
-            kind: container.kind,
+            identity: container.identity.clone(),
         })
         .collect()
 }

@@ -1,16 +1,16 @@
 use async_nats::jetstream;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
-    ManagedContainerObservation,
+    MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
-    route_hostname, route_port, service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
+    route_port, service_id,
 };
 use ployzd::gateway::{
     GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,
@@ -231,17 +231,15 @@ fn managed_observation(
     service_id_value: &str,
     namespace_revision_entry_id_value: &str,
 ) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        machine_id: machine_id(machine_id_value),
-        container_id: container_id(container_id_value),
-        namespace_id: namespace_id("default"),
-        service_id: service_id(service_id_value),
-        namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("step_1"),
-        kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::running_at(endpoint_ip("10.0.0.7")),
-    }
+    containers::observation(machine_id_value, container_id_value)
+        .with(
+            containers::identity(service_id_value)
+                .entry(namespace_revision_entry_id_value)
+                .operation("op_123")
+                .step("step_1"),
+        )
+        .running_at(endpoint_ip("10.0.0.7"))
+        .build()
 }
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {

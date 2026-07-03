@@ -1,16 +1,13 @@
 //! Machine-local NATS RPC protocol types.
 
-use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployz_core::dataplane::{
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareRequest,
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
-};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 
@@ -28,17 +25,6 @@ pub enum MachineRpcResponse<T, E> {
 /// reject answers from the wrong machine.
 pub trait MachineRpcResponder {
     fn responder_machine_id(&self) -> &MachineId;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineContainerRunSpec {
-    pub namespace_id: NamespaceId,
-    pub service_id: ServiceId,
-    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
-    pub operation_id: OperationId,
-    pub step_id: StepId,
-    pub kind: ManagedContainerKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,7 +78,9 @@ pub enum MachineEnsureEndpointNetworkDomainError {
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunRpcRequest {
     pub image: ImageReference,
-    pub container: MachineContainerRunSpec,
+    /// The identity the machine stamps onto the created container; the
+    /// wire shape is identical to the dissolved per-RPC run spec.
+    pub container: ManagedContainerIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,8 +105,8 @@ pub type MachineContainerRunRpcResponse =
 pub enum MachineContainerRunDomainError {
     OperationStepConflict {
         container_id: ContainerId,
-        expected: ManagedContainerLabels,
-        actual: ManagedContainerLabels,
+        expected: ManagedContainerIdentity,
+        actual: ManagedContainerIdentity,
     },
     OperationStepAmbiguous {
         operation_id: OperationId,

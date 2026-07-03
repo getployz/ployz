@@ -1,14 +1,13 @@
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, ManagedContainerKind, ManagedContainerObservation,
+    MachineContainerObservationSnapshotError, ManagedContainerIdentity,
+    ManagedContainerObservation,
 };
 use ployz_core::state::MachineContainerObservationKey;
-use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
-    step_id,
-};
+use ployz_test_support::containers;
+use ployz_test_support::ids::{container_id, machine_id};
 use ployzd::docker::labels::{
-    CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError, ManagedContainerLabels,
+    self, CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
     NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
 };
 
@@ -30,7 +29,7 @@ fn machine_snapshot_rejects_observations_for_a_different_machine() {
 
 #[test]
 fn managed_containers_render_required_ployz_labels() {
-    let labels = managed_labels().render();
+    let labels = labels::render(&managed_identity());
 
     assert_eq!(labels.get(MANAGED_LABEL).map(String::as_str), Some("true"));
     assert_eq!(
@@ -59,18 +58,18 @@ fn managed_containers_render_required_ployz_labels() {
 
 #[test]
 fn managed_containers_parse_raw_docker_labels() {
-    let labels = managed_labels().render();
+    let labels = labels::render(&managed_identity());
 
-    assert_eq!(ManagedContainerLabels::parse(&labels), Ok(managed_labels()));
+    assert_eq!(labels::parse(&labels), Ok(managed_identity()));
 }
 
 #[test]
 fn managed_container_labels_reject_missing_runtime_boundary_data() {
-    let mut labels = managed_labels().render();
+    let mut labels = labels::render(&managed_identity());
     labels.remove(STEP_ID_LABEL);
 
     assert_eq!(
-        ManagedContainerLabels::parse(&labels),
+        labels::parse(&labels),
         Err(ManagedContainerLabelError::Missing {
             label: STEP_ID_LABEL
         })
@@ -79,11 +78,11 @@ fn managed_container_labels_reject_missing_runtime_boundary_data() {
 
 #[test]
 fn managed_container_labels_reject_unknown_container_kind() {
-    let mut labels = managed_labels().render();
+    let mut labels = labels::render(&managed_identity());
     labels.insert(CONTAINER_TYPE_LABEL.to_owned(), "sidequest".to_owned());
 
     assert_eq!(
-        ManagedContainerLabels::parse(&labels),
+        labels::parse(&labels),
         Err(ManagedContainerLabelError::InvalidKind {
             value: "sidequest".to_owned()
         })
@@ -102,26 +101,21 @@ fn managed_observation(
     container_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        machine_id: machine_id("machine_7"),
-        container_id: container_id(container_id_value),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("step_1"),
-        kind: ManagedContainerKind::Service,
-        state,
-    }
+    containers::observation("machine_7", container_id_value)
+        .with(
+            containers::identity("svc_api")
+                .entry("entry_1")
+                .operation("op_123")
+                .step("step_1"),
+        )
+        .state(state)
+        .build()
 }
 
-fn managed_labels() -> ManagedContainerLabels {
-    ManagedContainerLabels {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("step_1"),
-        kind: ManagedContainerKind::Service,
-    }
+fn managed_identity() -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_1")
+        .operation("op_123")
+        .step("step_1")
+        .build()
 }

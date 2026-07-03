@@ -13,7 +13,7 @@ use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionEr
 use std::future::Future;
 use std::time::Duration;
 
-use crate::docker::labels::ManagedContainerLabels;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 
 use super::{
     DeployContainer, DeployExecutionCommand, DeployOperationRecorder, RouteBindingCommitError,
@@ -439,8 +439,8 @@ pub enum MachineContainerRuntimeError {
     OperationStepConflict {
         machine_id: MachineId,
         container_id: ContainerId,
-        expected: ManagedContainerLabels,
-        actual: ManagedContainerLabels,
+        expected: ManagedContainerIdentity,
+        actual: ManagedContainerIdentity,
     },
     OperationStepAmbiguous {
         machine_id: MachineId,

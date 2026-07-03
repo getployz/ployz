@@ -312,12 +312,7 @@ where
         .map(|container| ManagedContainerObservation {
             machine_id: machine_id.clone(),
             container_id: container.container_id,
-            namespace_id: container.labels.namespace_id,
-            service_id: container.labels.service_id,
-            namespace_revision_entry_id: container.labels.namespace_revision_entry_id,
-            operation_id: container.labels.operation_id,
-            step_id: container.labels.step_id,
-            kind: container.labels.kind,
+            identity: container.identity,
             state: observation_state(container.state),
         });
     let snapshot = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
@@ -408,7 +403,6 @@ impl std::error::Error for MachineProcessRuntimeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::docker::labels::ManagedContainerIdentity;
     use crate::machine_runtime::runner::{
         CreateManagedContainer, ExistingManagedContainer, MachineContainerRunner,
         MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
@@ -418,6 +412,7 @@ mod tests {
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
+    use ployz_core::machine_runtime::ManagedContainerIdentity;
     use ployz_core::machine_runtime::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
 
@@ -604,7 +599,7 @@ mod tests {
         let nats = TestNats::start_bootstrapped().await;
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
-            labels: labels("run_1"),
+            identity: identity_for("run_1"),
             state: ExistingManagedContainerState::Running { ip: None },
         }]);
 
@@ -760,8 +755,8 @@ mod tests {
         }
     }
 
-    fn labels(step: &str) -> crate::docker::labels::ManagedContainerLabels {
-        crate::docker::labels::ManagedContainerLabels {
+    fn identity_for(step: &str) -> ManagedContainerIdentity {
+        ManagedContainerIdentity {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),

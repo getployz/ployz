@@ -47,7 +47,8 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{

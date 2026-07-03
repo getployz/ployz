@@ -6,24 +6,23 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::request_json;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, namespace_id, namespace_revision_entry_id,
-    operation_id, service_id, step_id,
+    container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
 };
 use ployzd::deploy_worker::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
     MachineRuntimeUnavailableReason,
 };
-use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerRunSpec, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
@@ -147,7 +146,7 @@ async fn machine_runtime_service_creates_missing_container() {
         state.creates(),
         vec![CreateManagedContainer {
             image: image("registry.example/api:rev_2"),
-            labels: managed_labels(),
+            identity: managed_identity(),
         }]
     );
 }
@@ -160,7 +159,7 @@ async fn machine_runtime_service_reuses_existing_operation_step_container() {
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone())
-            .with_existing(existing_container("ctr_existing", managed_labels())),
+            .with_existing(existing_container("ctr_existing", managed_identity())),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
@@ -195,7 +194,7 @@ async fn machine_runtime_service_starts_existing_stopped_operation_step_containe
         machine_id("machine_a"),
         RecordingRunner::new(state.clone()).with_existing(existing_container_with_state(
             "ctr_existing",
-            managed_labels(),
+            managed_identity(),
             ExistingManagedContainerState::StartableStopped,
         )),
         ready_wireguard_ebpf(),
@@ -297,7 +296,7 @@ async fn machine_runtime_service_reports_existing_start_failure_without_created_
 #[tokio::test]
 async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error() {
     let nats = test_nats().await;
-    let mut conflicting_labels = managed_labels();
+    let mut conflicting_labels = managed_identity();
     conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_other");
     let state = RecordingRunnerState::default();
     let service = start_machine_runtime_service(
@@ -328,7 +327,7 @@ async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error
         MachineContainerRuntimeError::OperationStepConflict {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_conflict"),
-            expected: managed_labels(),
+            expected: managed_identity(),
             actual: conflicting_labels,
         }
     );
@@ -396,7 +395,7 @@ async fn machine_runtime_service_removes_container() {
         &MachineContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
-            expected_identity: managed_labels().identity(),
+            expected_identity: managed_identity(),
         },
         Duration::from_secs(1),
     )
@@ -438,7 +437,7 @@ async fn machine_runtime_service_stops_container() {
             MachineContainerStopRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_failed"),
-                expected_identity: managed_labels().identity(),
+                expected_identity: managed_identity(),
             },
         )
         .await
@@ -474,7 +473,7 @@ async fn machine_runtime_service_reports_remove_failure_as_domain_error() {
         &MachineContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
-            expected_identity: managed_labels().identity(),
+            expected_identity: managed_identity(),
         },
         Duration::from_secs(1),
     )
@@ -521,7 +520,7 @@ async fn machine_runtime_service_reports_stop_failure_as_domain_error() {
         &MachineContainerStopRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_failed"),
-            expected_identity: managed_labels().identity(),
+            expected_identity: managed_identity(),
         },
         Duration::from_secs(1),
     )
@@ -548,7 +547,7 @@ async fn machine_runtime_service_tails_container_logs() {
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
-            .with_existing(existing_container("ctr_failed", managed_labels())),
+            .with_existing(existing_container("ctr_failed", managed_identity())),
         ready_wireguard_ebpf(),
         RecordingLogReader::new("ctr_failed", "panic: missing DATABASE_URL\n"),
     )
@@ -805,7 +804,7 @@ impl RecordingRunner {
     fn with_existing_start_failure(mut self, container_id: &str, message: &str) -> Self {
         self.existing.push(existing_container_with_state(
             container_id,
-            managed_labels(),
+            managed_identity(),
             ExistingManagedContainerState::StartableStopped,
         ));
         self.start_failure = Some((self::container_id(container_id), message.to_owned()));
@@ -1150,20 +1149,17 @@ fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
         .expect("valid inspect hint")
 }
 
-fn managed_container_spec() -> MachineContainerRunSpec {
-    MachineContainerRunSpec {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("run_1"),
-        kind: ManagedContainerKind::Service,
-    }
+fn managed_container_spec() -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_2")
+        .operation("op_123")
+        .step("run_1")
+        .build()
 }
 
 fn existing_container(
     container_id: &str,
-    labels: ManagedContainerLabels,
+    labels: ManagedContainerIdentity,
 ) -> ExistingManagedContainer {
     existing_container_with_state(
         container_id,
@@ -1174,25 +1170,22 @@ fn existing_container(
 
 fn existing_container_with_state(
     container_id: &str,
-    labels: ManagedContainerLabels,
+    labels: ManagedContainerIdentity,
     state: ExistingManagedContainerState,
 ) -> ExistingManagedContainer {
     ExistingManagedContainer {
         container_id: self::container_id(container_id),
-        labels,
+        identity: labels,
         state,
     }
 }
 
-fn managed_labels() -> ManagedContainerLabels {
-    ManagedContainerLabels {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("run_1"),
-        kind: ManagedContainerKind::Service,
-    }
+fn managed_identity() -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_2")
+        .operation("op_123")
+        .step("run_1")
+        .build()
 }
 
 fn image(value: &str) -> ImageReference {

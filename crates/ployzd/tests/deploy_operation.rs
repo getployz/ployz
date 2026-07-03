@@ -3,7 +3,6 @@ mod fixtures;
 
 use fixtures::*;
 use ployz_core::dataplane::DataplaneMember;
-use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
     RouteHostname, RouteTarget,
@@ -17,9 +16,7 @@ use ployzd::deploy_worker::{
     MachineContainerRuntimeError, RouteBindingCommitter, ServingTargetCommitter,
     execute_deploy_operation,
 };
-use ployzd::docker::labels::ManagedContainerIdentity;
 use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
-use ployzd::machine_runtime::runner::managed_container_labels;
 use std::time::Duration;
 
 fn assert_deploy_event_order(
@@ -44,17 +41,6 @@ fn assert_deploy_event_order(
         before_position < after_position,
         "{before:?} should be recorded before {after:?}"
     );
-}
-
-fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
-    ManagedContainerIdentity {
-        namespace_id: namespace_id("default"),
-        service_id: target.service_id.clone(),
-        namespace_revision_entry_id: target.namespace_revision_entry_id.clone(),
-        operation_id: target.operation_id.clone(),
-        step_id: target.step_id.clone(),
-        kind: target.kind,
-    }
 }
 
 async fn execute_deploy<R, D, N, H, C, A>(
@@ -298,11 +284,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
             ployzd::machine_runtime::protocol::MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_old"),
-                expected_identity: cleanup_expected_identity(&cleanup_container(
-                    "machine_b",
-                    "ctr_old",
-                    "entry_old",
-                )),
+                expected_identity: cleanup_container("machine_b", "ctr_old", "entry_old").identity,
             },
         )]
     );
@@ -421,7 +403,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             ployzd::machine_runtime::protocol::MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_old"),
-                expected_identity: cleanup_expected_identity(&cleanup_target),
+                expected_identity: cleanup_target.identity.clone(),
             },
         )]
     );
@@ -731,7 +713,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
                     ployzd::machine_runtime::protocol::MachineContainerStopRpcRequest {
                         operation_id: operation_id("op_123"),
                         container_id,
-                        expected_identity: managed_container_labels(&request.container).identity(),
+                        expected_identity: request.container.clone(),
                     },
                 )
             })
@@ -1059,7 +1041,7 @@ async fn routed_deploy_commits_route_before_completion() {
         panic!("expected one runtime request");
     };
     assert_eq!(
-        managed_container_labels(&runtime_request.container).namespace_revision_entry_id,
+        runtime_request.container.namespace_revision_entry_id,
         target_namespace_revision_entry_id()
     );
     assert_eq!(

@@ -85,8 +85,8 @@ pub fn prepare_deploy_execution_command(
         .namespace_cleanup_candidates
         .into_iter()
         .filter(|candidate| {
-            candidate.namespace_id == request.namespace_id
-                && !declared_services.contains(&candidate.service_id)
+            candidate.identity.namespace_id == request.namespace_id
+                && !declared_services.contains(&candidate.identity.service_id)
         })
         .collect();
 
@@ -114,18 +114,11 @@ pub fn namespace_cleanup_candidates(
     observed_machines
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
-        .filter(|container| {
-            container.kind == ManagedContainerKind::Service && container.state.is_running()
-        })
+        .filter(|container| container.is_running_service())
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
-            namespace_id: container.namespace_id.clone(),
-            service_id: container.service_id.clone(),
-            namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
-            operation_id: container.operation_id.clone(),
-            step_id: container.step_id.clone(),
-            kind: container.kind,
+            identity: container.identity.clone(),
         })
         .collect()
 }

@@ -94,9 +94,9 @@ impl RuntimeSnapshotQueryRuntime {
             .into_iter()
             .flat_map(|record| record.snapshot.containers().to_vec())
             .collect::<Vec<_>>();
-        let revisions = derive_runtime_revisions(&services, &routes, &containers);
+        let revisions = derive_runtime_revisions(&services, &containers);
         let releases = derive_runtime_releases(&services, &routes);
-        let instances = derive_runtime_instances(&services, &routes, &containers);
+        let instances = derive_runtime_instances(&containers);
         let missing_link_count = missing_runtime_links(&services, &routes, &containers);
 
         Ok(RuntimeSnapshotResult {
@@ -277,10 +277,8 @@ fn service_snapshot(active: ServingTargetEntry) -> ServiceSnapshot {
 
 fn derive_runtime_revisions(
     services: &[ServiceSnapshot],
-    routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> Vec<RuntimeServiceRevision> {
-    let namespaces = runtime_service_namespaces(services, routes);
     let mut revisions = BTreeSet::new();
     for service in services {
         revisions.insert((
@@ -290,13 +288,10 @@ fn derive_runtime_revisions(
         ));
     }
     for container in containers {
-        let Some(namespace_id) = namespaces.get(&container.service_id) else {
-            continue;
-        };
         revisions.insert((
-            namespace_id.clone(),
-            container.service_id.clone(),
-            container.namespace_revision_entry_id.clone(),
+            container.identity.namespace_id.clone(),
+            container.identity.service_id.clone(),
+            container.identity.namespace_revision_entry_id.clone(),
         ));
     }
 
@@ -364,26 +359,20 @@ fn derive_runtime_releases(
 }
 
 fn derive_runtime_instances(
-    services: &[ServiceSnapshot],
-    routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> Vec<RuntimeServiceInstance> {
-    let namespaces = runtime_service_namespaces(services, routes);
     containers
         .iter()
-        .filter(|container| container.kind == ManagedContainerKind::Service)
-        .filter_map(|container| {
-            let namespace_id = namespaces.get(&container.service_id)?;
-            Some(RuntimeServiceInstance {
-                namespace_id: namespace_id.clone(),
-                machine_id: container.machine_id.clone(),
-                container_id: container.container_id.clone(),
-                service_id: container.service_id.clone(),
-                namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
-                operation_id: container.operation_id.clone(),
-                step_id: container.step_id.clone(),
-                state: container.state.clone(),
-            })
+        .filter(|container| container.identity.kind == ManagedContainerKind::Service)
+        .map(|container| RuntimeServiceInstance {
+            namespace_id: container.identity.namespace_id.clone(),
+            machine_id: container.machine_id.clone(),
+            container_id: container.container_id.clone(),
+            service_id: container.identity.service_id.clone(),
+            namespace_revision_entry_id: container.identity.namespace_revision_entry_id.clone(),
+            operation_id: container.identity.operation_id.clone(),
+            step_id: container.identity.step_id.clone(),
+            state: container.state.clone(),
         })
         .collect()
 }
@@ -404,27 +393,8 @@ fn missing_runtime_links(
         .count()
         + containers
             .iter()
-            .filter(|container| !service_ids.contains(&container.service_id))
+            .filter(|container| !service_ids.contains(&container.identity.service_id))
             .count()
-}
-
-fn runtime_service_namespaces(
-    services: &[ServiceSnapshot],
-    routes: &[RouteBindingState],
-) -> BTreeMap<ServiceId, NamespaceId> {
-    let mut namespaces = BTreeMap::new();
-    for service in services {
-        namespaces.insert(
-            service.active.service_id.clone(),
-            service.active.namespace_id.clone(),
-        );
-    }
-    for route in routes {
-        namespaces
-            .entry(route.service_id.clone())
-            .or_insert_with(|| route.namespace_id.clone());
-    }
-    namespaces
 }
 
 fn derived_source(
@@ -708,4 +678,38 @@ pub async fn ops_watch(
         .replay_operation_events(request)
         .await
         .map_err(|error| ops_watch_error_from_replay_error(operation_id, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{derive_runtime_instances, derive_runtime_revisions};
+    use ployz_test_support::containers;
+    use ployz_test_support::ids::{namespace_id, service_id};
+
+    /// Containers whose service has no serving target entry still surface
+    /// as instances and revisions under their own identity namespace.
+    /// Before identity consolidation they were silently dropped by a
+    /// namespace-lookup join; Docker is execution reality, so orphaned
+    /// containers are evidence, not noise (missing_link_count separately
+    /// reports the mismatch).
+    #[test]
+    fn orphaned_containers_surface_as_instances_and_revisions() {
+        let orphan = containers::observation("machine_a", "ctr_orphan")
+            .with(containers::identity("svc_orphan").namespace("team-a"))
+            .running_unroutable()
+            .build();
+
+        let instances = derive_runtime_instances(&[orphan.clone()]);
+        let [instance] = instances.as_slice() else {
+            panic!("orphaned container is projected as an instance");
+        };
+        assert_eq!(instance.namespace_id, namespace_id("team-a"));
+        assert_eq!(instance.service_id, service_id("svc_orphan"));
+
+        let revisions = derive_runtime_revisions(&[], &[orphan]);
+        let [revision] = revisions.as_slice() else {
+            panic!("orphaned container is projected as a revision");
+        };
+        assert_eq!(revision.namespace_id, namespace_id("team-a"));
+    }
 }
