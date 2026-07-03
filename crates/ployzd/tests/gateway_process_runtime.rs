@@ -1,19 +1,20 @@
 use async_nats::jetstream;
 use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{ActiveRouteState, GatewayServingStatus};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry, GatewayServingStatus};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
-    service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
+    route_hostname, route_port, service_id, step_id,
 };
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
-    GatewayHttpFailure, GatewayProcessAttempt, start_gateway_process_runtime_with_client,
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
+    start_gateway_process_runtime_with_client,
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,6 +44,33 @@ async fn gateway_process_reports_unavailable_before_projection_sources_exist() {
 }
 
 #[tokio::test]
+async fn gateway_process_reports_http_bind_failure_before_returning() {
+    let nats = TestNats::start_without_buckets().await;
+    let occupied_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind occupied listener");
+    let occupied_addr = occupied_listener
+        .local_addr()
+        .expect("read occupied listener address");
+
+    let result = start_gateway_process_runtime_with_client(
+        nats.machine_client.clone(),
+        Duration::from_millis(10),
+        occupied_addr,
+        machine_id("machine_7"),
+    )
+    .await;
+
+    let Err(error) = result else {
+        panic!("gateway runtime unexpectedly started on occupied address");
+    };
+    assert!(matches!(
+        error,
+        GatewayProcessRuntimeError::BindHttp { addr, .. } if addr == occupied_addr
+    ));
+}
+
+#[tokio::test]
 async fn gateway_process_serves_http_from_nats_projection() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
@@ -64,12 +92,19 @@ async fn gateway_process_serves_http_from_nats_projection() {
         .expect("open observation store");
 
     routes
-        .replace_active_route(&ActiveRouteState {
+        .replace_serving_target_entry(&ServingTargetEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
+        })
+        .await
+        .expect("serving target entry stores");
+    routes
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", runtime.listen_addr().port()),
             endpoint_port: route_port(upstream.port()),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
         })
         .await
         .expect("route stores");
@@ -80,7 +115,6 @@ async fn gateway_process_serves_http_from_nats_projection() {
                 "machine_7",
                 "ctr_7",
                 "127.0.0.1",
-                upstream.port(),
             )],
         ))
         .await
@@ -132,12 +166,19 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
         .expect("open observation store");
 
     routes
-        .replace_active_route(&ActiveRouteState {
+        .replace_serving_target_entry(&ServingTargetEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
+        })
+        .await
+        .expect("serving target entry stores");
+    routes
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
         })
         .await
         .expect("route stores");
@@ -238,7 +279,10 @@ fn gateway_serves_route(
             [route] if route.upstreams == vec![GatewayUpstream {
                 machine_id: machine_id("machine_7"),
                 container_id: container_id("ctr_7"),
-                endpoint: endpoint(endpoint_ip, endpoint_port),
+                address: std::net::SocketAddr::new(
+                    endpoint_ip.parse().expect("valid endpoint ip"),
+                    endpoint_port,
+                ),
             }]
         )
     })
@@ -300,25 +344,24 @@ fn managed_observation(
     machine_id_value: &str,
     container_id_value: &str,
 ) -> ManagedContainerObservation {
-    managed_observation_with_endpoint(machine_id_value, container_id_value, "10.0.0.7", 8080)
+    managed_observation_with_endpoint(machine_id_value, container_id_value, "10.0.0.7")
 }
 
 fn managed_observation_with_endpoint(
     machine_id_value: &str,
     container_id_value: &str,
     ip: &str,
-    port: u16,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::running_at(endpoint(ip, port)),
+        state: ContainerRuntimeState::running_at(ip.parse().expect("valid endpoint ip")),
     }
 }
 
@@ -328,13 +371,6 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
 
 fn socket_addr(value: &str) -> std::net::SocketAddr {
     value.parse().expect("valid socket address")
-}
-
-fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
-    ContainerEndpoint {
-        ip: ip.parse().expect("valid endpoint ip"),
-        port: route_port(port),
-    }
 }
 
 struct TestUpstream {

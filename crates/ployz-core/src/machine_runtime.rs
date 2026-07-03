@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use crate::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId};
-use crate::ops::RoutePort;
+use crate::ids::{
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -41,8 +42,11 @@ impl ManagedContainerKind {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContainerRuntimeState {
     Running {
+        /// Endpoint-network address of the running container. The routed
+        /// port is route state, not container state (ADR 0023), so the
+        /// observation carries only the IP gateways dial.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        endpoint: Option<ContainerEndpoint>,
+        ip: Option<IpAddr>,
     },
     Exited,
 }
@@ -50,14 +54,12 @@ pub enum ContainerRuntimeState {
 impl ContainerRuntimeState {
     #[must_use]
     pub const fn running_unroutable() -> Self {
-        Self::Running { endpoint: None }
+        Self::Running { ip: None }
     }
 
     #[must_use]
-    pub fn running_at(endpoint: ContainerEndpoint) -> Self {
-        Self::Running {
-            endpoint: Some(endpoint),
-        }
+    pub const fn running_at(ip: IpAddr) -> Self {
+        Self::Running { ip: Some(ip) }
     }
 
     #[must_use]
@@ -69,14 +71,6 @@ impl ContainerRuntimeState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ContainerEndpoint {
-    pub ip: IpAddr,
-    pub port: RoutePort,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -85,7 +79,7 @@ pub struct ManagedContainerObservation {
     pub container_id: ContainerId,
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
@@ -99,26 +93,24 @@ impl ManagedContainerObservation {
     }
 
     #[must_use]
-    pub fn is_running_service_revision(
+    pub fn is_running_service_entry(
         &self,
-        namespace_id: &NamespaceId,
         service_id: &ServiceId,
-        revision_id: &RevisionId,
+        namespace_revision_entry_id: &NamespaceRevisionEntryId,
     ) -> bool {
         self.is_running_service()
-            && self.namespace_id == *namespace_id
             && self.service_id == *service_id
-            && self.revision_id == *revision_id
+            && self.namespace_revision_entry_id == *namespace_revision_entry_id
     }
 
     #[must_use]
-    pub fn running_service_endpoint(&self) -> Option<&ContainerEndpoint> {
+    pub fn running_service_ip(&self) -> Option<IpAddr> {
         if self.kind != ManagedContainerKind::Service {
             return None;
         }
 
         match &self.state {
-            ContainerRuntimeState::Running { endpoint } => endpoint.as_ref(),
+            ContainerRuntimeState::Running { ip } => *ip,
             ContainerRuntimeState::Exited => None,
         }
     }

@@ -338,7 +338,7 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
                 matches!(
                     event,
                     OperationEvent::DeployRunning {
-                        stage: DeployRunningStage::ActiveServiceCommit,
+                        stage: DeployRunningStage::ServingTargetCommit,
                         ..
                     }
                 )

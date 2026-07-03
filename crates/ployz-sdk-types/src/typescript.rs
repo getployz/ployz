@@ -3,8 +3,8 @@
 use crate::operation_api::OperationApiContract;
 use crate::{
     AbsoluteInstallPath, AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds,
-    AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, ActiveMachineState, ActiveRouteState,
-    ActiveServiceState, ArtifactUnavailableReason, BootstrapMaterialFailure,
+    AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, ActiveMachineState, RouteBindingState,
+    ServingTargetEntry, ArtifactUnavailableReason, BootstrapMaterialFailure,
     CLOUD_BOOTSTRAP_PROTOCOL_VERSION, CancellationReason, CertBundleRef, CertId,
     CertOperationFailure, CertOperationState, CertRunningStage, CertValidAt, CertValidityWindow,
     CloudBootstrapAttemptId, CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest,
@@ -14,7 +14,7 @@ use crate::{
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudBootstrapSessionSecret, CloudFounderBootstrap,
     CloudFounderBootstrapResult, CloudJoinerBootstrap, CloudJoinerBootstrapResult,
-    ContainerEndpoint, ContainerId, ContainerRuntimeState, DataplaneMember,
+    ContainerId, ContainerRuntimeState, DataplaneMember,
     DataplaneProviderFailure, DeployCleanupContainer, DeployCleanupFailure,
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPlan,
     DeployPlanStep, DeployRequest, DeployRoute, DeployRunningStage, DeployServicePlan,
@@ -42,16 +42,16 @@ use crate::{
     MachineReadinessEvidence, MachineSnapshot, MachineSubstrateVersions, MachineUpdateError,
     MachineUpdateFailure, MachineUpdateOperationState, MachineUpdateRequest, MachineUpdateResponse,
     MachineUpdateUnavailableSource, ManagedContainerKind, ManagedContainerObservation, NamespaceId,
-    NatsServerInstallSpec, NatsUserPublicKey, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationId, OperationIdempotencyKey, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OperationSubmitClockFailure,
+    NamespaceRevisionEntryId, NamespaceRevisionId, NatsServerInstallSpec, NatsUserPublicKey, OperationApiResponse,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationId, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OperationSubmitClockFailure,
     OperationSubmitEventFailure, OperationSubmitStatusFailure, OperationSubmitUnavailableSource,
     OperatorHint, OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
     OpsStatusResponse, OpsStatusUnavailableSource, OpsWatchError, OpsWatchResponse,
     OpsWatchUnavailableSource, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
     PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, ReplayedOperationEvent, ReplicaCount,
-    ReplicaSlot, RetainedArtifact, RevisionId, RouteCutoverFailureReason, RouteHostname, RoutePort,
+    ReplicaSlot, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
     RouteTarget, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
     RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
     RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
@@ -107,7 +107,6 @@ macro_rules! exported_types {
             OperationIdempotencyKey,
             EventSequence,
             ServiceId,
-            RevisionId,
             MachineId,
             ContainerId,
             StepId,
@@ -141,6 +140,8 @@ macro_rules! exported_types {
             CloudBootstrapFailure,
             CloudBootstrapCallbackAccepted,
             NamespaceId,
+            NamespaceRevisionId,
+            NamespaceRevisionEntryId,
             ImageReference,
             ReplicaCount,
             ReplicaSlot,
@@ -152,7 +153,6 @@ macro_rules! exported_types {
             DeployCleanupContainer,
             DeployCleanupFailure,
             ManagedContainerKind,
-            ContainerEndpoint,
             ContainerRuntimeState,
             ManagedContainerObservation,
             DeployPlanStep,
@@ -212,8 +212,8 @@ macro_rules! exported_types {
             AcmeHttp01Challenge,
             ActiveCertState,
             ActiveMachineState,
-            ActiveRouteState,
-            ActiveServiceState,
+            RouteBindingState,
+            ServingTargetEntry,
             MachinePublicIpObservation,
             GatewayServingStatus,
             GatewayStatusObservation,
@@ -451,12 +451,12 @@ const fn operation_api_execution_name(execution: OperationApiEndpointExecution) 
 pub fn operation_contract_fixture() -> Value {
     let deploy_target = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     };
     let accepted = accepted_operation("op_123", 1);
@@ -631,8 +631,8 @@ fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
 
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
+fn namespace_revision_id(value: &str) -> NamespaceRevisionId {
+    NamespaceRevisionId::try_new(value).expect("valid namespace revision id")
 }
 
 fn machine_id(value: &str) -> MachineId {

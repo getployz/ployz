@@ -179,7 +179,7 @@ fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
     matches!(
         state,
         DeployOperationState::Running {
-            stage: DeployRunningStage::ActiveServiceCommit
+            stage: DeployRunningStage::ServingTargetCommit
                 | DeployRunningStage::RemovingSupersededContainers
         }
     )
@@ -855,7 +855,7 @@ fn deploy_transition_allowed(
         | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. }) => true,
         (
             DeployOperationState::Running {
-                stage: DeployRunningStage::ActiveServiceCommit,
+                stage: DeployRunningStage::ServingTargetCommit,
             },
             DeployOperationState::Completed { .. },
         )
@@ -890,7 +890,7 @@ fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
         DeployRunningStage::StartingContainers => 1,
         DeployRunningStage::WaitingForHealth => 2,
         DeployRunningStage::RouteCutover => 3,
-        DeployRunningStage::ActiveServiceCommit => 4,
+        DeployRunningStage::ServingTargetCommit => 4,
         DeployRunningStage::RemovingSupersededContainers => 5,
     }
 }
@@ -909,13 +909,13 @@ fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningSta
             DeployRunningStage::RouteCutover
         ) | (
             DeployRunningStage::RouteCutover,
-            DeployRunningStage::ActiveServiceCommit
+            DeployRunningStage::ServingTargetCommit
         ) | (
-            DeployRunningStage::ActiveServiceCommit,
+            DeployRunningStage::ServingTargetCommit,
             DeployRunningStage::RemovingSupersededContainers
         ) | (
             DeployRunningStage::WaitingForHealth,
-            DeployRunningStage::ActiveServiceCommit
+            DeployRunningStage::ServingTargetCommit
         )
     )
 }

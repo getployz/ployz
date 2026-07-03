@@ -1,12 +1,12 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationError, DeployPreparationInput, DeployRequest,
-    prepare_deploy,
+    DeployCleanupContainer, DeployPreparationInput, DeployRequest,
+    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
 };
-use ployz_core::ids::{MachineId, NamespaceId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
-use ployz_core::state::{ActiveRouteState, ActiveServiceState};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::time::Duration;
 
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
@@ -14,6 +14,8 @@ use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionFacts {
     pub services: Vec<DeployServiceExecutionFacts>,
+    pub namespace_route_bindings: Vec<RouteBindingState>,
+    pub namespace_serving_entries: Vec<ServingTargetEntry>,
     pub eligible_machines: Vec<MachineId>,
     pub dataplane_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
@@ -23,8 +25,8 @@ pub struct DeployExecutionFacts {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionFacts {
-    pub active_service: Option<ActiveServiceState>,
-    pub active_route: Option<ActiveRouteState>,
+    pub serving_target_entry: Option<ServingTargetEntry>,
+    pub route_bindings: Vec<RouteBindingState>,
 }
 
 pub fn prepare_deploy_execution_command(
@@ -33,6 +35,27 @@ pub fn prepare_deploy_execution_command(
     facts: DeployExecutionFacts,
 ) -> Result<DeployExecutionCommand, DeployCommandPreparationError> {
     let service_requests = request.service_requests();
+    let namespace_declared_targets = request
+        .services
+        .iter()
+        .flat_map(|service| service.routes.iter())
+        .map(|route| route.target.clone())
+        .collect::<Vec<_>>();
+    let declared_services = request
+        .services
+        .iter()
+        .map(|service| service.service_id.clone())
+        .collect::<Vec<_>>();
+    let route_binding_removals = namespace_route_binding_removals(
+        &request.namespace_id,
+        &namespace_declared_targets,
+        &facts.namespace_route_bindings,
+    );
+    let serving_target_removals = namespace_serving_target_removals(
+        &request.namespace_id,
+        &declared_services,
+        &facts.namespace_serving_entries,
+    );
     let mut service_facts = facts.services.into_iter();
     let mut services = Vec::new();
     for service_request in service_requests {
@@ -41,34 +64,38 @@ pub fn prepare_deploy_execution_command(
         };
         let prepared = prepare_deploy(DeployPreparationInput {
             request: service_request,
-            active_service: service_facts.active_service,
-            active_route: service_facts.active_route,
+            serving_target_entry: service_facts.serving_target_entry,
             eligible_machines: facts.eligible_machines.clone(),
             observed_machines: facts.observed_machines.clone(),
-        })?;
+        });
         services.push(DeployServiceExecutionCommand {
             request: prepared.request,
-            route_commit: prepared.route_commit,
+            route_commits: prepared.route_commits,
             eligible_machines: prepared.eligible_machines,
             existing_replicas: prepared.existing_replicas,
             cleanup_candidates: prepared.cleanup_candidates,
         });
     }
 
-    let namespace_cleanup_candidates = if request.services.is_empty() {
-        facts
-            .namespace_cleanup_candidates
-            .into_iter()
-            .filter(|container| container.namespace_id == request.namespace_id)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // Manifest omission removes a service: its containers are cleanup
+    // candidates on every deploy, not only when the manifest is empty.
+    // Only this namespace's containers qualify - a deploy must never
+    // remove another namespace's workloads.
+    let namespace_cleanup_candidates = facts
+        .namespace_cleanup_candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.namespace_id == request.namespace_id
+                && !declared_services.contains(&candidate.service_id)
+        })
+        .collect();
 
     Ok(DeployExecutionCommand {
         operation_id,
         request,
         services,
+        route_binding_removals,
+        serving_target_removals,
         namespace_cleanup_candidates,
         dataplane_machines: facts.dataplane_machines,
         step_timeout: facts.step_timeout,
@@ -77,36 +104,28 @@ pub fn prepare_deploy_execution_command(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployCommandPreparationError {
-    #[error(transparent)]
-    Service(#[from] DeployPreparationError),
     #[error("deploy service facts are missing")]
     ServiceFactsMissing,
 }
 
 pub fn namespace_cleanup_candidates(
-    namespace_id: &NamespaceId,
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
     observed_machines
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.namespace_id == *namespace_id
-                && container.kind == ManagedContainerKind::Service
-                && container.state.is_running()
+            container.kind == ManagedContainerKind::Service && container.state.is_running()
         })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             namespace_id: container.namespace_id.clone(),
             service_id: container.service_id.clone(),
-            revision_id: container.revision_id.clone(),
+            namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
             operation_id: container.operation_id.clone(),
             step_id: container.step_id.clone(),
             kind: container.kind,
-            endpoint_port: container
-                .running_service_endpoint()
-                .map(|endpoint| endpoint.port),
         })
         .collect()
 }

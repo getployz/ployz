@@ -301,14 +301,13 @@ where
         Ok(existing) => existing,
         Err(error) => return runner_error(error),
     };
-    let labels = managed_container_labels(&request.container, request.endpoint.as_ref());
+    let labels = managed_container_labels(&request.container);
 
     match decide_container_run(&labels, existing) {
         MachineContainerRunDecision::Create { labels } => {
             match runner
                 .create_managed_container(CreateManagedContainer {
                     image: request.image,
-                    endpoint: request.endpoint,
                     labels,
                 })
                 .await

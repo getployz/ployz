@@ -321,7 +321,7 @@ impl DeployRunningStage {
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
             Self::RouteCutover => "route_cutover",
-            Self::ActiveServiceCommit => "active_service_commit",
+            Self::ServingTargetCommit => "serving_target_commit",
             Self::RemovingSupersededContainers => "removing_superseded_containers",
         }
     }

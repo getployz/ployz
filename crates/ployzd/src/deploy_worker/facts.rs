@@ -38,28 +38,45 @@ pub async fn load_deploy_execution_facts_from_nats(
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let service_requests = request.service_requests();
+    let route_bindings = core_state.route_bindings().await.map_err(|source| {
+        DeployFactLoadError::RouteBindingsRead {
+            message: source.to_string(),
+        }
+    })?;
+    let namespace_route_bindings = route_bindings
+        .iter()
+        .filter(|binding| binding.namespace_id == request.namespace_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let namespace_serving_entries = core_state
+        .serving_target_entries()
+        .await
+        .map_err(|source| DeployFactLoadError::ServingTargetEntriesRead {
+            message: source.to_string(),
+        })?
+        .into_iter()
+        .filter(|entry| entry.namespace_id == request.namespace_id)
+        .collect::<Vec<_>>();
     let mut service_facts = Vec::new();
     for service in &service_requests {
-        let active_service = core_state
-            .active_service(&service.namespace_id, &service.service_id)
+        let serving_target_entry = core_state
+            .serving_target_entry(&service.namespace_id, &service.service_id)
             .await
-            .map_err(|source| DeployFactLoadError::ActiveServiceRead {
+            .map_err(|source| DeployFactLoadError::ServingTargetEntryRead {
                 service_id: service.service_id.clone(),
                 message: source.to_string(),
             })?;
-        let active_route = match &service.route {
-            Some(route) => Some(core_state.active_route(&route.target).await.map_err(
-                |source| DeployFactLoadError::ActiveRouteRead {
-                    route: route.target.clone(),
-                    message: source.to_string(),
-                },
-            )?),
-            None => None,
-        }
-        .flatten();
+        let route_bindings = route_bindings
+            .iter()
+            .filter(|route| {
+                route.namespace_id == service.namespace_id
+                    && route.service_id == service.service_id
+            })
+            .cloned()
+            .collect();
         service_facts.push(DeployServiceExecutionFacts {
-            active_service,
-            active_route,
+            serving_target_entry,
+            route_bindings,
         });
     }
     let machine_scope = load_active_machine_scope(core_state, machine_scope).await?;
@@ -69,10 +86,11 @@ pub async fn load_deploy_execution_facts_from_nats(
         &service_requests,
         machine_scope.observed_machine_ids.clone(),
     );
-    let namespace_cleanup_candidates =
-        namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
+    let namespace_cleanup_candidates = namespace_cleanup_candidates(&observed_machines);
     Ok(DeployExecutionFacts {
         services: service_facts,
+        namespace_route_bindings,
+        namespace_serving_entries,
         eligible_machines: machine_scope.eligible_machines,
         dataplane_machines,
         observed_machines,
@@ -85,7 +103,7 @@ fn routed_dataplane_machines(
     services: &[ployz_core::deploy::DeployServiceRequest],
     fallback_machines: Vec<MachineId>,
 ) -> Vec<MachineId> {
-    if services.iter().all(|service| service.route.is_none()) {
+    if services.iter().all(|service| service.routes.is_empty()) {
         return Vec::new();
     }
 
@@ -152,12 +170,14 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
 /// carries the rendered store-error message as failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
-    ActiveServiceRead {
+    ServingTargetEntryRead {
         service_id: ServiceId,
         message: String,
     },
-    ActiveRouteRead {
-        route: ployz_core::ops::RouteTarget,
+    RouteBindingsRead {
+        message: String,
+    },
+    ServingTargetEntriesRead {
         message: String,
     },
     ActiveMachineRead {
@@ -172,19 +192,24 @@ pub enum DeployFactLoadError {
 impl fmt::Display for DeployFactLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ActiveServiceRead {
+            Self::ServingTargetEntryRead {
                 service_id,
                 message,
             } => write!(
                 formatter,
-                "active service state for {} could not be read: {}",
+                "serving target entry state for {} could not be read: {}",
                 service_id.as_str(),
                 message
             ),
-            Self::ActiveRouteRead { route, message } => write!(
+            Self::RouteBindingsRead { message } => write!(
                 formatter,
-                "active route state for {:?} could not be read: {}",
-                route, message
+                "route binding state could not be read: {}",
+                message
+            ),
+            Self::ServingTargetEntriesRead { message } => write!(
+                formatter,
+                "serving target entries could not be read: {}",
+                message
             ),
             Self::ActiveMachineRead { message } => {
                 write!(formatter, "active machines could not be read: {message}")

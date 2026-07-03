@@ -39,16 +39,18 @@ pub(crate) fn parse_deploy_file(
                 .unwrap_or(DEFAULT_REPLICA_COUNT),
         )
         .map_err(|error| invalid_value("services.*.deploy.replicas", error))?;
-        let route = service
+        let routes = service
             .x_route
-            .as_deref()
-            .map(parse_route_shorthand)
-            .transpose()?;
+            .map(ComposeRoutes::into_shorthands)
+            .unwrap_or_default()
+            .iter()
+            .map(|shorthand| parse_route_shorthand(shorthand))
+            .collect::<Result<Vec<_>, _>>()?;
         services.push(DeployServiceSpec {
             service_id,
             image,
             replicas,
-            route,
+            routes,
         });
     }
     if services.is_empty() {
@@ -79,7 +81,25 @@ struct ComposeService {
     image: String,
     deploy: Option<ComposeDeploy>,
     #[serde(rename = "x-route")]
-    x_route: Option<String>,
+    x_route: Option<ComposeRoutes>,
+}
+
+/// `x-route` accepts one shorthand or a list of shorthands, so one service
+/// can bind multiple hostnames (AE5).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeRoutes {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl ComposeRoutes {
+    fn into_shorthands(self) -> Vec<String> {
+        match self {
+            Self::One(shorthand) => vec![shorthand],
+            Self::Many(shorthands) => shorthands,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

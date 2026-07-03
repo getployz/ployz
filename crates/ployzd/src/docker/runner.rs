@@ -19,8 +19,6 @@ use bollard::query_parameters::{
 };
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
-use ployz_core::machine_runtime::ContainerEndpoint;
-use ployz_core::ops::RoutePort;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
@@ -126,10 +124,9 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     ) -> Result<ContainerId, MachineContainerRunnerError> {
         self.pull_image(command.image.as_str()).await?;
 
-        let requires_endpoint_network = command.endpoint.is_some();
-        if requires_endpoint_network {
-            self.ensure_endpoint_network_inner().await?;
-        }
+        // Every service container joins the endpoint network at creation;
+        // route state alone decides whether anything dials it (ADR 0023).
+        self.ensure_endpoint_network_inner().await?;
 
         let docker = self
             .docker()
@@ -405,12 +402,11 @@ fn is_container_missing(error: &BollardError) -> bool {
 
 fn docker_container_state(
     state: ContainerSummaryStateEnum,
-    labels: &ManagedContainerLabels,
     network_settings: Option<ContainerSummaryNetworkSettings>,
 ) -> Result<ExistingManagedContainerState, DockerManagedContainerSummaryError> {
     match state {
         ContainerSummaryStateEnum::RUNNING => Ok(ExistingManagedContainerState::Running {
-            endpoint: container_endpoint(labels.endpoint_port, network_settings)?,
+            ip: container_ip(network_settings)?,
         }),
         ContainerSummaryStateEnum::CREATED | ContainerSummaryStateEnum::EXITED => {
             Ok(ExistingManagedContainerState::StartableStopped)
@@ -469,25 +465,19 @@ const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
 }
 
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
-    let endpoint_port = command.endpoint.as_ref().map(|endpoint| endpoint.port);
-    let exposed_ports = endpoint_port.map(|port| vec![format!("{}/tcp", port.get())]);
-    let host_config = endpoint_port.map(|_| HostConfig {
-        network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
-        ..Default::default()
-    });
-    let networking_config = endpoint_port.map(|_| NetworkingConfig {
-        endpoints_config: Some(HashMap::from([(
-            ENDPOINT_NETWORK_NAME.to_owned(),
-            EndpointSettings::default(),
-        )])),
-    });
-
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
         labels: Some(hashmap_from_btree(command.labels.render())),
-        exposed_ports,
-        host_config,
-        networking_config,
+        host_config: Some(HostConfig {
+            network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
+            ..Default::default()
+        }),
+        networking_config: Some(NetworkingConfig {
+            endpoints_config: Some(HashMap::from([(
+                ENDPOINT_NETWORK_NAME.to_owned(),
+                EndpointSettings::default(),
+            )])),
+        }),
         ..Default::default()
     }
 }
@@ -510,18 +500,14 @@ fn existing_container_from_summary(
     Ok(ExistingManagedContainer {
         container_id: ContainerId::try_new(id)
             .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
-        state: docker_container_state(state, &labels, summary.network_settings)?,
+        state: docker_container_state(state, summary.network_settings)?,
         labels,
     })
 }
 
-fn container_endpoint(
-    port: Option<RoutePort>,
+fn container_ip(
     network_settings: Option<ContainerSummaryNetworkSettings>,
-) -> Result<Option<ContainerEndpoint>, DockerManagedContainerSummaryError> {
-    let Some(port) = port else {
-        return Ok(None);
-    };
+) -> Result<Option<IpAddr>, DockerManagedContainerSummaryError> {
     let Some(network_settings) = network_settings else {
         return Ok(None);
     };
@@ -541,14 +527,11 @@ fn container_endpoint(
         return Ok(None);
     };
 
-    Ok(Some(ContainerEndpoint {
-        ip: ip.parse::<IpAddr>().map_err(|_| {
-            DockerManagedContainerSummaryError::InvalidEndpointIp {
-                value: ip.to_owned(),
-            }
-        })?,
-        port,
-    }))
+    Ok(Some(ip.parse::<IpAddr>().map_err(|_| {
+        DockerManagedContainerSummaryError::InvalidEndpointIp {
+            value: ip.to_owned(),
+        }
+    })?))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -603,7 +586,7 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 mod tests {
     use super::*;
     use ployz_core::deploy::ImageReference;
-    use ployz_core::ids::{NamespaceId, OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::ManagedContainerKind;
 
     #[test]
@@ -624,7 +607,6 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            endpoint: None,
             labels: managed_labels(),
         });
 
@@ -636,28 +618,16 @@ mod tests {
     }
 
     #[test]
-    fn create_body_exposes_endpoint_port_when_routable() {
-        let labels = ManagedContainerLabels {
-            endpoint_port: Some(route_port(8080)),
-            ..managed_labels()
-        };
+    fn create_body_always_joins_the_endpoint_network() {
+        // Ports never influence network membership (ADR 0023): even a
+        // route-less service container joins the endpoint network so a
+        // later route attach can reach it without recreation.
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            endpoint: Some(crate::machine_runtime::protocol::ContainerEndpointRequest {
-                port: route_port(8080),
-            }),
-            labels,
+            labels: managed_labels(),
         });
 
-        assert_eq!(body.exposed_ports, Some(vec!["8080/tcp".to_owned()]));
-        assert_eq!(
-            body.labels.as_ref().and_then(|labels| {
-                labels
-                    .get(crate::docker::labels::ENDPOINT_PORT_LABEL)
-                    .cloned()
-            }),
-            Some("8080".to_owned())
-        );
+        assert_eq!(body.exposed_ports, None);
         assert_eq!(
             body.host_config.and_then(|config| config.network_mode),
             Some(ENDPOINT_NETWORK_NAME.to_owned())
@@ -668,25 +638,6 @@ mod tests {
                 .map(|endpoints| endpoints.contains_key(ENDPOINT_NETWORK_NAME)),
             Some(true)
         );
-    }
-
-    #[test]
-    fn create_body_without_endpoint_has_no_endpoint_label_or_networking() {
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            endpoint: None,
-            labels: managed_labels(),
-        });
-
-        assert_eq!(
-            body.labels.as_ref().and_then(|labels| labels
-                .get(crate::docker::labels::ENDPOINT_PORT_LABEL)
-                .cloned()),
-            None
-        );
-        assert_eq!(body.exposed_ports, None);
-        assert_eq!(body.host_config, None);
-        assert_eq!(body.networking_config, None);
     }
 
     #[test]
@@ -719,20 +670,16 @@ mod tests {
             ExistingManagedContainer {
                 container_id: container_id("0123456789abcdef"),
                 labels: managed_labels(),
-                state: ExistingManagedContainerState::Running { endpoint: None },
+                state: ExistingManagedContainerState::Running { ip: None },
             }
         );
     }
 
     #[test]
-    fn running_summary_with_endpoint_label_and_network_ip_becomes_routable_container() {
-        let labels = ManagedContainerLabels {
-            endpoint_port: Some(route_port(8080)),
-            ..managed_labels()
-        };
+    fn running_summary_with_network_ip_reports_the_endpoint_ip() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(labels.render())),
+            labels: Some(hashmap_from_btree(managed_labels().render())),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
@@ -751,23 +698,16 @@ mod tests {
                 .expect("summary parses")
                 .state,
             ExistingManagedContainerState::Running {
-                endpoint: Some(ContainerEndpoint {
-                    ip: "10.42.0.9".parse().expect("valid endpoint ip"),
-                    port: route_port(8080),
-                }),
+                ip: Some("10.42.0.9".parse().expect("valid endpoint ip")),
             }
         );
     }
 
     #[test]
     fn running_summary_uses_only_the_ployz_network_for_endpoint_evidence() {
-        let labels = ManagedContainerLabels {
-            endpoint_port: Some(route_port(8080)),
-            ..managed_labels()
-        };
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(labels.render())),
+            labels: Some(hashmap_from_btree(managed_labels().render())),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([
@@ -795,23 +735,16 @@ mod tests {
                 .expect("summary parses")
                 .state,
             ExistingManagedContainerState::Running {
-                endpoint: Some(ContainerEndpoint {
-                    ip: "10.42.0.9".parse().expect("valid endpoint ip"),
-                    port: route_port(8080),
-                }),
+                ip: Some("10.42.0.9".parse().expect("valid endpoint ip")),
             }
         );
     }
 
     #[test]
     fn running_summary_without_ployz_network_is_running_but_unroutable() {
-        let labels = ManagedContainerLabels {
-            endpoint_port: Some(route_port(8080)),
-            ..managed_labels()
-        };
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(labels.render())),
+            labels: Some(hashmap_from_btree(managed_labels().render())),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
@@ -829,7 +762,7 @@ mod tests {
             existing_container_from_summary(summary)
                 .expect("summary parses")
                 .state,
-            ExistingManagedContainerState::Running { endpoint: None }
+            ExistingManagedContainerState::Running { ip: None }
         );
     }
 
@@ -886,26 +819,25 @@ mod tests {
 
     fn managed_labels() -> ManagedContainerLabels {
         ManagedContainerLabels {
-            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
-            endpoint_port: None,
         }
     }
 
-    fn route_port(value: u16) -> RoutePort {
-        RoutePort::try_new(value).expect("valid route port")
+    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn service_id(value: &str) -> ServiceId {
         ServiceId::try_new(value).expect("valid service id")
     }
 
-    fn revision_id(value: &str) -> RevisionId {
-        RevisionId::try_new(value).expect("valid revision id")
+    fn namespace_revision_entry_id(value: &str) -> NamespaceRevisionEntryId {
+        NamespaceRevisionEntryId::try_new(value).expect("valid namespace revision entry id")
     }
 
     fn operation_id(value: &str) -> OperationId {

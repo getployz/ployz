@@ -4,12 +4,14 @@
 use crate::controllers::OperationControllers;
 use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
+use ployz_core::ids::{
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
+};
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
-use ployz_core::state::{ActiveMachineState, ActiveRouteState, ActiveServiceState};
+use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::{ActiveMachineReadError, AsyncNatsCoreStateStore};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
@@ -77,7 +79,7 @@ impl RuntimeSnapshotQueryRuntime {
             .await
             .map_err(runtime_service_error)?
             .services;
-        let routes = self.core_state.active_routes().await.map_err(|_| {
+        let routes = self.core_state.route_bindings().await.map_err(|_| {
             RuntimeSnapshotError::Unavailable {
                 source: RuntimeSnapshotUnavailableSource::CoreState,
             }
@@ -240,7 +242,7 @@ impl ServiceQueryRuntime {
     pub(crate) async fn list(&self) -> Result<ServiceListResult, ServiceListError> {
         let services = self
             .core_state
-            .active_services()
+            .serving_target_entries()
             .await
             .map_err(service_list_core_error)?
             .into_iter()
@@ -256,7 +258,7 @@ impl ServiceQueryRuntime {
     ) -> Result<ServiceSnapshot, ServiceInspectError> {
         let Some(active) = self
             .core_state
-            .active_service(namespace_id, service_id)
+            .serving_target_entry(namespace_id, service_id)
             .await
             .map_err(service_inspect_core_error)?
         else {
@@ -269,13 +271,13 @@ impl ServiceQueryRuntime {
     }
 }
 
-fn service_snapshot(active: ActiveServiceState) -> ServiceSnapshot {
+fn service_snapshot(active: ServingTargetEntry) -> ServiceSnapshot {
     ServiceSnapshot { active }
 }
 
 fn derive_runtime_revisions(
     services: &[ServiceSnapshot],
-    routes: &[ActiveRouteState],
+    routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> Vec<RuntimeServiceRevision> {
     let namespaces = runtime_service_namespaces(services, routes);
@@ -284,14 +286,7 @@ fn derive_runtime_revisions(
         revisions.insert((
             service.active.namespace_id.clone(),
             service.active.service_id.clone(),
-            service.active.active_revision.clone(),
-        ));
-    }
-    for route in routes {
-        revisions.insert((
-            route.namespace_id.clone(),
-            route.service_id.clone(),
-            route.revision_id.clone(),
+            service.active.namespace_revision_entry_id.clone(),
         ));
     }
     for container in containers {
@@ -301,17 +296,17 @@ fn derive_runtime_revisions(
         revisions.insert((
             namespace_id.clone(),
             container.service_id.clone(),
-            container.revision_id.clone(),
+            container.namespace_revision_entry_id.clone(),
         ));
     }
 
     revisions
         .into_iter()
         .map(
-            |(namespace_id, service_id, revision_id)| RuntimeServiceRevision {
+            |(namespace_id, service_id, namespace_revision_entry_id)| RuntimeServiceRevision {
                 namespace_id,
                 service_id,
-                revision_id,
+                namespace_revision_entry_id,
             },
         )
         .collect()
@@ -319,24 +314,35 @@ fn derive_runtime_revisions(
 
 fn derive_runtime_releases(
     services: &[ServiceSnapshot],
-    routes: &[ActiveRouteState],
+    routes: &[RouteBindingState],
 ) -> Vec<RuntimeServiceRelease> {
-    let mut releases = BTreeMap::<(NamespaceId, ServiceId, RevisionId), Vec<_>>::new();
+    let mut releases =
+        BTreeMap::<(NamespaceId, ServiceId, NamespaceRevisionEntryId), Vec<_>>::new();
+    let mut active_revisions = BTreeMap::new();
     for service in services {
+        active_revisions.insert(
+            service.active.service_id.clone(),
+            service.active.namespace_revision_entry_id.clone(),
+        );
         releases
             .entry((
                 service.active.namespace_id.clone(),
                 service.active.service_id.clone(),
-                service.active.active_revision.clone(),
+                service.active.namespace_revision_entry_id.clone(),
             ))
             .or_default();
     }
     for route in routes {
+        // Route bindings are service references (ADR 0024); the served
+        // entry identity comes from the serving target, not the binding.
+        let Some(namespace_revision_entry_id) = active_revisions.get(&route.service_id) else {
+            continue;
+        };
         releases
             .entry((
                 route.namespace_id.clone(),
                 route.service_id.clone(),
-                route.revision_id.clone(),
+                namespace_revision_entry_id.clone(),
             ))
             .or_default()
             .push(route.target.clone());
@@ -345,11 +351,13 @@ fn derive_runtime_releases(
     releases
         .into_iter()
         .map(
-            |((namespace_id, service_id, revision_id), routes)| RuntimeServiceRelease {
-                namespace_id,
-                service_id,
-                revision_id,
-                routes,
+            |((namespace_id, service_id, namespace_revision_entry_id), routes)| {
+                RuntimeServiceRelease {
+                    namespace_id,
+                    service_id,
+                    namespace_revision_entry_id,
+                    routes,
+                }
             },
         )
         .collect()
@@ -357,7 +365,7 @@ fn derive_runtime_releases(
 
 fn derive_runtime_instances(
     services: &[ServiceSnapshot],
-    routes: &[ActiveRouteState],
+    routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> Vec<RuntimeServiceInstance> {
     let namespaces = runtime_service_namespaces(services, routes);
@@ -371,7 +379,7 @@ fn derive_runtime_instances(
                 machine_id: container.machine_id.clone(),
                 container_id: container.container_id.clone(),
                 service_id: container.service_id.clone(),
-                revision_id: container.revision_id.clone(),
+                namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
                 operation_id: container.operation_id.clone(),
                 step_id: container.step_id.clone(),
                 state: container.state.clone(),
@@ -382,7 +390,7 @@ fn derive_runtime_instances(
 
 fn missing_runtime_links(
     services: &[ServiceSnapshot],
-    routes: &[ActiveRouteState],
+    routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> usize {
     let service_ids = services
@@ -402,7 +410,7 @@ fn missing_runtime_links(
 
 fn runtime_service_namespaces(
     services: &[ServiceSnapshot],
-    routes: &[ActiveRouteState],
+    routes: &[RouteBindingState],
 ) -> BTreeMap<ServiceId, NamespaceId> {
     let mut namespaces = BTreeMap::new();
     for service in services {

@@ -1,7 +1,8 @@
 use ployz_core::dataplane::DataplanePrepareError;
-use ployz_core::deploy::{DeployPlanError, DeployRoute};
+use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{
-    ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
+    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
+    StepId, SubjectTokenError,
 };
 use ployz_core::ops::{
     DeployOperationFailure, FailureMessage, HealthCheckFailure, OperatorHint, RetainedArtifact,
@@ -15,28 +16,30 @@ use std::time::Duration;
 use crate::docker::labels::ManagedContainerLabels;
 
 use super::{
-    ActiveRouteCommitError, DeployContainer, DeployExecutionCommand, DeployOperationRecorder,
+    RouteBindingCommitError, DeployContainer, DeployExecutionCommand, DeployOperationRecorder,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
-    command
-        .request
-        .primary_service_id()
-        .expect("accepted deploy request has at least one service")
-        .clone()
+    command.request.status_service_id()
 }
 
-fn failure_revision_id(command: &DeployExecutionCommand) -> RevisionId {
-    command.request.target_revision.clone()
+fn failure_namespace_revision_id(command: &DeployExecutionCommand) -> NamespaceRevisionId {
+    command.request.namespace_revision_id.clone()
 }
 
-fn failure_route(command: &DeployExecutionCommand) -> DeployRoute {
-    command
-        .request
-        .services
-        .iter()
-        .find_map(|service| service.route.clone())
-        .expect("route commit errors only occur for routed deploys")
+fn failure_namespace_revision_entry_id(
+    command: &DeployExecutionCommand,
+) -> NamespaceRevisionEntryId {
+    // Empty-manifest deploys (remove everything) have no service entry;
+    // failure evidence falls back to the namespace revision id, mirroring
+    // `DeployRequest::status_service_id`.
+    let Some(service) = command.services().first() else {
+        return NamespaceRevisionEntryId::try_new(
+            command.request.namespace_revision_id.as_str().to_owned(),
+        )
+        .expect("namespace revision id is a valid entry id fallback");
+    };
+    service.request.namespace_revision_entry_id.clone()
 }
 
 #[derive(Debug)]
@@ -160,8 +163,8 @@ pub enum DeployExecutionError {
     PrepareDataplane(DataplanePrepareError),
     RunContainer(MachineContainerRuntimeError),
     WaitHealthy(DeployHealthCheckError),
-    CommitRoute(ActiveRouteCommitError),
-    CommitActiveService(ActiveServiceCommitError),
+    CommitRoute(RouteBindingCommitError),
+    CommitServingTarget(ServingTargetCommitError),
     Failed {
         failure: DeployOperationFailure,
         source: Box<DeployExecutionError>,
@@ -177,7 +180,9 @@ pub enum DeployExecutionStep {
     RunContainer { machine_id: MachineId },
     WaitHealthy,
     CommitRoute { route: ployz_core::ops::RouteTarget },
-    CommitActiveService,
+    RemoveRoute { route: ployz_core::ops::RouteTarget },
+    CommitServingTarget,
+    RemoveServingTarget { service_id: ServiceId },
 }
 
 impl From<DeployPlanError> for DeployExecutionError {
@@ -196,7 +201,9 @@ impl DeployExecutionStep {
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
             Self::CommitRoute { .. } => "commit_route",
-            Self::CommitActiveService => "commit_active_service",
+            Self::RemoveRoute { .. } => "remove_route",
+            Self::RemoveServingTarget { .. } => "remove_serving_target",
+            Self::CommitServingTarget => "commit_serving_target_entry",
         }
     }
 
@@ -232,22 +239,32 @@ impl DeployExecutionStep {
                 },
                 retained_artifacts,
             },
-            Self::CommitRoute { route } => DeployOperationFailure::RouteCutoverFailed {
-                route: route.clone(),
-                reason: RouteCutoverFailureReason::TimedOut {
-                    timeout_seconds: timeout_seconds(timeout),
-                },
-                retained_artifacts,
-            },
-            Self::CommitActiveService => DeployOperationFailure::ControlPlaneCommitFailed {
+            Self::CommitRoute { route } | Self::RemoveRoute { route } => {
+                DeployOperationFailure::RouteCutoverFailed {
+                    route: route.clone(),
+                    reason: RouteCutoverFailureReason::TimedOut {
+                        timeout_seconds: timeout_seconds(timeout),
+                    },
+                    retained_artifacts,
+                }
+            }
+            Self::CommitServingTarget => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
-                message: timeout_failure_message("active service commit", timeout),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                message: timeout_failure_message("serving target commit", timeout),
                 retained_artifacts,
             },
+            Self::RemoveServingTarget { service_id } => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    service_id: service_id.clone(),
+                    namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                    message: timeout_failure_message("serving target unpublish", timeout),
+                    retained_artifacts,
+                }
+            }
             Self::RecordOperationEvent => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
                 message: timeout_failure_message(self.as_str(), timeout),
                 retained_artifacts,
             },
@@ -262,7 +279,7 @@ impl DeployExecutionError {
     ) -> DeployOperationFailure {
         DeployOperationFailure::ControlPlaneCommitFailed {
             service_id: failure_service_id(command),
-            revision_id: failure_revision_id(command),
+            namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
             message: failure_message("operation progress could not be recorded"),
             retained_artifacts,
         }
@@ -291,7 +308,7 @@ impl DeployExecutionError {
         match self {
             Self::Plan(_) | Self::StepId(_) => DeployOperationFailure::PlanningFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message("deploy planning failed"),
             },
             Self::StepTimedOut { step, timeout } => {
@@ -304,7 +321,7 @@ impl DeployExecutionError {
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
             Self::CommitRoute(error) => error.deploy_failure(command, retained_artifacts),
-            Self::CommitActiveService(error) => error.deploy_failure(command, retained_artifacts),
+            Self::CommitServingTarget(error) => error.deploy_failure(command, retained_artifacts),
             Self::Failed { failure, .. } => failure.clone(),
         }
     }
@@ -334,29 +351,28 @@ fn dataplane_deploy_failure(
     }
 }
 
-impl From<ActiveRouteCommitError> for DeployExecutionError {
-    fn from(value: ActiveRouteCommitError) -> Self {
+impl From<RouteBindingCommitError> for DeployExecutionError {
+    fn from(value: RouteBindingCommitError) -> Self {
         Self::CommitRoute(value)
     }
 }
 
-impl ActiveRouteCommitError {
+impl RouteBindingCommitError {
     fn deploy_failure(
         &self,
-        command: &DeployExecutionCommand,
+        _command: &DeployExecutionCommand,
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
-        let route = failure_route(command);
         match self {
-            Self::Store(error) => DeployOperationFailure::RouteCutoverFailed {
-                route: route.target,
+            Self::Store { target, error } => DeployOperationFailure::RouteCutoverFailed {
+                route: target.clone(),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
-                    message: failure_message(format!("active route state write failed: {error}")),
+                    message: failure_message(format!("route binding state write failed: {error}")),
                 },
                 retained_artifacts,
             },
-            Self::NamespaceLockLost => DeployOperationFailure::RouteCutoverFailed {
-                route: route.target,
+            Self::NamespaceLockLost { target } => DeployOperationFailure::RouteCutoverFailed {
+                route: target.clone(),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
                     message: failure_message("namespace lock was lost before route cutover"),
                 },
@@ -366,19 +382,19 @@ impl ActiveRouteCommitError {
     }
 }
 
-impl From<ActiveServiceCommitError> for DeployExecutionError {
-    fn from(value: ActiveServiceCommitError) -> Self {
-        Self::CommitActiveService(value)
+impl From<ServingTargetCommitError> for DeployExecutionError {
+    fn from(value: ServingTargetCommitError) -> Self {
+        Self::CommitServingTarget(value)
     }
 }
 
 #[derive(Debug)]
-pub enum ActiveServiceCommitError {
+pub enum ServingTargetCommitError {
     Store(CoreStateStoreError),
     NamespaceLockLost,
 }
 
-impl ActiveServiceCommitError {
+impl ServingTargetCommitError {
     fn deploy_failure(
         &self,
         command: &DeployExecutionCommand,
@@ -387,14 +403,14 @@ impl ActiveServiceCommitError {
         match self {
             Self::Store(_) => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
-                message: failure_message("active service state could not be committed"),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                message: failure_message("serving target entry state could not be committed"),
                 retained_artifacts,
             },
             Self::NamespaceLockLost => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
-                message: failure_message("namespace lock was lost before active service commit"),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
+                message: failure_message("namespace lock was lost before serving target commit"),
                 retained_artifacts,
             },
         }

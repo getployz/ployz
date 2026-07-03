@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{NamespaceId, RevisionId, ServiceId};
+use ployz_core::ids::{NamespaceId, NamespaceRevisionId, ServiceId};
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
@@ -26,14 +26,14 @@ fn cli_dispatches_deploy_request_with_route() {
         panic!("expected deploy command");
     };
     assert_eq!(
-        first_service(&command).route,
-        Some(DeployRoute {
+        first_service(&command).routes,
+        vec![DeployRoute {
             target: RouteTarget {
                 hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
                 port: RoutePort::try_new(443).expect("valid route port"),
             },
             endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
-        })
+        }]
     );
 }
 
@@ -104,19 +104,19 @@ fn cli_deploy_shorthand_derives_full_request() {
         ReplicaCount::try_new(1).expect("valid replicas")
     );
     assert_eq!(
-        first_service(&command).route,
-        Some(DeployRoute {
+        first_service(&command).routes,
+        vec![DeployRoute {
             target: RouteTarget {
                 hostname: RouteHostname::try_new("app.example.com").expect("valid route hostname"),
                 port: RoutePort::try_new(80).expect("valid route port"),
             },
             endpoint_port: RoutePort::try_new(8000).expect("valid endpoint port"),
-        })
+        }]
     );
     assert!(
-        command.target_revision.as_str().starts_with("rev_latest_"),
+        command.namespace_revision_id.as_str().starts_with("rev_latest_"),
         "derived revision id carries the image tag: {}",
-        command.target_revision.as_str()
+        command.namespace_revision_id.as_str()
     );
     assert!(
         command.operation_id.as_str().starts_with("op_deploy_web_"),
@@ -132,7 +132,7 @@ fn cli_deploy_shorthand_generates_collision_resistant_ids() {
     let second = shorthand_deploy_command(quick_start_deploy_args());
 
     assert_ne!(first.operation_id, second.operation_id);
-    assert_ne!(first.target_revision, second.target_revision);
+    assert_ne!(first.namespace_revision_id, second.namespace_revision_id);
 }
 
 /// R12: explicit expert flags override every derived value.
@@ -157,8 +157,8 @@ fn cli_explicit_flags_override_shorthand_derivations() {
         ServiceId::try_new("svc_custom").expect("valid service id")
     );
     assert_eq!(
-        command.target_revision,
-        RevisionId::try_new("rev_pinned").expect("valid revision id")
+        command.namespace_revision_id,
+        NamespaceRevisionId::try_new("rev_pinned").expect("valid revision id")
     );
     assert_eq!(
         first_service(&command).replicas,
@@ -297,9 +297,9 @@ fn cli_deploy_shorthand_derives_revision_for_untagged_image() {
         shorthand_deploy_command(["deploy", "--image", "ghcr.io/acme/web"].map(str::to_owned));
 
     assert!(
-        command.target_revision.as_str().starts_with("rev_"),
+        command.namespace_revision_id.as_str().starts_with("rev_"),
         "derived revision id is rev-prefixed: {}",
-        command.target_revision.as_str()
+        command.namespace_revision_id.as_str()
     );
 }
 
@@ -312,9 +312,9 @@ fn cli_deploy_shorthand_sanitizes_dotted_tag_into_revision() {
     );
 
     assert!(
-        command.target_revision.as_str().starts_with("rev_1-2-3_"),
+        command.namespace_revision_id.as_str().starts_with("rev_1-2-3_"),
         "dotted tag is sanitized: {}",
-        command.target_revision.as_str()
+        command.namespace_revision_id.as_str()
     );
 }
 
@@ -436,8 +436,8 @@ fn assert_deploy_fixture(command: &DeployCommand) {
         NamespaceId::try_new("default").expect("valid namespace id")
     );
     assert_eq!(
-        command.target_revision,
-        RevisionId::try_new("rev_2").expect("valid revision id")
+        command.namespace_revision_id,
+        NamespaceRevisionId::try_new("rev_2").expect("valid revision id")
     );
     assert_eq!(
         command.services,
@@ -445,7 +445,7 @@ fn assert_deploy_fixture(command: &DeployCommand) {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replicas"),
-            route: None,
+            routes: Vec::new(),
         }]
     );
     assert!(!command.detach);

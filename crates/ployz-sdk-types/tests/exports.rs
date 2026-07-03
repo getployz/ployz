@@ -19,15 +19,15 @@ use ployz_sdk_types::{
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
     MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse, NamespaceId,
-    NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest,
-    OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
-    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
-    RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceSnapshot, SubjectTokenError,
+    NamespaceRevisionId, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError,
+    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RouteHostname,
+    RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest,
+    RuntimeSnapshotResult, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
         DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
@@ -44,15 +44,16 @@ fn sdk_exports_core_wire_types() {
         service_id: service_id.clone(),
     };
     let state = DeployOperationState::Accepted;
-    let running = DeployRunningStage::ActiveServiceCommit;
+    let running = DeployRunningStage::ServingTargetCommit;
     let _deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
+        namespace_revision_id: NamespaceRevisionId::try_new("rev_1")
+            .expect("valid namespace revision id"),
         services: vec![DeployServiceSpec {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     };
     let status = OperationStatus::deploy_accepted(
@@ -77,7 +78,7 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&running).expect("running state serializes"),
-        r#""active_service_commit""#
+        r#""serving_target_commit""#
     );
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
@@ -140,12 +141,13 @@ fn sdk_exports_operation_api_wire_types() {
         operation_id: operation_id.clone(),
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-            target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
+            namespace_revision_id: NamespaceRevisionId::try_new("rev_1")
+                .expect("valid namespace revision id"),
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-                route: None,
+                routes: Vec::new(),
             }],
         },
     };
@@ -159,7 +161,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"operation_id":"op_123","target":{"namespace_id":"default","target_revision":"rev_1","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1}]}}"#
+        r#"{"operation_id":"op_123","target":{"namespace_id":"default","namespace_revision_id":"rev_1","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1}]}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),

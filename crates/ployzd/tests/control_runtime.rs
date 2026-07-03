@@ -10,6 +10,7 @@ use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
 };
+use ployz_core::ids::NamespaceRevisionEntryId;
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
@@ -21,7 +22,7 @@ use ployz_core::ops::{
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
-    ActiveMachineState, ActiveRouteState, ActiveServiceState, GatewayServingStatus,
+    ActiveMachineState, RouteBindingState, ServingTargetEntry, GatewayServingStatus,
     GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_core::subjects::OperationApiEndpoint;
@@ -48,8 +49,8 @@ use tokio::net::TcpStream;
 mod support;
 
 use ployz_test_support::ids::{
-    event_sequence, idempotency_key, machine_id, namespace_id, operation_id, revision_id,
-    route_hostname, route_port, service_id,
+    event_sequence, idempotency_key, machine_id, namespace_id, namespace_revision_entry_id,
+    namespace_revision_id, operation_id, route_hostname, route_port, service_id,
 };
 use support::control::{TestNats, machine_join_template, redeem_when_ready};
 
@@ -268,10 +269,10 @@ async fn control_runtime_serves_active_service_queries() {
         .await
         .expect("open core state");
     core_state
-        .replace_active_service(&ActiveServiceState {
+        .replace_serving_target_entry(&ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: revision_id("rev_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         })
         .await
         .expect("service state stores");
@@ -285,7 +286,10 @@ async fn control_runtime_serves_active_service_queries() {
         panic!("expected one listed service, got {:?}", listed.services);
     };
     assert_eq!(service.active.service_id, service_id("svc_api"));
-    assert_eq!(service.active.active_revision, revision_id("rev_2"));
+    assert_eq!(
+        service.active.namespace_revision_entry_id,
+        namespace_revision_entry_id("entry_2")
+    );
 
     let inspected = api
         .service_inspect(&ServiceInspectRequest {
@@ -295,7 +299,10 @@ async fn control_runtime_serves_active_service_queries() {
         .await
         .expect("service inspects");
     assert_eq!(inspected.active.service_id, service_id("svc_api"));
-    assert_eq!(inspected.active.active_revision, revision_id("rev_2"));
+    assert_eq!(
+        inspected.active.namespace_revision_entry_id,
+        namespace_revision_entry_id("entry_2")
+    );
 
     runtime
         .shutdown()
@@ -320,23 +327,22 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("active machine stores");
     core_state
-        .replace_active_service(&ActiveServiceState {
+        .replace_serving_target_entry(&ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: revision_id("rev_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         })
         .await
-        .expect("active service stores");
+        .expect("serving target entry stores");
     core_state
-        .replace_active_route(&ActiveRouteState {
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
         })
         .await
-        .expect("active route stores");
+        .expect("route binding stores");
     observations
         .replace_machine_containers(
             &MachineContainerObservationSnapshot::try_new(
@@ -346,7 +352,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
                     container_id: ployz_test_support::ids::container_id("ctr_api"),
                     namespace_id: namespace_id("default"),
                     service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
+                    namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
                     operation_id: operation_id("op_deploy"),
                     step_id: ployz_test_support::ids::step_id("step_run"),
                     kind: ManagedContainerKind::Service,
@@ -374,7 +380,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         vec![ployz_sdk_types::RuntimeServiceRevision {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         }]
     );
     assert_eq!(snapshot.releases.len(), 1);
@@ -474,12 +480,12 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .expect("open core state");
     assert_eq!(
         core_state
-            .active_service(&namespace_id("default"), &service_id("svc_api"))
+            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
             .await
-            .expect("active service reads")
-            .expect("active service committed")
-            .active_revision,
-        revision_id("rev_2")
+            .expect("serving target entry reads")
+            .expect("serving target committed")
+            .namespace_revision_entry_id,
+        deploy_target_entry_id("svc_api")
     );
     let duplicate = api
         .deploy_submit(&request)
@@ -722,14 +728,22 @@ fn active_machine(value: &str) -> ActiveMachineState {
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             replicas: replicas(1),
-            route: None,
+            routes: Vec::new(),
         }],
     }
+}
+
+fn deploy_target_entry_id(service_id: &str) -> NamespaceRevisionEntryId {
+    ployz_core::deploy::namespace_revision_entry_id_for(
+        &namespace_id("default"),
+        &self::service_id(service_id),
+        &image("ghcr.io/acme/api:rev-2"),
+    )
 }
 
 fn deploy_target_with_route(
@@ -738,9 +752,12 @@ fn deploy_target_with_route(
     endpoint_port: u16,
 ) -> DeployRequest {
     let mut target = deploy_target(service_id);
-    target.services[0].route = Some(DeployRoute {
+    let [service] = target.services.as_mut_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    service.routes = vec![DeployRoute {
         target: RouteTarget::new(route_hostname("api.example.com"), route_port(gateway_port)),
         endpoint_port: route_port(endpoint_port),
-    });
+    }];
     target
 }

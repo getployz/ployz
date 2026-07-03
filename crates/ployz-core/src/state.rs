@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
-use crate::ids::{MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
+use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{MachineSubstrateVersions, RoutePort, RouteTarget};
 use crate::wire::id_prefixed_state_key;
@@ -13,13 +13,13 @@ pub const KV_CORE_BUCKET: &str = "KV_CORE";
 pub const KV_OPS_BUCKET: &str = "KV_OPS";
 pub const KV_OBS_BUCKET: &str = "KV_OBS";
 
-pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
+pub const SERVING_TARGET_ENTRY_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 pub const NAMESPACE_LOCK_STATE_PREFIX: &str = "namespace_locks";
 /// `KV_CORE` prefix of the durable NATS authorized-principal records
 /// (ADR-0001: their recovery evidence is `authorized-users.conf`).
 pub const NATS_AUTHORIZED_USER_PREFIX: &str = "nats_authorized_user";
-pub const ACTIVE_ROUTE_STATE_PREFIX: &str = "routes";
+pub const ROUTE_BINDING_STATE_PREFIX: &str = "routes";
 pub const MACHINE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
 pub const MACHINE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "machines";
 pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
@@ -27,21 +27,20 @@ pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ActiveServiceState {
+pub struct ServingTargetEntry {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
-    pub active_revision: RevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ActiveRouteState {
+pub struct RouteBindingState {
     pub namespace_id: NamespaceId,
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,14 +90,17 @@ pub enum GatewayServingStatus {
     Unavailable,
 }
 
+/// KV key for one serving target entry, scoped by namespace so equally
+/// named services in different namespaces never share a record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveServiceStateKey(String);
+pub struct ServingTargetEntryKey(String);
 
-impl ActiveServiceStateKey {
+impl ServingTargetEntryKey {
     #[must_use]
     pub fn from_namespace_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
         Self(format!(
-            "{ACTIVE_SERVICE_STATE_PREFIX}.{}.{}",
+            "{}.{}.{}",
+            SERVING_TARGET_ENTRY_PREFIX,
             namespace_id.as_str(),
             service_id.as_str()
         ))
@@ -111,13 +113,13 @@ impl ActiveServiceStateKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveRouteStateKey(String);
+pub struct RouteBindingStateKey(String);
 
-impl ActiveRouteStateKey {
+impl RouteBindingStateKey {
     #[must_use]
     pub fn from_target(target: &RouteTarget) -> Self {
         Self(format!(
-            "{ACTIVE_ROUTE_STATE_PREFIX}.{}.{}",
+            "{ROUTE_BINDING_STATE_PREFIX}.{}.{}",
             route_hostname_key_token(target),
             target.port.get()
         ))

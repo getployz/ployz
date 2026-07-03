@@ -2,9 +2,9 @@ use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
-use ployz_core::ops::{DeployEvidence, DeployTransition};
-use ployz_core::state::{ActiveRouteState, ActiveServiceState};
-use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
+use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore};
 use std::future::Future;
 
 use crate::machine_runtime::protocol::{
@@ -14,7 +14,7 @@ use crate::machine_runtime::protocol::{
 };
 
 use super::{
-    ActiveServiceCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
+    ServingTargetCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
     MachineContainerRuntimeError,
 };
 
@@ -72,24 +72,29 @@ pub trait DeployHealthChecker {
     ) -> impl Future<Output = Result<(), DeployHealthCheckError>> + Send;
 }
 
-pub trait ActiveServiceCommitter {
-    fn replace_active_service(
+pub trait ServingTargetCommitter {
+    fn replace_serving_target_entry(
         &mut self,
-        state: ActiveServiceState,
-    ) -> impl Future<Output = Result<(), ActiveServiceCommitError>> + Send;
+        state: ServingTargetEntry,
+    ) -> impl Future<Output = Result<(), ServingTargetCommitError>> + Send;
 
-    fn remove_active_service(
+    fn remove_serving_target_entry(
         &mut self,
         namespace_id: NamespaceId,
         service_id: ServiceId,
-    ) -> impl Future<Output = Result<(), ActiveServiceCommitError>> + Send;
+    ) -> impl Future<Output = Result<(), ServingTargetCommitError>> + Send;
 }
 
-pub trait ActiveRouteCommitter {
-    fn replace_active_route(
+pub trait RouteBindingCommitter {
+    fn replace_route_binding(
         &mut self,
-        state: ActiveRouteState,
-    ) -> impl Future<Output = Result<(), ActiveRouteCommitError>> + Send;
+        state: RouteBindingState,
+    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
+
+    fn remove_route_binding(
+        &mut self,
+        target: RouteTarget,
+    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
 }
 
 impl DeployOperationRecorder for crate::controllers::OperationControllers {
@@ -118,40 +123,55 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
     }
 }
 
-impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
-    async fn replace_active_route(
+impl RouteBindingCommitter for AsyncNatsCoreStateStore {
+    async fn replace_route_binding(
         &mut self,
-        state: ActiveRouteState,
-    ) -> Result<(), ActiveRouteCommitError> {
-        AsyncNatsCoreStateStore::replace_active_route(self, &state)
+        state: RouteBindingState,
+    ) -> Result<(), RouteBindingCommitError> {
+        let target = state.target.clone();
+        AsyncNatsCoreStateStore::replace_route_binding(self, &state)
             .await
-            .map_err(ActiveRouteCommitError::Store)
+            .map_err(|error| RouteBindingCommitError::Store { target, error })
+    }
+
+    async fn remove_route_binding(
+        &mut self,
+        target: RouteTarget,
+    ) -> Result<(), RouteBindingCommitError> {
+        AsyncNatsCoreStateStore::remove_route_binding(self, &target)
+            .await
+            .map_err(|error| RouteBindingCommitError::Store { target, error })
     }
 }
 
 #[derive(Debug)]
-pub enum ActiveRouteCommitError {
-    Store(ActiveRouteStoreError),
-    NamespaceLockLost,
+pub enum RouteBindingCommitError {
+    Store {
+        target: RouteTarget,
+        error: RouteBindingStoreError,
+    },
+    NamespaceLockLost {
+        target: RouteTarget,
+    },
 }
 
-impl ActiveServiceCommitter for AsyncNatsCoreStateStore {
-    async fn replace_active_service(
+impl ServingTargetCommitter for AsyncNatsCoreStateStore {
+    async fn replace_serving_target_entry(
         &mut self,
-        state: ActiveServiceState,
-    ) -> Result<(), ActiveServiceCommitError> {
-        AsyncNatsCoreStateStore::replace_active_service(self, &state)
+        state: ServingTargetEntry,
+    ) -> Result<(), ServingTargetCommitError> {
+        AsyncNatsCoreStateStore::replace_serving_target_entry(self, &state)
             .await
-            .map_err(ActiveServiceCommitError::Store)
+            .map_err(ServingTargetCommitError::Store)
     }
 
-    async fn remove_active_service(
+    async fn remove_serving_target_entry(
         &mut self,
         namespace_id: NamespaceId,
         service_id: ServiceId,
-    ) -> Result<(), ActiveServiceCommitError> {
-        AsyncNatsCoreStateStore::remove_active_service(self, &namespace_id, &service_id)
+    ) -> Result<(), ServingTargetCommitError> {
+        AsyncNatsCoreStateStore::remove_serving_target_entry(self, &namespace_id, &service_id)
             .await
-            .map_err(ActiveServiceCommitError::Store)
+            .map_err(ServingTargetCommitError::Store)
     }
 }
