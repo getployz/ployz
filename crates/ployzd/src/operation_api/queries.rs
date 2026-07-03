@@ -387,18 +387,28 @@ fn missing_runtime_links(
     routes: &[RouteBindingState],
     containers: &[ManagedContainerObservation],
 ) -> usize {
-    let service_ids = services
+    let serving = services
         .iter()
-        .map(|service| service.active.service_id.clone())
+        .map(|service| {
+            (
+                service.active.namespace_id.clone(),
+                service.active.service_id.clone(),
+            )
+        })
         .collect::<BTreeSet<_>>();
 
     routes
         .iter()
-        .filter(|route| !service_ids.contains(&route.service_id))
+        .filter(|route| !serving.contains(&(route.namespace_id.clone(), route.service_id.clone())))
         .count()
         + containers
             .iter()
-            .filter(|container| !service_ids.contains(&container.identity.service_id))
+            .filter(|container| {
+                !serving.contains(&(
+                    container.identity.namespace_id.clone(),
+                    container.identity.service_id.clone(),
+                ))
+            })
             .count()
 }
 
@@ -719,6 +729,33 @@ mod tests {
             panic!("orphaned container is projected as a revision");
         };
         assert_eq!(revision.namespace_id, namespace_id("team-a"));
+    }
+
+    /// A route for a namespace with no serving entry is a missing link
+    /// even when another namespace serves the same service name.
+    #[test]
+    fn missing_links_are_namespace_scoped() {
+        let serving = ServiceSnapshot {
+            active: ServingTargetEntry {
+                namespace_id: namespace_id("team-a"),
+                service_id: service_id("web"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_a"),
+            },
+        };
+        let dangling_route = RouteBindingState {
+            namespace_id: namespace_id("team-b"),
+            target: RouteTarget::new(
+                RouteHostname::try_new("b.example.com").expect("valid route hostname"),
+                RoutePort::try_new(443).expect("valid route port"),
+            ),
+            endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
+            service_id: service_id("web"),
+        };
+
+        assert_eq!(
+            super::missing_runtime_links(&[serving], &[dangling_route], &[]),
+            1
+        );
     }
 
     /// Two namespaces sharing a service name must not cross-attribute

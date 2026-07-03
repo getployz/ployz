@@ -26,28 +26,6 @@ fn failure_namespace_revision_id(command: &DeployExecutionCommand) -> NamespaceR
     command.request.namespace_revision_id.clone()
 }
 
-/// Scope for the serving-target unpublish of one omitted service: the
-/// removed entry's own identity when the command still carries it, else
-/// namespace scope.
-fn removed_serving_target_scope(
-    command: &DeployExecutionCommand,
-    service_id: &ServiceId,
-) -> ControlPlaneCommitScope {
-    let Some(entry) = command
-        .serving_target_removals()
-        .iter()
-        .find(|entry| entry.service_id == *service_id)
-    else {
-        return ControlPlaneCommitScope::Namespace {
-            namespace_revision_id: command.request.namespace_revision_id.clone(),
-        };
-    };
-    ControlPlaneCommitScope::ServiceEntry {
-        service_id: entry.service_id.clone(),
-        namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
-    }
-}
-
 /// Scope for a control-plane commit failure. Empty-manifest deploys commit
 /// no service entry, so their record failures are namespace-scoped instead
 /// of borrowing a counterfeit entry digest.
@@ -203,7 +181,7 @@ pub enum DeployExecutionStep {
     CommitRoute { route: ployz_core::ops::RouteTarget },
     RemoveRoute { route: ployz_core::ops::RouteTarget },
     CommitServingTarget,
-    RemoveServingTarget { service_id: ServiceId },
+    RemoveServingTarget { scope: ControlPlaneCommitScope },
 }
 
 impl From<DeployPlanError> for DeployExecutionError {
@@ -274,9 +252,9 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("serving target commit", timeout),
                 retained_artifacts,
             },
-            Self::RemoveServingTarget { service_id } => {
+            Self::RemoveServingTarget { scope } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
-                    scope: removed_serving_target_scope(command, service_id),
+                    scope: scope.clone(),
                     message: timeout_failure_message("serving target unpublish", timeout),
                     retained_artifacts,
                 }
