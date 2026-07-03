@@ -186,7 +186,7 @@ async fn operation_repository_replay_marks_terminal_operation_caught_up_as_termi
         DeployRunningStage::PreparingDataplane,
         DeployRunningStage::StartingContainers,
         DeployRunningStage::WaitingForHealth,
-        DeployRunningStage::ActiveServiceCommit,
+        DeployRunningStage::ServingTargetCommit,
     ] {
         repository
             .record_deploy_transition(&operation_id("op_123"), DeployTransition::Running { stage })

@@ -2,7 +2,7 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
-    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
+    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitError, ServingTargetCommitter,
     DataplanePreparer, DeployCommandPreparationError, DeployContainer, DeployExecutionError,
     DeployExecutionMachineScope, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
     DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, execute_deploy_operation,
@@ -150,7 +150,7 @@ fn fact_load_failure(
 ) -> DeployOperationFailure {
     DeployOperationFailure::PlanningFailed {
         service_id: request.status_service_id(),
-        revision_id: request.target_revision.clone(),
+        namespace_revision_id: request.namespace_revision_id.clone(),
         message: FailureMessage::try_new(source.to_string())
             .expect("rendered fact load failure message is non-empty"),
     }
@@ -159,7 +159,7 @@ fn fact_load_failure(
 fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOperationFailure {
     DeployOperationFailure::PlanningFailed {
         service_id: request.status_service_id(),
-        revision_id: request.target_revision.clone(),
+        namespace_revision_id: request.namespace_revision_id.clone(),
         message: FailureMessage::try_new("deploy command could not be prepared")
             .expect("static operation failure message is non-empty"),
     }
@@ -197,47 +197,65 @@ impl LockCheckedCoreState {
     }
 }
 
-impl ActiveRouteCommitter for LockCheckedCoreState {
-    async fn replace_active_route(
+impl RouteBindingCommitter for LockCheckedCoreState {
+    async fn replace_route_binding(
         &mut self,
-        state: ployz_core::state::ActiveRouteState,
-    ) -> Result<(), ActiveRouteCommitError> {
+        state: ployz_core::state::RouteBindingState,
+    ) -> Result<(), RouteBindingCommitError> {
+        let target = state.target.clone();
         if self.lock_is_lost() {
-            return Err(ActiveRouteCommitError::NamespaceLockLost);
+            return Err(RouteBindingCommitError::NamespaceLockLost { target });
         }
 
-        AsyncNatsCoreStateStore::replace_active_route(&self.core_state, &state)
+        AsyncNatsCoreStateStore::replace_route_binding(&self.core_state, &state)
             .await
-            .map_err(ActiveRouteCommitError::Store)
+            .map_err(|error| RouteBindingCommitError::Store { target, error })
+    }
+
+    async fn remove_route_binding(
+        &mut self,
+        target: ployz_core::ops::RouteTarget,
+    ) -> Result<(), RouteBindingCommitError> {
+        if self.lock_is_lost() {
+            return Err(RouteBindingCommitError::NamespaceLockLost { target });
+        }
+
+        AsyncNatsCoreStateStore::remove_route_binding(&self.core_state, &target)
+            .await
+            .map_err(|error| RouteBindingCommitError::Store { target, error })
     }
 }
 
-impl ActiveServiceCommitter for LockCheckedCoreState {
-    async fn replace_active_service(
+impl ServingTargetCommitter for LockCheckedCoreState {
+    async fn replace_serving_target_entry(
         &mut self,
-        state: ployz_core::state::ActiveServiceState,
-    ) -> Result<(), ActiveServiceCommitError> {
+        state: ployz_core::state::ServingTargetEntry,
+    ) -> Result<(), ServingTargetCommitError> {
         if self.lock_is_lost() {
-            return Err(ActiveServiceCommitError::NamespaceLockLost);
+            return Err(ServingTargetCommitError::NamespaceLockLost);
         }
 
-        AsyncNatsCoreStateStore::replace_active_service(&self.core_state, &state)
+        AsyncNatsCoreStateStore::replace_serving_target_entry(&self.core_state, &state)
             .await
-            .map_err(ActiveServiceCommitError::Store)
+            .map_err(ServingTargetCommitError::Store)
     }
 
-    async fn remove_active_service(
+    async fn remove_serving_target_entry(
         &mut self,
         namespace_id: ployz_core::ids::NamespaceId,
         service_id: ployz_core::ids::ServiceId,
-    ) -> Result<(), ActiveServiceCommitError> {
+    ) -> Result<(), ServingTargetCommitError> {
         if self.lock_is_lost() {
-            return Err(ActiveServiceCommitError::NamespaceLockLost);
+            return Err(ServingTargetCommitError::NamespaceLockLost);
         }
 
-        AsyncNatsCoreStateStore::remove_active_service(&self.core_state, &namespace_id, &service_id)
-            .await
-            .map_err(ActiveServiceCommitError::Store)
+        AsyncNatsCoreStateStore::remove_serving_target_entry(
+            &self.core_state,
+            &namespace_id,
+            &service_id,
+        )
+        .await
+        .map_err(ServingTargetCommitError::Store)
     }
 }
 
@@ -461,15 +479,9 @@ impl DeployHealthChecker for ObservationHealthChecker {
                     .await
                 {
                     Ok(Some(observation)) => {
-                        match observed_container_health(container, &observation) {
+                        match observed_container_health(&observation) {
                             ObservedContainerHealth::Healthy => {
                                 memory.record_running(container);
-                            }
-                            ObservedContainerHealth::Pending => {
-                                if observation.state.is_running() {
-                                    memory.record_running(container);
-                                }
-                                all_running = false;
                             }
                             ObservedContainerHealth::Failed(message) => {
                                 if memory.should_wait_for_fresh_start_observation(container) {
@@ -527,24 +539,14 @@ fn health_container_key(container: &DeployContainer) -> HealthContainerKey {
     (container.machine_id.clone(), container.container_id.clone())
 }
 
+/// Running is healthy: deploy input defines no healthchecks yet, and when it
+/// does they will gate only first container creation (ADR 0025) - reused
+/// containers and phase continuation never re-run health gates.
 fn observed_container_health(
-    container: &DeployContainer,
     observation: &ployz_core::machine_runtime::ManagedContainerObservation,
 ) -> ObservedContainerHealth {
     if !observation.state.is_running() {
         return ObservedContainerHealth::Failed("container exited");
-    }
-
-    let Some(required_port) = container.required_endpoint_port else {
-        return ObservedContainerHealth::Healthy;
-    };
-
-    let Some(endpoint) = observation.running_service_endpoint() else {
-        return ObservedContainerHealth::Pending;
-    };
-
-    if endpoint.port != required_port {
-        return ObservedContainerHealth::Pending;
     }
 
     ObservedContainerHealth::Healthy
@@ -553,7 +555,6 @@ fn observed_container_health(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObservedContainerHealth {
     Healthy,
-    Pending,
     Failed(&'static str),
 }
 
@@ -580,33 +581,16 @@ fn health_read_error(error: ObservationStoreError) -> String {
 mod tests {
     use super::*;
     use ployz_core::ids::{
-        ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId,
+        ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
     };
     use ployz_core::machine_runtime::{
-        ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+        ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     };
-    use ployz_core::ops::RoutePort;
 
     #[test]
-    fn routed_health_waits_for_endpoint_evidence() {
+    fn health_accepts_running_without_endpoint() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("machine_a", "ctr_1", Some(route_port(8080))),
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::running_unroutable()
-                ),
-            ),
-            ObservedContainerHealth::Pending
-        );
-    }
-
-    #[test]
-    fn unrouted_health_accepts_running_without_endpoint() {
-        assert_eq!(
-            observed_container_health(
-                &deploy_container("machine_a", "ctr_1", None),
                 &observation(
                     "machine_a",
                     "ctr_1",
@@ -618,14 +602,13 @@ mod tests {
     }
 
     #[test]
-    fn routed_health_accepts_running_endpoint() {
+    fn health_accepts_running_endpoint() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("machine_a", "ctr_1", Some(route_port(8080))),
                 &observation(
                     "machine_a",
                     "ctr_1",
-                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 8080)),
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
                 ),
             ),
             ObservedContainerHealth::Healthy
@@ -633,17 +616,16 @@ mod tests {
     }
 
     #[test]
-    fn routed_health_waits_for_matching_endpoint_port() {
+    fn health_accepts_running_endpoint_without_matching_route_port() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("machine_a", "ctr_1", Some(route_port(8080))),
                 &observation(
                     "machine_a",
                     "ctr_1",
-                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
                 ),
             ),
-            ObservedContainerHealth::Pending
+            ObservedContainerHealth::Healthy
         );
     }
 
@@ -651,7 +633,6 @@ mod tests {
     fn health_fails_exited_container() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("machine_a", "ctr_1", None),
                 &observation("machine_a", "ctr_1", ContainerRuntimeState::Exited),
             ),
             ObservedContainerHealth::Failed("container exited")
@@ -660,7 +641,7 @@ mod tests {
 
     #[test]
     fn health_graces_initial_exited_observation_until_running_is_seen() {
-        let container = deploy_container("machine_a", "ctr_1", Some(route_port(8080)));
+        let container = deploy_container("machine_a", "ctr_1");
         let mut memory = HealthObservationMemory::default();
 
         assert!(memory.should_wait_for_fresh_start_observation(&container));
@@ -670,18 +651,13 @@ mod tests {
         assert!(!memory.should_wait_for_fresh_start_observation(&container));
     }
 
-    fn deploy_container(
-        machine_id_value: &str,
-        container_id_value: &str,
-        required_endpoint_port: Option<RoutePort>,
-    ) -> DeployContainer {
+    fn deploy_container(machine_id_value: &str, container_id_value: &str) -> DeployContainer {
         DeployContainer {
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_target"),
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
             step_id: step_id("run_1"),
-            required_endpoint_port,
         }
     }
 
@@ -693,9 +669,9 @@ mod tests {
         ManagedContainerObservation {
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
-            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_observed"),
             operation_id: operation_id("op_123"),
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
@@ -703,15 +679,12 @@ mod tests {
         }
     }
 
-    fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
-        ContainerEndpoint {
-            ip: ip.parse().expect("valid endpoint ip"),
-            port: route_port(port),
-        }
+    fn endpoint_ip(ip: &str) -> std::net::IpAddr {
+        ip.parse().expect("valid endpoint ip")
     }
 
-    fn route_port(port: u16) -> RoutePort {
-        RoutePort::try_new(port).expect("valid endpoint port")
+    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn machine_id(value: &str) -> MachineId {
@@ -726,8 +699,8 @@ mod tests {
         ServiceId::try_new(value).expect("valid service id")
     }
 
-    fn revision_id(value: &str) -> RevisionId {
-        RevisionId::try_new(value).expect("valid revision id")
+    fn namespace_revision_entry_id(value: &str) -> NamespaceRevisionEntryId {
+        NamespaceRevisionEntryId::try_new(value).expect("valid namespace revision entry id")
     }
 
     fn operation_id(value: &str) -> OperationId {

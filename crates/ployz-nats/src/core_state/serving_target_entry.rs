@@ -1,18 +1,18 @@
 use super::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use crate::kv::{list_current, with_io_timeout};
 use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::state::{ACTIVE_SERVICE_STATE_PREFIX, ActiveServiceState, ActiveServiceStateKey};
+use ployz_core::state::{SERVING_TARGET_ENTRY_PREFIX, ServingTargetEntry, ServingTargetEntryKey};
 
 impl AsyncNatsCoreStateStore {
-    pub async fn replace_active_service(
+    pub async fn replace_serving_target_entry(
         &self,
-        state: &ActiveServiceState,
+        state: &ServingTargetEntry,
     ) -> Result<(), CoreStateStoreError> {
         let key =
-            ActiveServiceStateKey::from_namespace_service(&state.namespace_id, &state.service_id);
+            ServingTargetEntryKey::from_namespace_service(&state.namespace_id, &state.service_id);
         let payload = serde_json::to_vec(state).map_err(CoreStateStoreError::Encode)?;
         with_io_timeout(
-            "active service state replace",
+            "serving target entry state replace",
             self.bucket.put(key.as_str(), payload.into()),
         )
         .await?
@@ -24,14 +24,14 @@ impl AsyncNatsCoreStateStore {
         Ok(())
     }
 
-    pub async fn active_service(
+    pub async fn serving_target_entry(
         &self,
         namespace_id: &NamespaceId,
         service_id: &ServiceId,
-    ) -> Result<Option<ActiveServiceState>, CoreStateStoreError> {
-        let key = ActiveServiceStateKey::from_namespace_service(namespace_id, service_id);
+    ) -> Result<Option<ServingTargetEntry>, CoreStateStoreError> {
+        let key = ServingTargetEntryKey::from_namespace_service(namespace_id, service_id);
         let Some(payload) =
-            with_io_timeout("active service state get", self.bucket.get(key.as_str()))
+            with_io_timeout("serving target entry state get", self.bucket.get(key.as_str()))
                 .await?
                 .map_err(|error| CoreStateStoreError::Get {
                     key: key.as_str().to_owned(),
@@ -41,25 +41,25 @@ impl AsyncNatsCoreStateStore {
             return Ok(None);
         };
 
-        decode_active_service_state(namespace_id, service_id, &key, &payload).map(Some)
+        decode_active_service_state(service_id, &key, &payload).map(Some)
     }
 
-    pub async fn remove_active_service(
+    pub async fn remove_serving_target_entry(
         &self,
         namespace_id: &NamespaceId,
         service_id: &ServiceId,
     ) -> Result<(), CoreStateStoreError> {
         if self
-            .active_service(namespace_id, service_id)
+            .serving_target_entry(namespace_id, service_id)
             .await?
             .is_none()
         {
             return Ok(());
         }
 
-        let key = ActiveServiceStateKey::from_namespace_service(namespace_id, service_id);
+        let key = ServingTargetEntryKey::from_namespace_service(namespace_id, service_id);
         with_io_timeout(
-            "active service state delete",
+            "serving target entry state delete",
             self.bucket.delete(key.as_str()),
         )
         .await?
@@ -71,17 +71,14 @@ impl AsyncNatsCoreStateStore {
         Ok(())
     }
 
-    pub async fn active_services(&self) -> Result<Vec<ActiveServiceState>, CoreStateStoreError> {
+    pub async fn serving_target_entries(&self) -> Result<Vec<ServingTargetEntry>, CoreStateStoreError> {
         list_current(
             &self.bucket,
-            &format!("{ACTIVE_SERVICE_STATE_PREFIX}."),
-            |state: &ActiveServiceState| {
-                ActiveServiceStateKey::from_namespace_service(
-                    &state.namespace_id,
-                    &state.service_id,
-                )
-                .as_str()
-                .to_owned()
+            &format!("{SERVING_TARGET_ENTRY_PREFIX}."),
+            |state: &ServingTargetEntry| {
+                ServingTargetEntryKey::from_namespace_service(&state.namespace_id, &state.service_id)
+                    .as_str()
+                    .to_owned()
             },
             |state| state.service_id.clone(),
         )
@@ -91,22 +88,14 @@ impl AsyncNatsCoreStateStore {
 }
 
 fn decode_active_service_state(
-    expected_namespace_id: &NamespaceId,
     expected_service_id: &ServiceId,
-    key: &ActiveServiceStateKey,
+    key: &ServingTargetEntryKey,
     payload: &[u8],
-) -> Result<ActiveServiceState, CoreStateStoreError> {
-    let state: ActiveServiceState =
+) -> Result<ServingTargetEntry, CoreStateStoreError> {
+    let state: ServingTargetEntry =
         serde_json::from_slice(payload).map_err(CoreStateStoreError::Decode)?;
-    if state.namespace_id != *expected_namespace_id {
-        return Err(CoreStateStoreError::CorruptActiveServiceState {
-            key: key.as_str().to_owned(),
-            expected_service_id: expected_service_id.clone(),
-            actual_service_id: state.service_id,
-        });
-    }
     if state.service_id != *expected_service_id {
-        return Err(CoreStateStoreError::CorruptActiveServiceState {
+        return Err(CoreStateStoreError::CorruptServingTargetEntry {
             key: key.as_str().to_owned(),
             expected_service_id: expected_service_id.clone(),
             actual_service_id: state.service_id,

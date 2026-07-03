@@ -24,7 +24,7 @@ fn operation_state_serializes_with_stable_wire_names() {
 
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
-        r#"{"state":"running","stage":"active_service_commit"}"#
+        r#"{"state":"running","stage":"serving_target_commit"}"#
     );
 }
 
@@ -296,28 +296,37 @@ fn public_u64_wire_values_are_string_encoded_without_narrowing_core_values() {
 #[test]
 fn deploy_request_rejects_empty_image_and_zero_replicas() {
     let empty_image = r#"{
-        "service_id": "svc_api",
-        "target_revision": "rev_1",
-        "image": "",
-        "replicas": 1
+        "namespace_id": "default",
+        "namespace_revision_id": "rev_1",
+        "services": [{
+            "service_id": "svc_api",
+            "image": "",
+            "replicas": 1
+        }]
     }"#;
 
     assert!(serde_json::from_str::<DeployRequest>(empty_image).is_err());
 
     let zero_replicas = r#"{
-        "service_id": "svc_api",
-        "target_revision": "rev_1",
-        "image": "ghcr.io/acme/api:rev-1",
-        "replicas": 0
+        "namespace_id": "default",
+        "namespace_revision_id": "rev_1",
+        "services": [{
+            "service_id": "svc_api",
+            "image": "ghcr.io/acme/api:rev-1",
+            "replicas": 0
+        }]
     }"#;
 
     assert!(serde_json::from_str::<DeployRequest>(zero_replicas).is_err());
 
     let whitespace_image = r#"{
-        "service_id": "svc_api",
-        "target_revision": "rev_1",
-        "image": " ghcr.io/acme/api:rev-1",
-        "replicas": 1
+        "namespace_id": "default",
+        "namespace_revision_id": "rev_1",
+        "services": [{
+            "service_id": "svc_api",
+            "image": " ghcr.io/acme/api:rev-1",
+            "replicas": 1
+        }]
     }"#;
 
     assert!(serde_json::from_str::<DeployRequest>(whitespace_image).is_err());
@@ -399,11 +408,14 @@ fn route_cutover_failures_use_structured_route_targets() {
 #[test]
 fn wire_models_reject_unknown_fields() {
     let deploy_with_extra = r#"{
-        "service_id": "svc_api",
-        "target_revision": "rev_1",
-        "image": "ghcr.io/acme/api:rev-1",
-        "replicas": 1,
-        "unsupported": true
+        "namespace_id": "default",
+        "namespace_revision_id": "rev_1",
+        "services": [{
+            "service_id": "svc_api",
+            "image": "ghcr.io/acme/api:rev-1",
+            "replicas": 1,
+            "unsupported": true
+        }]
     }"#;
 
     assert!(serde_json::from_str::<DeployRequest>(deploy_with_extra).is_err());
@@ -477,7 +489,7 @@ fn cancellation_reasons_are_non_empty() {
 }
 
 fn active_service_running() -> DeployRunningStage {
-    DeployRunningStage::ActiveServiceCommit
+    DeployRunningStage::ServingTargetCommit
 }
 
 fn wireguard_public_key(value: &str) -> WireGuardPublicKey {

@@ -1,16 +1,17 @@
 use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
-    service_id, step_id,
+    namespace_id,
+    container_id, machine_id, namespace_revision_entry_id, operation_id, route_hostname,
+    route_port, service_id, step_id,
 };
 use ployzd::gateway::{
     GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
     GatewayProjection, GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
-    GatewayProjectionUpdate, GatewayRoute, GatewayUpstream,
+    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry, GatewayUpstream,
 };
 use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
 
@@ -200,10 +201,15 @@ fn source_input(
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         routes: vec![GatewayRoute {
+            namespace_id: namespace_id("default"),
             target: route_target(hostname, 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+        }],
+        serving: vec![GatewayServingEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         }],
         observed_machines: vec![GatewayMachineObservation {
             freshness: GatewayObservationFreshness::Fresh,
@@ -225,11 +231,11 @@ fn managed_container(
         container_id: container_id(container_id_value),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::running_at(endpoint("10.0.0.1", 8080)),
+        state: ContainerRuntimeState::running_at(endpoint_ip("10.0.0.1")),
     }
 }
 
@@ -243,7 +249,7 @@ fn projected_route(
         upstreams: vec![GatewayUpstream {
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
-            endpoint: endpoint("10.0.0.1", 8080),
+            address: socket_addr("10.0.0.1", 8080),
         }],
         unroutable_containers: vec![],
     }
@@ -270,7 +276,7 @@ fn upstream(machine_id_value: &str, container_id_value: &str) -> GatewayUpstream
     GatewayUpstream {
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
-        endpoint: endpoint("10.0.0.1", 8080),
+        address: socket_addr("10.0.0.1", 8080),
     }
 }
 
@@ -278,11 +284,12 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
-fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
-    ContainerEndpoint {
-        ip: ip.parse().expect("valid endpoint ip"),
-        port: route_port(port),
-    }
+fn endpoint_ip(ip: &str) -> std::net::IpAddr {
+    ip.parse().expect("valid endpoint ip")
+}
+
+fn socket_addr(ip: &str, port: u16) -> std::net::SocketAddr {
+    std::net::SocketAddr::new(endpoint_ip(ip), port)
 }
 
 fn invalid_source() -> GatewayProjectionError {

@@ -13,7 +13,7 @@ use ployz_core::install::{
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::RouteTarget;
 
-use crate::ids::{namespace_id, revision_id, route_hostname, route_port, service_id};
+use crate::ids::{namespace_id, namespace_revision_id, route_hostname, route_port, service_id};
 
 /// A syntactically valid (not real) PEM literal for join-material fixtures.
 pub const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
@@ -74,12 +74,12 @@ pub fn machine_join_template() -> MachineJoinTemplate {
 pub fn deploy_target(service: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: service_id(service),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }
@@ -93,7 +93,10 @@ pub fn deploy_target_with_route(
     endpoint_port: u16,
 ) -> DeployRequest {
     let mut request = deploy_target(service);
-    request.services[0].route = Some(DeployRoute {
+    let [service_spec] = request.services.as_mut_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    service_spec.routes.push(DeployRoute {
         target: RouteTarget::new(route_hostname(hostname), route_port(gateway_port)),
         endpoint_port: route_port(endpoint_port),
     });

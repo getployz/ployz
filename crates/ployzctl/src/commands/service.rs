@@ -39,8 +39,12 @@ impl ServiceInspectCommand {
 pub(crate) fn service_inspect_command(
     parsed: ServiceInspectCli,
 ) -> Result<ServiceInspectCommand, PloyzctlCliError> {
-    let namespace_id = NamespaceId::try_new(parsed.namespace_id)
-        .map_err(|error| invalid_value("<namespace_id>", error))?;
+    let namespace_id = parsed
+        .namespace
+        .map(NamespaceId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--namespace", error))?
+        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
     let service_id = ServiceId::try_new(parsed.service_id)
         .map_err(|error| invalid_value("<service_id>", error))?;
 
@@ -55,7 +59,8 @@ pub(crate) struct EmptyCli {}
 
 #[derive(Debug, Args)]
 pub(crate) struct ServiceInspectCli {
-    namespace_id: String,
+    #[arg(short = 'n', long = "namespace")]
+    namespace: Option<String>,
     service_id: String,
 }
 
@@ -105,7 +110,7 @@ impl ServiceInspectOutput {
         format!(
             "service {}\nactive-revision {}\n",
             self.service.active.service_id.as_str(),
-            self.service.active.active_revision.as_str(),
+            self.service.active.namespace_revision_entry_id.as_str(),
         )
     }
 }
@@ -114,6 +119,6 @@ fn render_service_summary(service: &ServiceSnapshot) -> String {
     format!(
         "{} active-revision {}",
         service.active.service_id.as_str(),
-        service.active.active_revision.as_str(),
+        service.active.namespace_revision_entry_id.as_str(),
     )
 }

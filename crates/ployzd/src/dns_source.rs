@@ -4,8 +4,8 @@ use crate::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use ployz_core::ops::RouteHostname;
-use ployz_core::state::{ActiveRouteState, GatewayServingStatus, MachinePublicIpObservation};
-use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
+use ployz_core::state::{RouteBindingState, GatewayServingStatus, MachinePublicIpObservation};
+use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,7 +29,7 @@ pub async fn load_dns_projection_input_from_nats(
 ) -> Result<DnsProjectionInput, DnsSourceError> {
     let routes = async {
         core_state
-            .active_routes()
+            .route_bindings()
             .await
             .map_err(DnsSourceError::from)
     };
@@ -81,32 +81,33 @@ impl fmt::Display for DnsSourceError {
     }
 }
 
-impl From<ActiveRouteStoreError> for DnsSourceError {
-    fn from(error: ActiveRouteStoreError) -> Self {
+impl From<RouteBindingStoreError> for DnsSourceError {
+    fn from(error: RouteBindingStoreError) -> Self {
         match error {
-            ActiveRouteStoreError::Decode(error) => Self::Invalid {
-                message: format!("decode active route state: {error}"),
+            RouteBindingStoreError::Decode(error) => Self::Invalid {
+                message: format!("decode route binding state: {error}"),
             },
-            ActiveRouteStoreError::CorruptActiveRouteState {
+            RouteBindingStoreError::CorruptActiveRouteState {
                 key,
                 expected_target,
                 actual_target,
             } => Self::Invalid {
                 message: format!(
-                    "active route state at {key} belongs to {actual_target:?}, not {expected_target:?}"
+                    "route binding state at {key} belongs to {actual_target:?}, not {expected_target:?}"
                 ),
             },
-            ActiveRouteStoreError::CorruptKey { key, actual_key } => Self::Invalid {
+            RouteBindingStoreError::CorruptKey { key, actual_key } => Self::Invalid {
                 message: format!(
-                    "active route state key {key} does not match encoded target key {actual_key}"
+                    "route binding state key {key} does not match encoded target key {actual_key}"
                 ),
             },
-            error @ (ActiveRouteStoreError::Encode(_)
-            | ActiveRouteStoreError::Put { .. }
-            | ActiveRouteStoreError::ListKeys { .. }
-            | ActiveRouteStoreError::Watch { .. }
-            | ActiveRouteStoreError::Get { .. }
-            | ActiveRouteStoreError::Timeout { .. }) => Self::Unavailable {
+            error @ (RouteBindingStoreError::Encode(_)
+            | RouteBindingStoreError::Put { .. }
+            | RouteBindingStoreError::Delete { .. }
+            | RouteBindingStoreError::ListKeys { .. }
+            | RouteBindingStoreError::Watch { .. }
+            | RouteBindingStoreError::Get { .. }
+            | RouteBindingStoreError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),
             },
         }
@@ -139,7 +140,7 @@ impl From<ObservationStoreError> for DnsSourceError {
 }
 
 fn dns_projection_input_from_state(
-    routes: Vec<ActiveRouteState>,
+    routes: Vec<RouteBindingState>,
     gateway_answers: Vec<MachinePublicIpObservation>,
 ) -> DnsProjectionInput {
     let answers = gateway_answers

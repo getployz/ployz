@@ -2,11 +2,14 @@ use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
 };
-use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
-use ployz_core::ops::{
-    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RoutePort,
+use ployz_core::ids::{
+    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
+    StepId,
 };
-use ployz_core::state::{ActiveRouteState, ActiveServiceState};
+use ployz_core::ops::{
+    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteTarget,
+};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::time::Duration;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
@@ -16,6 +19,8 @@ pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
+    pub(super) route_binding_removals: Vec<RouteTarget>,
+    pub(super) serving_target_removals: Vec<ServingTargetEntry>,
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) dataplane_machines: Vec<MachineId>,
     pub(super) step_timeout: Duration,
@@ -24,7 +29,7 @@ pub struct DeployExecutionCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionCommand {
     pub(super) request: DeployServiceRequest,
-    pub(super) route_commit: Option<ActiveRouteState>,
+    pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -44,6 +49,16 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn namespace_cleanup_candidates(&self) -> &[DeployCleanupContainer] {
         &self.namespace_cleanup_candidates
+    }
+
+    #[must_use]
+    pub fn route_binding_removals(&self) -> &[RouteTarget] {
+        &self.route_binding_removals
+    }
+
+    #[must_use]
+    pub fn serving_target_removals(&self) -> &[ServingTargetEntry] {
+        &self.serving_target_removals
     }
 
     #[must_use]
@@ -114,24 +129,24 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
-    pub fn active_service_state(&self) -> ActiveServiceState {
-        ActiveServiceState {
+    pub fn serving_target_entry_state(&self) -> ServingTargetEntry {
+        ServingTargetEntry {
             namespace_id: self.request.namespace_id.clone(),
             service_id: self.request.service_id.clone(),
-            active_revision: self.request.target_revision.clone(),
+            namespace_revision_entry_id: self.request.namespace_revision_entry_id.clone(),
         }
     }
 
     #[must_use]
-    pub fn active_route_state(&self) -> Option<ActiveRouteState> {
-        self.route_commit.clone()
+    pub fn route_binding_states(&self) -> &[RouteBindingState] {
+        &self.route_commits
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionOutcome {
     pub namespace_id: ployz_core::ids::NamespaceId,
-    pub target_revision: RevisionId,
+    pub namespace_revision_id: NamespaceRevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
     pub terminal_event: DeployTerminalEvent,
@@ -181,11 +196,10 @@ pub enum DeployTerminalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployContainer {
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub step_id: StepId,
-    pub required_endpoint_port: Option<RoutePort>,
 }
 
 impl DeployContainer {

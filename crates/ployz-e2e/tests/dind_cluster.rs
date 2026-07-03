@@ -43,11 +43,12 @@ use ployz_sdk_types::{
     MachineSnapshot,
 };
 use ployz_test_support::ids::{
-    machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, namespace_id, namespace_revision_id, operation_id, route_hostname, route_port,
+    service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
-    CONTAINER_TYPE_LABEL, OPERATION_ID_LABEL, REVISION_LABEL, SERVICE_ID_LABEL,
+    CONTAINER_TYPE_LABEL, OPERATION_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, SERVICE_ID_LABEL,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -452,7 +453,7 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
         };
         for (key, value) in [
             (SERVICE_ID_LABEL, "svc_smoke".to_owned()),
-            (REVISION_LABEL, "rev_local".to_owned()),
+            (NAMESPACE_REVISION_ENTRY_LABEL, "rev_local".to_owned()),
             (OPERATION_ID_LABEL, deploy_operation.as_str().to_owned()),
             (CONTAINER_TYPE_LABEL, "service".to_owned()),
         ] {
@@ -476,18 +477,18 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
 fn smoke_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("smoke"),
-        target_revision: revision_id("rev_local"),
+        namespace_revision_id: namespace_revision_id("rev_local"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
-            route: Some(DeployRoute {
+            routes: vec![DeployRoute {
                 target: RouteTarget::new(
                     route_hostname(ROUTE_HOSTNAME),
                     route_port(dind::MACHINE_GATEWAY_PORT),
                 ),
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
-            }),
+            }],
         }],
     }
 }

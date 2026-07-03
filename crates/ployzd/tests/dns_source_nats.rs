@@ -1,13 +1,13 @@
 use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    ActiveRouteState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    RouteBindingState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    machine_id, namespace_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, namespace_id, route_hostname, route_port, service_id,
 };
 use ployzd::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState,
@@ -27,11 +27,11 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .expect("open observation store");
 
     routes
-        .replace_active_route(&active_route_state("api.example.com", 443, 8080))
+        .replace_route_binding(&active_route_state("api.example.com", 443, 8080))
         .await
         .expect("api route stores");
     routes
-        .replace_active_route(&active_route_state("www.example.com", 443, 8080))
+        .replace_route_binding(&active_route_state("www.example.com", 443, 8080))
         .await
         .expect("www route stores");
     let gateway_1 = nats.machine_observations("gateway_1").await;
@@ -120,12 +120,11 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
         .get_key_value(KV_CORE_BUCKET)
         .await
         .expect("open raw core bucket");
-    let payload = serde_json::to_vec(&ActiveRouteState {
+    let payload = serde_json::to_vec(&RouteBindingState {
         namespace_id: namespace_id("default"),
         target: route_target("api.example.com", 443),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
     })
     .expect("route state encodes");
     core_bucket
@@ -139,7 +138,7 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
     else {
         panic!("DNS source should be invalid, got {update:?}");
     };
-    assert!(message.contains("active route state key"));
+    assert!(message.contains("route binding state key"));
 }
 
 #[tokio::test]
@@ -155,7 +154,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let hostname = route_hostname("api.example.com");
 
     routes
-        .replace_active_route(&active_route_state("api.example.com", 443, 8080))
+        .replace_route_binding(&active_route_state("api.example.com", 443, 8080))
         .await
         .expect("route stores");
     let gateway_1 = nats.machine_observations("gateway_1").await;
@@ -244,13 +243,12 @@ async fn test_nats() -> TestNats {
     }
 }
 
-fn active_route_state(hostname: &str, public_port: u16, endpoint_port: u16) -> ActiveRouteState {
-    ActiveRouteState {
+fn active_route_state(hostname: &str, public_port: u16, endpoint_port: u16) -> RouteBindingState {
+    RouteBindingState {
         namespace_id: namespace_id("default"),
         target: route_target(hostname, public_port),
         endpoint_port: route_port(endpoint_port),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
     }
 }
 

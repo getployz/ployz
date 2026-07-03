@@ -24,7 +24,8 @@ import {
   type OperationIdempotencyKey,
   type OperatorHint,
   type ReplicaCount,
-  type RevisionId,
+  type NamespaceRevisionEntryId,
+  type NamespaceRevisionId,
   type RouteHostname,
   type RoutePort,
   type ServiceId,
@@ -48,8 +49,12 @@ export function serviceId(value: string): ServiceId {
   return subjectToken(value, "service id") as ServiceId;
 }
 
-export function revisionId(value: string): RevisionId {
-  return subjectToken(value, "revision id") as RevisionId;
+export function namespaceRevisionId(value: string): NamespaceRevisionId {
+  return subjectToken(value, "namespace revision id") as NamespaceRevisionId;
+}
+
+export function namespaceRevisionEntryId(value: string): NamespaceRevisionEntryId {
+  return subjectToken(value, "namespace revision entry id") as NamespaceRevisionEntryId;
 }
 
 export function machineId(value: string): MachineId {

@@ -314,7 +314,7 @@ where
             container_id: container.container_id,
             namespace_id: container.labels.namespace_id,
             service_id: container.labels.service_id,
-            revision_id: container.labels.revision_id,
+            namespace_revision_entry_id: container.labels.namespace_revision_entry_id,
             operation_id: container.labels.operation_id,
             step_id: container.labels.step_id,
             kind: container.labels.kind,
@@ -330,9 +330,7 @@ where
 
 fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
     match state {
-        ExistingManagedContainerState::Running { endpoint } => {
-            ContainerRuntimeState::Running { endpoint }
-        }
+        ExistingManagedContainerState::Running { ip } => ContainerRuntimeState::Running { ip },
         ExistingManagedContainerState::StartableStopped
         | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
     }
@@ -419,8 +417,7 @@ mod tests {
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
-    use ployz_core::ids::NamespaceId;
-    use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
 
@@ -608,7 +605,7 @@ mod tests {
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
             labels: labels("run_1"),
-            state: ExistingManagedContainerState::Running { endpoint: None },
+            state: ExistingManagedContainerState::Running { ip: None },
         }]);
 
         let mut publisher = MachineObservationPublisher::new(nats.client.clone());
@@ -765,13 +762,12 @@ mod tests {
 
     fn labels(step: &str) -> crate::docker::labels::ManagedContainerLabels {
         crate::docker::labels::ManagedContainerLabels {
-            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
-            endpoint_port: None,
         }
     }
 
@@ -787,12 +783,16 @@ mod tests {
         OperationId::try_new(value).expect("valid operation id")
     }
 
+    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
+    }
+
     fn service_id(value: &str) -> ServiceId {
         ServiceId::try_new(value).expect("valid service id")
     }
 
-    fn revision_id(value: &str) -> RevisionId {
-        RevisionId::try_new(value).expect("valid revision id")
+    fn namespace_revision_entry_id(value: &str) -> NamespaceRevisionEntryId {
+        NamespaceRevisionEntryId::try_new(value).expect("valid namespace revision entry id")
     }
 
     fn step_id(value: &str) -> StepId {

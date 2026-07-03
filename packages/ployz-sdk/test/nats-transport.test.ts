@@ -11,7 +11,7 @@ import {
   PloyzNatsTransport,
   PloyzNatsTransportError,
   replicaCount,
-  revisionId,
+  namespaceRevisionId,
   serviceId,
 } from "../src/index.ts";
 import type {
@@ -38,7 +38,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
     operation_id: "op_123",
     target: {
       namespace_id: "default",
-      target_revision: "rev_2",
+      namespace_revision_id: "rev_2",
       services: [
         {
           service_id: "svc_api",
@@ -195,7 +195,7 @@ function deploySubmitRequest(): DeploySubmitRequest {
     operation_id: operationId("op_123"),
     target: {
       namespace_id: namespaceId("default"),
-      target_revision: revisionId("rev_2"),
+      namespace_revision_id: namespaceRevisionId("rev_2"),
       services: [
         {
           service_id: serviceId("svc_api"),

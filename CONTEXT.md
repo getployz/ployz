@@ -12,6 +12,22 @@ _Avoid_: Environment
 The internal normalized service graph for a namespace at a point in time. Ployz derives a namespace revision from deploy input so it can plan, label service containers, record evidence, and advance serving targets.
 _Avoid_: User-supplied revision, service revision, active state
 
+**Namespace Revision Entry**:
+One service's normalized desired definition inside a namespace revision. A namespace revision entry can satisfy replicas only through service containers that are equivalent to that entry.
+_Avoid_: Service revision, service-equivalence identity, container spec hash
+
+**Namespace Revision Entry Identity**:
+The stable identity of one namespace revision entry, derived per service so that two services never share an identity even if their container shape is otherwise identical. It is a versioned digest so a future change to which fields it covers is a deliberate, detectable version bump rather than silent drift. It covers only fields that require a new service container, currently service id and image reference; it excludes replica count, route bindings, and routed endpoint port, since a routed endpoint port change is satisfied by an endpoint reroute instead of container replacement.
+_Avoid_: Container spec hash, service fingerprint, target revision
+
+**Endpoint Reroute**:
+A route-level deploy effect that changes where traffic for a service lands without recreating its containers. A routed endpoint port change commits new route state during the deploy; gateway upstream matching dials a container's observed IP on the route's endpoint port rather than requiring the container's own declared port to match, so containers stay usable by namespace revision entry identity.
+_Avoid_: Container replacement, in-place update, machine-local override, per-container planning outcome
+
+**Service Container Shape**:
+The planned target-specific runtime shape for service containers that can satisfy one namespace revision entry on a compatible machine. It includes the namespace revision entry, target platform, and planned resolved image identity.
+_Avoid_: Namespace revision entry, route binding, machine observation
+
 **Serving Target**:
 The current serveable service set for a namespace. It tells gateways which services and namespace revision entries are eligible to serve when combined with route bindings and runtime observations.
 _Avoid_: Active service, active revision, completed phase pointer
@@ -33,15 +49,15 @@ A one-off service-derived container created to run a pre-start hook. Hook contai
 _Avoid_: Job service, replica, sidecar
 
 **Route Binding**:
-An external route attached to a service inside a namespace. A route binding can exist only after its required certificate is active and any route protection can be enforced; once attached, it becomes serveable when its service is included in the current serving target and has healthy matching containers.
-_Avoid_: Active route
+An external route bound to a service id inside a namespace. A service can have any number of route bindings, each with its own hostname and endpoint port, and several route bindings may share one endpoint port. A route binding can exist even when its service is absent from the current serving target; the binding is valid route state, while serving is a projection result. A deploy manifest may include route bindings as a convenience; future route operations will update the same route binding state independently of deploy manifests.
+_Avoid_: Active route, the route (as if a service has at most one), deploy-owned route
 
 **Route Binding Identity**:
 The stable identity of one attached route binding. It changes when a route is detached and later recreated, even if the external hostname is reused.
 _Avoid_: Host identity, route name, route target
 
 **Route Projection**:
-A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations.
+A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations. If a route binding points at a service that is not currently serveable, the route remains attached and the gateway returns an unavailable response for that route.
 _Avoid_: Route binding, gateway config, active route
 
 **Route DNS Projection**:
@@ -161,8 +177,12 @@ The result for one service within a namespace deploy attempt. It lets a service 
 _Avoid_: Deploy outcome, service status, active service
 
 **Deploy Input**:
-The caller-provided input for a deploy, such as Compose YAML, a cloud-generated payload, or an SDK request. Ployz turns deploy input into an internal namespace revision before planning.
+The caller-provided input for a deploy, such as Compose YAML, a cloud-generated payload, or an SDK request. Ployz turns deploy input into an internal namespace revision before planning. Deploy input may include route bindings as a convenience so one manifest can update service containers and route state together, but routes are not owned by deploys and will be updatable independently.
 _Avoid_: Desired state
+
+**Resolved Image Identity**:
+The exact image identity selected during deploy planning for a service container, such as an immutable digest. Execution uses the planned resolved image identity; machines do not resolve mutable image references after planning. Heterogeneous targets may require platform-specific resolved image identities.
+_Avoid_: Latest tag, requested image, background refresh
 
 **Cloud Deploy Payload**:
 The typed deploy input submitted by Ployz Cloud or another SDK client. It is the first deploy input source for core Ployz.
@@ -233,7 +253,7 @@ A desired capacity slot for a service in a namespace revision. A replica can be 
 _Avoid_: Container
 
 **Usable Service Container**:
-A service container that can satisfy a desired replica. It is running, healthy, valid for the intended placement, and equivalent to the desired service definition for that replica.
+A service container that can satisfy a desired replica. It is running, valid for the intended placement, and equivalent to the desired service definition for that replica by namespace revision entry identity. A container passes its healthcheck once, at first creation, and only when the service defines one; reuse by a later deploy never re-runs that gate. Route endpoint port changes never affect usability: they are route state, satisfied by an endpoint reroute during the deploy, not by container replacement.
 _Avoid_: Running container
 
 **Container Replacement**:
@@ -301,16 +321,16 @@ Durable or host-backed storage that can be mounted into a service container. Vol
 _Avoid_: Disk, mount as storage identity
 
 **Config**:
-Non-secret file or inline content mounted into a service container as part of a namespace revision. Changing a config changes the desired service definition that deploy planning compares against runtime state.
+Non-secret material injected into a service container as part of a namespace revision. Changing a config changes the desired service definition that deploy planning compares against runtime state.
 _Avoid_: Runtime setting, secret
 
 **Secret**:
-Sensitive material provided to a service container without becoming shared observation state or public deploy history. Secrets are distinct from configs because their values require stricter storage, redaction, and access rules.
+Sensitive material injected into a service container without becoming shared observation state or public deploy history. Secrets are distinct from configs because their values require stricter storage, redaction, and access rules.
 _Avoid_: Config, env var
 
 **Healthcheck**:
-A service-defined readiness signal used to decide whether a service container can satisfy a replica and whether a deploy phase may progress.
-_Avoid_: Liveness as stored truth, gateway check
+A service-defined readiness signal checked once when a service container is first created. It gates only that container's creation, and only when the service defines one; reused containers and phase continuation never wait on healthchecks.
+_Avoid_: Liveness as stored truth, gateway check, recurring deploy gate
 
 **Port**:
 A declared network entry point for a service container. Ports may describe host-bound exposure or routeable service traffic, but they are not themselves route bindings.

@@ -4,12 +4,11 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
     ManagedContainerObservation,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use ployzd::machine_runtime::protocol::ContainerEndpointRequest;
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -65,13 +64,12 @@ impl MachineContainerRunner for ObservingContainerRunner {
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerRunnerError> {
         let container_id = self.next_container_id()?;
-        self.store_endpoint(&container_id, command.endpoint)?;
         let observation = ManagedContainerObservation {
             machine_id: self.machine_id.clone(),
             container_id: container_id.clone(),
             namespace_id: command.labels.namespace_id,
             service_id: command.labels.service_id,
-            revision_id: command.labels.revision_id,
+            namespace_revision_entry_id: command.labels.namespace_revision_entry_id,
             operation_id: command.labels.operation_id,
             step_id: command.labels.step_id,
             kind: command.labels.kind,
@@ -110,13 +108,11 @@ impl MachineContainerRunner for ObservingContainerRunner {
         let Some(observation) = snapshot.container(container_id).cloned() else {
             return Err(missing_container_start_error(container_id));
         };
-        let endpoint = self.endpoint_for(container_id)?;
+        // Every container joins the endpoint network at creation (ADR 0023),
+        // so a started container always observes an endpoint IP.
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
-                state: endpoint.map_or_else(
-                    ContainerRuntimeState::running_unroutable,
-                    ContainerRuntimeState::running_at,
-                ),
+                state: ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into()),
                 ..observation
             })
             .map_err(|error| MachineContainerRunnerError::Start {
@@ -254,7 +250,7 @@ fn observation_identity(observation: &ManagedContainerObservation) -> ManagedCon
     ManagedContainerIdentity {
         namespace_id: observation.namespace_id.clone(),
         service_id: observation.service_id.clone(),
-        revision_id: observation.revision_id.clone(),
+        namespace_revision_entry_id: observation.namespace_revision_entry_id.clone(),
         operation_id: observation.operation_id.clone(),
         step_id: observation.step_id.clone(),
         kind: observation.kind,
@@ -272,53 +268,11 @@ impl ObservingContainerRunner {
         state.next_container_id()
     }
 
-    fn store_endpoint(
-        &self,
-        container_id: &ContainerId,
-        endpoint: Option<ContainerEndpointRequest>,
-    ) -> Result<(), MachineContainerRunnerError> {
-        let Some(endpoint) = endpoint else {
-            return Ok(());
-        };
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|error| MachineContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
-        state.endpoints.push((
-            container_id.clone(),
-            ContainerEndpoint {
-                ip: std::net::Ipv4Addr::LOCALHOST.into(),
-                port: endpoint.port,
-            },
-        ));
-        Ok(())
-    }
-
-    fn endpoint_for(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<Option<ContainerEndpoint>, MachineContainerRunnerError> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|error| MachineContainerRunnerError::Start {
-                container_id: container_id.clone(),
-                message: error.to_string(),
-            })?;
-        Ok(state
-            .endpoints
-            .iter()
-            .find(|(id, _)| id == container_id)
-            .map(|(_, endpoint)| endpoint.clone()))
-    }
 }
 
 #[derive(Debug, Default)]
 struct ObservingContainerRunnerState {
     next_container_number: u64,
-    endpoints: Vec<(ContainerId, ContainerEndpoint)>,
 }
 
 impl ObservingContainerRunnerState {
@@ -374,13 +328,10 @@ fn existing_container_from_observation(
         labels: ManagedContainerLabels {
             namespace_id: observation.namespace_id.clone(),
             service_id: observation.service_id.clone(),
-            revision_id: observation.revision_id.clone(),
+            namespace_revision_entry_id: observation.namespace_revision_entry_id.clone(),
             operation_id: observation.operation_id.clone(),
             step_id: observation.step_id.clone(),
             kind: observation.kind,
-            endpoint_port: observation
-                .running_service_endpoint()
-                .map(|endpoint| endpoint.port),
         },
         state: existing_container_state(&observation.state),
     }
@@ -388,9 +339,7 @@ fn existing_container_from_observation(
 
 fn existing_container_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
-        ContainerRuntimeState::Running { endpoint } => ExistingManagedContainerState::Running {
-            endpoint: endpoint.clone(),
-        },
+        ContainerRuntimeState::Running { ip } => ExistingManagedContainerState::Running { ip: *ip },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
 }
