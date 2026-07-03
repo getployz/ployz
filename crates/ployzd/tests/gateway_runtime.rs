@@ -1,12 +1,12 @@
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerKind, ManagedContainerObservation,
+    MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     namespace_id,
-    container_id, machine_id, namespace_revision_entry_id, operation_id, route_hostname,
-    route_port, service_id, step_id,
+    container_id, machine_id, namespace_revision_entry_id, route_hostname,
+    route_port, service_id,
 };
 use ployzd::gateway::{
     GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
@@ -226,17 +226,12 @@ fn managed_container(
     machine_id_value: &str,
     container_id_value: &str,
 ) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        machine_id: machine_id(machine_id_value),
-        container_id: container_id(container_id_value),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("step_1"),
-        kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::running_at(endpoint_ip("10.0.0.1")),
-    }
+    containers::observation(machine_id_value, container_id_value)
+        .entry("entry_1")
+        .operation("op_123")
+        .step("step_1")
+        .running_at(endpoint_ip("10.0.0.1"))
+        .build()
 }
 
 fn projected_route(

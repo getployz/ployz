@@ -332,8 +332,10 @@ fn cli_dispatches_service_list_request() {
 
 #[test]
 fn cli_dispatches_service_inspect_request() {
-    let command = parse_command(["service", "inspect", "default", "svc_api"].map(str::to_owned))
-        .expect("service inspect command parses");
+    let command = parse_command(
+        ["service", "inspect", "-n", "default", "svc_api"].map(str::to_owned),
+    )
+    .expect("service inspect command parses");
 
     let PloyzctlCommand::ServiceInspect(command) = command else {
         panic!("expected service inspect command");

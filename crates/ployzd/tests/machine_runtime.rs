@@ -9,10 +9,10 @@ use ployz_test_support::ids::{
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
-use ployzd::docker::labels::ManagedContainerLabels;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineContainerRunSpec,
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
     MachineRunContainerOutcome,
 };
 use ployzd::machine_runtime::service::start_machine_runtime_service;
@@ -87,7 +87,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
             MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id.clone(),
-                expected_identity: managed_labels("run_1").identity(),
+                expected_identity: managed_labels("run_1"),
             },
         )
         .await
@@ -177,14 +177,14 @@ async fn assert_observed_running(
         .expect("observation reads")
         .expect("created container is observed");
 
-    assert_eq!(observation.service_id, service_id("svc_api"));
+    assert_eq!(observation.identity.service_id, service_id("svc_api"));
     assert_eq!(
-        observation.namespace_revision_entry_id,
+        observation.identity.namespace_revision_entry_id,
         namespace_revision_entry_id("entry_2")
     );
-    assert_eq!(observation.operation_id, operation_id("op_123"));
-    assert_eq!(observation.step_id, step_id("run_1"));
-    assert_eq!(observation.kind, ManagedContainerKind::Service);
+    assert_eq!(observation.identity.operation_id, operation_id("op_123"));
+    assert_eq!(observation.identity.step_id, step_id("run_1"));
+    assert_eq!(observation.identity.kind, ManagedContainerKind::Service);
     // Every started container joins the endpoint network (ADR 0023), so
     // the observation always carries an endpoint IP.
     assert_eq!(
@@ -196,7 +196,7 @@ async fn assert_observed_running(
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:rev-2"),
-        container: MachineContainerRunSpec {
+        container: ManagedContainerIdentity {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
@@ -207,8 +207,8 @@ fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     }
 }
 
-fn managed_labels(step: &str) -> ManagedContainerLabels {
-    ManagedContainerLabels {
+fn managed_labels(step: &str) -> ManagedContainerIdentity {
+    ManagedContainerIdentity {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),

@@ -1,5 +1,5 @@
 use ployz_core::permissions::{
-    NatsPermissionProfile, ResponsePermission, core_state_kv_write_scope, inbox_prefix,
+    NatsPermissionProfile, ResponsePermission, inbox_prefix,
     inbox_subscribe_scope, kv_read_js_api_subjects, machine_observation_kv_write_subjects,
 };
 use ployz_core::state::CoreStateKeyFamily;

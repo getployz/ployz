@@ -10,10 +10,10 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, ServiceId, StepId,
+    OperationId, ServiceId,
 };
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    MachineContainerObservationSnapshot,
     ManagedContainerObservation,
 };
 use ployz_core::ops::{
@@ -21,6 +21,7 @@ use ployz_core::ops::{
     OperatorHint, RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+pub(crate) use ployz_test_support::containers;
 pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     operation_id, service_id,
@@ -814,17 +815,12 @@ fn observed_service_container_with_entry(
     container_id: &str,
     namespace_revision_entry_id: NamespaceRevisionEntryId,
 ) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        machine_id: self::machine_id(machine_id),
-        container_id: self::container_id(container_id),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id,
-        operation_id: operation_id("op_existing"),
-        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
-        kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::running_unroutable(),
-    }
+    containers::observation(machine_id, container_id)
+        .entry(namespace_revision_entry_id.as_str())
+        .operation("op_existing")
+        .step(&format!("existing_{container_id}"))
+        .running_unroutable()
+        .build()
 }
 
 pub(super) fn active_service_running() -> DeployRunningStage {
@@ -887,12 +883,11 @@ pub(super) fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id,
-        operation_id: operation_id("op_existing"),
-        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
-        kind: ManagedContainerKind::Service,
+        identity: containers::identity("svc_api")
+            .entry(namespace_revision_entry_id.as_str())
+            .operation("op_existing")
+            .step(&format!("existing_{container_id}"))
+            .build(),
     }
 }
 

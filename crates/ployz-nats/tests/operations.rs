@@ -4,13 +4,13 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::machine::JoinTokenRedeemedAt;
-use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, OperationEvent};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    cert_id, container_id, machine_id, namespace_id, namespace_revision_entry_id,
-    namespace_revision_id, operation_id, service_id, step_id,
+    cert_id, container_id, machine_id, namespace_id,
+    namespace_revision_id, operation_id, service_id,
 };
 
 #[test]
@@ -188,12 +188,11 @@ fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
     DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("rev_old"),
-        operation_id: operation_id("op_existing"),
-        step_id: step_id(container),
-        kind: ManagedContainerKind::Service,
+        identity: containers::identity("svc_api")
+            .entry("rev_old")
+            .operation("op_existing")
+            .step(container)
+            .build(),
     }
 }
 

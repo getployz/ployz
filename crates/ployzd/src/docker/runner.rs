@@ -1,6 +1,6 @@
 use super::network::{ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
 use crate::docker::labels::{
-    MANAGED_LABEL, ManagedContainerIdentity, ManagedContainerLabelError, ManagedContainerLabels,
+    MANAGED_LABEL, ManagedContainerLabelError,
 };
 use crate::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -18,6 +18,7 @@ use bollard::query_parameters::{
     LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -178,13 +179,13 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         let Some(existing) = existing else {
             return Ok(());
         };
-        if existing.labels.identity() != *expected_identity {
+        if existing.identity != *expected_identity {
             return Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match cleanup target: expected {:?}, found {:?}",
                     expected_identity,
-                    existing.labels.identity()
+                    existing.identity
                 ),
             });
         }
@@ -223,13 +224,13 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         let Some(existing) = existing else {
             return Ok(());
         };
-        if existing.labels.identity() != *expected_identity {
+        if existing.identity != *expected_identity {
             return Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match stop target: expected {:?}, found {:?}",
                     expected_identity,
-                    existing.labels.identity()
+                    existing.identity
                 ),
             });
         }
@@ -467,7 +468,9 @@ const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
-        labels: Some(hashmap_from_btree(command.labels.render())),
+        labels: Some(hashmap_from_btree(crate::docker::labels::render(
+            &command.identity,
+        ))),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
             ..Default::default()
@@ -495,13 +498,13 @@ fn existing_container_from_summary(
         .state
         .ok_or(DockerManagedContainerSummaryError::MissingState)?;
 
-    let labels = ManagedContainerLabels::parse(&btree_from_hashmap(labels))
+    let identity = crate::docker::labels::parse(&btree_from_hashmap(labels))
         .map_err(DockerManagedContainerSummaryError::InvalidLabels)?;
     Ok(ExistingManagedContainer {
         container_id: ContainerId::try_new(id)
             .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
         state: docker_container_state(state, summary.network_settings)?,
-        labels,
+        identity,
     })
 }
 
@@ -587,7 +590,8 @@ mod tests {
     use super::*;
     use ployz_core::deploy::ImageReference;
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine_runtime::ManagedContainerKind;
 
     #[test]
     fn list_options_filter_to_managed_containers() {
@@ -607,13 +611,13 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            labels: managed_labels(),
+            identity: managed_labels(),
         });
 
         assert_eq!(body.image, Some("ghcr.io/acme/api:rev-2".to_owned()));
         assert_eq!(
             body.labels,
-            Some(hashmap_from_btree(managed_labels().render()))
+            Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels())))
         );
     }
 
@@ -624,7 +628,7 @@ mod tests {
         // later route attach can reach it without recreation.
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            labels: managed_labels(),
+            identity: managed_labels(),
         });
 
         assert_eq!(body.exposed_ports, None);
@@ -660,7 +664,7 @@ mod tests {
     fn summary_with_managed_labels_becomes_existing_container() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(managed_labels().render())),
+            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             ..Default::default()
         };
@@ -669,7 +673,7 @@ mod tests {
             existing_container_from_summary(summary).expect("summary parses"),
             ExistingManagedContainer {
                 container_id: container_id("0123456789abcdef"),
-                labels: managed_labels(),
+                identity: managed_labels(),
                 state: ExistingManagedContainerState::Running { ip: None },
             }
         );
@@ -679,7 +683,7 @@ mod tests {
     fn running_summary_with_network_ip_reports_the_endpoint_ip() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(managed_labels().render())),
+            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
@@ -707,7 +711,7 @@ mod tests {
     fn running_summary_uses_only_the_ployz_network_for_endpoint_evidence() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(managed_labels().render())),
+            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([
@@ -744,7 +748,7 @@ mod tests {
     fn running_summary_without_ployz_network_is_running_but_unroutable() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(managed_labels().render())),
+            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
@@ -770,7 +774,7 @@ mod tests {
     fn summary_with_created_state_is_not_reusable_as_running() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(managed_labels().render())),
+            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
             state: Some(ContainerSummaryStateEnum::CREATED),
             ..Default::default()
         };
@@ -787,7 +791,7 @@ mod tests {
     fn summary_with_paused_state_is_not_startable() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(managed_labels().render())),
+            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
             state: Some(ContainerSummaryStateEnum::PAUSED),
             ..Default::default()
         };
@@ -817,8 +821,8 @@ mod tests {
         );
     }
 
-    fn managed_labels() -> ManagedContainerLabels {
-        ManagedContainerLabels {
+    fn managed_labels() -> ManagedContainerIdentity {
+        ManagedContainerIdentity {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),

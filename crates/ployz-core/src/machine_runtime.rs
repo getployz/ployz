@@ -71,41 +71,74 @@ impl ContainerRuntimeState {
     }
 }
 
+/// The single record of what a managed container is and where it came from:
+/// namespace, service, and namespace revision entry identity, plus the
+/// provenance (operation, step) and kind stamped by the operation that
+/// created it. Rendered into Docker labels as recovery evidence, reported in
+/// machine observations, sent in machine run commands, and compared for
+/// cleanup fencing - one struct everywhere, so the copies cannot drift.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ManagedContainerObservation {
-    pub machine_id: MachineId,
-    pub container_id: ContainerId,
+pub struct ManagedContainerIdentity {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
+}
+
+impl ManagedContainerIdentity {
+    /// Whether this identity is a service container instance of the given
+    /// namespace revision entry - the subset the deploy planner and gateway
+    /// match on; provenance never participates in entry matching.
+    #[must_use]
+    pub fn is_service_entry(
+        &self,
+        namespace_id: &NamespaceId,
+        service_id: &ServiceId,
+        namespace_revision_entry_id: &NamespaceRevisionEntryId,
+    ) -> bool {
+        self.kind == ManagedContainerKind::Service
+            && self.namespace_id == *namespace_id
+            && self.service_id == *service_id
+            && self.namespace_revision_entry_id == *namespace_revision_entry_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ManagedContainerObservation {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    pub identity: ManagedContainerIdentity,
     pub state: ContainerRuntimeState,
 }
 
 impl ManagedContainerObservation {
     #[must_use]
     pub fn is_running_service(&self) -> bool {
-        self.kind == ManagedContainerKind::Service && self.state.is_running()
+        self.identity.kind == ManagedContainerKind::Service && self.state.is_running()
     }
 
     #[must_use]
     pub fn is_running_service_entry(
         &self,
+        namespace_id: &NamespaceId,
         service_id: &ServiceId,
         namespace_revision_entry_id: &NamespaceRevisionEntryId,
     ) -> bool {
-        self.is_running_service()
-            && self.service_id == *service_id
-            && self.namespace_revision_entry_id == *namespace_revision_entry_id
+        self.state.is_running()
+            && self
+                .identity
+                .is_service_entry(namespace_id, service_id, namespace_revision_entry_id)
     }
 
     #[must_use]
     pub fn running_service_ip(&self) -> Option<IpAddr> {
-        if self.kind != ManagedContainerKind::Service {
+        if self.identity.kind != ManagedContainerKind::Service {
             return None;
         }
 
