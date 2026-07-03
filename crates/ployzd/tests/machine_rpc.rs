@@ -4,7 +4,8 @@ use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, operation_id, revision_id, service_id, step_id,
+    container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
+    service_id, step_id,
 };
 use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
@@ -149,7 +150,7 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
         container_id: container_id("ctr_existing"),
         expected: managed_labels(),
         actual: ManagedContainerLabels {
-            revision_id: revision_id("rev_other"),
+            revision_id: namespace_revision_entry_id("entry_other"),
             ..managed_labels()
         },
     };
@@ -174,7 +175,7 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
             container_id: container_id("ctr_existing"),
             expected: managed_labels(),
             actual: ManagedContainerLabels {
-                revision_id: revision_id("rev_other"),
+                revision_id: namespace_revision_entry_id("entry_other"),
                 ..managed_labels()
             },
         }
@@ -576,7 +577,7 @@ fn run_request() -> MachineContainerRunRpcRequest {
 fn managed_container_spec() -> MachineContainerRunSpec {
     MachineContainerRunSpec {
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_2"),
+        revision_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
@@ -586,7 +587,7 @@ fn managed_container_spec() -> MachineContainerRunSpec {
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_2"),
+        revision_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,

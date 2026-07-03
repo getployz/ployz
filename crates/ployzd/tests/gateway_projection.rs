@@ -4,8 +4,8 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
-    step_id,
+    container_id, machine_id, namespace_revision_entry_id, operation_id, route_hostname,
+    route_port, service_id, step_id,
 };
 use ployzd::gateway::{
     GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
@@ -18,22 +18,22 @@ use ployzd::gateway::{
 fn gateway_filters_stale_and_non_running_route_upstreams() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![
-            gateway_route("WWW.example.com", "svc_web", "rev_1"),
-            gateway_route("api.example.com", "svc_api", "rev_2"),
+            gateway_route("WWW.example.com", "svc_web", "entry_1"),
+            gateway_route("api.example.com", "svc_api", "entry_2"),
         ],
         observed_machines: vec![
             fresh_machine(
                 "machine_1",
                 vec![
-                    service_container("machine_1", "api_good", "svc_api", "rev_2", running()),
-                    service_container("machine_1", "web_good", "svc_web", "rev_1", running()),
-                    service_container("machine_1", "api_exited", "svc_api", "rev_2", exited()),
-                    service_container("machine_1", "api_old", "svc_api", "rev_1", running()),
+                    service_container("machine_1", "api_good", "svc_api", "entry_2", running()),
+                    service_container("machine_1", "web_good", "svc_web", "entry_1", running()),
+                    service_container("machine_1", "api_exited", "svc_api", "entry_2", exited()),
+                    service_container("machine_1", "api_old", "svc_api", "entry_1", running()),
                     managed_container(
                         "machine_1",
                         "api_job",
                         "svc_api",
-                        "rev_2",
+                        "entry_2",
                         ManagedContainerKind::Job,
                         running(),
                     ),
@@ -45,7 +45,7 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
                     "machine_2",
                     "api_stale",
                     "svc_api",
-                    "rev_2",
+                    "entry_2",
                     running(),
                 )],
             ),
@@ -83,14 +83,14 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
 #[test]
 fn gateway_filters_running_containers_without_endpoint_evidence() {
     let projection = project_gateway(GatewayProjectionInput {
-        routes: vec![gateway_route("api.example.com", "svc_api", "rev_2")],
+        routes: vec![gateway_route("api.example.com", "svc_api", "entry_2")],
         observed_machines: vec![fresh_machine(
             "machine_1",
             vec![service_container(
                 "machine_1",
                 "api_unroutable",
                 "svc_api",
-                "rev_2",
+                "entry_2",
                 ContainerRuntimeState::running_unroutable(),
             )],
         )],
@@ -115,7 +115,7 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
 #[test]
 fn gateway_filters_running_containers_on_endpoint_port() {
     let projection = project_gateway(GatewayProjectionInput {
-        routes: vec![gateway_route("api.example.com", "svc_api", "rev_2")],
+        routes: vec![gateway_route("api.example.com", "svc_api", "entry_2")],
         observed_machines: vec![fresh_machine(
             "machine_1",
             vec![
@@ -123,14 +123,14 @@ fn gateway_filters_running_containers_on_endpoint_port() {
                     "machine_1",
                     "api_wrong_port",
                     "svc_api",
-                    "rev_2",
+                    "entry_2",
                     ContainerRuntimeState::running_at(endpoint("10.0.0.1", 3000)),
                 ),
                 service_container(
                     "machine_1",
                     "api_good",
                     "svc_api",
-                    "rev_2",
+                    "entry_2",
                     ContainerRuntimeState::running_at(endpoint("10.0.0.2", 8080)),
                 ),
             ],
@@ -211,13 +211,13 @@ fn gateway_rejects_duplicate_route_targets() {
                     target: route_target("API.example.com", 443),
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_1"),
+                    revision_id: namespace_revision_entry_id("entry_1"),
                 },
                 GatewayRoute {
                     target: target.clone(),
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
+                    revision_id: namespace_revision_entry_id("entry_2"),
                 },
             ],
             observed_machines: vec![],
@@ -246,13 +246,13 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
                 target: target.clone(),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_1"),
+                revision_id: namespace_revision_entry_id("entry_1"),
             },
             GatewayRoute {
                 target: target.clone(),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_2"),
+                revision_id: namespace_revision_entry_id("entry_2"),
             },
         ],
         observed_machines: vec![],
@@ -397,12 +397,16 @@ fn observed_machine(
     }
 }
 
-fn gateway_route(hostname: &str, service_id_value: &str, revision_id_value: &str) -> GatewayRoute {
+fn gateway_route(
+    hostname: &str,
+    service_id_value: &str,
+    namespace_revision_entry_id_value: &str,
+) -> GatewayRoute {
     GatewayRoute {
         target: route_target(hostname, 443),
         endpoint_port: route_port(8080),
         service_id: service_id(service_id_value),
-        revision_id: revision_id(revision_id_value),
+        revision_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
     }
 }
 
@@ -410,14 +414,14 @@ fn service_container(
     machine_id_value: &str,
     container_id_value: &str,
     service_id_value: &str,
-    revision_id_value: &str,
+    namespace_revision_entry_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     managed_container(
         machine_id_value,
         container_id_value,
         service_id_value,
-        revision_id_value,
+        namespace_revision_entry_id_value,
         ManagedContainerKind::Service,
         state,
     )
@@ -427,7 +431,7 @@ fn managed_container(
     machine_id_value: &str,
     container_id_value: &str,
     service_id_value: &str,
-    revision_id_value: &str,
+    namespace_revision_entry_id_value: &str,
     kind: ManagedContainerKind,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
@@ -435,7 +439,7 @@ fn managed_container(
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id(service_id_value),
-        revision_id: revision_id(revision_id_value),
+        revision_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
         operation_id: operation_id("op_1"),
         step_id: step_id("step_1"),
         kind,

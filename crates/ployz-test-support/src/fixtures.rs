@@ -79,7 +79,7 @@ pub fn deploy_target(service: &str) -> DeployRequest {
             service_id: service_id(service),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }
@@ -93,7 +93,7 @@ pub fn deploy_target_with_route(
     endpoint_port: u16,
 ) -> DeployRequest {
     let mut request = deploy_target(service);
-    request.services[0].route = Some(DeployRoute {
+    request.services[0].routes.push(DeployRoute {
         target: RouteTarget::new(route_hostname(hostname), route_port(gateway_port)),
         endpoint_port: route_port(endpoint_port),
     });

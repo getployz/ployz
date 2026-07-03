@@ -2,7 +2,7 @@ use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, OperationId, ServiceId};
-use ployz_core::ops::{DeployEvidence, DeployTransition};
+use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use std::future::Future;
@@ -89,6 +89,11 @@ pub trait ActiveRouteCommitter {
         &mut self,
         state: ActiveRouteState,
     ) -> impl Future<Output = Result<(), ActiveRouteCommitError>> + Send;
+
+    fn remove_active_route(
+        &mut self,
+        target: RouteTarget,
+    ) -> impl Future<Output = Result<(), ActiveRouteCommitError>> + Send;
 }
 
 impl DeployOperationRecorder for crate::controllers::OperationControllers {
@@ -123,6 +128,15 @@ impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
         state: ActiveRouteState,
     ) -> Result<(), ActiveRouteCommitError> {
         AsyncNatsCoreStateStore::replace_active_route(self, &state)
+            .await
+            .map_err(ActiveRouteCommitError::Store)
+    }
+
+    async fn remove_active_route(
+        &mut self,
+        target: RouteTarget,
+    ) -> Result<(), ActiveRouteCommitError> {
+        AsyncNatsCoreStateStore::remove_active_route(self, &target)
             .await
             .map_err(ActiveRouteCommitError::Store)
     }

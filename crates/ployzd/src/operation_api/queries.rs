@@ -4,7 +4,9 @@
 use crate::controllers::OperationControllers;
 use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
+use ployz_core::ids::{
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
+};
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
@@ -307,10 +309,10 @@ fn derive_runtime_revisions(
     revisions
         .into_iter()
         .map(
-            |(namespace_id, service_id, revision_id)| RuntimeServiceRevision {
+            |(namespace_id, service_id, namespace_revision_entry_id)| RuntimeServiceRevision {
                 namespace_id,
                 service_id,
-                revision_id,
+                namespace_revision_entry_id,
             },
         )
         .collect()
@@ -320,7 +322,8 @@ fn derive_runtime_releases(
     services: &[ServiceSnapshot],
     routes: &[ActiveRouteState],
 ) -> Vec<RuntimeServiceRelease> {
-    let mut releases = BTreeMap::<(NamespaceId, ServiceId, RevisionId), Vec<_>>::new();
+    let mut releases =
+        BTreeMap::<(NamespaceId, ServiceId, NamespaceRevisionEntryId), Vec<_>>::new();
     for service in services {
         releases
             .entry((
@@ -344,11 +347,13 @@ fn derive_runtime_releases(
     releases
         .into_iter()
         .map(
-            |((namespace_id, service_id, revision_id), routes)| RuntimeServiceRelease {
-                namespace_id,
-                service_id,
-                revision_id,
-                routes,
+            |((namespace_id, service_id, namespace_revision_entry_id), routes)| {
+                RuntimeServiceRelease {
+                    namespace_id,
+                    service_id,
+                    namespace_revision_entry_id,
+                    routes,
+                }
             },
         )
         .collect()
@@ -370,7 +375,7 @@ fn derive_runtime_instances(
                 machine_id: container.machine_id.clone(),
                 container_id: container.container_id.clone(),
                 service_id: container.service_id.clone(),
-                revision_id: container.revision_id.clone(),
+                namespace_revision_entry_id: container.revision_id.clone(),
                 operation_id: container.operation_id.clone(),
                 step_id: container.step_id.clone(),
                 state: container.state.clone(),

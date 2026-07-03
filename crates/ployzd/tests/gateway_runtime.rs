@@ -4,8 +4,8 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
-    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
-    step_id,
+    container_id, machine_id, namespace_revision_entry_id, operation_id, route_hostname,
+    route_port, service_id, step_id,
 };
 use ployzd::gateway::{
     GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
@@ -203,7 +203,7 @@ fn source_input(
             target: route_target(hostname, 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            revision_id: namespace_revision_entry_id("entry_1"),
         }],
         observed_machines: vec![GatewayMachineObservation {
             freshness: GatewayObservationFreshness::Fresh,
@@ -224,7 +224,7 @@ fn managed_container(
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
+        revision_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,

@@ -418,7 +418,7 @@ mod tests {
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
-    use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
 
@@ -764,7 +764,7 @@ mod tests {
     fn labels(step: &str) -> crate::docker::labels::ManagedContainerLabels {
         crate::docker::labels::ManagedContainerLabels {
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            revision_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
@@ -788,8 +788,8 @@ mod tests {
         ServiceId::try_new(value).expect("valid service id")
     }
 
-    fn revision_id(value: &str) -> RevisionId {
-        RevisionId::try_new(value).expect("valid revision id")
+    fn namespace_revision_entry_id(value: &str) -> NamespaceRevisionEntryId {
+        NamespaceRevisionEntryId::try_new(value).expect("valid namespace revision entry id")
     }
 
     fn step_id(value: &str) -> StepId {

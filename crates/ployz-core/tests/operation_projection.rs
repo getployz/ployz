@@ -10,7 +10,8 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{
-    container_id, event_sequence, machine_id, machine_name, namespace_id, operation_id, service_id,
+    container_id, event_sequence, machine_id, machine_name, namespace_id, namespace_revision_id,
+    operation_id, service_id,
 };
 
 #[test]
@@ -835,8 +836,7 @@ fn plan_created_event() -> OperationEvent {
         operation_id: operation_id("op_123"),
         plan: DeployPlan {
             namespace_id: namespace_id("default"),
-            target_revision: ployz_core::ids::RevisionId::try_new("rev_2")
-                .expect("valid revision id"),
+            namespace_revision_id: namespace_revision_id("rev_2"),
             services: vec![DeployServicePlan {
                 service_id: service_id("svc_api"),
                 steps: vec![DeployPlanStep::RunContainer {

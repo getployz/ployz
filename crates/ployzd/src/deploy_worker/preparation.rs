@@ -24,7 +24,7 @@ pub struct DeployExecutionFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionFacts {
     pub active_service: Option<ActiveServiceState>,
-    pub active_route: Option<ActiveRouteState>,
+    pub active_routes: Vec<ActiveRouteState>,
 }
 
 pub fn prepare_deploy_execution_command(
@@ -42,13 +42,14 @@ pub fn prepare_deploy_execution_command(
         let prepared = prepare_deploy(DeployPreparationInput {
             request: service_request,
             active_service: service_facts.active_service,
-            active_route: service_facts.active_route,
+            active_routes: service_facts.active_routes,
             eligible_machines: facts.eligible_machines.clone(),
             observed_machines: facts.observed_machines.clone(),
         })?;
         services.push(DeployServiceExecutionCommand {
             request: prepared.request,
-            route_commit: prepared.route_commit,
+            route_commits: prepared.route_commits,
+            route_removals: prepared.route_removals,
             eligible_machines: prepared.eligible_machines,
             existing_replicas: prepared.existing_replicas,
             cleanup_candidates: prepared.cleanup_candidates,

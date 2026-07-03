@@ -38,6 +38,11 @@ pub async fn load_deploy_execution_facts_from_nats(
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let service_requests = request.service_requests();
+    let active_routes = core_state.active_routes().await.map_err(|source| {
+        DeployFactLoadError::ActiveRoutesRead {
+            message: source.to_string(),
+        }
+    })?;
     let mut service_facts = Vec::new();
     for service in &service_requests {
         let active_service = core_state
@@ -47,19 +52,14 @@ pub async fn load_deploy_execution_facts_from_nats(
                 service_id: service.service_id.clone(),
                 message: source.to_string(),
             })?;
-        let active_route = match &service.route {
-            Some(route) => Some(core_state.active_route(&route.target).await.map_err(
-                |source| DeployFactLoadError::ActiveRouteRead {
-                    route: route.target.clone(),
-                    message: source.to_string(),
-                },
-            )?),
-            None => None,
-        }
-        .flatten();
+        let active_routes = active_routes
+            .iter()
+            .filter(|route| route.service_id == service.service_id)
+            .cloned()
+            .collect();
         service_facts.push(DeployServiceExecutionFacts {
             active_service,
-            active_route,
+            active_routes,
         });
     }
     let machine_scope = load_active_machine_scope(core_state, machine_scope).await?;
@@ -84,7 +84,7 @@ fn routed_dataplane_machines(
     services: &[ployz_core::deploy::DeployServiceRequest],
     fallback_machines: Vec<MachineId>,
 ) -> Vec<MachineId> {
-    if services.iter().all(|service| service.route.is_none()) {
+    if services.iter().all(|service| service.routes.is_empty()) {
         return Vec::new();
     }
 
@@ -155,8 +155,7 @@ pub enum DeployFactLoadError {
         service_id: ServiceId,
         message: String,
     },
-    ActiveRouteRead {
-        route: ployz_core::ops::RouteTarget,
+    ActiveRoutesRead {
         message: String,
     },
     ActiveMachineRead {
@@ -180,10 +179,10 @@ impl fmt::Display for DeployFactLoadError {
                 service_id.as_str(),
                 message
             ),
-            Self::ActiveRouteRead { route, message } => write!(
+            Self::ActiveRoutesRead { message } => write!(
                 formatter,
-                "active route state for {:?} could not be read: {}",
-                route, message
+                "active route state could not be read: {}",
+                message
             ),
             Self::ActiveMachineRead { message } => {
                 write!(formatter, "active machines could not be read: {message}")

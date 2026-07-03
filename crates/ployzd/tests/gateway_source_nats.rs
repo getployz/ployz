@@ -9,8 +9,8 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
-    service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
+    route_hostname, route_port, service_id, step_id,
 };
 use ployzd::gateway::{
     GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,
@@ -39,7 +39,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
             target: target.clone(),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            revision_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("route stores");
@@ -52,7 +52,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
                 "machine_7",
                 "ctr_7",
                 "svc_api",
-                "rev_1",
+                "entry_1",
             )],
         ))
         .await
@@ -95,7 +95,7 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
             target: target.clone(),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            revision_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("route stores");
@@ -108,7 +108,7 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
                 "machine_7",
                 "ctr_7",
                 "svc_api",
-                "rev_1",
+                "entry_1",
             )],
         ))
         .await
@@ -154,7 +154,7 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
         target: route_target("api.example.com", 443),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
+        revision_id: namespace_revision_entry_id("entry_1"),
     })
     .expect("route state encodes");
     core_bucket
@@ -216,13 +216,13 @@ fn managed_observation(
     machine_id_value: &str,
     container_id_value: &str,
     service_id_value: &str,
-    revision_id_value: &str,
+    namespace_revision_entry_id_value: &str,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id(service_id_value),
-        revision_id: revision_id(revision_id_value),
+        revision_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,

@@ -6,7 +6,9 @@ use ployz_core::dataplane::{
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::{
+    ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
+};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint, RoutePort};
@@ -38,7 +40,7 @@ pub struct ContainerEndpointRequest {
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunSpec {
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub revision_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,

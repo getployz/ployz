@@ -1,8 +1,8 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
-    DeployPreparationError, DeployPreparationInput, DeployRoute, DeployServicePlan,
-    DeployServiceRequest, ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot,
-    plan_service_deploy, prepare_deploy,
+    DeployPreparationInput, DeployRoute, DeployServicePlan, DeployServiceRequest,
+    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, plan_service_deploy,
+    prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -91,7 +91,7 @@ fn new_service_plan_runs_replicas_across_eligible_machines() {
 }
 
 #[test]
-fn service_plan_reuses_running_target_revision_containers() {
+fn service_plan_reuses_running_target_entry_containers() {
     let mut input = planning_input(3, [machine_id("machine_a"), machine_id("machine_b")]);
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
@@ -184,7 +184,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
             service_id: service_id("svc_api"),
             active_revision: namespace_revision_entry_id("entry_old"),
         }),
-        active_route: None,
+        active_routes: Vec::new(),
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         observed_machines: vec![observed_machine(
             "machine_b",
@@ -238,21 +238,21 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     assert_eq!(
         prepared.cleanup_candidates,
         vec![
-            cleanup_container_with_revision("machine_b", "ctr_target", "entry_1"),
-            cleanup_container_with_revision("machine_b", "ctr_old", "entry_old"),
+            cleanup_container_with_entry("machine_b", "ctr_target", "entry_1"),
+            cleanup_container_with_entry("machine_b", "ctr_old", "entry_old"),
         ]
     );
 }
 
 #[test]
-fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
+fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_port() {
     let mut request = deploy_request(2);
-    request.route = Some(deploy_route("api.example.com", 443, 8080));
+    request.routes = vec![deploy_route("api.example.com", 443, 8080)];
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         active_service: None,
-        active_route: None,
+        active_routes: Vec::new(),
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         observed_machines: vec![observed_machine(
             "machine_b",
@@ -280,69 +280,103 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
 
     assert_eq!(
         prepared.existing_replicas,
-        vec![existing_replica("machine_b", "ctr_target")]
+        vec![
+            existing_replica("machine_b", "ctr_wrong_port"),
+            existing_replica("machine_b", "ctr_target"),
+        ]
     );
 }
 
 #[test]
-fn deploy_preparation_rejects_active_route_for_another_target() {
+fn deploy_preparation_commits_multiple_routes_and_removes_omitted_service_routes() {
     let mut request = deploy_request(1);
-    request.route = Some(deploy_route("api.example.com", 443, 8080));
+    request.routes = vec![
+        deploy_route("api.example.com", 443, 8080),
+        deploy_route("www.example.com", 443, 8080),
+    ];
 
-    assert_eq!(
-        prepare_deploy(DeployPreparationInput {
-            request,
-            active_service: None,
-            active_route: Some(ActiveRouteState {
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request,
+        active_service: None,
+        active_routes: vec![
+            ActiveRouteState {
                 namespace_id: namespace_id("default"),
                 target: route_target("admin.example.com", 443),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
                 revision_id: namespace_revision_entry_id("entry_old"),
-            }),
-            eligible_machines: vec![machine_id("machine_a")],
-            observed_machines: Vec::new(),
-        }),
-        Err(DeployPreparationError::ActiveRouteMismatch {
-            expected_route: route_target("api.example.com", 443),
-            actual_route: route_target("admin.example.com", 443),
-        })
+            },
+            ActiveRouteState {
+                namespace_id: namespace_id("default"),
+                target: route_target("other.example.com", 443),
+                endpoint_port: route_port(8080),
+                service_id: service_id("svc_worker"),
+                revision_id: namespace_revision_entry_id("entry_worker"),
+            },
+        ],
+        eligible_machines: vec![machine_id("machine_a")],
+        observed_machines: Vec::new(),
+    })
+    .expect("route reconciliation succeeds");
+
+    assert_eq!(
+        prepared.route_commits,
+        vec![
+            ActiveRouteState {
+                namespace_id: namespace_id("default"),
+                target: route_target("api.example.com", 443),
+                endpoint_port: route_port(8080),
+                service_id: service_id("svc_api"),
+                revision_id: namespace_revision_entry_id("entry_1"),
+            },
+            ActiveRouteState {
+                namespace_id: namespace_id("default"),
+                target: route_target("www.example.com", 443),
+                endpoint_port: route_port(8080),
+                service_id: service_id("svc_api"),
+                revision_id: namespace_revision_entry_id("entry_1"),
+            },
+        ]
+    );
+    assert_eq!(
+        prepared.route_removals,
+        vec![route_target("admin.example.com", 443)]
     );
 }
 
 #[test]
-fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
+fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
     let mut request = deploy_request(1);
-    request.route = Some(deploy_route("api.example.com", 443, 8080));
+    request.routes = vec![deploy_route("api.example.com", 443, 8080)];
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         active_service: None,
-        active_route: Some(ActiveRouteState {
+        active_routes: vec![ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
-            endpoint_port: route_port(8080),
+            endpoint_port: route_port(3000),
             service_id: service_id("svc_api"),
             revision_id: namespace_revision_entry_id("entry_old"),
-        }),
-        eligible_machines: vec![machine_id("machine_a")],
+        }],
+        eligible_machines: Vec::new(),
         observed_machines: Vec::new(),
     })
     .expect("routed deploy preparation succeeds");
 
-    let route_commit = prepared
-        .route_commit
-        .expect("routed deploy has route state");
     assert_eq!(
-        route_commit,
-        ActiveRouteState {
+        prepared.route_commits,
+        vec![ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
             revision_id: namespace_revision_entry_id("entry_1"),
-        }
+        }]
     );
+    assert!(prepared.route_removals.is_empty());
+    assert!(prepared.existing_replicas.is_empty());
+    assert!(prepared.cleanup_candidates.is_empty());
 }
 
 fn service_spec(
@@ -355,9 +389,11 @@ fn service_spec(
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-        route: route.map(|(endpoint_port, public_port)| {
-            deploy_route("api.example.com", public_port, endpoint_port)
-        }),
+        routes: route
+            .map(|(endpoint_port, public_port)| {
+                vec![deploy_route("api.example.com", public_port, endpoint_port)]
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -381,7 +417,7 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
         namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-        route: None,
+        routes: Vec::new(),
     }
 }
 
@@ -448,19 +484,19 @@ fn existing_replica(machine: &str, container: &str) -> ExistingServiceReplica {
 }
 
 fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
-    cleanup_container_with_revision(machine, container, "rev_1")
+    cleanup_container_with_entry(machine, container, "entry_1")
 }
 
-fn cleanup_container_with_revision(
+fn cleanup_container_with_entry(
     machine: &str,
     container: &str,
-    revision: &str,
+    namespace_revision_entry: &str,
 ) -> DeployCleanupContainer {
     DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id(revision),
+        revision_id: namespace_revision_entry_id(namespace_revision_entry),
         operation_id: operation_id("op_existing"),
         step_id: step_id(container),
         kind: ManagedContainerKind::Service,

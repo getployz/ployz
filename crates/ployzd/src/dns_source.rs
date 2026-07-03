@@ -103,6 +103,7 @@ impl From<ActiveRouteStoreError> for DnsSourceError {
             },
             error @ (ActiveRouteStoreError::Encode(_)
             | ActiveRouteStoreError::Put { .. }
+            | ActiveRouteStoreError::Delete { .. }
             | ActiveRouteStoreError::ListKeys { .. }
             | ActiveRouteStoreError::Watch { .. }
             | ActiveRouteStoreError::Get { .. }

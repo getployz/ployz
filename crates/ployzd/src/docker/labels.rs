@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId, SubjectTokenError};
+use ployz_core::ids::{
+    NamespaceRevisionEntryId, OperationId, ServiceId, StepId, SubjectTokenError,
+};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{RoutePort, RoutePortError};
 use serde::{Deserialize, Serialize};
@@ -17,7 +19,7 @@ pub const ENDPOINT_PORT_LABEL: &str = "plz.endpoint_port";
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerLabels {
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub revision_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
@@ -29,7 +31,7 @@ pub struct ManagedContainerLabels {
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerIdentity {
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub revision_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
@@ -88,7 +90,7 @@ impl ManagedContainerLabels {
         }
 
         let service_id = parse_id(labels, SERVICE_ID_LABEL, ServiceId::try_new)?;
-        let revision_id = parse_id(labels, REVISION_LABEL, RevisionId::try_new)?;
+        let revision_id = parse_id(labels, REVISION_LABEL, NamespaceRevisionEntryId::try_new)?;
         let operation_id = parse_id(labels, OPERATION_ID_LABEL, OperationId::try_new)?;
         let step_id = parse_id(labels, STEP_ID_LABEL, StepId::try_new)?;
         let kind_value = required_label(labels, CONTAINER_TYPE_LABEL)?;
