@@ -1,6 +1,5 @@
 //! Machine-local NATS RPC protocol types.
 
-
 use ployz_core::dataplane::{
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareRequest,
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,

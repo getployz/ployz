@@ -67,8 +67,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
-    ActiveMachineState, RouteBindingState, ServingTargetEntry, GatewayServingStatus,
-    GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    RouteBindingState, ServingTargetEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -3,8 +3,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::NamespaceRevisionEntryId;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};

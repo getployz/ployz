@@ -7,8 +7,7 @@ mod preparation;
 mod types;
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployPlanningInput, ReplicaSlot,
-    plan_namespace_deploy,
+    DeployPlan, DeployPlanStep, DeployPlanningInput, ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerKind;
@@ -21,26 +20,25 @@ pub use facts::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
-    ServingTargetCommitError, DeployExecutionError, DeployExecutionStep, DeployFailureRecordError,
-    DeployHealthCheckError, DeployOperationRecordError, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason,
+    DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
+    DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    ServingTargetCommitError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
-    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitter, DataplanePreparer,
-    DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
+    DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
+    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitter,
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, DeployServiceExecutionFacts,
     namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 
-use ployz_core::machine_runtime::ManagedContainerIdentity;
 use crate::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkRpcRequest,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
 };
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
     DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
@@ -200,7 +198,10 @@ where
                     slot,
                 } => containers.push(DeployContainer {
                     service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+                    namespace_revision_entry_id: service
+                        .request
+                        .namespace_revision_entry_id
+                        .clone(),
                     machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     step_id: deploy_step_id(*slot)
@@ -350,7 +351,7 @@ where
             MachineContainerRemoveRpcRequest {
                 operation_id: command.operation_id.clone(),
                 container_id: target.container_id.clone(),
-                expected_identity: cleanup_expected_identity(target),
+                expected_identity: target.identity.clone(),
             },
         );
         let result = tokio::time::timeout(command.step_timeout(), result).await;
@@ -479,10 +480,6 @@ fn retained_container_identity(
         step_id: container.step_id.clone(),
         kind: ManagedContainerKind::Service,
     }
-}
-
-fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
-    target.identity.clone()
 }
 
 fn inspect_hint(container_id: &ployz_core::ids::ContainerId) -> OperatorHint {

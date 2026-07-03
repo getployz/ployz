@@ -3,12 +3,11 @@ use ployz_core::dataplane::{
     WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -255,7 +254,6 @@ impl ObservingContainerRunner {
             })?;
         state.next_container_id()
     }
-
 }
 
 #[derive(Debug, Default)]

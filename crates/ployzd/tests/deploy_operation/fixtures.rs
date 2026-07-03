@@ -13,8 +13,7 @@ use ployz_core::ids::{
     OperationId, ServiceId,
 };
 use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot,
-    ManagedContainerObservation,
+    MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
@@ -27,11 +26,11 @@ pub(crate) use ployz_test_support::ids::{
     operation_id, service_id,
 };
 use ployzd::deploy_worker::{
-    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitError, ServingTargetCommitter,
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     DeployServiceExecutionFacts, MachineContainerRuntime, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason, prepare_deploy_execution_command,
+    MachineRuntimeUnavailableReason, RouteBindingCommitError, RouteBindingCommitter,
+    ServingTargetCommitError, ServingTargetCommitter, prepare_deploy_execution_command,
 };
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,

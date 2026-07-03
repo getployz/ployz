@@ -403,7 +403,6 @@ impl std::error::Error for MachineProcessRuntimeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::machine_runtime::ManagedContainerIdentity;
     use crate::machine_runtime::runner::{
         CreateManagedContainer, ExistingManagedContainer, MachineContainerRunner,
         MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
@@ -413,6 +412,7 @@ mod tests {
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
+    use ployz_core::machine_runtime::ManagedContainerIdentity;
     use ployz_core::machine_runtime::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
 
@@ -599,7 +599,7 @@ mod tests {
         let nats = TestNats::start_bootstrapped().await;
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
-            identity: labels("run_1"),
+            identity: identity_for("run_1"),
             state: ExistingManagedContainerState::Running { ip: None },
         }]);
 
@@ -755,7 +755,7 @@ mod tests {
         }
     }
 
-    fn labels(step: &str) -> ManagedContainerIdentity {
+    fn identity_for(step: &str) -> ManagedContainerIdentity {
         ManagedContainerIdentity {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),

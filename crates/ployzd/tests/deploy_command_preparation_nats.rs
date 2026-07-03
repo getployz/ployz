@@ -6,8 +6,7 @@ use ployz_core::deploy::{
 use ployz_core::ids::{NamespaceRevisionEntryId, OperationId};
 use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ServingTargetEntryKey};
@@ -245,7 +244,10 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    let key = ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &service_id("svc_api"));
+    let key = ServingTargetEntryKey::from_namespace_service(
+        &namespace_id("default"),
+        &service_id("svc_api"),
+    );
     let wrong_service_state = ServingTargetEntry {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),
@@ -462,14 +464,13 @@ fn managed_observation_with_entry(
     namespace_revision_entry_id: NamespaceRevisionEntryId,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    let mut observation = containers::observation(machine_id, container_id)
+    containers::observation(machine_id, container_id)
         .service(service_id)
         .entry(namespace_revision_entry_id.as_str())
         .operation("op_existing")
         .step(&format!("existing_{container_id}"))
-        .build();
-    observation.state = state;
-    observation
+        .state(state)
+        .build()
 }
 
 fn active_machine(machine_id: &str) -> ActiveMachineState {

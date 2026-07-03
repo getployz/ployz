@@ -85,16 +85,11 @@ impl GatewayUpstreamKey {
         }
     }
 
-    fn for_container(
-        container: &ployz_core::machine_runtime::ManagedContainerObservation,
-    ) -> Self {
+    fn for_container(container: &ployz_core::machine_runtime::ManagedContainerObservation) -> Self {
         Self {
             namespace_id: container.identity.namespace_id.clone(),
             service_id: container.identity.service_id.clone(),
-            namespace_revision_entry_id: container
-                .identity
-                .namespace_revision_entry_id
-                .clone(),
+            namespace_revision_entry_id: container.identity.namespace_revision_entry_id.clone(),
         }
     }
 }
@@ -181,7 +176,12 @@ pub fn project_gateway(
     let serving_by_service = input
         .serving
         .iter()
-        .map(|entry| ((entry.namespace_id.clone(), entry.service_id.clone()), entry))
+        .map(|entry| {
+            (
+                (entry.namespace_id.clone(), entry.service_id.clone()),
+                entry,
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let indexed_containers = index_fresh_running_containers(&input.observed_machines);
     let mut routes = Vec::with_capacity(input_routes.len());

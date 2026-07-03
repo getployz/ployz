@@ -2,18 +2,16 @@ use async_nats::jetstream;
 use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    namespace_id,
-    machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
+    machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
-use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::machine_runtime::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineRunContainerOutcome,
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineRunContainerOutcome,
 };
 use ployzd::machine_runtime::service::start_machine_runtime_service;
 

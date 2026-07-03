@@ -9,8 +9,8 @@ use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id,
-    route_hostname, route_port, service_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
+    route_port, service_id,
 };
 use ployzd::gateway::{
     GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,

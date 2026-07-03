@@ -1,7 +1,5 @@
 use super::network::{ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
-use crate::docker::labels::{
-    MANAGED_LABEL, ManagedContainerLabelError,
-};
+use crate::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
 use crate::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -18,8 +16,8 @@ use bollard::query_parameters::{
     LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
-use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
@@ -184,8 +182,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match cleanup target: expected {:?}, found {:?}",
-                    expected_identity,
-                    existing.identity
+                    expected_identity, existing.identity
                 ),
             });
         }
@@ -229,8 +226,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match stop target: expected {:?}, found {:?}",
-                    expected_identity,
-                    existing.identity
+                    expected_identity, existing.identity
                 ),
             });
         }
@@ -468,9 +464,7 @@ const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
-        labels: Some(hashmap_from_btree(crate::docker::labels::render(
-            &command.identity,
-        ))),
+        labels: Some(hashmap_from_btree(labels::render(&command.identity))),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
             ..Default::default()
@@ -498,7 +492,7 @@ fn existing_container_from_summary(
         .state
         .ok_or(DockerManagedContainerSummaryError::MissingState)?;
 
-    let identity = crate::docker::labels::parse(&btree_from_hashmap(labels))
+    let identity = labels::parse(&btree_from_hashmap(labels))
         .map_err(DockerManagedContainerSummaryError::InvalidLabels)?;
     Ok(ExistingManagedContainer {
         container_id: ContainerId::try_new(id)
@@ -590,8 +584,7 @@ mod tests {
     use super::*;
     use ployz_core::deploy::ImageReference;
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use ployz_core::machine_runtime::ManagedContainerIdentity;
-use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
 
     #[test]
     fn list_options_filter_to_managed_containers() {
@@ -611,13 +604,13 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn create_body_preserves_image_and_labels() {
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            identity: managed_labels(),
+            identity: managed_identity(),
         });
 
         assert_eq!(body.image, Some("ghcr.io/acme/api:rev-2".to_owned()));
         assert_eq!(
             body.labels,
-            Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels())))
+            Some(hashmap_from_btree(labels::render(&managed_identity())))
         );
     }
 
@@ -628,7 +621,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
         // later route attach can reach it without recreation.
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            identity: managed_labels(),
+            identity: managed_identity(),
         });
 
         assert_eq!(body.exposed_ports, None);
@@ -664,7 +657,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn summary_with_managed_labels_becomes_existing_container() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
+            labels: Some(hashmap_from_btree(labels::render(&managed_identity()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             ..Default::default()
         };
@@ -673,7 +666,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
             existing_container_from_summary(summary).expect("summary parses"),
             ExistingManagedContainer {
                 container_id: container_id("0123456789abcdef"),
-                identity: managed_labels(),
+                identity: managed_identity(),
                 state: ExistingManagedContainerState::Running { ip: None },
             }
         );
@@ -683,7 +676,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn running_summary_with_network_ip_reports_the_endpoint_ip() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
+            labels: Some(hashmap_from_btree(labels::render(&managed_identity()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
@@ -711,7 +704,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn running_summary_uses_only_the_ployz_network_for_endpoint_evidence() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
+            labels: Some(hashmap_from_btree(labels::render(&managed_identity()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([
@@ -748,7 +741,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn running_summary_without_ployz_network_is_running_but_unroutable() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
+            labels: Some(hashmap_from_btree(labels::render(&managed_identity()))),
             state: Some(ContainerSummaryStateEnum::RUNNING),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
@@ -774,7 +767,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn summary_with_created_state_is_not_reusable_as_running() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
+            labels: Some(hashmap_from_btree(labels::render(&managed_identity()))),
             state: Some(ContainerSummaryStateEnum::CREATED),
             ..Default::default()
         };
@@ -791,7 +784,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
     fn summary_with_paused_state_is_not_startable() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
-            labels: Some(hashmap_from_btree(crate::docker::labels::render(&managed_labels()))),
+            labels: Some(hashmap_from_btree(labels::render(&managed_identity()))),
             state: Some(ContainerSummaryStateEnum::PAUSED),
             ..Default::default()
         };
@@ -821,7 +814,7 @@ use ployz_core::machine_runtime::ManagedContainerKind;
         );
     }
 
-    fn managed_labels() -> ManagedContainerIdentity {
+    fn managed_identity() -> ManagedContainerIdentity {
         ManagedContainerIdentity {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),

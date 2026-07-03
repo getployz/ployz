@@ -16,7 +16,7 @@ use std::time::Duration;
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 
 use super::{
-    RouteBindingCommitError, DeployContainer, DeployExecutionCommand, DeployOperationRecorder,
+    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, RouteBindingCommitError,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {

@@ -1,5 +1,6 @@
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::containers;
@@ -9,14 +10,12 @@ use ployz_test_support::ids::{
 use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
-    MachineSubstrateReportRpcResponse,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
 };
 use ployzd::services::machine_runtime_service;
 use std::sync::{Arc, Mutex};
@@ -146,10 +145,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
     let nats = test_nats().await;
     let conflict = MachineContainerRunDomainError::OperationStepConflict {
         container_id: container_id("ctr_existing"),
-        expected: managed_labels(),
+        expected: managed_identity(),
         actual: ManagedContainerIdentity {
             namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
-            ..managed_labels()
+            ..managed_identity()
         },
     };
     let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
@@ -171,10 +170,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
         MachineContainerRuntimeError::OperationStepConflict {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_existing"),
-            expected: managed_labels(),
+            expected: managed_identity(),
             actual: ManagedContainerIdentity {
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
-                ..managed_labels()
+                ..managed_identity()
             },
         }
     );
@@ -268,7 +267,7 @@ async fn nats_machine_runtime_calls_container_remove_service() {
         [MachineContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
-            expected_identity: managed_labels().clone(),
+            expected_identity: managed_identity(),
         }]
     );
 }
@@ -530,7 +529,7 @@ fn remove_request(container_id: &str) -> MachineContainerRemoveRpcRequest {
     MachineContainerRemoveRpcRequest {
         operation_id: operation_id("op_123"),
         container_id: self::container_id(container_id),
-        expected_identity: managed_labels().clone(),
+        expected_identity: managed_identity(),
     }
 }
 
@@ -579,7 +578,7 @@ fn managed_container_spec() -> ManagedContainerIdentity {
         .build()
 }
 
-fn managed_labels() -> ManagedContainerIdentity {
+fn managed_identity() -> ManagedContainerIdentity {
     containers::identity("svc_api")
         .entry("entry_2")
         .operation("op_123")

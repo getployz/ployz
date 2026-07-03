@@ -18,7 +18,7 @@ use ployz_core::ops::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
     OperationStatus, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, MachinePublicIpObservation};
+use ployz_core::state::{MachinePublicIpObservation, RouteBindingState};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
@@ -646,16 +646,16 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .await
         .expect("route can change without control runtime");
     observations
-        .replace_machine_containers(
-            &containers::snapshot(
-                "machine_a",
-                [containers::observation("machine_a", "ctr_after_control_down")
+        .replace_machine_containers(&containers::snapshot(
+            "machine_a",
+            [
+                containers::observation("machine_a", "ctr_after_control_down")
                     .entry("rev_2")
                     .operation("op_e2e_control_down_route")
                     .step("step_after_control_down")
-                    .running_at(endpoint_ip("127.0.0.1"))],
-            ),
-        )
+                    .running_at(endpoint_ip("127.0.0.1")),
+            ],
+        ))
         .await
         .expect("observation can change without control runtime");
 

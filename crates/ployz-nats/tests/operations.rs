@@ -9,8 +9,8 @@ use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    cert_id, container_id, machine_id, namespace_id,
-    namespace_revision_id, operation_id, service_id,
+    cert_id, container_id, machine_id, namespace_id, namespace_revision_id, operation_id,
+    service_id,
 };
 
 #[test]
@@ -199,7 +199,8 @@ fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
 fn deploy_plan() -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: ployz_core::ids::NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
+        namespace_revision_id: ployz_core::ids::NamespaceRevisionId::try_new("rev_2")
+            .expect("valid revision id"),
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),
             steps: vec![DeployPlanStep::RunContainer {

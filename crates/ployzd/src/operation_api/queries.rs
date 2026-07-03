@@ -369,10 +369,7 @@ fn derive_runtime_instances(
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             service_id: container.identity.service_id.clone(),
-            namespace_revision_entry_id: container
-                .identity
-                .namespace_revision_entry_id
-                .clone(),
+            namespace_revision_entry_id: container.identity.namespace_revision_entry_id.clone(),
             operation_id: container.identity.operation_id.clone(),
             step_id: container.identity.step_id.clone(),
             state: container.state.clone(),

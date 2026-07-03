@@ -1,20 +1,20 @@
 //! NATS-backed canonical current-state adapters.
 
 mod active_machine;
-mod route_binding;
-mod serving_target_entry;
 mod namespace_lock;
 mod nats_authorized_user;
+mod route_binding;
+mod serving_target_entry;
 
 use crate::kv::{KV_CORE_BUCKET, KvListError, NatsIoTimeout, with_io_timeout};
 pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};
-pub use route_binding::RouteBindingStoreError;
 use async_nats::jetstream;
 pub use namespace_lock::{
     NAMESPACE_LOCK_RENEW_INTERVAL_MS, NAMESPACE_LOCK_TTL_MS, NamespaceLockAcquire,
     NamespaceLockRenew,
 };
 use ployz_core::ids::ServiceId;
+pub use route_binding::RouteBindingStoreError;
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -96,7 +96,9 @@ impl fmt::Display for CoreStateStoreError {
             Self::CasConflict { message } => write!(formatter, "cas conflict: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
-            Self::ListKeys { message } => write!(formatter, "list serving target entry keys: {message}"),
+            Self::ListKeys { message } => {
+                write!(formatter, "list serving target entry keys: {message}")
+            }
             Self::CorruptServingTargetEntry {
                 key,
                 expected_service_id,
