@@ -22,10 +22,7 @@ use ployz_core::ops::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
     OperationStatus, RouteTarget,
 };
-use ployz_core::state::{
-    ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
-    MachinePublicIpObservation,
-};
+use ployz_core::state::{ActiveRouteState, MachinePublicIpObservation};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
@@ -644,15 +641,10 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .await
         .expect("open core state store");
     routes
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname.clone(), route_port),
             endpoint_port: self::route_port(second_upstream.port()),
-            expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
-                service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_2"),
-                endpoint_port: self::route_port(first_upstream_port),
-            }),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
         })

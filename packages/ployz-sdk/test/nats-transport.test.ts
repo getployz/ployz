@@ -2,16 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  deploySubmitRequest,
   eventSequence,
+  imageReference,
   machineJoinToken,
+  namespaceId,
   operationId,
   machineId,
   PloyzNatsTransport,
   PloyzNatsTransportError,
+  replicaCount,
+  revisionId,
+  serviceId,
 } from "../src/index.ts";
 import type {
   AcceptedOperation,
+  DeploySubmitRequest,
   MachineJoinReportRequest,
   PloyzNatsRequestConnection,
   PloyzNatsResponseMessage,
@@ -23,7 +28,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   ]);
   const transport = new PloyzNatsTransport(nats, { requestTimeoutMs: 1234 });
 
-  const response = await transport.request("deploy.submit", deploySubmitRequest(deployInput()));
+  const response = await transport.request("deploy.submit", deploySubmitRequest());
 
   assert.deepEqual(response, { status: "ok", value: acceptedOperation("op_123") });
   assert.equal(nats.requests[0].subject, "plz.v1.svc.api.deploy.submit");
@@ -59,7 +64,7 @@ test("NATS transport surfaces service error headers before response decoding", a
   const transport = new PloyzNatsTransport(nats);
 
   await assert.rejects(
-    transport.request("deploy.submit", deploySubmitRequest(deployInput())),
+    transport.request("deploy.submit", deploySubmitRequest()),
     (error: unknown) =>
       error instanceof PloyzNatsTransportError &&
       error.endpoint === "deploy.submit" &&
@@ -185,13 +190,20 @@ function jsonResponse(value: unknown): PloyzNatsResponseMessage {
   };
 }
 
-function deployInput() {
+function deploySubmitRequest(): DeploySubmitRequest {
   return {
-    operationId: "op_123",
-    serviceId: "svc_api",
-    targetRevision: "rev_2",
-    image: "ghcr.io/acme/api:rev-2",
-    replicas: 1,
+    operation_id: operationId("op_123"),
+    target: {
+      namespace_id: namespaceId("default"),
+      target_revision: revisionId("rev_2"),
+      services: [
+        {
+          service_id: serviceId("svc_api"),
+          image: imageReference("ghcr.io/acme/api:rev-2"),
+          replicas: replicaCount(1),
+        },
+      ],
+    },
   };
 }
 

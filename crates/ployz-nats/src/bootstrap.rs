@@ -1,23 +1,15 @@
-//! JetStream bucket, stream, and Object Store bootstrap.
+//! JetStream bucket and stream bootstrap.
 
 #[path = "bootstrap/assurance.rs"]
 mod assurance;
-#[path = "bootstrap/resources.rs"]
-mod resources;
 
 use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
-use crate::objects::ObjectBucketSpec;
 use crate::observations::KV_OBS_BUCKET;
 use crate::operations::{KV_OPS_BUCKET, PLZ_OPS_STREAM};
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
 use ployz_core::subjects::OPS_STREAM_SUBJECT;
-pub use resources::{
-    BootstrapResourceAction, BootstrapResourceDecision, BootstrapResourceKind,
-    BootstrapResourceRef, BootstrapResourceRefusal,
-};
-use resources::{ExistingResourceView, PlannedResource};
 
 pub const MIN_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion {
     major: 2,
@@ -61,7 +53,6 @@ pub struct InvalidResourceReplicas {
 pub struct BootstrapPlan {
     pub kv_buckets: Vec<KvBucketSpec>,
     pub streams: Vec<StreamSpec>,
-    pub object_buckets: Vec<ObjectBucketSpec>,
 }
 
 impl BootstrapPlan {
@@ -114,45 +105,6 @@ impl BootstrapPlan {
                 StorageBackend::File,
                 DiscardPolicy::Old,
             )],
-            object_buckets: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn diff_against(&self, existing: &ExistingResources) -> BootstrapDiff {
-        BootstrapDiff::from_resources(
-            self.planned_resources()
-                .into_iter()
-                .map(|resource| resource.bootstrap_decision(&existing.view()))
-                .collect(),
-        )
-    }
-
-    fn planned_resources(&self) -> Vec<PlannedResource<'_>> {
-        let mut resources = Vec::new();
-        resources.extend(self.kv_buckets.iter().map(PlannedResource::KvBucket));
-        resources.extend(self.streams.iter().map(PlannedResource::Stream));
-        resources.extend(
-            self.object_buckets
-                .iter()
-                .map(PlannedResource::ObjectBucket),
-        );
-        resources
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsServerCapabilities {
-    pub version: NatsServerVersion,
-    pub jetstream_enabled: bool,
-}
-
-impl NatsServerCapabilities {
-    #[must_use]
-    pub const fn new(version: NatsServerVersion, jetstream_enabled: bool) -> Self {
-        Self {
-            version,
-            jetstream_enabled,
         }
     }
 }
@@ -181,74 +133,40 @@ pub enum BootstrapRefusal {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ExistingResources {
-    pub kv_buckets: Vec<KvBucketSpec>,
-    pub streams: Vec<StreamSpec>,
-    pub object_buckets: Vec<ObjectBucketSpec>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsServerCapabilities {
+    pub version: NatsServerVersion,
+    pub jetstream_enabled: bool,
 }
 
-impl ExistingResources {
-    fn view(&self) -> ExistingResourceView<'_> {
-        ExistingResourceView {
-            kv_buckets: &self.kv_buckets,
-            streams: &self.streams,
-            object_buckets: &self.object_buckets,
+impl NatsServerCapabilities {
+    #[must_use]
+    pub const fn new(version: NatsServerVersion, jetstream_enabled: bool) -> Self {
+        Self {
+            version,
+            jetstream_enabled,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapResourceKind {
+    KvBucket,
+    Stream,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootstrapResourceRef {
+    pub kind: BootstrapResourceKind,
+    pub name: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapDiff {
-    pub kv_buckets: Vec<BootstrapResourceDecision>,
-    pub streams: Vec<BootstrapResourceDecision>,
-    pub object_buckets: Vec<BootstrapResourceDecision>,
-}
-
-impl BootstrapDiff {
-    fn from_resources(resources: Vec<BootstrapResourceDecision>) -> Self {
-        let mut diff = Self {
-            kv_buckets: Vec::new(),
-            streams: Vec::new(),
-            object_buckets: Vec::new(),
-        };
-
-        for resource in resources {
-            match resource.resource.kind {
-                BootstrapResourceKind::KvBucket => diff.kv_buckets.push(resource),
-                BootstrapResourceKind::Stream => diff.streams.push(resource),
-                BootstrapResourceKind::ObjectBucket => diff.object_buckets.push(resource),
-            }
-        }
-
-        diff
-    }
-
-    #[must_use]
-    pub fn kv_bucket(&self, name: &str) -> Option<&BootstrapResourceDecision> {
-        self.kv_buckets
-            .iter()
-            .find(|decision| decision.resource.name == name)
-    }
-
-    #[must_use]
-    pub fn stream(&self, name: &str) -> Option<&BootstrapResourceDecision> {
-        self.streams
-            .iter()
-            .find(|decision| decision.resource.name == name)
-    }
-
-    #[must_use]
-    pub fn object_bucket(&self, name: &str) -> Option<&BootstrapResourceDecision> {
-        self.object_buckets
-            .iter()
-            .find(|decision| decision.resource.name == name)
-    }
-
-    pub fn all_resources(&self) -> impl Iterator<Item = &BootstrapResourceDecision> {
-        self.kv_buckets
-            .iter()
-            .chain(self.streams.iter())
-            .chain(self.object_buckets.iter())
-    }
+pub enum BootstrapResourceRefusal {
+    MissingResource,
+    ConfigurationDrift {
+        field: &'static str,
+        expected: String,
+        observed: String,
+    },
 }

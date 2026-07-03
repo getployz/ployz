@@ -3,9 +3,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::{MachineId, OperationId, ServiceId};
 use ployz_core::ops::{DeployEvidence, DeployTransition};
-use ployz_core::state::{
-    ActiveRouteCommit, ActiveRouteCommitRequest, ActiveServiceCommit, ActiveServiceCommitRequest,
-};
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use std::future::Future;
 
@@ -75,10 +73,10 @@ pub trait DeployHealthChecker {
 }
 
 pub trait ActiveServiceCommitter {
-    fn commit_active_service(
+    fn replace_active_service(
         &mut self,
-        request: ActiveServiceCommitRequest,
-    ) -> impl Future<Output = Result<ActiveServiceCommit, ActiveServiceCommitError>> + Send;
+        state: ActiveServiceState,
+    ) -> impl Future<Output = Result<(), ActiveServiceCommitError>> + Send;
 
     fn remove_active_service(
         &mut self,
@@ -87,10 +85,10 @@ pub trait ActiveServiceCommitter {
 }
 
 pub trait ActiveRouteCommitter {
-    fn commit_active_route(
+    fn replace_active_route(
         &mut self,
-        request: ActiveRouteCommitRequest,
-    ) -> impl Future<Output = Result<ActiveRouteCommit, ActiveRouteCommitError>> + Send;
+        state: ActiveRouteState,
+    ) -> impl Future<Output = Result<(), ActiveRouteCommitError>> + Send;
 }
 
 impl DeployOperationRecorder for crate::controllers::OperationControllers {
@@ -120,11 +118,11 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
 }
 
 impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
-    async fn commit_active_route(
+    async fn replace_active_route(
         &mut self,
-        request: ActiveRouteCommitRequest,
-    ) -> Result<ActiveRouteCommit, ActiveRouteCommitError> {
-        AsyncNatsCoreStateStore::commit_active_route(self, &request)
+        state: ActiveRouteState,
+    ) -> Result<(), ActiveRouteCommitError> {
+        AsyncNatsCoreStateStore::replace_active_route(self, &state)
             .await
             .map_err(ActiveRouteCommitError::Store)
     }
@@ -133,14 +131,15 @@ impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
 #[derive(Debug)]
 pub enum ActiveRouteCommitError {
     Store(ActiveRouteStoreError),
+    NamespaceLockLost,
 }
 
 impl ActiveServiceCommitter for AsyncNatsCoreStateStore {
-    async fn commit_active_service(
+    async fn replace_active_service(
         &mut self,
-        request: ActiveServiceCommitRequest,
-    ) -> Result<ActiveServiceCommit, ActiveServiceCommitError> {
-        AsyncNatsCoreStateStore::commit_active_service(self, &request)
+        state: ActiveServiceState,
+    ) -> Result<(), ActiveServiceCommitError> {
+        AsyncNatsCoreStateStore::replace_active_service(self, &state)
             .await
             .map_err(ActiveServiceCommitError::Store)
     }

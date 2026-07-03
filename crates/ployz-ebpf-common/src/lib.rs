@@ -10,14 +10,8 @@ use std::borrow::ToOwned;
 #[cfg(feature = "validation")]
 use std::string::ToString;
 
-pub const REQUIRED_TC_SYMBOLS: [&str; 6] = [
-    "ployz_egress",
-    "ployz_ingress",
-    "ROUTES",
-    "WG_IFINDEX",
-    "OBSERVE_FLAG",
-    "EVENTS",
-];
+pub const REQUIRED_TC_SYMBOLS: [&str; 4] =
+    ["ployz_egress", "ployz_ingress", "ROUTES", "WG_IFINDEX"];
 
 /// BPF map key for an IPv4 network prefix.
 #[repr(C)]
@@ -32,21 +26,6 @@ pub struct RouteKey {
 #[derive(Clone, Copy)]
 pub struct RouteEntry {
     pub ifindex: u32,
-}
-
-/// Raw packet event emitted by the eBPF observation tap.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PacketEvent {
-    pub ts_ns: u64,
-    pub src_addr: [u8; 16],
-    pub dst_addr: [u8; 16],
-    pub src_port: u16,
-    pub dst_port: u16,
-    pub pkt_len: u32,
-    pub proto: u8,
-    pub direction: u8,
-    pub _pad: [u8; 2],
 }
 
 #[cfg(feature = "validation")]

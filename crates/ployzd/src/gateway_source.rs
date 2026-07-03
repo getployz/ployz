@@ -129,7 +129,7 @@ impl From<ActiveRouteStoreError> for GatewaySourceError {
                 ),
             },
             error @ (ActiveRouteStoreError::Encode(_)
-            | ActiveRouteStoreError::CasConflict { .. }
+            | ActiveRouteStoreError::Put { .. }
             | ActiveRouteStoreError::ListKeys { .. }
             | ActiveRouteStoreError::Watch { .. }
             | ActiveRouteStoreError::Get { .. }

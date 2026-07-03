@@ -9,7 +9,7 @@ use std::process::Command;
 
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallSha256Digest,
+    InstallContractError, InstallSha256Digest,
 };
 use tempfile::TempDir;
 
@@ -23,98 +23,15 @@ pub enum ArtifactKind {
     Ployzd,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArtifactVersion(String);
-
-impl ArtifactVersion {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, ArtifactTargetError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(ArtifactTargetError::EmptyVersion);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sha256Digest(String);
-
-impl Sha256Digest {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, ArtifactTargetError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(ArtifactTargetError::EmptyDigest);
-        }
-        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(ArtifactTargetError::InvalidSha256Digest { value });
-        }
-        Ok(Self(value.to_ascii_lowercase()))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArtifactSource(ArtifactSourceKind);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ArtifactSourceKind {
-    LocalPath(PathBuf),
-    RemoteUrl(String),
-}
+pub type ArtifactVersion = InstallArtifactVersion;
+pub type ArtifactSource = InstallArtifactSource;
+pub type Sha256Digest = InstallSha256Digest;
+pub type ArtifactTargetError = InstallContractError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactSourceView<'a> {
     LocalPath(&'a Path),
     RemoteUrl(&'a str),
-}
-
-impl ArtifactSource {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, ArtifactTargetError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(ArtifactTargetError::EmptySource);
-        }
-        if value.starts_with("https://") || value.starts_with("http://") {
-            return Ok(Self(ArtifactSourceKind::RemoteUrl(value)));
-        }
-
-        Self::from_local_path(PathBuf::from(value))
-    }
-
-    pub fn from_local_path(path: PathBuf) -> Result<Self, ArtifactTargetError> {
-        if path.as_os_str().is_empty() {
-            return Err(ArtifactTargetError::EmptySource);
-        }
-        if !path.is_absolute() {
-            return Err(ArtifactTargetError::RelativeSourcePath { value: path });
-        }
-        Ok(Self(ArtifactSourceKind::LocalPath(path)))
-    }
-
-    #[must_use]
-    pub fn view(&self) -> ArtifactSourceView<'_> {
-        match &self.0 {
-            ArtifactSourceKind::LocalPath(path) => ArtifactSourceView::LocalPath(path),
-            ArtifactSourceKind::RemoteUrl(url) => ArtifactSourceView::RemoteUrl(url),
-        }
-    }
-
-    #[must_use]
-    pub fn render(&self) -> String {
-        match &self.0 {
-            ArtifactSourceKind::LocalPath(path) => path.display().to_string(),
-            ArtifactSourceKind::RemoteUrl(url) => url.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,12 +51,13 @@ impl ArtifactTarget {
         digest: Sha256Digest,
         install_path: PathBuf,
     ) -> Result<Self, ArtifactTargetError> {
+        let install_path = AbsoluteInstallPath::try_new(install_path.display().to_string())?;
         Ok(Self {
             kind,
             version,
             source,
             digest,
-            install_path: validate_install_path(install_path)?,
+            install_path: PathBuf::from(install_path.as_str()),
         })
     }
 
@@ -149,14 +67,21 @@ impl ArtifactTarget {
     }
 
     #[must_use]
+    pub fn source_view(&self) -> ArtifactSourceView<'_> {
+        let source = self.source.as_str();
+        if source.starts_with("https://") || source.starts_with("http://") {
+            ArtifactSourceView::RemoteUrl(source)
+        } else {
+            ArtifactSourceView::LocalPath(Path::new(source))
+        }
+    }
+
+    #[must_use]
     pub fn install_spec(&self) -> InstallArtifactSpec {
         InstallArtifactSpec {
-            version: InstallArtifactVersion::try_new(self.version.as_str())
-                .expect("validated artifact target version stays valid"),
-            source: InstallArtifactSource::try_new(self.source.render())
-                .expect("validated artifact target source stays valid"),
-            sha256: InstallSha256Digest::try_new(self.digest.as_str())
-                .expect("validated artifact target digest stays valid"),
+            version: self.version.clone(),
+            source: self.source.clone(),
+            sha256: self.digest.clone(),
             install_path: AbsoluteInstallPath::try_new(self.install_path.display().to_string())
                 .expect("validated artifact target install path stays valid"),
         }
@@ -192,54 +117,6 @@ impl DataplaneArtifactTargets {
             ebpf_ctl,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ArtifactTargetError {
-    EmptyVersion,
-    EmptySource,
-    RelativeSourcePath { value: PathBuf },
-    EmptyDigest,
-    InvalidSha256Digest { value: String },
-    EmptyInstallPath,
-    RelativeInstallPath { value: PathBuf },
-    MissingInstallParent { value: PathBuf },
-    MissingInstallFileName { value: PathBuf },
-}
-
-fn validate_install_path(install_path: PathBuf) -> Result<PathBuf, ArtifactTargetError> {
-    if install_path.as_os_str().is_empty() {
-        return Err(ArtifactTargetError::EmptyInstallPath);
-    }
-    if !install_path.is_absolute() {
-        return Err(ArtifactTargetError::RelativeInstallPath {
-            value: install_path,
-        });
-    }
-    if install_path.parent().is_none() {
-        return Err(ArtifactTargetError::MissingInstallParent {
-            value: install_path,
-        });
-    }
-    if install_path.file_name().is_none() || has_trailing_separator(&install_path) {
-        return Err(ArtifactTargetError::MissingInstallFileName {
-            value: install_path,
-        });
-    }
-    Ok(install_path)
-}
-
-#[cfg(unix)]
-fn has_trailing_separator(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-
-    path.as_os_str().as_bytes().last() == Some(&b'/')
-}
-
-#[cfg(not(unix))]
-fn has_trailing_separator(path: &Path) -> bool {
-    path.to_str()
-        .is_some_and(|value| value.ends_with(std::path::MAIN_SEPARATOR))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,7 +168,7 @@ fn sha256_file(path: &Path) -> Result<Sha256Digest, ArtifactVerificationError> {
     }
 
     let digest = hasher.finalize();
-    Ok(Sha256Digest(format!("{digest:x}")))
+    Ok(Sha256Digest::try_new(format!("{digest:x}")).expect("sha256 hasher yields valid hex"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -802,50 +679,3 @@ impl fmt::Display for ArtifactInstallError {
 }
 
 impl std::error::Error for ArtifactInstallError {}
-
-impl fmt::Display for ArtifactTargetError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyVersion => formatter.write_str("artifact version is empty"),
-            Self::EmptySource => formatter.write_str("artifact source is empty"),
-            Self::RelativeSourcePath { value } => {
-                write!(
-                    formatter,
-                    "artifact source path {} must be absolute",
-                    value.display()
-                )
-            }
-            Self::EmptyDigest => formatter.write_str("artifact sha256 digest is empty"),
-            Self::InvalidSha256Digest { value } => {
-                write!(
-                    formatter,
-                    "artifact sha256 digest {value:?} must be 64 hex characters"
-                )
-            }
-            Self::EmptyInstallPath => formatter.write_str("artifact install path is empty"),
-            Self::RelativeInstallPath { value } => {
-                write!(
-                    formatter,
-                    "artifact install path {} must be absolute",
-                    value.display()
-                )
-            }
-            Self::MissingInstallParent { value } => {
-                write!(
-                    formatter,
-                    "artifact install path {} must have a parent directory",
-                    value.display()
-                )
-            }
-            Self::MissingInstallFileName { value } => {
-                write!(
-                    formatter,
-                    "artifact install path {} must have a file name",
-                    value.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ArtifactTargetError {}

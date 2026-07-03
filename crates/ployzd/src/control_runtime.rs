@@ -85,8 +85,12 @@ pub async fn start_control_runtime_with_client_and_reload(
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
-    let controllers =
-        OperationControllers::new(event_log, status_store, config.machine_bootstrap.clone());
+    let controllers = OperationControllers::new(
+        event_log,
+        status_store,
+        core_state.clone(),
+        config.machine_bootstrap.clone(),
+    );
     // Adopt-on-start happens here, before any render: the on-disk
     // authorized-users file is the authority set's recovery evidence.
     let authorization = NatsAuthorizationRuntime::start(

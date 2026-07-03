@@ -162,6 +162,9 @@ pub async fn machine_update(
             super::error_map::SubmitFailure::InvalidDeployTarget => {
                 unreachable!("machine update submit is not deploy target")
             }
+            super::error_map::SubmitFailure::ResourceBusy { .. } => {
+                unreachable!("machine update submit has no namespace lock")
+            }
             super::error_map::SubmitFailure::Unavailable(source) => {
                 MachineUpdateError::Unavailable {
                     operation_id: operation_id.clone(),

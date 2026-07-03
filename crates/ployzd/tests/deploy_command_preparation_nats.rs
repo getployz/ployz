@@ -10,10 +10,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
-use ployz_core::state::{
-    ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService,
-};
+use ployz_core::state::{ActiveMachineState, ActiveServiceState, ActiveServiceStateKey};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -32,11 +29,10 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let (core_state, observations) = nats.stores();
 
     core_state
-        .commit_active_service(&ActiveServiceCommitRequest {
+        .replace_active_service(&ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            expected_current: ExpectedActiveService::Absent,
-            target_revision: revision_id("rev_1"),
+            active_revision: revision_id("rev_1"),
         })
         .await
         .expect("active service stores");
@@ -90,10 +86,6 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     )
     .await;
 
-    assert_eq!(
-        command.expected_active(),
-        &ExpectedActiveService::Revision(revision_id("rev_1"))
-    );
     assert_eq!(
         command.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
@@ -240,7 +232,6 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     )
     .await;
 
-    assert_eq!(command.expected_active(), &ExpectedActiveService::Absent);
     assert!(command.existing_replicas().is_empty());
 }
 

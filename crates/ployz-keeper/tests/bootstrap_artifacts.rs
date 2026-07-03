@@ -40,7 +40,7 @@ fn artifact_install_paths_must_be_absolute() {
             PathBuf::from("bin/ployzd"),
         ),
         Err(ArtifactTargetError::RelativeInstallPath {
-            value: PathBuf::from("bin/ployzd"),
+            value: "bin/ployzd".to_owned(),
         })
     );
     assert_eq!(
@@ -52,7 +52,7 @@ fn artifact_install_paths_must_be_absolute() {
             PathBuf::from("/"),
         ),
         Err(ArtifactTargetError::MissingInstallParent {
-            value: PathBuf::from("/"),
+            value: "/".to_owned(),
         })
     );
     assert_eq!(
@@ -64,7 +64,7 @@ fn artifact_install_paths_must_be_absolute() {
             PathBuf::from("/usr/local/bin/"),
         ),
         Err(ArtifactTargetError::MissingInstallFileName {
-            value: PathBuf::from("/usr/local/bin/"),
+            value: "/usr/local/bin/".to_owned(),
         })
     );
 }

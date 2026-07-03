@@ -51,14 +51,14 @@ pub use ployz_core::machine_runtime::{
 };
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
-    ActiveServiceCommitFailure, ArtifactUnavailableReason, CancellationReason, EventSequence,
-    EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OperatorHint, ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
+    ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
+    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineSubstrateVersions,
+    MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OperatorHint,
+    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteHostname,
+    RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, DeployCleanupFailure,
@@ -66,9 +66,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
-    ActiveMachineState, ActiveRouteState, ActiveServiceCommitRequest, ActiveServiceState,
-    ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation,
-    MachinePublicIpObservation,
+    ActiveMachineState, ActiveRouteState, ActiveServiceState, GatewayServingStatus,
+    GatewayStatusObservation, MachinePublicIpObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1043,6 +1042,11 @@ pub enum DeploySubmitError {
     InvalidTarget {
         operation_id: OperationId,
         message: FailureMessage,
+    },
+    ResourceBusy {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        owner_operation_id: OperationId,
     },
     Unavailable {
         operation_id: OperationId,

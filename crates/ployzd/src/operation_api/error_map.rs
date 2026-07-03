@@ -8,6 +8,7 @@ use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
+use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{
     OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
     OperationStatusStoreError, RecordMachineAddEventError, RecordMachineJoinReportError,
@@ -26,12 +27,35 @@ use ployz_sdk_types::{
 /// unavailable source or the duplicate-sequence collision.
 pub(super) enum SubmitFailure {
     InvalidDeployTarget,
+    ResourceBusy {
+        namespace_id: ployz_core::ids::NamespaceId,
+        owner: OperationId,
+    },
     Unavailable(OperationSubmitUnavailableSource),
-    DuplicateSequenceMismatch { sequence: EventSequence },
+    DuplicateSequenceMismatch {
+        sequence: EventSequence,
+    },
 }
 
 pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     match error {
+        SubmitCommandError::Clock { .. } => {
+            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
+                failure: OperationSubmitStatusFailure::Timeout,
+            })
+        }
+        SubmitCommandError::NamespaceBusy {
+            namespace_id,
+            owner,
+        } => SubmitFailure::ResourceBusy {
+            namespace_id,
+            owner,
+        },
+        SubmitCommandError::NamespaceLock(source) => {
+            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
+                failure: operation_submit_core_state_failure(&source),
+            })
+        }
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget
         }
@@ -60,6 +84,14 @@ pub(super) fn deploy_submit_error_from_submit_error(
             operation_id,
             message: FailureMessage::try_new("deploy target must include at least one service")
                 .expect("static deploy target failure message is non-empty"),
+        },
+        SubmitFailure::ResourceBusy {
+            namespace_id,
+            owner,
+        } => DeploySubmitError::ResourceBusy {
+            operation_id,
+            namespace_id,
+            owner_operation_id: owner,
         },
         SubmitFailure::Unavailable(source) => DeploySubmitError::Unavailable {
             operation_id,
@@ -95,6 +127,9 @@ pub(super) fn machine_add_error_from_submit_error(
     match submit_failure(submit) {
         SubmitFailure::InvalidDeployTarget => {
             unreachable!("machine add submit is not deploy target")
+        }
+        SubmitFailure::ResourceBusy { .. } => {
+            unreachable!("machine add submit has no namespace lock")
         }
         SubmitFailure::Unavailable(source) => MachineAddError::Unavailable {
             operation_id,
@@ -275,6 +310,26 @@ fn operation_submit_status_failure(
     }
 }
 
+fn operation_submit_core_state_failure(
+    error: &CoreStateStoreError,
+) -> OperationSubmitStatusFailure {
+    match error {
+        CoreStateStoreError::OpenBucket { .. } => OperationSubmitStatusFailure::OpenBucket,
+        CoreStateStoreError::Encode(_) => OperationSubmitStatusFailure::EncodeStatus,
+        CoreStateStoreError::Decode(_) | CoreStateStoreError::CorruptNamespaceLock { .. } => {
+            OperationSubmitStatusFailure::DecodeStatus
+        }
+        CoreStateStoreError::Put { .. }
+        | CoreStateStoreError::Get { .. }
+        | CoreStateStoreError::Delete { .. }
+        | CoreStateStoreError::ListKeys { .. }
+        | CoreStateStoreError::CorruptActiveServiceState { .. }
+        | CoreStateStoreError::CorruptKey { .. } => OperationSubmitStatusFailure::GetStatus,
+        CoreStateStoreError::CasConflict { .. } => OperationSubmitStatusFailure::CasConflict,
+        CoreStateStoreError::Timeout { .. } => OperationSubmitStatusFailure::Timeout,
+    }
+}
+
 fn operation_submit_event_failure(error: &OperationEventLogError) -> OperationSubmitEventFailure {
     match error {
         OperationEventLogError::EncodeEvent(_) => OperationSubmitEventFailure::EncodeEvent,
@@ -419,7 +474,7 @@ mod tests {
         status_read_failure,
     };
     use crate::controllers::SubmitCommandError;
-    use ployz_core::ids::OperationId;
+    use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
     use ployz_nats::operations::{
         OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
@@ -494,6 +549,28 @@ mod tests {
     }
 
     #[test]
+    fn deploy_submit_maps_namespace_busy_to_resource_busy() {
+        let submitted_operation_id = operation_id("op_new");
+        let namespace_id = namespace_id("ns_prod");
+        let owner = operation_id("op_running");
+
+        assert_eq!(
+            deploy_submit_error_from_submit_error(
+                submitted_operation_id.clone(),
+                SubmitCommandError::NamespaceBusy {
+                    namespace_id: namespace_id.clone(),
+                    owner: owner.clone(),
+                },
+            ),
+            DeploySubmitError::ResourceBusy {
+                operation_id: submitted_operation_id,
+                namespace_id,
+                owner_operation_id: owner,
+            }
+        );
+    }
+
+    #[test]
     fn ops_watch_maps_missing_operation_to_api_error() {
         let operation_id = operation_id("op_missing");
 
@@ -558,6 +635,10 @@ mod tests {
 
     fn operation_id(value: &str) -> OperationId {
         OperationId::try_new(value).expect("valid operation id")
+    }
+
+    fn namespace_id(value: &str) -> NamespaceId {
+        NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn event_sequence(value: u64) -> EventSequence {
