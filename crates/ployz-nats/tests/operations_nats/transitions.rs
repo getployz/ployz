@@ -10,6 +10,7 @@ use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, OperationEventAppend,
     OperationStatusWrite, RecordDeployTransitionError,
 };
+use ployz_test_support::ids::namespace_id;
 
 #[tokio::test]
 async fn operation_repository_records_transition_status_against_real_nats() {
@@ -101,6 +102,7 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
     let cleanup_target = DeployCleanupContainer {
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_old"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_old"),
         operation_id: operation_id("op_old"),

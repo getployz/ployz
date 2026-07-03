@@ -129,6 +129,7 @@ fn cleanup_container(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
         operation_id: operation_id("op_existing"),
@@ -146,6 +147,7 @@ fn observed_service_container(
     ManagedContainerObservation {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
         operation_id: operation_id("op_existing"),

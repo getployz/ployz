@@ -4,7 +4,8 @@ use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, operation_id, revision_id, service_id, step_id,
+    container_id, failure_message, machine_id, namespace_id, operation_id, revision_id, service_id,
+    step_id,
 };
 use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
@@ -575,6 +576,7 @@ fn run_request() -> MachineContainerRunRpcRequest {
 
 fn managed_container_spec() -> MachineContainerRunSpec {
     MachineContainerRunSpec {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_2"),
         operation_id: operation_id("op_123"),
@@ -585,6 +587,7 @@ fn managed_container_spec() -> MachineContainerRunSpec {
 
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_2"),
         operation_id: operation_id("op_123"),

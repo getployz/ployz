@@ -74,7 +74,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     assert_eq!(run_request.container.operation_id, operation_id("op_123"));
     assert_eq!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state reads")
             .expect("active state committed")
@@ -138,7 +138,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state reads")
             .is_none()
@@ -203,7 +203,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state reads")
             .is_none()
@@ -279,7 +279,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state reads")
             .is_none()

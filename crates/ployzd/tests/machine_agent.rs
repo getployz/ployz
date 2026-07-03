@@ -1,5 +1,7 @@
 use ployz_core::machine_runtime::ManagedContainerKind;
-use ployz_test_support::ids::{container_id, operation_id, revision_id, service_id, step_id};
+use ployz_test_support::ids::{
+    container_id, namespace_id, operation_id, revision_id, service_id, step_id,
+};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::machine_runtime::runner::{
     ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunConflict,
@@ -142,6 +144,7 @@ fn existing_container_with_state(
 
 fn run_labels(operation_id: &str, step_id: &str) -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
         operation_id: self::operation_id(operation_id),

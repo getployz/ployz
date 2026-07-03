@@ -4,7 +4,7 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployPreparationError, DeployPreparationInput, DeployRequest,
     prepare_deploy,
 };
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use std::time::Duration;
@@ -56,7 +56,11 @@ pub fn prepare_deploy_execution_command(
     }
 
     let namespace_cleanup_candidates = if request.services.is_empty() {
-        facts.namespace_cleanup_candidates
+        facts
+            .namespace_cleanup_candidates
+            .into_iter()
+            .filter(|container| container.namespace_id == request.namespace_id)
+            .collect()
     } else {
         Vec::new()
     };
@@ -80,17 +84,21 @@ pub enum DeployCommandPreparationError {
 }
 
 pub fn namespace_cleanup_candidates(
+    namespace_id: &NamespaceId,
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
     observed_machines
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.kind == ManagedContainerKind::Service && container.state.is_running()
+            container.namespace_id == *namespace_id
+                && container.kind == ManagedContainerKind::Service
+                && container.state.is_running()
         })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
+            namespace_id: container.namespace_id.clone(),
             service_id: container.service_id.clone(),
             revision_id: container.revision_id.clone(),
             operation_id: container.operation_id.clone(),

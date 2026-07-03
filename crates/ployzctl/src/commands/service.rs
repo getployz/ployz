@@ -1,5 +1,5 @@
 use clap::Args;
-use ployz_core::ids::ServiceId;
+use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
@@ -22,6 +22,7 @@ pub(crate) fn service_list_command(_: EmptyCli) -> ServiceListCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceInspectCommand {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
 }
 
@@ -29,6 +30,7 @@ impl ServiceInspectCommand {
     #[must_use]
     pub fn into_request(self) -> ServiceInspectRequest {
         ServiceInspectRequest {
+            namespace_id: self.namespace_id,
             service_id: self.service_id,
         }
     }
@@ -37,10 +39,15 @@ impl ServiceInspectCommand {
 pub(crate) fn service_inspect_command(
     parsed: ServiceInspectCli,
 ) -> Result<ServiceInspectCommand, PloyzctlCliError> {
+    let namespace_id = NamespaceId::try_new(parsed.namespace_id)
+        .map_err(|error| invalid_value("<namespace_id>", error))?;
     let service_id = ServiceId::try_new(parsed.service_id)
         .map_err(|error| invalid_value("<service_id>", error))?;
 
-    Ok(ServiceInspectCommand { service_id })
+    Ok(ServiceInspectCommand {
+        namespace_id,
+        service_id,
+    })
 }
 
 #[derive(Debug, Args)]
@@ -48,6 +55,7 @@ pub(crate) struct EmptyCli {}
 
 #[derive(Debug, Args)]
 pub(crate) struct ServiceInspectCli {
+    namespace_id: String,
     service_id: String,
 }
 

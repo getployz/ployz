@@ -104,6 +104,7 @@ pub struct ExistingServiceReplica {
 pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
     pub operation_id: OperationId,
@@ -262,8 +263,11 @@ fn existing_replicas(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service_revision(&request.service_id, &request.target_revision)
-                && reusable_for_route(container, request.route.as_ref())
+            container.is_running_service_revision(
+                &request.namespace_id,
+                &request.service_id,
+                &request.target_revision,
+            ) && reusable_for_route(container, request.route.as_ref())
         })
         .map(|container| ExistingServiceReplica {
             machine_id: container.machine_id.clone(),
@@ -280,11 +284,14 @@ fn cleanup_candidates(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service() && container.service_id == request.service_id
+            container.is_running_service()
+                && container.namespace_id == request.namespace_id
+                && container.service_id == request.service_id
         })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
+            namespace_id: container.namespace_id.clone(),
             service_id: container.service_id.clone(),
             revision_id: container.revision_id.clone(),
             operation_id: container.operation_id.clone(),

@@ -239,7 +239,10 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    let key = ActiveServiceStateKey::from_service_id(&service_id("svc_api"));
+    let key = ActiveServiceStateKey::from_namespace_service(
+        &namespace_id("default"),
+        &service_id("svc_api"),
+    );
     let wrong_service_state = ActiveServiceState {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),
@@ -285,7 +288,8 @@ async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
     let request = deploy_request();
-    let key = ActiveServiceStateKey::from_service_id(
+    let key = ActiveServiceStateKey::from_namespace_service(
+        &request.namespace_id,
         request
             .primary_service_id()
             .expect("test deploy request has a service"),
@@ -434,6 +438,7 @@ fn managed_observation(
     ManagedContainerObservation {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: self::service_id(service_id),
         revision_id: self::revision_id(revision_id),
         operation_id: operation_id("op_existing"),
@@ -460,6 +465,7 @@ fn cleanup_container(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),
         operation_id: operation_id("op_existing"),

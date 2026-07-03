@@ -47,6 +47,7 @@ fn assert_deploy_event_order(
 
 fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: target.namespace_id.clone(),
         service_id: target.service_id.clone(),
         revision_id: target.revision_id.clone(),
         operation_id: target.operation_id.clone(),

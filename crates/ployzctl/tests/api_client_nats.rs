@@ -315,6 +315,8 @@ async fn operation_api_client_routes_service_inspect_success() {
 
     let result = api
         .service_inspect(&ServiceInspectRequest {
+            namespace_id: ployz_core::ids::NamespaceId::try_new("default")
+                .expect("valid namespace id"),
             service_id: ployz_core::ids::ServiceId::try_new("svc_api").expect("valid service id"),
         })
         .await
