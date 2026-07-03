@@ -4,8 +4,8 @@ use crate::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use ployz_core::ops::RouteHostname;
-use ployz_core::state::{RouteBindingState, GatewayServingStatus, MachinePublicIpObservation};
-use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore};
+use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};
+use ployz_nats::core_state::{AsyncNatsCoreStateStore, RouteBindingStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

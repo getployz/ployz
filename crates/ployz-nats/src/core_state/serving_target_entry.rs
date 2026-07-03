@@ -30,13 +30,15 @@ impl AsyncNatsCoreStateStore {
         service_id: &ServiceId,
     ) -> Result<Option<ServingTargetEntry>, CoreStateStoreError> {
         let key = ServingTargetEntryKey::from_namespace_service(namespace_id, service_id);
-        let Some(payload) =
-            with_io_timeout("serving target entry state get", self.bucket.get(key.as_str()))
-                .await?
-                .map_err(|error| CoreStateStoreError::Get {
-                    key: key.as_str().to_owned(),
-                    message: error.to_string(),
-                })?
+        let Some(payload) = with_io_timeout(
+            "serving target entry state get",
+            self.bucket.get(key.as_str()),
+        )
+        .await?
+        .map_err(|error| CoreStateStoreError::Get {
+            key: key.as_str().to_owned(),
+            message: error.to_string(),
+        })?
         else {
             return Ok(None);
         };
@@ -71,14 +73,19 @@ impl AsyncNatsCoreStateStore {
         Ok(())
     }
 
-    pub async fn serving_target_entries(&self) -> Result<Vec<ServingTargetEntry>, CoreStateStoreError> {
+    pub async fn serving_target_entries(
+        &self,
+    ) -> Result<Vec<ServingTargetEntry>, CoreStateStoreError> {
         list_current(
             &self.bucket,
             &format!("{SERVING_TARGET_ENTRY_PREFIX}."),
             |state: &ServingTargetEntry| {
-                ServingTargetEntryKey::from_namespace_service(&state.namespace_id, &state.service_id)
-                    .as_str()
-                    .to_owned()
+                ServingTargetEntryKey::from_namespace_service(
+                    &state.namespace_id,
+                    &state.service_id,
+                )
+                .as_str()
+                .to_owned()
             },
             |state| state.service_id.clone(),
         )

@@ -1,13 +1,11 @@
 use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    RouteBindingState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{
-    machine_id, namespace_id, route_hostname, route_port, service_id,
-};
+use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::dns::DnsAnswer;
 use ployzd::dns_process_runtime::{
     DnsProcessAttempt, DnsProcessRuntimeError, RunningDnsProcessRuntime,

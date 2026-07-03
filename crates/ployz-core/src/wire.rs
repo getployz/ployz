@@ -184,34 +184,4 @@ macro_rules! nonempty_text_newtype {
     };
 }
 
-/// Defines a KV storage-key newtype derived from a single typed id as
-/// `"{PREFIX}.{id}"`. These keys are constructed in-process to address KV
-/// records and never cross the JSON wire, so they carry no serde derives.
-/// Keys with extra path segments, hashing, or wire serialization stay explicit.
-macro_rules! id_prefixed_state_key {
-    (
-        pub struct $name:ident;
-        prefix: $prefix:ident;
-        fn $ctor:ident(&$idty:ty);
-    ) => {
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub struct $name(String);
-
-        impl $name {
-            #[must_use]
-            pub fn $ctor(id: &$idty) -> Self {
-                Self(format!("{}.{}", $prefix, id.as_str()))
-            }
-
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-    };
-}
-
-pub(crate) use {
-    id_prefixed_state_key, nonempty_text_newtype, positive_u64_wire_error,
-    positive_u64_wire_newtype,
-};
+pub(crate) use {nonempty_text_newtype, positive_u64_wire_error, positive_u64_wire_newtype};

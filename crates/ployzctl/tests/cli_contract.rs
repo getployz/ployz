@@ -8,7 +8,9 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId};
+use ployz_core::ids::{
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
+};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
@@ -971,7 +973,10 @@ fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> Serv
             namespace_id: ployz_core::ids::NamespaceId::try_new("default")
                 .expect("valid namespace id"),
             service_id: ServiceId::try_new(service_id).expect("valid service id"),
-            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(namespace_revision_entry_id).expect("valid revision id"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(
+                namespace_revision_entry_id,
+            )
+            .expect("valid revision id"),
         },
     }
 }

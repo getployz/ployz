@@ -200,7 +200,8 @@ fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
 fn deploy_plan() -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: ployz_core::ids::NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
+        namespace_revision_id: ployz_core::ids::NamespaceRevisionId::try_new("rev_2")
+            .expect("valid revision id"),
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),
             steps: vec![DeployPlanStep::RunContainer {

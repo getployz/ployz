@@ -7,8 +7,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{
-    NamespaceId,
-    ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::ManagedContainerKind;

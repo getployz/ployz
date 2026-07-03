@@ -16,7 +16,7 @@ use std::time::Duration;
 use crate::docker::labels::ManagedContainerLabels;
 
 use super::{
-    RouteBindingCommitError, DeployContainer, DeployExecutionCommand, DeployOperationRecorder,
+    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, RouteBindingCommitError,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {

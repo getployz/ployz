@@ -48,7 +48,7 @@ use ployz_test_support::ids::{
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
-    CONTAINER_TYPE_LABEL, OPERATION_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, SERVICE_ID_LABEL,
+    CONTAINER_TYPE_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL,
 };
 use std::collections::HashMap;
 use std::time::Duration;
