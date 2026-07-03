@@ -656,9 +656,7 @@ fn run_pingora_gateway_server(
     service.add_tcp(&listen_addr.to_string());
     server.add_service(service);
     server.run(RunArgs {
-        shutdown_signal: Box::new(GatewayPingoraShutdown {
-            shutdown: tokio::sync::Mutex::new(shutdown),
-        }),
+        shutdown_signal: Box::new(GatewayPingoraShutdown { shutdown }),
     });
 }
 
