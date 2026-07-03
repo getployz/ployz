@@ -11,6 +11,7 @@ use ployz_core::ops::{
     OperationEventReplayRequest, OperationStatus, OperatorHint, ReplayedOperationEvent,
     RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
     machine_id, operation_id, route_hostname, route_port, service_id,
@@ -502,4 +503,68 @@ fn operator_hint(value: &str) -> OperatorHint {
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
+}
+
+#[test]
+fn managed_container_observation_wire_shape_nests_identity() {
+    // Observations persist in KV with deny_unknown_fields: this pin is the
+    // contract for the nested identity shape introduced when the flattened
+    // six-tuple copies were consolidated.
+    let observation = ployz_core::machine_runtime::ManagedContainerObservation {
+        machine_id: machine_id("machine_a"),
+        container_id: container_id("ctr_1"),
+        identity: containers::identity("svc_api")
+            .entry("entry_1")
+            .operation("op_1")
+            .step("step_1")
+            .build(),
+        state: ployz_core::machine_runtime::ContainerRuntimeState::running_unroutable(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&observation).expect("observation serializes"),
+        serde_json::json!({
+            "machine_id": "machine_a",
+            "container_id": "ctr_1",
+            "identity": {
+                "namespace_id": "default",
+                "service_id": "svc_api",
+                "namespace_revision_entry_id": "entry_1",
+                "operation_id": "op_1",
+                "step_id": "step_1",
+                "kind": "service",
+            },
+            "state": { "state": "running" },
+        })
+    );
+}
+
+#[test]
+fn deploy_cleanup_container_wire_shape_nests_identity() {
+    // Cleanup containers ride operation events; same nested-identity pin.
+    let cleanup = ployz_core::deploy::DeployCleanupContainer {
+        machine_id: machine_id("machine_a"),
+        container_id: container_id("ctr_old"),
+        identity: containers::identity("svc_api")
+            .entry("entry_old")
+            .operation("op_old")
+            .step("step_old")
+            .build(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&cleanup).expect("cleanup container serializes"),
+        serde_json::json!({
+            "machine_id": "machine_a",
+            "container_id": "ctr_old",
+            "identity": {
+                "namespace_id": "default",
+                "service_id": "svc_api",
+                "namespace_revision_entry_id": "entry_old",
+                "operation_id": "op_old",
+                "step_id": "step_old",
+                "kind": "service",
+            },
+        })
+    );
 }

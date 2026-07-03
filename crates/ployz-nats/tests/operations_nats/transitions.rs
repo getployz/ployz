@@ -1,7 +1,5 @@
 use super::fixtures::*;
 use ployz_core::deploy::DeployCleanupContainer;
-use ployz_core::ids::StepId;
-use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationState,
     DeployRunningStage, DeployTransition, OperationStatus, StatusProjectionError,
@@ -10,7 +8,7 @@ use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, OperationEventAppend,
     OperationStatusWrite, RecordDeployTransitionError,
 };
-use ployz_test_support::ids::namespace_id;
+use ployz_test_support::containers;
 
 #[tokio::test]
 async fn operation_repository_records_transition_status_against_real_nats() {
@@ -102,12 +100,11 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
     let cleanup_target = DeployCleanupContainer {
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_old"),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("rev_old"),
-        operation_id: operation_id("op_old"),
-        step_id: StepId::try_new("step_old").expect("valid step id"),
-        kind: ManagedContainerKind::Service,
+        identity: containers::identity("svc_api")
+            .entry("rev_old")
+            .operation("op_old")
+            .step("step_old")
+            .build(),
     };
     repository
         .record_deploy_evidence(

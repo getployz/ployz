@@ -12,10 +12,6 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::NamespaceRevisionEntryId;
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
-use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
-    ManagedContainerObservation,
-};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationStatus, RouteTarget,
 };
@@ -48,6 +44,7 @@ use tokio::net::TcpStream;
 
 mod support;
 
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     event_sequence, idempotency_key, machine_id, namespace_id, namespace_revision_entry_id,
     namespace_revision_id, operation_id, route_hostname, route_port, service_id,
@@ -344,23 +341,17 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("route binding stores");
     observations
-        .replace_machine_containers(
-            &MachineContainerObservationSnapshot::try_new(
-                machine_id("machine_a"),
-                [ManagedContainerObservation {
-                    machine_id: machine_id("machine_a"),
-                    container_id: ployz_test_support::ids::container_id("ctr_api"),
-                    namespace_id: namespace_id("default"),
-                    service_id: service_id("svc_api"),
-                    namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-                    operation_id: operation_id("op_deploy"),
-                    step_id: ployz_test_support::ids::step_id("step_run"),
-                    kind: ManagedContainerKind::Service,
-                    state: ContainerRuntimeState::running_unroutable(),
-                }],
-            )
-            .expect("machine snapshot builds"),
-        )
+        .replace_machine_containers(&containers::snapshot(
+            "machine_a",
+            [containers::observation("machine_a", "ctr_api")
+                .with(
+                    containers::identity("svc_api")
+                        .entry("entry_2")
+                        .operation("op_deploy")
+                        .step("step_run"),
+                )
+                .running_unroutable()],
+        ))
         .await
         .expect("machine observations store");
 

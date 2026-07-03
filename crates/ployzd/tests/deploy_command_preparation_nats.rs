@@ -3,17 +3,17 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
     ReplicaCount,
 };
-use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, StepId};
+use ployz_core::ids::{NamespaceRevisionEntryId, OperationId};
 use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
-    ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ServingTargetEntryKey};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     operation_id, route_port, service_id,
@@ -464,17 +464,15 @@ fn managed_observation_with_entry(
     namespace_revision_entry_id: NamespaceRevisionEntryId,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        machine_id: self::machine_id(machine_id),
-        container_id: self::container_id(container_id),
-        namespace_id: namespace_id("default"),
-        service_id: self::service_id(service_id),
-        namespace_revision_entry_id: namespace_revision_entry_id,
-        operation_id: operation_id("op_existing"),
-        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
-        kind: ManagedContainerKind::Service,
-        state,
-    }
+    containers::observation(machine_id, container_id)
+        .with(
+            containers::identity(service_id)
+                .entry(namespace_revision_entry_id.as_str())
+                .operation("op_existing")
+                .step(&format!("existing_{container_id}")),
+        )
+        .state(state)
+        .build()
 }
 
 fn active_machine(machine_id: &str) -> ActiveMachineState {
@@ -506,11 +504,10 @@ fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id,
-        operation_id: operation_id("op_existing"),
-        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
-        kind: ManagedContainerKind::Service,
+        identity: containers::identity("svc_api")
+            .entry(namespace_revision_entry_id.as_str())
+            .operation("op_existing")
+            .step(&format!("existing_{container_id}"))
+            .build(),
     }
 }

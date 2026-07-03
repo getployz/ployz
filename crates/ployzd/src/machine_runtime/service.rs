@@ -20,7 +20,7 @@ use crate::machine_runtime::protocol::{
 use crate::machine_runtime::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
     MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
-    decide_container_run, managed_container_labels,
+    decide_container_run,
 };
 use crate::services::{machine_endpoint_spec, machine_runtime_service_base};
 use ployz_core::dataplane::{
@@ -301,14 +301,12 @@ where
         Ok(existing) => existing,
         Err(error) => return runner_error(error),
     };
-    let labels = managed_container_labels(&request.container);
-
-    match decide_container_run(&labels, existing) {
-        MachineContainerRunDecision::Create { labels } => {
+    match decide_container_run(&request.container, existing) {
+        MachineContainerRunDecision::Create { identity } => {
             match runner
                 .create_managed_container(CreateManagedContainer {
                     image: request.image,
-                    labels,
+                    identity,
                 })
                 .await
             {

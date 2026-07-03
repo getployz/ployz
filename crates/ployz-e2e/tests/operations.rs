@@ -13,10 +13,6 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
-use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
-    ManagedContainerObservation,
-};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
@@ -37,7 +33,7 @@ use ployzd::deploy_worker::{
 };
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
 use ployzd::machine_runtime::client::NatsMachineContainerRuntime;
-use ployzd::machine_runtime::protocol::{MachineContainerRunRpcRequest, MachineContainerRunSpec};
+use ployzd::machine_runtime::protocol::MachineContainerRunRpcRequest;
 use ployzd::machine_runtime::service::start_machine_runtime_service;
 
 mod support;
@@ -45,7 +41,7 @@ mod support;
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
-use ployz_test_support::ids::{container_id, step_id};
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     event_replay_limit, event_sequence, machine_id, namespace_id, namespace_revision_entry_id,
     namespace_revision_id, operation_id, route_hostname, route_port, service_id,
@@ -650,23 +646,19 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .await
         .expect("route can change without control runtime");
     observations
-        .replace_machine_containers(
-            &MachineContainerObservationSnapshot::try_new(
-                machine_id("machine_a"),
-                [ManagedContainerObservation {
-                    machine_id: machine_id("machine_a"),
-                    container_id: container_id("ctr_after_control_down"),
-                    namespace_id: namespace_id("default"),
-                    service_id: service_id("svc_api"),
-                    namespace_revision_entry_id: namespace_revision_entry_id("rev_2"),
-                    operation_id: operation_id("op_e2e_control_down_route"),
-                    step_id: step_id("step_after_control_down"),
-                    kind: ManagedContainerKind::Service,
-                    state: ContainerRuntimeState::running_at(endpoint_ip("127.0.0.1")),
-                }],
-            )
-            .expect("manual observation matches machine"),
-        )
+        .replace_machine_containers(&containers::snapshot(
+            "machine_a",
+            [
+                containers::observation("machine_a", "ctr_after_control_down")
+                    .with(
+                        containers::identity("svc_api")
+                            .entry("rev_2")
+                            .operation("op_e2e_control_down_route")
+                            .step("step_after_control_down"),
+                    )
+                    .running_at(endpoint_ip("127.0.0.1")),
+            ],
+        ))
         .await
         .expect("observation can change without control runtime");
 
@@ -948,14 +940,11 @@ fn deploy_target_with_route(
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:probe"),
-        container: MachineContainerRunSpec {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_probe"),
-            namespace_revision_entry_id: namespace_revision_entry_id("rev_probe"),
-            operation_id: operation_id("op_probe"),
-            step_id: step_id("step_probe"),
-            kind: ManagedContainerKind::Service,
-        },
+        container: containers::identity("svc_probe")
+            .entry("rev_probe")
+            .operation("op_probe")
+            .step("step_probe")
+            .build(),
     }
 }
 

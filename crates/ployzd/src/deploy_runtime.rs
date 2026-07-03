@@ -583,7 +583,8 @@ mod tests {
         ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
     };
     use ployz_core::machine_runtime::{
-        ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+        ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
+        ManagedContainerObservation,
     };
 
     #[test]
@@ -593,7 +594,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::running_unroutable()
-            ),),
+            )),
             ObservedContainerHealth::Healthy
         );
     }
@@ -605,7 +606,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-            ),),
+            )),
             ObservedContainerHealth::Healthy
         );
     }
@@ -617,7 +618,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-            ),),
+            )),
             ObservedContainerHealth::Healthy
         );
     }
@@ -629,7 +630,7 @@ mod tests {
                 "machine_a",
                 "ctr_1",
                 ContainerRuntimeState::Exited
-            ),),
+            )),
             ObservedContainerHealth::Failed("container exited")
         );
     }
@@ -664,12 +665,14 @@ mod tests {
         ManagedContainerObservation {
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_observed"),
-            operation_id: operation_id("op_123"),
-            step_id: step_id("run_1"),
-            kind: ManagedContainerKind::Service,
+            identity: ManagedContainerIdentity {
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_api"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_observed"),
+                operation_id: operation_id("op_123"),
+                step_id: step_id("run_1"),
+                kind: ManagedContainerKind::Service,
+            },
             state,
         }
     }

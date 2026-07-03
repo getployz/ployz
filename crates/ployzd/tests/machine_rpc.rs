@@ -1,23 +1,21 @@
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, MachineId};
-use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, namespace_id, namespace_revision_entry_id,
-    operation_id, service_id, step_id,
+    container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
 };
 use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
-    MachineContainerRunSpec, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
-    MachineSubstrateReportRpcResponse,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
 };
 use ployzd::services::machine_runtime_service;
 use std::sync::{Arc, Mutex};
@@ -61,7 +59,7 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .as_slice(),
         [MachineContainerRunRpcRequest {
             image: image("registry.example/api:rev_2"),
-            container: managed_container_spec()
+            container: managed_identity()
         }]
     );
 }
@@ -147,10 +145,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
     let nats = test_nats().await;
     let conflict = MachineContainerRunDomainError::OperationStepConflict {
         container_id: container_id("ctr_existing"),
-        expected: managed_labels(),
-        actual: ManagedContainerLabels {
+        expected: managed_identity(),
+        actual: ManagedContainerIdentity {
             namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
-            ..managed_labels()
+            ..managed_identity()
         },
     };
     let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
@@ -172,10 +170,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
         MachineContainerRuntimeError::OperationStepConflict {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_existing"),
-            expected: managed_labels(),
-            actual: ManagedContainerLabels {
+            expected: managed_identity(),
+            actual: ManagedContainerIdentity {
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
-                ..managed_labels()
+                ..managed_identity()
             },
         }
     );
@@ -269,7 +267,7 @@ async fn nats_machine_runtime_calls_container_remove_service() {
         [MachineContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
-            expected_identity: managed_labels().identity(),
+            expected_identity: managed_identity(),
         }]
     );
 }
@@ -531,7 +529,7 @@ fn remove_request(container_id: &str) -> MachineContainerRemoveRpcRequest {
     MachineContainerRemoveRpcRequest {
         operation_id: operation_id("op_123"),
         container_id: self::container_id(container_id),
-        expected_identity: managed_labels().identity(),
+        expected_identity: managed_identity(),
     }
 }
 
@@ -568,32 +566,42 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
-        container: managed_container_spec(),
+        container: managed_identity(),
     }
 }
 
-fn managed_container_spec() -> MachineContainerRunSpec {
-    MachineContainerRunSpec {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("run_1"),
-        kind: ManagedContainerKind::Service,
-    }
-}
-
-fn managed_labels() -> ManagedContainerLabels {
-    ManagedContainerLabels {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id("run_1"),
-        kind: ManagedContainerKind::Service,
-    }
+fn managed_identity() -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_2")
+        .operation("op_123")
+        .step("run_1")
+        .build()
 }
 
 fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image")
+}
+
+#[test]
+fn container_run_request_wire_shape_survived_run_spec_dissolution() {
+    // The run RPC used to carry a per-RPC MachineContainerRunSpec with
+    // exactly these six fields; it now carries ManagedContainerIdentity
+    // directly. This pin proves the dissolution changed no wire bytes.
+    let request = run_request();
+    let json = serde_json::to_value(&request).expect("run request serializes");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "image": "registry.example/api:rev_2",
+            "container": {
+                "namespace_id": "default",
+                "service_id": "svc_api",
+                "namespace_revision_entry_id": "entry_2",
+                "operation_id": "op_123",
+                "step_id": "run_1",
+                "kind": "service",
+            },
+        })
+    );
 }

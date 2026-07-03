@@ -4,13 +4,12 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use std::net::IpAddr;
 
-use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use crate::machine_runtime::protocol::MachineContainerRunSpec;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {
     pub container_id: ContainerId,
-    pub labels: ManagedContainerLabels,
+    pub identity: ManagedContainerIdentity,
     pub state: ExistingManagedContainerState,
 }
 
@@ -24,19 +23,7 @@ pub enum ExistingManagedContainerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateManagedContainer {
     pub image: ImageReference,
-    pub labels: ManagedContainerLabels,
-}
-
-#[must_use]
-pub fn managed_container_labels(spec: &MachineContainerRunSpec) -> ManagedContainerLabels {
-    ManagedContainerLabels {
-        namespace_id: spec.namespace_id.clone(),
-        service_id: spec.service_id.clone(),
-        namespace_revision_entry_id: spec.namespace_revision_entry_id.clone(),
-        operation_id: spec.operation_id.clone(),
-        step_id: spec.step_id.clone(),
-        kind: spec.kind,
-    }
+    pub identity: ManagedContainerIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +111,7 @@ pub trait MachineLogReader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineContainerRunDecision {
     Create {
-        labels: ManagedContainerLabels,
+        identity: ManagedContainerIdentity,
     },
     ReuseRunning {
         container_id: ContainerId,
@@ -147,23 +134,23 @@ pub enum MachineContainerRunDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineContainerRunConflict {
     pub container_id: ContainerId,
-    pub expected: ManagedContainerLabels,
-    pub actual: ManagedContainerLabels,
+    pub expected: ManagedContainerIdentity,
+    pub actual: ManagedContainerIdentity,
 }
 
 #[must_use]
 pub fn decide_container_run(
-    expected: &ManagedContainerLabels,
+    expected: &ManagedContainerIdentity,
     existing: impl IntoIterator<Item = ExistingManagedContainer>,
 ) -> MachineContainerRunDecision {
     let mut matches = existing.into_iter().filter(|container| {
-        container.labels.operation_id == expected.operation_id
-            && container.labels.step_id == expected.step_id
+        container.identity.operation_id == expected.operation_id
+            && container.identity.step_id == expected.step_id
     });
 
     let Some(first) = matches.next() else {
         return MachineContainerRunDecision::Create {
-            labels: expected.clone(),
+            identity: expected.clone(),
         };
     };
 
@@ -181,11 +168,11 @@ pub fn decide_container_run(
 
     let ExistingManagedContainer {
         container_id,
-        labels,
+        identity,
         state,
     } = first;
 
-    if labels == *expected {
+    if identity == *expected {
         return match state {
             ExistingManagedContainerState::Running { .. } => {
                 MachineContainerRunDecision::ReuseRunning { container_id }
@@ -205,6 +192,6 @@ pub fn decide_container_run(
     MachineContainerRunDecision::Conflict(MachineContainerRunConflict {
         container_id,
         expected: expected.clone(),
-        actual: labels,
+        actual: identity,
     })
 }

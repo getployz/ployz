@@ -3,11 +3,11 @@ use ployz_core::dataplane::{
     WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -66,12 +66,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
         let observation = ManagedContainerObservation {
             machine_id: self.machine_id.clone(),
             container_id: container_id.clone(),
-            namespace_id: command.labels.namespace_id,
-            service_id: command.labels.service_id,
-            namespace_revision_entry_id: command.labels.namespace_revision_entry_id,
-            operation_id: command.labels.operation_id,
-            step_id: command.labels.step_id,
-            kind: command.labels.kind,
+            identity: command.identity,
             state: ContainerRuntimeState::Exited,
         };
         let snapshot = self
@@ -246,14 +241,7 @@ impl MachineLogReader for ObservingContainerRunner {
 }
 
 fn observation_identity(observation: &ManagedContainerObservation) -> ManagedContainerIdentity {
-    ManagedContainerIdentity {
-        namespace_id: observation.namespace_id.clone(),
-        service_id: observation.service_id.clone(),
-        namespace_revision_entry_id: observation.namespace_revision_entry_id.clone(),
-        operation_id: observation.operation_id.clone(),
-        step_id: observation.step_id.clone(),
-        kind: observation.kind,
-    }
+    observation.identity.clone()
 }
 
 impl ObservingContainerRunner {
@@ -323,14 +311,7 @@ fn existing_container_from_observation(
 ) -> ExistingManagedContainer {
     ExistingManagedContainer {
         container_id: observation.container_id.clone(),
-        labels: ManagedContainerLabels {
-            namespace_id: observation.namespace_id.clone(),
-            service_id: observation.service_id.clone(),
-            namespace_revision_entry_id: observation.namespace_revision_entry_id.clone(),
-            operation_id: observation.operation_id.clone(),
-            step_id: observation.step_id.clone(),
-            kind: observation.kind,
-        },
+        identity: observation.identity.clone(),
         state: existing_container_state(&observation.state),
     }
 }
