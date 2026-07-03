@@ -89,7 +89,11 @@ impl ManagedContainerLabels {
 
         let namespace_id = parse_id(labels, NAMESPACE_ID_LABEL, NamespaceId::try_new)?;
         let service_id = parse_id(labels, SERVICE_ID_LABEL, ServiceId::try_new)?;
-        let namespace_revision_entry_id = parse_id(labels, NAMESPACE_REVISION_ENTRY_LABEL, NamespaceRevisionEntryId::try_new)?;
+        let namespace_revision_entry_id = parse_id(
+            labels,
+            NAMESPACE_REVISION_ENTRY_LABEL,
+            NamespaceRevisionEntryId::try_new,
+        )?;
         let operation_id = parse_id(labels, OPERATION_ID_LABEL, OperationId::try_new)?;
         let step_id = parse_id(labels, STEP_ID_LABEL, StepId::try_new)?;
         let kind_value = required_label(labels, CONTAINER_TYPE_LABEL)?;

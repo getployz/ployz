@@ -5,7 +5,9 @@ use crate::gateway::{
     GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::core_state::{
+    AsyncNatsCoreStateStore, CoreStateStoreError, RouteBindingStoreError,
+};
 use ployz_nats::observations::{
     AsyncNatsObservationStore, MachineContainerObservationRecord, ObservationStoreError,
 };
