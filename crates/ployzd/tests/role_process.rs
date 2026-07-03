@@ -3,48 +3,22 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::subjects::API_OPS_STATUS;
-use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
+use ployz_nats::connect::NatsClientUrl;
 use ployz_test_support::ids::machine_id;
-use ployzd::app::{ControlWork, DnsWork, GatewayWork, RoleProcessPlan, plan_configured_process};
 use ployzd::config::{
-    ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, MachinePloyzNativeMeshConfig, MachineProcessArtifacts,
-    MachineProcessConfig, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
-    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_MACHINES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
-    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_JOIN_NKEY_SEED_FILE_ENV,
-    PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV,
-    PLOYZ_MACHINE_PUBLIC_IP_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
-    PLOYZ_NATS_URL_ENV, RoleNatsConnect, load_daemon_process_config,
+    DaemonProcessConfig, DaemonProcessConfigError, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV,
+    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_MACHINES_ENV,
+    PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV,
+    PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_MACHINE_PUBLIC_IP_ENV, PLOYZ_NATS_CA_FILE_ENV,
+    PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, load_daemon_process_config,
 };
-use ployzd::nats_process::NatsServerRuntime;
 use ployzd::role::{DaemonProcessRole, parse_role_args};
 
 /// Syntactically valid NKey user seed for config tests (not a real key).
 const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 static TEMP_SEED_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn test_connect_config(url: NatsClientUrl) -> NatsConnectConfig {
-    NatsConnectConfig {
-        url,
-        auth: NatsClientAuth::NkeySeed(
-            NatsUserSeed::try_new(TEST_SEED).expect("test seed is valid"),
-        ),
-        trust: NatsTlsTrust::ClusterCa("/tmp/ployz-test-ca.pem".into()),
-        principal: NatsPrincipal::Controller,
-    }
-}
-
-fn role_connect(url: NatsClientUrl, principal: NatsPrincipal) -> RoleNatsConnect {
-    RoleNatsConnect {
-        url,
-        ca_file: "/tmp/ployz-test-ca.pem".into(),
-        seed_file: "/tmp/ployz-test-machine.seed".into(),
-        principal,
-    }
-}
 
 fn temp_seed_file(name: &str) -> String {
     let index = TEMP_SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -53,36 +27,6 @@ fn temp_seed_file(name: &str) -> String {
     let path = dir.join(name);
     fs::write(&path, format!("{TEST_SEED}\n")).expect("seed file can be written");
     path.to_str().expect("temp path is utf-8").to_owned()
-}
-
-#[test]
-fn control_process_owns_api_and_nats_assurance() {
-    let url = NatsClientUrl::loopback(4222);
-    let config = DaemonProcessConfig::Control(ControlProcessConfig::new(
-        NatsServerRuntime::External(url.clone()),
-        machine_id("core_1"),
-        test_connect_config(url.clone()),
-    ));
-    let RoleProcessPlan::Control(plan) = plan_configured_process(&config) else {
-        panic!("control role should produce a control process plan");
-    };
-
-    assert_eq!(config.role(), DaemonProcessRole::Control);
-    let DaemonProcessConfig::Control(config) = &config else {
-        panic!("control config stays typed");
-    };
-    assert_eq!(config.deploy_machines, vec![machine_id("core_1")]);
-    assert_eq!(plan.nats, NatsServerRuntime::External(url.clone()));
-    assert_eq!(plan.nats_url(), url);
-    assert_eq!(
-        plan.work,
-        &[
-            ControlWork::AssureNatsResources,
-            ControlWork::ServeOperationApi
-        ]
-    );
-    assert_eq!(service_names(&plan.service_catalog), vec!["plz-api"]);
-    assert!(plan.service_catalog.has_endpoint_subject(API_OPS_STATUS));
 }
 
 #[test]
@@ -124,102 +68,6 @@ fn control_role_rejects_invalid_deploy_machine() {
         error,
         DaemonProcessConfigError::InvalidDeployMachine { value } if value == "not a machine"
     ));
-}
-
-#[test]
-fn machine_process_owns_machine_rpc_and_observations_only() {
-    let machine_id = machine_id("machine_7");
-    let url = NatsClientUrl::loopback(7422);
-    let config = DaemonProcessConfig::Machine(MachineProcessConfig::new(
-        machine_id.clone(),
-        role_connect(
-            url.clone(),
-            NatsPrincipal::Machine {
-                machine_id: machine_id.clone(),
-            },
-        ),
-        MachineProcessArtifacts::new("/tmp/ployz-ebpf".into(), "/tmp/ployz-ebpf-ctl".into()),
-        MachinePloyzNativeMeshConfig::new(
-            "br-ployz".to_owned(),
-            "ployz-wg0".to_owned(),
-            "10.42.7.0/24".to_owned(),
-        ),
-        None,
-    ));
-    let RoleProcessPlan::Machine(plan) = plan_configured_process(&config) else {
-        panic!("machine role should produce a machine process plan");
-    };
-
-    assert_eq!(
-        config.role(),
-        DaemonProcessRole::Machine(machine_id.clone())
-    );
-    assert_eq!(plan.machine_id, machine_id);
-    assert_eq!(plan.nats_url, url);
-    assert_eq!(
-        plan.work,
-        &[
-            ployzd::app::MachineWork::ServeMachineRpc,
-            ployzd::app::MachineWork::PublishDockerObservations
-        ]
-    );
-    assert_eq!(service_names(&plan.service_catalog), vec!["plz-machine"]);
-    assert!(!plan.service_catalog.has_endpoint_subject(API_OPS_STATUS));
-}
-
-#[test]
-fn gateway_and_dns_are_watchers_not_command_surfaces() {
-    let url = NatsClientUrl::loopback(7422);
-    let gateway_config = DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
-        machine_id("machine_7"),
-        role_connect(
-            url.clone(),
-            NatsPrincipal::Machine {
-                machine_id: machine_id("machine_7"),
-            },
-        ),
-        socket(8080),
-    ));
-    let dns_config = DaemonProcessConfig::Dns(DnsProcessConfig::new(
-        machine_id("machine_7"),
-        role_connect(
-            url.clone(),
-            NatsPrincipal::Machine {
-                machine_id: machine_id("machine_7"),
-            },
-        ),
-    ));
-
-    let RoleProcessPlan::Gateway(gateway) = plan_configured_process(&gateway_config) else {
-        panic!("gateway role should produce a gateway process plan");
-    };
-    let RoleProcessPlan::Dns(dns) = plan_configured_process(&dns_config) else {
-        panic!("dns role should produce a dns process plan");
-    };
-
-    assert_eq!(gateway_config.role(), DaemonProcessRole::Gateway);
-    assert_eq!(dns_config.role(), DaemonProcessRole::Dns);
-    assert_eq!(gateway.machine_id, machine_id("machine_7"));
-    assert_eq!(gateway.nats_url, url);
-    assert_eq!(gateway.listen_addr, socket(8080));
-    assert_eq!(dns.machine_id, machine_id("machine_7"));
-    assert_eq!(dns.nats_url, url);
-    assert_eq!(
-        gateway.work,
-        &[
-            GatewayWork::WatchRoutes,
-            GatewayWork::WatchContainerHealth,
-            GatewayWork::ServeLastKnownGoodRoutes
-        ]
-    );
-    assert_eq!(
-        dns.work,
-        &[
-            DnsWork::WatchServices,
-            DnsWork::WatchMachineAddresses,
-            DnsWork::ServeLastKnownGoodAnswers
-        ]
-    );
 }
 
 #[test]
@@ -682,12 +530,4 @@ fn temp_join_template_file() -> String {
 
 fn socket(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
-}
-
-fn service_names(catalog: &ployzd::services::DaemonServiceCatalog) -> Vec<&str> {
-    catalog
-        .services()
-        .iter()
-        .map(|service| service.name)
-        .collect()
 }

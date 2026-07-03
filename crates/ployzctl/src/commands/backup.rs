@@ -1,7 +1,6 @@
 use clap::{ArgAction, Args, ValueEnum};
 use ployz_core::backup::{
-    BackupRestoreSource, BackupTarget, RestoreStep, S3AddressingStyle, S3BackupRestoreSource,
-    S3BackupTarget, single_core_restore_contract,
+    BackupRestoreSource, BackupTarget, RestoreStep, S3AddressingStyle, single_core_restore_contract,
 };
 use ployz_core::ids::OperationId;
 use ployz_sdk_types::{AcceptedOperation, BackupCreateRequest};
@@ -84,13 +83,13 @@ pub(crate) fn backup_create_command(
     Ok(BackupCreateCommand {
         operation_id: OperationId::try_new(parsed.operation)
             .map_err(|error| invalid_value("--operation", error))?,
-        target: BackupTarget::s3(S3BackupTarget::new(
-            non_empty_string("--s3-bucket", parsed.s3_bucket)?,
-            non_empty_string("--s3-prefix", parsed.s3_prefix)?,
-            non_empty_string("--s3-region", parsed.s3_region)?,
-            optional_non_empty_string("--s3-endpoint-url", parsed.s3_endpoint_url)?,
-            parsed.s3_addressing_style.into(),
-        )),
+        target: BackupTarget::S3 {
+            bucket: non_empty_string("--s3-bucket", parsed.s3_bucket)?,
+            key_prefix: non_empty_string("--s3-prefix", parsed.s3_prefix)?,
+            region: non_empty_string("--s3-region", parsed.s3_region)?,
+            endpoint_url: optional_non_empty_string("--s3-endpoint-url", parsed.s3_endpoint_url)?,
+            addressing_style: parsed.s3_addressing_style.into(),
+        },
     })
 }
 
@@ -114,13 +113,13 @@ pub(crate) fn backup_restore_command(
     parsed: BackupRestoreCli,
 ) -> Result<BackupRestorePlanCommand, PloyzctlCliError> {
     Ok(BackupRestorePlanCommand {
-        source: BackupRestoreSource::s3(S3BackupRestoreSource::new(
-            non_empty_string("--s3-bucket", parsed.s3_bucket)?,
-            non_empty_string("--s3-manifest-key", parsed.s3_manifest_key)?,
-            non_empty_string("--s3-region", parsed.s3_region)?,
-            optional_non_empty_string("--s3-endpoint-url", parsed.s3_endpoint_url)?,
-            parsed.s3_addressing_style.into(),
-        )),
+        source: BackupRestoreSource::S3 {
+            bucket: non_empty_string("--s3-bucket", parsed.s3_bucket)?,
+            manifest_key: non_empty_string("--s3-manifest-key", parsed.s3_manifest_key)?,
+            region: non_empty_string("--s3-region", parsed.s3_region)?,
+            endpoint_url: optional_non_empty_string("--s3-endpoint-url", parsed.s3_endpoint_url)?,
+            addressing_style: parsed.s3_addressing_style.into(),
+        },
     })
 }
 

@@ -1,11 +1,9 @@
-//! Core-cluster formation: the proof-script recipe, host-driven — plus the
-//! cluster lifecycle (teardown) and host-side client plumbing.
+//! Core-cluster formation, cluster lifecycle, and host-side client plumbing.
 
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ployz_core::ids::OperationId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::InstallRolePolicy;
@@ -13,8 +11,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_e2e::bollard::Docker;
 use ployz_e2e::dind::{
     self, ARTIFACTS_MOUNT_PATH, DindCluster, DindClusterSpec, DindMachine, DindMachineRole,
-    ExecOutcome, MACHINE_NATS_PORT, MachineSpec, exec_in_container, read_file_from_container,
-    write_file_in_container,
+    ExecOutcome, MachineSpec, exec_in_container, read_file_from_container, write_file_in_container,
 };
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsConnectError, NatsTlsTrust,
@@ -79,27 +76,6 @@ pub struct ClusterMaterial {
     pub join_seed_file: PathBuf,
 }
 
-/// Provisions the machines and forms the secured core exactly the way the
-/// proof script does: placeholder-CA join template → keeper install via
-/// `ployzctl init --run-keeper-install` → re-render the template with the
-/// keeper-minted CA and restart the (disposable) control role → wait for
-/// the control API over the published TLS port. Formation failures capture
-/// whole-cluster evidence.
-///
-/// Scenario 1 keeps using this proof-level flow because its subject is the
-/// seam between install and activation; the product quick-start path lives
-/// in [`init_core_cluster`].
-pub async fn install_core_cluster(docker: &Docker, edge_count: usize) -> CoreContext {
-    let cluster = provision_cluster(docker, edge_count).await;
-    let (material, api) = with_evidence(&cluster, form_core(docker, &cluster)).await;
-    CoreContext {
-        docker: docker.clone(),
-        material,
-        api,
-        cluster,
-    }
-}
-
 /// Provisions the machines and forms the secured core through the product
 /// `ployzctl machine init root@core` command, driven in-process from the
 /// host over a docker-exec-backed stand-in `ssh`. Includes first-machine
@@ -153,110 +129,6 @@ async fn mount_bpf(docker: &Docker, cluster: &DindCluster) {
         .expect("exec bpf mount");
         assert!(mounted.success(), "bpf mount failed: {mounted:?}");
     }
-}
-
-/// The formation work between provisioning and the ready operator API.
-async fn form_core(
-    docker: &Docker,
-    cluster: &DindCluster,
-) -> (ClusterMaterial, OperationApiClient) {
-    let core = cluster.core().clone();
-    let core_ip = core.bridge_ip;
-    let core_nats_url = format!("tls://{core_ip}:{MACHINE_NATS_PORT}");
-
-    mount_bpf(docker, cluster).await;
-
-    let shas = ArtifactShas::read(docker, &core).await;
-
-    // Join template first carries a syntactically valid placeholder CA: it
-    // must parse when ployzd-control first starts, before the cluster CA
-    // exists. It is replaced with the real CA right after keeper install.
-    let placeholder_ca =
-        "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n".to_owned();
-    write_join_template(docker, &core, &core_nats_url, &placeholder_ca, &shas).await;
-
-    let install_spec = serde_json::json!({
-        "machine_id": "core_1",
-        "gateway": "install",
-        "dns": "install",
-        "machine_public_ip": core_ip.to_string(),
-        "machine_bootstrap_url": "https://local.invalid/ployz.sh",
-        "machine_join_template_file": "/etc/ployz/machine-join-template.json",
-        "machine_join_cluster_name": "ployz",
-        "machine_join_runtime_nats_url": core_nats_url,
-        "artifacts": {
-            "ployzd": shas.ployzd_descriptor(),
-            "ebpf_bytecode": shas.ebpf_bytecode_descriptor(),
-            "ebpf_ctl": shas.ebpf_ctl_descriptor(),
-            "nats_server": {
-                "version": "local",
-                "source": "/usr/local/bin/nats-server",
-                "sha256": shas.nats_server,
-                "binary": "/usr/local/bin/nats-server",
-                "config": "/etc/nats/nats-server.conf"
-            }
-        }
-    });
-    write_file_in_container(
-        docker,
-        &core.container_id,
-        "/tmp/ployz-first-machine-install.json",
-        &serde_json::to_string_pretty(&install_spec).expect("install spec serializes"),
-        "0644",
-    )
-    .await
-    .expect("write first-machine install spec");
-
-    let init = exec_in_container(
-        docker,
-        &core.container_id,
-        &[
-            &format!("{ARTIFACTS_MOUNT_PATH}/ployzctl"),
-            "init",
-            "--run-keeper-install",
-            "--install-spec",
-            "/tmp/ployz-first-machine-install.json",
-            "--keeper-binary",
-            &format!("{ARTIFACTS_MOUNT_PATH}/ployz-keeper"),
-        ],
-    )
-    .await
-    .expect("exec ployzctl init");
-    assert!(
-        init.success(),
-        "keeper first-machine install failed (exit {}): {}\n{}",
-        init.exit_code,
-        init.stdout,
-        init.stderr
-    );
-
-    // The keeper minted the cluster CA during install; the join template
-    // can only carry the real CA now. Re-render it and restart the
-    // (disposable) control role so machine-add bundles hand out the
-    // trusted CA.
-    let ca_pem = read_file_from_container(
-        docker,
-        &core.container_id,
-        &format!("{NATS_MATERIAL_DIR}/ca.pem"),
-    )
-    .await
-    .expect("read cluster CA");
-    write_join_template(docker, &core, &core_nats_url, &ca_pem, &shas).await;
-    let restart = exec_in_container(
-        docker,
-        &core.container_id,
-        &["systemctl", "restart", "ployzd-control"],
-    )
-    .await
-    .expect("restart ployzd-control");
-    assert!(restart.success(), "control restart failed: {restart:?}");
-
-    let material = collect_cluster_material(docker, &core).await;
-
-    // Authenticated host-side operator client through the published
-    // 127.0.0.1 port (127.0.0.1 is in the server-cert SANs).
-    let api = wait_for_operator_api(cluster, &material).await;
-    (material, api)
 }
 
 /// Copies the host-side material out of the core container (CA plus the
@@ -438,7 +310,6 @@ pub struct ArtifactShas {
     pub ployzd: String,
     pub ebpf_bytecode: String,
     pub ebpf_ctl: String,
-    pub nats_server: String,
 }
 
 impl ArtifactShas {
@@ -457,35 +328,7 @@ impl ArtifactShas {
                 &format!("{ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl"),
             )
             .await,
-            nats_server: sha256_of(docker, core, "/usr/local/bin/nats-server").await,
         }
-    }
-
-    fn ployzd_descriptor(&self) -> serde_json::Value {
-        serde_json::json!({
-            "version": "local",
-            "source": format!("{ARTIFACTS_MOUNT_PATH}/ployzd"),
-            "sha256": self.ployzd,
-            "install_path": "/usr/local/bin/ployzd"
-        })
-    }
-
-    fn ebpf_bytecode_descriptor(&self) -> serde_json::Value {
-        serde_json::json!({
-            "version": "local",
-            "source": format!("{ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc"),
-            "sha256": self.ebpf_bytecode,
-            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-        })
-    }
-
-    fn ebpf_ctl_descriptor(&self) -> serde_json::Value {
-        serde_json::json!({
-            "version": "local",
-            "source": format!("{ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl"),
-            "sha256": self.ebpf_ctl,
-            "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-        })
     }
 }
 
@@ -498,36 +341,6 @@ pub async fn sha256_of(docker: &Docker, machine: &DindMachine, path: &str) -> St
         panic!("empty sha256sum output for {path}");
     };
     digest.to_owned()
-}
-
-async fn write_join_template(
-    docker: &Docker,
-    core: &DindMachine,
-    runtime_nats_url: &str,
-    ca_pem: &str,
-    shas: &ArtifactShas,
-) {
-    let template = serde_json::json!({
-        "join_bundle": {
-            "material": {
-                "cluster_name": "dind-e2e",
-                "runtime_nats_url": runtime_nats_url,
-                "trusted_nats": { "ca_pem": ca_pem },
-                "ployzd": shas.ployzd_descriptor(),
-                "ebpf_bytecode": shas.ebpf_bytecode_descriptor(),
-                "ebpf_ctl": shas.ebpf_ctl_descriptor(),
-            }
-        }
-    });
-    write_file_in_container(
-        docker,
-        &core.container_id,
-        "/etc/ployz/machine-join-template.json",
-        &serde_json::to_string_pretty(&template).expect("join template serializes"),
-        "0644",
-    )
-    .await
-    .expect("write join template");
 }
 
 /// Connects an authenticated operator client through the published port and
@@ -587,34 +400,6 @@ pub async fn connect_core_client(
     connect_authenticated(&config, CONNECT_TIMEOUT).await
 }
 
-/// Activates the first machine through the in-machine product CLI,
-/// authenticated with the keeper-minted operator credential, and returns the
-/// activation operation id.
-pub async fn activate_first_machine(core: &CoreContext) -> OperationId {
-    let activate = core
-        .exec_sh(
-            core.cluster.core(),
-            &format!(
-                "PLOYZ_NATS_CA_FILE={NATS_MATERIAL_DIR}/ca.pem \
-                 PLOYZ_NATS_NKEY_SEED_FILE={NATS_MATERIAL_DIR}/operator.seed \
-                 {ARTIFACTS_MOUNT_PATH}/ployzctl --nats tls://127.0.0.1:{MACHINE_NATS_PORT} \
-                 init activate-first-machine --machine core_1 --gateway"
-            ),
-        )
-        .await;
-    assert!(
-        activate.success(),
-        "activate-first-machine failed (exit {}): {}\n{}",
-        activate.exit_code,
-        activate.stdout,
-        activate.stderr
-    );
-    let Some(operation_id) = parse_operation_line(&activate.stdout) else {
-        panic!("no operation id in activate output: {}", activate.stdout);
-    };
-    operation_id
-}
-
 /// Submits the canonical edge machine add (`edge_2`) and returns the
 /// acceptance the product printed the join bundle from.
 pub async fn submit_machine_add(core: &CoreContext) -> MachineAddAccepted {
@@ -655,13 +440,6 @@ pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
         "machine add output: {}",
         output.stdout
     );
-}
-
-fn parse_operation_line(output: &str) -> Option<OperationId> {
-    output.lines().find_map(|line| {
-        line.strip_prefix("operation ")
-            .and_then(|id| OperationId::try_new(id.trim()).ok())
-    })
 }
 
 /// Tears the cluster down unless `PLOYZ_DIND_KEEP=1`.

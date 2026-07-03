@@ -11,7 +11,6 @@ use crate::ids::{
 };
 use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
 use crate::roles::InstallRolePolicy;
-use crate::state::ExpectedActiveService;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 mod accessors;
@@ -186,12 +185,6 @@ pub enum DeployOperationFailure {
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
-    ActiveServiceCommitRejected {
-        service_id: ServiceId,
-        revision_id: RevisionId,
-        reason: ActiveServiceCommitFailure,
-        retained_artifacts: Vec<RetainedArtifact>,
-    },
     RouteCutoverFailed {
         route: RouteTarget,
         reason: RouteCutoverFailureReason,
@@ -230,17 +223,6 @@ impl CertOperationFailure {
             | Self::ActiveCertCommitFailed { cert_id, .. } => cert_id,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActiveServiceCommitFailure {
-    ActiveServiceChanged {
-        expected_current: ExpectedActiveService,
-        current_revision: Option<RevisionId>,
-        attempted_revision: RevisionId,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

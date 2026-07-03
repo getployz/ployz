@@ -765,10 +765,11 @@ mod tests {
         let next = record_gateway_attempt(
             &health,
             Ok(GatewayRuntimeTick {
-                state: crate::gateway::GatewayProjectionState::ProjectionFailedUnavailable {
-                    error: GatewayProjectionError::SourceUnavailable {
+                state: crate::gateway::GatewayProjectionState {
+                    last_good: None,
+                    last_error: Some(GatewayProjectionError::SourceUnavailable {
                         message: "not used".to_owned(),
-                    },
+                    }),
                 },
                 served: None,
                 serving: GatewayServingState::LastKnownGood {

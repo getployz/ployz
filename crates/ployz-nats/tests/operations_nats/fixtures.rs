@@ -1,4 +1,4 @@
-use ployz_core::backup::{BackupTarget, S3AddressingStyle, S3BackupTarget};
+use ployz_core::backup::{BackupTarget, S3AddressingStyle};
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
@@ -75,13 +75,13 @@ pub(super) fn backup_submission(operation_id: &str) -> BackupOperationSubmission
 }
 
 pub(super) fn backup_target(key_prefix: &str) -> BackupTarget {
-    BackupTarget::s3(S3BackupTarget::new(
-        "ployz-backups",
-        key_prefix,
-        "us-east-1",
-        None,
-        S3AddressingStyle::VirtualHosted,
-    ))
+    BackupTarget::S3 {
+        bucket: "ployz-backups".to_owned(),
+        key_prefix: key_prefix.to_owned(),
+        region: "us-east-1".to_owned(),
+        endpoint_url: None,
+        addressing_style: S3AddressingStyle::VirtualHosted,
+    }
 }
 
 pub(super) fn machine_add_submission(

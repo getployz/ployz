@@ -10,9 +10,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::{
-    ActiveRouteState, ActiveServiceState, ExpectedActiveRoute, ExpectedActiveService,
-};
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, operation_id, revision_id, service_id, step_id,
 };
@@ -174,10 +172,6 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 
     assert_eq!(prepared.request, deploy_request(2));
     assert_eq!(
-        prepared.expected_active,
-        ExpectedActiveService::Revision(revision_id("rev_old"))
-    );
-    assert_eq!(
         prepared.eligible_machines,
         vec![machine_id("machine_a"), machine_id("machine_b")]
     );
@@ -235,27 +229,6 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
 }
 
 #[test]
-fn deploy_preparation_rejects_active_state_for_another_service() {
-    assert_eq!(
-        prepare_deploy(DeployPreparationInput {
-            request: deploy_request(1),
-            active_service: Some(ActiveServiceState {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_other"),
-                active_revision: revision_id("rev_old"),
-            }),
-            active_route: None,
-            eligible_machines: vec![machine_id("machine_a")],
-            observed_machines: Vec::new(),
-        }),
-        Err(DeployPreparationError::ActiveServiceMismatch {
-            expected_service_id: service_id("svc_api"),
-            actual_service_id: service_id("svc_other"),
-        })
-    );
-}
-
-#[test]
 fn deploy_preparation_rejects_active_route_for_another_target() {
     let mut request = deploy_request(1);
     request.route = Some(deploy_route("api.example.com", 443, 8080));
@@ -303,19 +276,17 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
 
     let route_commit = prepared
         .route_commit
-        .expect("routed deploy has route commit request");
-    assert_eq!(route_commit.target, route_target("api.example.com", 443));
-    assert_eq!(route_commit.endpoint_port, route_port(8080));
+        .expect("routed deploy has route state");
     assert_eq!(
-        route_commit.expected_current,
-        ExpectedActiveRoute::ServiceRevision(ployz_core::state::ExpectedActiveRouteRevision {
-            service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_old"),
+        route_commit,
+        ActiveRouteState {
+            namespace_id: namespace_id("default"),
+            target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
-        })
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_1"),
+        }
     );
-    assert_eq!(route_commit.service_id, service_id("svc_api"));
-    assert_eq!(route_commit.revision_id, revision_id("rev_1"));
 }
 
 fn planning_input(

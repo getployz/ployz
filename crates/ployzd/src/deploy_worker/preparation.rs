@@ -48,7 +48,6 @@ pub fn prepare_deploy_execution_command(
         })?;
         services.push(DeployServiceExecutionCommand {
             request: prepared.request,
-            expected_active: prepared.expected_active,
             route_commit: prepared.route_commit,
             eligible_machines: prepared.eligible_machines,
             existing_replicas: prepared.existing_replicas,
