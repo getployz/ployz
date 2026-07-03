@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{NamespaceId, RevisionId, ServiceId};
+use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::ids::{NamespaceId, ServiceId};
 use serde::Deserialize;
 
 use crate::commands::deploy::parse_route_shorthand;
@@ -12,7 +12,7 @@ const DEFAULT_REPLICA_COUNT: u16 = 1;
 pub(crate) fn parse_deploy_file(
     source: &str,
     namespace_override: Option<NamespaceId>,
-) -> Result<DeployRequest, PloyzctlCliError> {
+) -> Result<ParsedComposeDeploy, PloyzctlCliError> {
     let compose: ComposeFile = serde_yaml::from_str(source)
         .map_err(|error| cli_error(format!("invalid compose YAML: {error}")))?;
     let namespace_id = match namespace_override {
@@ -54,12 +54,16 @@ pub(crate) fn parse_deploy_file(
     if services.is_empty() {
         return Err(cli_error("compose file must define at least one service"));
     }
-    Ok(DeployRequest {
+    Ok(ParsedComposeDeploy {
         namespace_id,
-        target_revision: RevisionId::try_new("rev_pending")
-            .expect("placeholder revision id is valid"),
         services,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedComposeDeploy {
+    pub namespace_id: NamespaceId,
+    pub services: Vec<DeployServiceSpec>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -268,6 +268,20 @@ pub async fn execute_command(
                     .render(),
             ))
         }
+        PloyzctlCommand::MachineUpdate(command) => {
+            let detach = command.detach;
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .machine_update(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            if detach {
+                return Ok(PloyzctlExecutionOutput::stdout(
+                    crate::commands::machine::MachineUpdateOutput::from_accepted(accepted).render(),
+                ));
+            }
+            watch_accepted_operation(&api, accepted.operation_id, config).await
+        }
         PloyzctlCommand::MachineList(command) => {
             render_api_call(
                 config,

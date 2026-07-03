@@ -26,6 +26,7 @@ pub mod gateway_runtime;
 pub mod gateway_source;
 pub mod machine_credentials;
 pub mod machine_runtime;
+pub mod machine_update_runtime;
 pub mod nats_authorization;
 pub mod nats_process;
 pub mod operation_api;

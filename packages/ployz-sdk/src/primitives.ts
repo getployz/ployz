@@ -12,6 +12,7 @@ import {
   type EventSequence,
   type FailureMessage,
   type ImageReference,
+  type InstallArtifactVersion,
   type LogsTailLines,
   type MachineBootstrapUrl,
   type MachineJoinToken,
@@ -98,6 +99,10 @@ export function imageReference(value: string): ImageReference {
   }
 
   return value as ImageReference;
+}
+
+export function installArtifactVersion(value: string): InstallArtifactVersion {
+  return visibleAscii(value, "install artifact version") as InstallArtifactVersion;
 }
 
 export function failureMessage(value: string): FailureMessage {

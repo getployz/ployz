@@ -14,6 +14,7 @@ import {
   logsTailLines,
   machineInspectRequest,
   machineAddRequest,
+  machineUpdateRequest,
   machineBootstrapUrl,
   machineJoinRedeemRequest,
   machineListRequest,
@@ -25,6 +26,7 @@ import {
   OPERATION_API_CONTRACTS,
   operationId,
   operationEventReplayLimit,
+  opsListRequest,
   PloyzApiError,
   PloyzClient,
   revisionId,
@@ -56,10 +58,13 @@ import type {
   MachineListResponse,
   MachineListRequest,
   MachineSnapshot,
+  MachineUpdateRequest,
+  MachineUpdateResponse,
   OperationEventReplayPage,
   OperationStatusSnapshot,
   OperationSubject,
   OpsListRequest,
+  OpsListResult,
   OpsStatusResponse,
   OpsStatusRequest,
   OpsWatchResponse,
@@ -121,6 +126,21 @@ test("machine add returns an operation handle with bootstrap material", async ()
   assert.equal(handle.joinToken, "join_once_123");
   assert.deepEqual(transport.machineAddRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_machine" }]);
+  assert.deepEqual(status, defaultFixture().operation_status_snapshot);
+});
+
+test("machine update returns an operation handle", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+  const input = machineUpdateInput();
+  const request = machineUpdateRequest(input);
+
+  const handle = await client.machineUpdate(input);
+  const status = await handle.status();
+
+  assert.equal(handle.operationId, "op_123");
+  assert.deepEqual(transport.machineUpdateRequests, [request]);
+  assert.deepEqual(transport.statusRequests, [{ operation_id: "op_123" }]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
 });
 
@@ -194,6 +214,15 @@ test("logs tail returns recent container evidence", async () => {
     text: "hello\n",
     truncated: false,
   });
+});
+
+test("ops list returns operation snapshots", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+  const result: OpsListResult = await client.opsList({ activeOnly: true });
+
+  assert.deepEqual(result, { operations: [] });
+  assert.deepEqual(transport.opsListRequests, [opsListRequest({ activeOnly: true })]);
 });
 
 test("machine join redeem returns joined machine facts", async () => {
@@ -376,6 +405,22 @@ test("sdk maps raw machine add input to the wire request", () => {
   );
 });
 
+test("sdk maps raw machine update input to the wire request", () => {
+  assert.deepEqual(machineUpdateRequest(machineUpdateInput()), {
+    operation_id: "op_update_machine_2_123",
+    machine_id: "machine_2",
+    target_version: "0.2.0",
+  });
+  assert.throws(
+    () => machineUpdateRequest({ ...machineUpdateInput(), machineId: "machine.2" }),
+    /machine id/,
+  );
+  assert.throws(
+    () => machineUpdateRequest({ ...machineUpdateInput(), targetVersion: "0.2.0 beta" }),
+    /install artifact version/,
+  );
+});
+
 test("sdk maps current-state query inputs to wire requests", () => {
   assert.deepEqual(machineListRequest(), {});
   assert.deepEqual(machineInspectRequest({ machineId: "machine_2" }), { machine_id: "machine_2" });
@@ -384,6 +429,9 @@ test("sdk maps current-state query inputs to wire requests", () => {
   assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
   assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
   assert.deepEqual(runtimeSnapshotRequest(), {});
+  assert.deepEqual(opsListRequest(), { active_only: false });
+  assert.deepEqual(opsListRequest({ activeOnly: true }), { active_only: true });
+  assert.deepEqual(opsListRequest({ activeOnly: false }), { active_only: false });
   assert.deepEqual(logsTailRequest("ctr_failed"), { container_id: "ctr_failed" });
   assert.deepEqual(logsTailRequest({ containerId: "ctr_failed", tailLines: 25 }), {
     container_id: "ctr_failed",
@@ -461,6 +509,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "MachineAddAccepted",
       error: "MachineAddError",
       response: "MachineAddResponse",
+    },
+    {
+      name: "machine.update",
+      subject: "plz.v1.svc.api.machine.update",
+      execution: "accepts_operation",
+      request: "MachineUpdateRequest",
+      success: "AcceptedOperation",
+      error: "MachineUpdateError",
+      response: "MachineUpdateResponse",
     },
     {
       name: "machine.list",
@@ -583,6 +640,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
   readonly initFirstMachineActivateRequests: InitFirstMachineActivateRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
+  readonly machineUpdateRequests: MachineUpdateRequest[] = [];
   readonly machineListRequests: MachineListRequest[] = [];
   readonly machineInspectRequests: MachineInspectRequest[] = [];
   readonly machineJoinRedeemRequests: MachineJoinRedeemRequest[] = [];
@@ -606,6 +664,7 @@ class RecordingTransport implements PloyzOperationTransport {
   deployResponse?: DeploySubmitResponse;
   initFirstMachineActivateResponse?: InitFirstMachineActivateResponse;
   machineAddResponse?: MachineAddResponse;
+  machineUpdateResponse?: MachineUpdateResponse;
   machineListResponse?: MachineListResponse;
   machineInspectResponse?: MachineInspectResponse;
   machineJoinRedeemResponse?: MachineJoinRedeemResponse;
@@ -645,6 +704,9 @@ class RecordingTransport implements PloyzOperationTransport {
       case "machine.add":
         this.machineAddRequests.push(request as MachineAddRequest);
         return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as OperationApiResponseByEndpoint[E];
+      case "machine.update":
+        this.machineUpdateRequests.push(request as MachineUpdateRequest);
+        return (this.machineUpdateResponse ?? { status: "ok", value: this.accepted }) as OperationApiResponseByEndpoint[E];
       case "machine.list":
         this.machineListRequests.push(request as MachineListRequest);
         return (this.machineListResponse ?? {
@@ -868,6 +930,14 @@ function machineAddInput() {
     machineId: "machine_2",
     name: "edge_2",
     roles: gatewaySkippedRoles(),
+  };
+}
+
+function machineUpdateInput() {
+  return {
+    operationId: "op_update_machine_2_123",
+    machineId: "machine_2",
+    targetVersion: "0.2.0",
   };
 }
 

@@ -15,6 +15,7 @@ pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
 pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
 pub const API_INIT_FIRST_MACHINE_ACTIVATE: &str = "plz.v1.svc.api.init.first_machine.activate";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
+pub const API_MACHINE_UPDATE: &str = "plz.v1.svc.api.machine.update";
 pub const API_MACHINE_LIST: &str = "plz.v1.svc.api.machine.list";
 pub const API_MACHINE_INSPECT: &str = "plz.v1.svc.api.machine.inspect";
 pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
@@ -28,6 +29,7 @@ pub enum OperationApiEndpoint {
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
+    MachineUpdate,
     MachineList,
     MachineInspect,
     MachineJoinRedeem,
@@ -40,23 +42,6 @@ pub enum OperationApiEndpoint {
     OpsStatus,
     OpsWatch,
 }
-
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 14] = [
-    OperationApiEndpoint::DeploySubmit,
-    OperationApiEndpoint::InitFirstMachineActivate,
-    OperationApiEndpoint::MachineAdd,
-    OperationApiEndpoint::MachineList,
-    OperationApiEndpoint::MachineInspect,
-    OperationApiEndpoint::MachineJoinRedeem,
-    OperationApiEndpoint::MachineJoinReport,
-    OperationApiEndpoint::ServiceList,
-    OperationApiEndpoint::ServiceInspect,
-    OperationApiEndpoint::RuntimeSnapshot,
-    OperationApiEndpoint::LogsTail,
-    OperationApiEndpoint::OpsList,
-    OperationApiEndpoint::OpsStatus,
-    OperationApiEndpoint::OpsWatch,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpointExecution {
@@ -72,6 +57,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit => "deploy.submit",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
+            Self::MachineUpdate => "machine.update",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
             Self::MachineJoinRedeem => "machine.join.redeem",
@@ -92,6 +78,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit => API_DEPLOY_SUBMIT,
             Self::InitFirstMachineActivate => API_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => API_MACHINE_ADD,
+            Self::MachineUpdate => API_MACHINE_UPDATE,
             Self::MachineList => API_MACHINE_LIST,
             Self::MachineInspect => API_MACHINE_INSPECT,
             Self::MachineJoinRedeem => API_MACHINE_JOIN_REDEEM,
@@ -109,7 +96,7 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn execution(self) -> OperationApiEndpointExecution {
         match self {
-            Self::DeploySubmit | Self::MachineAdd => {
+            Self::DeploySubmit | Self::MachineAdd | Self::MachineUpdate => {
                 OperationApiEndpointExecution::AcceptsOperation
             }
             Self::InitFirstMachineActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
@@ -277,6 +264,32 @@ pub fn op_machine_add_failed(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
+pub fn op_machine_update_submitted(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.machine.update.submitted",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn op_machine_update_running(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.update.running", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_machine_update_completed(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.machine.update.completed",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn op_machine_update_failed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.update.failed", operation_id.as_str())
+}
+
+#[must_use]
 pub fn cert_renewal_schedule(cert_id: &CertId) -> String {
     format!("plz.v1.sched.cert.renew.{}", cert_id.as_str())
 }
@@ -336,6 +349,8 @@ pub enum MachineServiceEndpoint {
     ContainerStop,
     ContainerRemove,
     DataplanePrepare,
+    SubstrateUpdate,
+    SubstrateReport,
     LogsTail,
 }
 
@@ -349,6 +364,8 @@ impl MachineServiceEndpoint {
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
             Self::DataplanePrepare => "dataplane.prepare",
+            Self::SubstrateUpdate => "substrate.update",
+            Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
         }
     }

@@ -10,7 +10,7 @@ use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
 };
-use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
@@ -32,9 +32,9 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
-    RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest, ServiceInspectRequest,
-    ServiceListRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineUpdateError,
+    MachineUpdateRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest,
+    ServiceInspectRequest, ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
@@ -504,6 +504,37 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .shutdown()
         .await
         .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_rejects_current_machine_update() {
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let error = nats
+        .api()
+        .machine_update(&MachineUpdateRequest {
+            operation_id: operation_id("op_update_core"),
+            machine_id: machine_id("core_1"),
+            target_version: InstallArtifactVersion::try_new("0.2.0")
+                .expect("valid install version"),
+        })
+        .await
+        .expect_err("current machine update is rejected");
+
+    let OperationApiClientError::Domain {
+        error: MachineUpdateError::CurrentMachineUnsupported { machine_id, .. },
+        ..
+    } = error
+    else {
+        panic!("unexpected machine update error: {error:?}");
+    };
+    assert_eq!(machine_id, self::machine_id("core_1"));
+
     runtime
         .shutdown()
         .await

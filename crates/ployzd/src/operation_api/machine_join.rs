@@ -4,9 +4,10 @@
 
 use crate::controllers::OperationControllers;
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
+use ployz_core::ops::MachineSubstrateVersions;
 use ployz_core::ops::OperationStatus;
-use ployz_core::state::SubstrateVersions;
 use ployz_nats::operations::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -170,8 +171,11 @@ async fn activate_reported_machine(
     .map_err(|_| MachineJoinReportError::Unavailable {
         source: MachineJoinReportUnavailableSource::OperationCorrupt,
     })?;
-    active_machine.substrate_versions = Some(SubstrateVersions {
-        ployzd: Some(env!("CARGO_PKG_VERSION").to_owned()),
+    active_machine.substrate_versions = Some(MachineSubstrateVersions {
+        ployzd: Some(
+            InstallArtifactVersion::try_new(env!("CARGO_PKG_VERSION"))
+                .expect("crate package version is a valid install artifact version"),
+        ),
         keeper: None,
     });
     handlers

@@ -27,7 +27,8 @@ use ployzd::machine_runtime::protocol::{
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
     MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
-    MachineRunContainerOutcome,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
+    MachineSubstrateReportRpcResponse,
 };
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -70,6 +71,45 @@ async fn machine_runtime_service_ensures_endpoint_network() {
         .expect("endpoint network ensure succeeds");
 
     assert_eq!(state.endpoint_networks(), 1);
+}
+
+#[tokio::test]
+async fn machine_runtime_service_reports_unknown_substrate_without_evidence() {
+    let nats = test_nats().await;
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let response = request_json::<_, MachineSubstrateReportRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::SubstrateReport,
+        ),
+        &MachineSubstrateReportRpcRequest {
+            operation_id: operation_id("op_update_1"),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("substrate report succeeds");
+
+    let MachineSubstrateReportRpcResponse::Ok(ok) = response else {
+        panic!("substrate report returned domain error");
+    };
+    assert_eq!(ok.machine_id, machine_id("machine_a"));
+    assert_eq!(ok.reported.ployzd, None);
+    assert_eq!(ok.reported.keeper, None);
 }
 
 #[tokio::test]

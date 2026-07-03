@@ -53,7 +53,8 @@ pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsU
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, CancellationReason, EventSequence,
     EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
     OperatorHint, ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason,
@@ -67,7 +68,7 @@ pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
     ActiveMachineState, ActiveRouteState, ActiveServiceCommitRequest, ActiveServiceState,
     ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation,
-    MachinePublicIpObservation, SubstrateVersions,
+    MachinePublicIpObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -112,6 +113,8 @@ pub type MachineListResponse = OperationApiResponse<MachineListResult, MachineLi
 
 pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
 
+pub type MachineUpdateResponse = OperationApiResponse<AcceptedOperation, MachineUpdateError>;
+
 pub type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;
 
 pub type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
@@ -150,20 +153,7 @@ pub struct OpsListRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct OpsListResult {
-    pub operations: Vec<OpsListItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct OpsListItem {
-    pub operation_id: OperationId,
-    pub kind: String,
-    pub subject: String,
-    pub state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at_unix_seconds: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at_unix_seconds: Option<u64>,
+    pub operations: Vec<OperationStatusSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -174,6 +164,14 @@ pub struct MachineListRequest {}
 #[serde(deny_unknown_fields)]
 pub struct MachineInspectRequest {
     pub machine_id: MachineId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineUpdateRequest {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -618,6 +616,36 @@ pub enum MachineAddError {
     DuplicateIdempotencyKey {
         operation_id: OperationId,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUpdateError {
+    NoSuchMachine {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    CurrentMachineUnsupported {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    Unavailable {
+        operation_id: OperationId,
+        source: MachineUpdateUnavailableSource,
+    },
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUpdateUnavailableSource {
+    OperationSubmit {
+        failure: OperationSubmitUnavailableSource,
+    },
+    CoreState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

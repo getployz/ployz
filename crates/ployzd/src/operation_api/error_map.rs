@@ -24,13 +24,13 @@ use ployz_sdk_types::{
 
 /// The endpoint-independent core of a submit command failure: either an
 /// unavailable source or the duplicate-sequence collision.
-enum SubmitFailure {
+pub(super) enum SubmitFailure {
     InvalidDeployTarget,
     Unavailable(OperationSubmitUnavailableSource),
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
 
-fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
+pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     match error {
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget

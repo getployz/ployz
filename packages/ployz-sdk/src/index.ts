@@ -23,6 +23,7 @@ export {
   eventSequence,
   failureMessage,
   imageReference,
+  installArtifactVersion,
   logsTailLines,
   machineBootstrapUrl,
   machineJoinToken,
@@ -43,6 +44,7 @@ export {
 import {
   containerId,
   imageReference,
+  installArtifactVersion,
   logsTailLines,
   machineName,
   machineJoinToken,
@@ -81,6 +83,8 @@ import type {
   MachineListError,
   MachineListRequest,
   MachineSnapshot,
+  MachineUpdateError,
+  MachineUpdateRequest,
   OperationApiResponse,
   OperationApiRequestByEndpoint,
   OperationApiResponseByEndpoint,
@@ -89,6 +93,9 @@ import type {
   OperationEventReplayPage,
   OperationId,
   OperationStatusSnapshot,
+  OpsListError,
+  OpsListRequest,
+  OpsListResult,
   OpsStatusError,
   OpsWatchError,
   RuntimeSnapshotError,
@@ -143,6 +150,12 @@ export interface PloyzMachineAddInput {
   roles: InstallRolePolicy;
 }
 
+export interface PloyzMachineUpdateInput {
+  operationId: string;
+  machineId: string;
+  targetVersion: string;
+}
+
 export interface PloyzFirstMachineActivateInput {
   machineId: string;
   roles: InstallRolePolicy;
@@ -164,6 +177,10 @@ export interface PloyzLogsTailInput {
   containerId: string;
   machineId?: string;
   tailLines?: number | LogsTailLines;
+}
+
+export interface PloyzOpsListInput {
+  activeOnly?: boolean;
 }
 
 export class PloyzClient {
@@ -201,6 +218,14 @@ export class PloyzClient {
       await this.#transport.request("machine.add", machineAddRequest(input)),
     );
     return new MachineAddHandle(this.#transport, accepted);
+  }
+
+  async machineUpdate(input: PloyzMachineUpdateInput): Promise<OperationHandle> {
+    const accepted = unwrapApiResponse(
+      "machine.update",
+      await this.#transport.request("machine.update", machineUpdateRequest(input)),
+    );
+    return new OperationHandle(this.#transport, accepted);
   }
 
   async machineList(): Promise<MachineSnapshot[]> {
@@ -249,6 +274,13 @@ export class PloyzClient {
     return unwrapApiResponse(
       "logs.tail",
       await this.#transport.request("logs.tail", logsTailRequest(input)),
+    );
+  }
+
+  async opsList(input: PloyzOpsListInput = {}): Promise<OpsListResult> {
+    return unwrapApiResponse(
+      "ops.list",
+      await this.#transport.request("ops.list", opsListRequest(input)),
     );
   }
 }
@@ -321,6 +353,14 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
   };
 }
 
+export function machineUpdateRequest(input: PloyzMachineUpdateInput): MachineUpdateRequest {
+  return {
+    operation_id: operationId(input.operationId),
+    machine_id: machineId(input.machineId),
+    target_version: installArtifactVersion(input.targetVersion),
+  };
+}
+
 export function initFirstMachineActivateRequest(
   input: PloyzFirstMachineActivateInput,
 ): InitFirstMachineActivateRequest {
@@ -377,6 +417,12 @@ export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailReq
     container_id: containerId(input.containerId),
     ...(input.machineId ? { machine_id: machineId(input.machineId) } : {}),
     ...(input.tailLines === undefined ? {} : { tail_lines: logsTailLines(input.tailLines) }),
+  };
+}
+
+export function opsListRequest(input: PloyzOpsListInput = {}): OpsListRequest {
+  return {
+    active_only: input.activeOnly ?? false,
   };
 }
 
@@ -506,10 +552,12 @@ export type PloyzOperationError =
   | PloyzApiError<DeploySubmitError>
   | PloyzApiError<InitFirstMachineActivateError>
   | PloyzApiError<MachineAddError>
+  | PloyzApiError<MachineUpdateError>
   | PloyzApiError<MachineListError>
   | PloyzApiError<MachineInspectError>
   | PloyzApiError<MachineJoinRedeemError>
   | PloyzApiError<LogsTailError>
+  | PloyzApiError<OpsListError>
   | PloyzApiError<RuntimeSnapshotError>
   | PloyzApiError<ServiceListError>
   | PloyzApiError<ServiceInspectError>

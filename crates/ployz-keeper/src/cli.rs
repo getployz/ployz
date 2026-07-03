@@ -16,6 +16,7 @@ use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use crate::steps::{FirstMachineInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 use clap::{Parser, Subcommand};
+use ployz_core::ids::OperationId;
 use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
     NatsServerInstallSpec,
@@ -125,6 +126,7 @@ pub struct KeeperStartup {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperSubstrateUpdate {
+    pub operation_id: Option<OperationId>,
     pub version: ExactPloyzVersion,
 }
 
@@ -153,11 +155,13 @@ pub fn load_command(
                 first_machine_install_target_from_spec(spec)?,
             )))
         }
-        Some(KeeperSubcommand::SubstrateUpdate { version }) => {
-            Ok(KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
-                version,
-            }))
-        }
+        Some(KeeperSubcommand::SubstrateUpdate {
+            operation_id,
+            version,
+        }) => Ok(KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
+            operation_id,
+            version,
+        })),
     }
 }
 
@@ -199,9 +203,15 @@ enum KeeperSubcommand {
         spec: SpecSource,
     },
     SubstrateUpdate {
+        #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
+        operation_id: Option<OperationId>,
         #[arg(long, value_name = "version")]
         version: ExactPloyzVersion,
     },
+}
+
+fn parse_operation_id(value: &str) -> Result<OperationId, String> {
+    OperationId::try_new(value).map_err(|error| error.to_string())
 }
 
 fn load_bootstrap(cloud_host: Option<CloudHost>) -> KeeperBootstrap {
@@ -432,6 +442,7 @@ mod tests {
     use std::path::PathBuf;
 
     use clap::Parser;
+    use ployz_core::ids::OperationId;
 
     use super::{
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
@@ -573,6 +584,8 @@ mod tests {
     fn parser_loads_substrate_update_exact_version() {
         let command = load_command([
             "substrate-update".into(),
+            "--operation-id".into(),
+            "op_update_1".into(),
             "--version".into(),
             "v0.0.2-alpha.16".into(),
         ])
@@ -581,6 +594,9 @@ mod tests {
         assert_eq!(
             command,
             KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
+                operation_id: Some(
+                    OperationId::try_new("op_update_1").expect("valid operation id")
+                ),
                 version: "v0.0.2-alpha.16".parse().expect("exact version parses"),
             })
         );
@@ -591,6 +607,8 @@ mod tests {
         assert!(matches!(
             load_command([
                 "substrate-update".into(),
+                "--operation-id".into(),
+                "op_update_1".into(),
                 "--version".into(),
                 "alpha".into(),
             ]),

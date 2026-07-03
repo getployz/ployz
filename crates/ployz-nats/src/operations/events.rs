@@ -4,11 +4,12 @@ use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, MachineId, OperationId};
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 use ployz_core::ops::{
     CertOperationFailure, DeployCompletionOutcome, DeployEvidence, DeployTransition, EventSequence,
-    EventSequenceError, OperationEvent, OperationEventReplayLimit, OperationEventReplayPage,
-    ReplayedOperationEvent,
+    EventSequenceError, MachineSubstrateVersions, MachineUpdateFailure, OperationEvent,
+    OperationEventReplayLimit, OperationEventReplayPage, ReplayedOperationEvent,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::subjects::{
@@ -18,7 +19,8 @@ use ployz_core::subjects::{
     op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
     op_deploy_running, op_deploy_submitted, op_machine_add_completed,
     op_machine_add_credential_provisioned, op_machine_add_failed, op_machine_add_joined,
-    op_machine_add_submitted, op_watch,
+    op_machine_add_submitted, op_machine_update_completed, op_machine_update_failed,
+    op_machine_update_running, op_machine_update_submitted, op_watch,
 };
 
 use crate::kv::{NatsIoTimeout, with_io_timeout};
@@ -189,6 +191,66 @@ impl OperationEventAppend {
         Self::from_event(
             MessageId::new(format!("machine.add.terminal.{}", operation_id.as_str())),
             OperationEvent::MachineAddFailed {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                failure,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_update_submitted(
+        operation_id: OperationId,
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
+    ) -> Self {
+        let message_operation_id = operation_id.clone();
+        Self::from_event(
+            submitted_message_id(&message_operation_id),
+            OperationEvent::MachineUpdateSubmitted {
+                operation_id,
+                machine_id,
+                target_version,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_update_running(operation_id: &OperationId, machine_id: &MachineId) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.update.running.{}", operation_id.as_str())),
+            OperationEvent::MachineUpdateRunning {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_update_completed(
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        reported: MachineSubstrateVersions,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.update.terminal.{}", operation_id.as_str())),
+            OperationEvent::MachineUpdateCompleted {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                reported,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_update_failed(
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        failure: MachineUpdateFailure,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.update.terminal.{}", operation_id.as_str())),
+            OperationEvent::MachineUpdateFailed {
                 operation_id: operation_id.clone(),
                 machine_id: machine_id.clone(),
                 failure,
@@ -543,6 +605,18 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         }
         OperationEvent::MachineAddFailed { operation_id, .. } => {
             op_machine_add_failed(operation_id)
+        }
+        OperationEvent::MachineUpdateSubmitted { operation_id, .. } => {
+            op_machine_update_submitted(operation_id)
+        }
+        OperationEvent::MachineUpdateRunning { operation_id, .. } => {
+            op_machine_update_running(operation_id)
+        }
+        OperationEvent::MachineUpdateCompleted { operation_id, .. } => {
+            op_machine_update_completed(operation_id)
+        }
+        OperationEvent::MachineUpdateFailed { operation_id, .. } => {
+            op_machine_update_failed(operation_id)
         }
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }

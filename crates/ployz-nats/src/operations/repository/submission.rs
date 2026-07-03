@@ -1,4 +1,5 @@
 use ployz_core::ids::{CertId, MachineId, OperationId};
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
@@ -94,6 +95,50 @@ impl SubmitKind for CertOperationSubmission {
     }
 }
 
+impl SubmitKind for MachineUpdateOperationSubmission {
+    type Payload = MachineUpdatePayload;
+    const KIND: OperationKind = OperationKind::MachineUpdate;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEventAppend {
+        OperationEventAppend::machine_update_submitted(
+            operation_id,
+            payload.machine_id,
+            payload.target_version,
+        )
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::MachineUpdateSubmitted {
+            operation_id,
+            machine_id,
+            target_version,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            MachineUpdatePayload {
+                machine_id,
+                target_version,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::machine_update_accepted(
+            operation_id,
+            payload.machine_id.clone(),
+            payload.target_version.clone(),
+            sequence,
+        )
+    }
+}
+
 impl AsyncNatsOperationRepository {
     pub async fn submit_deploy(
         &self,
@@ -131,6 +176,32 @@ impl AsyncNatsOperationRepository {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
             cert_id: submitted.payload,
+        })
+    }
+
+    pub async fn submit_machine_update(
+        &self,
+        submission: MachineUpdateOperationSubmission,
+    ) -> Result<AcceptedMachineUpdateSubmission, SubmitOperationError> {
+        let MachineUpdateOperationSubmission {
+            operation_id,
+            machine_id,
+            target_version,
+        } = submission;
+        let payload = MachineUpdatePayload {
+            machine_id,
+            target_version,
+        };
+        let submitted = self
+            .submit_operation::<MachineUpdateOperationSubmission>(operation_id, payload)
+            .await?;
+
+        Ok(AcceptedMachineUpdateSubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            machine_id: submitted.payload.machine_id,
+            target_version: submitted.payload.target_version,
+            should_start_execution: submitted.should_start_execution,
         })
     }
 
@@ -467,6 +538,19 @@ pub struct MachineAddOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineUpdateOperationSubmission {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MachineUpdatePayload {
+    machine_id: MachineId,
+    target_version: InstallArtifactVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -491,6 +575,15 @@ pub struct AcceptedMachineAddSubmission {
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedMachineUpdateSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
+    pub should_start_execution: bool,
 }
 
 /// How a deploy or cert submission fails inside the repository.
