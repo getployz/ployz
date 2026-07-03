@@ -42,10 +42,10 @@ use crate::{
     MachineReadinessEvidence, MachineSnapshot, MachineSubstrateVersions, MachineUpdateError,
     MachineUpdateFailure, MachineUpdateOperationState, MachineUpdateRequest, MachineUpdateResponse,
     MachineUpdateUnavailableSource, ManagedContainerKind, ManagedContainerObservation, NamespaceId,
-    NatsServerInstallSpec, NatsUserPublicKey, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationId, OperationIdempotencyKey, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OperationSubmitClockFailure,
+    NamespaceRevisionId, NatsServerInstallSpec, NatsUserPublicKey, OperationApiResponse,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationId, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OperationSubmitClockFailure,
     OperationSubmitEventFailure, OperationSubmitStatusFailure, OperationSubmitUnavailableSource,
     OperatorHint, OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
     OpsStatusResponse, OpsStatusUnavailableSource, OpsWatchError, OpsWatchResponse,
@@ -451,7 +451,7 @@ const fn operation_api_execution_name(execution: OperationApiEndpointExecution) 
 pub fn operation_contract_fixture() -> Value {
     let deploy_target = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
@@ -631,8 +631,8 @@ fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
 
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
+fn namespace_revision_id(value: &str) -> NamespaceRevisionId {
+    NamespaceRevisionId::try_new(value).expect("valid namespace revision id")
 }
 
 fn machine_id(value: &str) -> MachineId {

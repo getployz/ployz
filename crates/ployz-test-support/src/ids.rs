@@ -2,7 +2,8 @@
 //! literal does not satisfy the id's invariants.
 
 use ployz_core::ids::{
-    CertId, ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId,
+    CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, RevisionId, ServiceId, StepId,
 };
 use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
 use ployz_core::ops::{
@@ -38,6 +39,16 @@ pub fn service_id(value: &str) -> ServiceId {
 #[must_use]
 pub fn revision_id(value: &str) -> RevisionId {
     RevisionId::try_new(value).expect("valid revision id")
+}
+
+#[must_use]
+pub fn namespace_revision_id(value: &str) -> NamespaceRevisionId {
+    NamespaceRevisionId::try_new(value).expect("valid namespace revision id")
+}
+
+#[must_use]
+pub fn namespace_revision_entry_id(value: &str) -> NamespaceRevisionEntryId {
+    NamespaceRevisionEntryId::try_new(value).expect("valid namespace revision entry id")
 }
 
 #[must_use]
