@@ -18,8 +18,8 @@ use ployz_core::ops::{
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
-    ActiveMachineState, RouteBindingState, ServingTargetEntry, GatewayServingStatus,
-    GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    RouteBindingState, ServingTargetEntry,
 };
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::connect_authenticated;
@@ -341,16 +341,14 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("route binding stores");
     observations
-        .replace_machine_containers(
-            &containers::snapshot(
-                "machine_a",
-                [containers::observation("machine_a", "ctr_api")
-                    .entry("entry_2")
-                    .operation("op_deploy")
-                    .step("step_run")
-                    .running_unroutable()],
-            ),
-        )
+        .replace_machine_containers(&containers::snapshot(
+            "machine_a",
+            [containers::observation("machine_a", "ctr_api")
+                .entry("entry_2")
+                .operation("op_deploy")
+                .step("step_run")
+                .running_unroutable()],
+        ))
         .await
         .expect("machine observations store");
 

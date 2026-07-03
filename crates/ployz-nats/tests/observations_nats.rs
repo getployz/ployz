@@ -8,9 +8,7 @@ use ployz_core::state::{
 };
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
-use ployz_test_support::ids::{
-    container_id, machine_id,
-};
+use ployz_test_support::ids::{container_id, machine_id};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[tokio::test]
@@ -315,13 +313,12 @@ fn managed_observation_for(
     container_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    let mut observation = containers::observation(machine_id_value, container_id_value)
+    containers::observation(machine_id_value, container_id_value)
         .entry("rev_1")
         .operation("op_123")
         .step("step_1")
-        .build();
-    observation.state = state;
-    observation
+        .state(state)
+        .build()
 }
 
 fn machine_snapshot(

@@ -1,9 +1,9 @@
 use ployz_core::permissions::{
-    NatsPermissionProfile, ResponsePermission, inbox_prefix,
-    inbox_subscribe_scope, kv_read_js_api_subjects, machine_observation_kv_write_subjects,
+    NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
+    kv_read_js_api_subjects, machine_observation_kv_write_subjects,
 };
-use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::security::NatsPrincipal;
+use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
     MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
@@ -236,8 +236,7 @@ fn every_state_key_family_pattern_spans_its_rendered_keys() {
     use ployz_core::ids::{NamespaceId, ServiceId};
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
     use ployz_core::state::{
-        ActiveMachineStateKey, NamespaceLockStateKey, RouteBindingStateKey,
-        ServingTargetEntryKey,
+        ActiveMachineStateKey, NamespaceLockStateKey, RouteBindingStateKey, ServingTargetEntryKey,
     };
 
     let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
@@ -258,7 +257,9 @@ fn every_state_key_family_pattern_spans_its_rendered_keys() {
         ),
         (
             CoreStateKeyFamily::RouteBinding,
-            RouteBindingStateKey::from_target(&target).as_str().to_owned(),
+            RouteBindingStateKey::from_target(&target)
+                .as_str()
+                .to_owned(),
         ),
         (
             CoreStateKeyFamily::ActiveMachine,

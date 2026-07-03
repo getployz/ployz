@@ -5,8 +5,7 @@ use sha2::{Digest, Sha256};
 use std::num::NonZeroU16;
 
 use crate::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    ServiceId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
 };
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RoutePort, RouteTarget};
@@ -322,11 +321,12 @@ fn existing_replicas(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service_entry(
-                &request.namespace_id,
-                &request.service_id,
-                &request.namespace_revision_entry_id,
-            )
+            container.state.is_running()
+                && container.identity.is_service_entry(
+                    &request.namespace_id,
+                    &request.service_id,
+                    &request.namespace_revision_entry_id,
+                )
         })
         .map(|container| ExistingServiceReplica {
             machine_id: container.machine_id.clone(),

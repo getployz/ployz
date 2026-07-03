@@ -1,5 +1,4 @@
 use super::fixtures::*;
-use ployz_test_support::containers;
 use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationState,
@@ -9,6 +8,7 @@ use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, OperationEventAppend,
     OperationStatusWrite, RecordDeployTransitionError,
 };
+use ployz_test_support::containers;
 
 #[tokio::test]
 async fn operation_repository_records_transition_status_against_real_nats() {

@@ -5,8 +5,7 @@ use ployz_core::machine_runtime::{
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    namespace_id,
-    container_id, machine_id, namespace_revision_entry_id, route_hostname,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
 use ployzd::gateway::{
@@ -421,9 +420,7 @@ fn serving_entry(
     GatewayServingEntry {
         namespace_id: namespace_id("default"),
         service_id: service_id(service_id_value),
-        namespace_revision_entry_id: namespace_revision_entry_id(
-            namespace_revision_entry_id_value,
-        ),
+        namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
     }
 }
 
@@ -452,15 +449,14 @@ fn managed_container(
     kind: ManagedContainerKind,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    let mut observation = containers::observation(machine_id_value, container_id_value)
+    containers::observation(machine_id_value, container_id_value)
         .service(service_id_value)
         .entry(namespace_revision_entry_id_value)
         .operation("op_1")
         .step("step_1")
         .kind(kind)
-        .build();
-    observation.state = state;
-    observation
+        .state(state)
+        .build()
 }
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {

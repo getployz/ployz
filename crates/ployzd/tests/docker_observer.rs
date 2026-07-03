@@ -4,8 +4,8 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::state::MachineContainerObservationKey;
-use ployz_test_support::ids::{container_id, machine_id};
 use ployz_test_support::containers;
+use ployz_test_support::ids::{container_id, machine_id};
 use ployzd::docker::labels::{
     self, CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
     NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
@@ -37,7 +37,9 @@ fn managed_containers_render_required_ployz_labels() {
         Some("svc_api")
     );
     assert_eq!(
-        labels.get(NAMESPACE_REVISION_ENTRY_LABEL).map(String::as_str),
+        labels
+            .get(NAMESPACE_REVISION_ENTRY_LABEL)
+            .map(String::as_str),
         Some("entry_1")
     );
     assert_eq!(
@@ -99,13 +101,12 @@ fn managed_observation(
     container_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    let mut observation = containers::observation("machine_7", container_id_value)
+    containers::observation("machine_7", container_id_value)
         .entry("entry_1")
         .operation("op_123")
         .step("step_1")
-        .build();
-    observation.state = state;
-    observation
+        .state(state)
+        .build()
 }
 
 fn managed_identity() -> ManagedContainerIdentity {

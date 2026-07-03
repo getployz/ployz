@@ -124,19 +124,6 @@ impl ManagedContainerObservation {
     }
 
     #[must_use]
-    pub fn is_running_service_entry(
-        &self,
-        namespace_id: &NamespaceId,
-        service_id: &ServiceId,
-        namespace_revision_entry_id: &NamespaceRevisionEntryId,
-    ) -> bool {
-        self.state.is_running()
-            && self
-                .identity
-                .is_service_entry(namespace_id, service_id, namespace_revision_entry_id)
-    }
-
-    #[must_use]
     pub fn running_service_ip(&self) -> Option<IpAddr> {
         if self.identity.kind != ManagedContainerKind::Service {
             return None;

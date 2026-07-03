@@ -7,8 +7,8 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
-    ActiveMachineState, ServingTargetEntry, GatewayServingStatus, GatewayStatusObservation,
-    MachinePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    ServingTargetEntry,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{
@@ -684,7 +684,10 @@ fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> Serv
             namespace_id: ployz_core::ids::NamespaceId::try_new("default")
                 .expect("valid namespace id"),
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
-            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(namespace_revision_entry_id).expect("valid revision id"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(
+                namespace_revision_entry_id,
+            )
+            .expect("valid revision id"),
         },
     }
 }

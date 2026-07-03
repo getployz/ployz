@@ -18,7 +18,8 @@ pub(super) use ployz_test_support::fixtures::{deploy_target, machine_join_bundle
 pub(super) use ployz_test_support::ids::{
     cancellation_reason, cert_id, container_id, event_replay_limit, event_sequence,
     failure_message, idempotency_key, join_token_expires_at as expires_at,
-    join_token_redeemed_at as joined_at, machine_id, machine_name, namespace_id, operation_id, namespace_revision_id, raw_join_token, service_id,
+    join_token_redeemed_at as joined_at, machine_id, machine_name, namespace_id,
+    namespace_revision_id, operation_id, raw_join_token, service_id,
 };
 pub(super) use ployz_test_support::nats::TestNats;
 

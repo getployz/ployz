@@ -45,6 +45,12 @@ impl ManagedContainerIdentityBuilder {
     }
 
     #[must_use]
+    pub fn service(mut self, service: &str) -> Self {
+        self.identity.service_id = service_id(service);
+        self
+    }
+
+    #[must_use]
     pub fn entry(mut self, entry: &str) -> Self {
         self.identity.namespace_revision_entry_id = namespace_revision_entry_id(entry);
         self
@@ -103,21 +109,7 @@ impl ManagedContainerObservationBuilder {
 
     #[must_use]
     pub fn service(mut self, service: &str) -> Self {
-        let namespace = self.identity.identity.namespace_id.clone();
-        let entry = self
-            .identity
-            .identity
-            .namespace_revision_entry_id
-            .clone();
-        let operation = self.identity.identity.operation_id.clone();
-        let step = self.identity.identity.step_id.clone();
-        let kind = self.identity.identity.kind;
-        self.identity = identity(service)
-            .entry(entry.as_str())
-            .operation(operation.as_str())
-            .step(step.as_str())
-            .kind(kind)
-            .namespace(namespace.as_str());
+        self.identity = self.identity.service(service);
         self
     }
 
@@ -148,6 +140,12 @@ impl ManagedContainerObservationBuilder {
     #[must_use]
     pub fn identity(mut self, identity: ManagedContainerIdentity) -> Self {
         self.identity = ManagedContainerIdentityBuilder { identity };
+        self
+    }
+
+    #[must_use]
+    pub fn state(mut self, state: ContainerRuntimeState) -> Self {
+        self.state = state;
         self
     }
 
