@@ -197,7 +197,7 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     let [service] = request.services.as_slice() else {
         panic!("deploy request fixture has one service");
     };
-    service.namespace_revision_entry_id()
+    service.namespace_revision_entry_id(&namespace_id("default"))
 }
 
 fn existing_service_replica(
@@ -230,6 +230,7 @@ fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
@@ -258,6 +259,7 @@ fn observed_service_container_with_entry(
     ManagedContainerObservation {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),

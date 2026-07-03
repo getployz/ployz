@@ -10,7 +10,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
-use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ActiveServiceStateKey};
+use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ServingTargetEntryKey};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -244,7 +244,7 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    let key = ActiveServiceStateKey::from_service_id(&service_id("svc_api"));
+    let key = ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &service_id("svc_api"));
     let wrong_service_state = ServingTargetEntry {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),
@@ -289,7 +289,8 @@ async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
     let request = deploy_request();
-    let key = ActiveServiceStateKey::from_service_id(
+    let key = ServingTargetEntryKey::from_namespace_service(
+        &namespace_id("default"),
         request
             .primary_service_id()
             .expect("test deploy request has a service"),
@@ -426,7 +427,7 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     let [service] = request.services.as_slice() else {
         panic!("deploy request fixture has one service");
     };
-    service.namespace_revision_entry_id()
+    service.namespace_revision_entry_id(&namespace_id("default"))
 }
 
 fn machine_snapshot(
@@ -463,6 +464,7 @@ fn managed_observation_with_entry(
     ManagedContainerObservation {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: self::service_id(service_id),
         namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
@@ -501,6 +503,7 @@ fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),

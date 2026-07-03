@@ -30,6 +30,7 @@ pub struct CreateManagedContainer {
 #[must_use]
 pub fn managed_container_labels(spec: &MachineContainerRunSpec) -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: spec.namespace_id.clone(),
         service_id: spec.service_id.clone(),
         namespace_revision_entry_id: spec.namespace_revision_entry_id.clone(),
         operation_id: spec.operation_id.clone(),

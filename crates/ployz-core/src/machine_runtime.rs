@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 use crate::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +77,7 @@ impl ContainerRuntimeState {
 pub struct ManagedContainerObservation {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,

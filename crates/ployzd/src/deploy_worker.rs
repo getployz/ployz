@@ -472,6 +472,7 @@ fn retained_container_identity(
     container: &DeployContainer,
 ) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: command.request.namespace_id.clone(),
         service_id: container.service_id.clone(),
         namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
         operation_id: command.operation_id.clone(),
@@ -482,6 +483,7 @@ fn retained_container_identity(
 
 fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: target.namespace_id.clone(),
         service_id: target.service_id.clone(),
         namespace_revision_entry_id: target.namespace_revision_entry_id.clone(),
         operation_id: target.operation_id.clone(),
@@ -630,7 +632,8 @@ where
             DeployExecutionStep::RemoveServingTarget {
                 service_id: entry.service_id.clone(),
             },
-            active_state.remove_serving_target_entry(entry.service_id.clone()),
+            active_state
+                .remove_serving_target_entry(entry.namespace_id.clone(), entry.service_id.clone()),
         )
         .await?;
     }
@@ -769,6 +772,7 @@ where
     let request = MachineContainerRunRpcRequest {
         image: service.request.image.clone(),
         container: MachineContainerRunSpec {
+            namespace_id: service.request.namespace_id.clone(),
             service_id: service.request.service_id.clone(),
             namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
             operation_id: command.operation_id.clone(),

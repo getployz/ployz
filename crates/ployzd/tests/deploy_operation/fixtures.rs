@@ -9,8 +9,8 @@ use ployz_core::deploy::{
     ReplicaCount,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
-    StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, ServiceId, StepId,
 };
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
@@ -293,6 +293,7 @@ impl ServingTargetCommitter for RecordingActiveState {
 
     async fn remove_serving_target_entry(
         &mut self,
+        _namespace_id: NamespaceId,
         service_id: ServiceId,
     ) -> Result<(), ServingTargetCommitError> {
         self.removals.push(service_id);
@@ -313,6 +314,7 @@ impl ServingTargetCommitter for HangingActiveState {
 
     async fn remove_serving_target_entry(
         &mut self,
+        _namespace_id: NamespaceId,
         _service_id: ServiceId,
     ) -> Result<(), ServingTargetCommitError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -332,6 +334,7 @@ impl ServingTargetCommitter for LostLockActiveState {
 
     async fn remove_serving_target_entry(
         &mut self,
+        _namespace_id: NamespaceId,
         _service_id: ServiceId,
     ) -> Result<(), ServingTargetCommitError> {
         Err(ServingTargetCommitError::NamespaceLockLost)
@@ -814,6 +817,7 @@ fn observed_service_container_with_entry(
     ManagedContainerObservation {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
@@ -833,6 +837,7 @@ pub(super) fn target_namespace_revision_id() -> NamespaceRevisionId {
 
 pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     ployz_core::deploy::namespace_revision_entry_id_for(
+        &namespace_id("default"),
         &service_id("svc_api"),
         &image("registry.example/api:rev_2"),
     )
@@ -882,6 +887,7 @@ pub(super) fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),

@@ -53,7 +53,7 @@ pub fn inbox_subscribe_scope(principal: &NatsPrincipal) -> String {
 
 #[must_use]
 pub fn active_service_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{SERVING_TARGET_ENTRY_PREFIX}.*")
+    format!("$KV.{KV_CORE_BUCKET}.{SERVING_TARGET_ENTRY_PREFIX}.*.*")
 }
 
 #[must_use]

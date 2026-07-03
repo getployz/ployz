@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
 use ployz_core::ids::{
-    NamespaceRevisionEntryId, OperationId, ServiceId, StepId, SubjectTokenError,
+    NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId, SubjectTokenError,
 };
 use ployz_core::machine_runtime::ManagedContainerKind;
 use serde::{Deserialize, Serialize};
 
 pub const MANAGED_LABEL: &str = "plz.managed";
+pub const NAMESPACE_ID_LABEL: &str = "plz.namespace_id";
 pub const SERVICE_ID_LABEL: &str = "plz.service_id";
 pub const NAMESPACE_REVISION_ENTRY_LABEL: &str = "plz.namespace_revision_entry";
 pub const OPERATION_ID_LABEL: &str = "plz.operation_id";
@@ -16,6 +17,7 @@ pub const CONTAINER_TYPE_LABEL: &str = "plz.container_type";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerLabels {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
@@ -26,6 +28,7 @@ pub struct ManagedContainerLabels {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedContainerIdentity {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
@@ -37,6 +40,7 @@ impl ManagedContainerLabels {
     #[must_use]
     pub fn identity(&self) -> ManagedContainerIdentity {
         ManagedContainerIdentity {
+            namespace_id: self.namespace_id.clone(),
             service_id: self.service_id.clone(),
             namespace_revision_entry_id: self.namespace_revision_entry_id.clone(),
             operation_id: self.operation_id.clone(),
@@ -49,6 +53,10 @@ impl ManagedContainerLabels {
     pub fn render(&self) -> BTreeMap<String, String> {
         BTreeMap::from([
             (MANAGED_LABEL.to_owned(), "true".to_owned()),
+            (
+                NAMESPACE_ID_LABEL.to_owned(),
+                self.namespace_id.as_str().to_owned(),
+            ),
             (
                 SERVICE_ID_LABEL.to_owned(),
                 self.service_id.as_str().to_owned(),
@@ -79,6 +87,7 @@ impl ManagedContainerLabels {
             }
         }
 
+        let namespace_id = parse_id(labels, NAMESPACE_ID_LABEL, NamespaceId::try_new)?;
         let service_id = parse_id(labels, SERVICE_ID_LABEL, ServiceId::try_new)?;
         let namespace_revision_entry_id = parse_id(labels, NAMESPACE_REVISION_ENTRY_LABEL, NamespaceRevisionEntryId::try_new)?;
         let operation_id = parse_id(labels, OPERATION_ID_LABEL, OperationId::try_new)?;
@@ -90,6 +99,7 @@ impl ManagedContainerLabels {
             });
         };
         Ok(Self {
+            namespace_id,
             service_id,
             namespace_revision_entry_id,
             operation_id,

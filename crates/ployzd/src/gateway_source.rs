@@ -186,6 +186,7 @@ fn gateway_projection_input_from_state(
         serving: serving
             .into_iter()
             .map(|state| GatewayServingEntry {
+                namespace_id: state.namespace_id,
                 service_id: state.service_id,
                 namespace_revision_entry_id: state.namespace_revision_entry_id,
             })
@@ -204,6 +205,7 @@ fn gateway_route_from_state(state: RouteBindingState) -> GatewayRoute {
     GatewayRoute {
         target: state.target,
         endpoint_port: state.endpoint_port,
+        namespace_id: state.namespace_id,
         service_id: state.service_id,
     }
 }

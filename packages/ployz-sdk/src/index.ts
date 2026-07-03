@@ -172,6 +172,7 @@ export interface PloyzMachineInspectInput {
 }
 
 export interface PloyzServiceInspectInput {
+  namespaceId?: string;
   serviceId: string;
 }
 
@@ -395,7 +396,9 @@ export function serviceListRequest(): ServiceListRequest {
 export function serviceInspectRequest(
   input: string | PloyzServiceInspectInput,
 ): ServiceInspectRequest {
+  const namespace = typeof input === "string" ? undefined : input.namespaceId;
   return {
+    namespace_id: namespaceId(namespace ?? "default"),
     service_id: serviceId(typeof input === "string" ? input : input.serviceId),
   };
 }

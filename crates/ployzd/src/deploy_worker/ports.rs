@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
-use ployz_core::ids::{MachineId, OperationId, ServiceId};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore};
@@ -80,6 +80,7 @@ pub trait ServingTargetCommitter {
 
     fn remove_serving_target_entry(
         &mut self,
+        namespace_id: NamespaceId,
         service_id: ServiceId,
     ) -> impl Future<Output = Result<(), ServingTargetCommitError>> + Send;
 }
@@ -166,9 +167,10 @@ impl ServingTargetCommitter for AsyncNatsCoreStateStore {
 
     async fn remove_serving_target_entry(
         &mut self,
+        namespace_id: NamespaceId,
         service_id: ServiceId,
     ) -> Result<(), ServingTargetCommitError> {
-        AsyncNatsCoreStateStore::remove_serving_target_entry(self, &service_id)
+        AsyncNatsCoreStateStore::remove_serving_target_entry(self, &namespace_id, &service_id)
             .await
             .map_err(ServingTargetCommitError::Store)
     }

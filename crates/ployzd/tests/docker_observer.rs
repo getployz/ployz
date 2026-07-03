@@ -4,6 +4,7 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::state::MachineContainerObservationKey;
 use ployz_test_support::ids::{
+    namespace_id,
     container_id, machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
 use ployzd::docker::labels::{
@@ -102,6 +103,7 @@ fn managed_observation(
     ManagedContainerObservation {
         machine_id: machine_id("machine_7"),
         container_id: container_id(container_id_value),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
@@ -113,6 +115,7 @@ fn managed_observation(
 
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),

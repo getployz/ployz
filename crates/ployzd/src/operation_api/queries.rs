@@ -253,11 +253,12 @@ impl ServiceQueryRuntime {
 
     pub(crate) async fn inspect(
         &self,
+        namespace_id: &ployz_core::ids::NamespaceId,
         service_id: &ployz_core::ids::ServiceId,
     ) -> Result<ServiceSnapshot, ServiceInspectError> {
         let Some(active) = self
             .core_state
-            .serving_target_entry(service_id)
+            .serving_target_entry(namespace_id, service_id)
             .await
             .map_err(service_inspect_core_error)?
         else {

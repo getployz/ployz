@@ -7,6 +7,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{
+    NamespaceId,
     ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
 use ployz_core::install::InstallArtifactVersion;
@@ -33,6 +34,7 @@ pub trait MachineRpcResponder {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunSpec {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,

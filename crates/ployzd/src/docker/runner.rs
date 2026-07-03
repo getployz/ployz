@@ -819,12 +819,17 @@ mod tests {
 
     fn managed_labels() -> ManagedContainerLabels {
         ManagedContainerLabels {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
         }
+    }
+
+    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn service_id(value: &str) -> ServiceId {

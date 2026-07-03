@@ -242,15 +242,20 @@ impl ServingTargetCommitter for LockCheckedCoreState {
 
     async fn remove_serving_target_entry(
         &mut self,
+        namespace_id: ployz_core::ids::NamespaceId,
         service_id: ployz_core::ids::ServiceId,
     ) -> Result<(), ServingTargetCommitError> {
         if self.lock_is_lost() {
             return Err(ServingTargetCommitError::NamespaceLockLost);
         }
 
-        AsyncNatsCoreStateStore::remove_serving_target_entry(&self.core_state, &service_id)
-            .await
-            .map_err(ServingTargetCommitError::Store)
+        AsyncNatsCoreStateStore::remove_serving_target_entry(
+            &self.core_state,
+            &namespace_id,
+            &service_id,
+        )
+        .await
+        .map_err(ServingTargetCommitError::Store)
     }
 }
 
@@ -664,6 +669,7 @@ mod tests {
         ManagedContainerObservation {
             machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_observed"),
             operation_id: operation_id("op_123"),
@@ -675,6 +681,10 @@ mod tests {
 
     fn endpoint_ip(ip: &str) -> std::net::IpAddr {
         ip.parse().expect("valid endpoint ip")
+    }
+
+    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn machine_id(value: &str) -> MachineId {

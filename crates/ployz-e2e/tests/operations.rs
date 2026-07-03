@@ -241,7 +241,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .expect("open core state store");
     assert_eq!(
         core_state
-            .serving_target_entry(&service_id("svc_api"))
+            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("serving target entry reads")
             .expect("serving target committed")
@@ -656,6 +656,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
                 [ManagedContainerObservation {
                     machine_id: machine_id("machine_a"),
                     container_id: container_id("ctr_after_control_down"),
+                    namespace_id: namespace_id("default"),
                     service_id: service_id("svc_api"),
                     namespace_revision_entry_id: namespace_revision_entry_id("rev_2"),
                     operation_id: operation_id("op_e2e_control_down_route"),
@@ -948,6 +949,7 @@ fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:probe"),
         container: MachineContainerRunSpec {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_probe"),
             namespace_revision_entry_id: namespace_revision_entry_id("rev_probe"),
             operation_id: operation_id("op_probe"),

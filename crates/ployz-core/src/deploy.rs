@@ -48,7 +48,8 @@ impl DeployRequest {
                 namespace_id: self.namespace_id.clone(),
                 service_id: service.service_id.clone(),
                 namespace_revision_id: self.namespace_revision_id.clone(),
-                namespace_revision_entry_id: service.namespace_revision_entry_id(),
+                namespace_revision_entry_id: service
+                    .namespace_revision_entry_id(&self.namespace_id),
                 image: service.image.clone(),
                 replicas: service.replicas,
                 routes: service.routes.clone(),
@@ -70,21 +71,27 @@ pub struct DeployServiceSpec {
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v1";
+        "ployz.namespace_revision_entry.v2";
 
     #[must_use]
-    pub fn namespace_revision_entry_id(&self) -> NamespaceRevisionEntryId {
-        namespace_revision_entry_id_for(&self.service_id, &self.image)
+    pub fn namespace_revision_entry_id(
+        &self,
+        namespace_id: &NamespaceId,
+    ) -> NamespaceRevisionEntryId {
+        namespace_revision_entry_id_for(namespace_id, &self.service_id, &self.image)
     }
 }
 
 #[must_use]
 pub fn namespace_revision_entry_id_for(
+    namespace_id: &NamespaceId,
     service_id: &ServiceId,
     image: &ImageReference,
 ) -> NamespaceRevisionEntryId {
     let mut hasher = Sha256::new();
     hasher.update(DeployServiceSpec::NAMESPACE_REVISION_ENTRY_ENCODING_VERSION);
+    hasher.update(b"\nnamespace_id=");
+    hasher.update(namespace_id.as_str());
     hasher.update(b"\nservice_id=");
     hasher.update(service_id.as_str());
     hasher.update(b"\nimage=");
@@ -137,6 +144,7 @@ pub struct ExistingServiceReplica {
 pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
@@ -319,10 +327,11 @@ fn existing_replicas(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service_entry(
-                &request.service_id,
-                &request.namespace_revision_entry_id,
-            )
+            container.namespace_id == request.namespace_id
+                && container.is_running_service_entry(
+                    &request.service_id,
+                    &request.namespace_revision_entry_id,
+                )
         })
         .map(|container| ExistingServiceReplica {
             machine_id: container.machine_id.clone(),
@@ -339,11 +348,14 @@ fn cleanup_candidates(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service() && container.service_id == request.service_id
+            container.namespace_id == request.namespace_id
+                && container.is_running_service()
+                && container.service_id == request.service_id
         })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
+            namespace_id: container.namespace_id.clone(),
             service_id: container.service_id.clone(),
             namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
             operation_id: container.operation_id.clone(),

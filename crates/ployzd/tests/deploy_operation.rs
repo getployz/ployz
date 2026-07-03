@@ -9,7 +9,7 @@ use ployz_core::ops::{
     RouteHostname, RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_test_support::ids::failure_message;
+use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::deploy_worker::{
     RouteBindingCommitter, ServingTargetCommitter, DataplanePreparer, DeployCleanupResult,
     DeployExecutionCommand, DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts,
@@ -48,6 +48,7 @@ fn assert_deploy_event_order(
 
 fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: namespace_id("default"),
         service_id: target.service_id.clone(),
         namespace_revision_entry_id: target.namespace_revision_entry_id.clone(),
         operation_id: target.operation_id.clone(),

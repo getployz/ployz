@@ -1,14 +1,15 @@
 use super::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use crate::kv::{list_current, with_io_timeout};
-use ployz_core::ids::ServiceId;
-use ployz_core::state::{SERVING_TARGET_ENTRY_PREFIX, ServingTargetEntry, ActiveServiceStateKey};
+use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::state::{SERVING_TARGET_ENTRY_PREFIX, ServingTargetEntry, ServingTargetEntryKey};
 
 impl AsyncNatsCoreStateStore {
     pub async fn replace_serving_target_entry(
         &self,
         state: &ServingTargetEntry,
     ) -> Result<(), CoreStateStoreError> {
-        let key = ActiveServiceStateKey::from_service_id(&state.service_id);
+        let key =
+            ServingTargetEntryKey::from_namespace_service(&state.namespace_id, &state.service_id);
         let payload = serde_json::to_vec(state).map_err(CoreStateStoreError::Encode)?;
         with_io_timeout(
             "serving target entry state replace",
@@ -25,9 +26,10 @@ impl AsyncNatsCoreStateStore {
 
     pub async fn serving_target_entry(
         &self,
+        namespace_id: &NamespaceId,
         service_id: &ServiceId,
     ) -> Result<Option<ServingTargetEntry>, CoreStateStoreError> {
-        let key = ActiveServiceStateKey::from_service_id(service_id);
+        let key = ServingTargetEntryKey::from_namespace_service(namespace_id, service_id);
         let Some(payload) =
             with_io_timeout("serving target entry state get", self.bucket.get(key.as_str()))
                 .await?
@@ -44,13 +46,18 @@ impl AsyncNatsCoreStateStore {
 
     pub async fn remove_serving_target_entry(
         &self,
+        namespace_id: &NamespaceId,
         service_id: &ServiceId,
     ) -> Result<(), CoreStateStoreError> {
-        if self.serving_target_entry(service_id).await?.is_none() {
+        if self
+            .serving_target_entry(namespace_id, service_id)
+            .await?
+            .is_none()
+        {
             return Ok(());
         }
 
-        let key = ActiveServiceStateKey::from_service_id(service_id);
+        let key = ServingTargetEntryKey::from_namespace_service(namespace_id, service_id);
         with_io_timeout(
             "serving target entry state delete",
             self.bucket.delete(key.as_str()),
@@ -69,7 +76,7 @@ impl AsyncNatsCoreStateStore {
             &self.bucket,
             &format!("{SERVING_TARGET_ENTRY_PREFIX}."),
             |state: &ServingTargetEntry| {
-                ActiveServiceStateKey::from_service_id(&state.service_id)
+                ServingTargetEntryKey::from_namespace_service(&state.namespace_id, &state.service_id)
                     .as_str()
                     .to_owned()
             },
@@ -82,7 +89,7 @@ impl AsyncNatsCoreStateStore {
 
 fn decode_active_service_state(
     expected_service_id: &ServiceId,
-    key: &ActiveServiceStateKey,
+    key: &ServingTargetEntryKey,
     payload: &[u8],
 ) -> Result<ServingTargetEntry, CoreStateStoreError> {
     let state: ServingTargetEntry =

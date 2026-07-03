@@ -104,7 +104,7 @@ export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: Nam
 
 export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
 
-export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
+export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
 
 export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
 
@@ -118,7 +118,7 @@ export type ContainerRuntimeState = { "state": "running",
  */
 ip?: string | null, } | { "state": "exited" };
 
-export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
 
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
@@ -278,7 +278,7 @@ export type ServiceSnapshot = { active: ServingTargetEntry, };
 
 export type ServiceListError = { "error": "unavailable", source: ServiceQueryUnavailableSource, };
 
-export type ServiceInspectRequest = { service_id: ServiceId, };
+export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
 
 export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", source: ServiceQueryUnavailableSource, };
 
