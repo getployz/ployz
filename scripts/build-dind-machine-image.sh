@@ -54,7 +54,12 @@ build_linux_artifacts() {
     --volume "${CARGO_GIT_DIR}:/usr/local/cargo/git" \
     --workdir /work \
     "${BUILD_IMAGE}" \
-    cargo build --release --target-dir /target "${package_args[@]}"
+    bash -lc 'set -euo pipefail
+apt-get update
+apt-get install -y --no-install-recommends cmake
+rm -rf /var/lib/apt/lists/*
+cargo build --release --target-dir /target "$@"' \
+    bash "${package_args[@]}"
 }
 
 # The eBPF bytecode build needs nightly + rust-src + bpf-linker; baking them
