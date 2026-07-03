@@ -4,7 +4,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{ActiveRouteCommitRequest, ActiveRouteState, ExpectedActiveRoute};
+use ployz_core::state::ActiveRouteState;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -34,11 +34,10 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let target = route_target("api.example.com", 443);
 
     routes
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
-            expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         })
@@ -91,11 +90,10 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
     let target = route_target("api.example.com", 443);
 
     routes
-        .commit_active_route(&ActiveRouteCommitRequest {
+        .replace_active_route(&ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
-            expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         })

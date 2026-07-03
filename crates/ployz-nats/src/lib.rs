@@ -3,7 +3,7 @@
 //! NATS and JetStream adapters.
 //!
 //! This crate owns the concrete NATS boundary: connection setup, resource
-//! bootstrap, KV, streams, Object Store, services, server-version checks, and
+//! bootstrap, KV, streams, services, server-version checks, and
 //! permission rendering. Product policy belongs in `ployz-core`; process wiring
 //! belongs in `ployzd`.
 
@@ -11,7 +11,6 @@ pub mod bootstrap;
 pub mod connect;
 pub mod core_state;
 pub mod kv;
-pub mod objects;
 pub mod observations;
 pub mod operation_api_client;
 pub mod operations;

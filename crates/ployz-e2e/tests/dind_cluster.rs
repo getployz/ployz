@@ -6,15 +6,10 @@
 //! support. `PLOYZ_DIND_KEEP=1` keeps the cluster running for debugging;
 //! `scripts/dind-clean.sh` sweeps leftovers.
 //!
-//! Scenario 1 drives the proof-level formation flow (keeper first-machine
-//! install through `ployzctl init --run-keeper-install`, join template
-//! written with a placeholder CA first and re-rendered with the
-//! keeper-minted cluster CA afterwards, then `ployzctl init
-//! activate-first-machine`) because its subject is the seam between install
-//! and activation. The other scenarios form the core through the product
-//! quick-start command `ployzctl machine init root@core` (driven over a
-//! docker-exec-backed stand-in ssh), and scenarios 3–5 join the edge
-//! through the product `ployzctl machine add root@edge`.
+//! Scenarios form the core through the product quick-start command
+//! `ployzctl machine init root@core` (driven over a docker-exec-backed
+//! stand-in ssh), and scenarios 2–5 join the edge through the product
+//! `ployzctl machine add root@edge`.
 //!
 //! Every scenario body runs inside [`support::dind::with_evidence`], so any
 //! failed assertion captures whole-cluster evidence before the panic
@@ -57,15 +52,14 @@ use ployzd::docker::labels::{
 use std::collections::HashMap;
 use std::time::Duration;
 use support::dind::assert::{
-    assert_deploy_event_sequence, assert_journal_contains, assert_machine_add_event_sequence,
-    assert_unit_active, connect_with_event_capture, decode_base64, gateway_http_get,
-    managed_workload_containers, next_permission_violation, operation_events, operation_status,
-    terminal_operation_events, unit_main_pid, wait_for_inspect, wait_for_machine_observations,
-    wait_for_terminal_deploy_status,
+    assert_deploy_event_sequence, assert_machine_add_event_sequence, assert_unit_active,
+    connect_with_event_capture, decode_base64, gateway_http_get, managed_workload_containers,
+    next_permission_violation, operation_events, operation_status, terminal_operation_events,
+    wait_for_inspect, wait_for_machine_observations, wait_for_terminal_deploy_status,
 };
 use support::dind::formation::{
-    CoreContext, activate_first_machine, add_and_join_edge, connect_core_client, finish,
-    host_client_config, init_core_cluster, install_core_cluster, submit_machine_add,
+    CoreContext, add_and_join_edge, connect_core_client, finish, host_client_config,
+    init_core_cluster, submit_machine_add,
 };
 use support::dind::join::{parse_install_line, run_edge_join};
 use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, with_evidence};
@@ -176,65 +170,23 @@ async fn boots_machine_image() {
     );
 }
 
-/// Scenario 1 — init + activate-first-machine forms a TLS-authenticated core
-/// through product commands only, mints the first machine's credential as
-/// operation work, and hands the awaiting machine/gateway processes their seed
-/// without a unit restart.
+/// Scenario 1 — machine init forms a TLS-authenticated core through product
+/// commands only and activates the first machine.
 #[tokio::test]
 async fn scenario_init_and_activate_first_machine() {
     if !dind::e2e_enabled() {
         return;
     }
     let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = install_core_cluster(&docker, 0).await;
+    let core = init_core_cluster(&docker, 0).await;
     with_evidence(&core.cluster, async {
         let cluster = &core.cluster;
-
-        // Before activate: machine and gateway units run in the visible
-        // awaiting-credentials state (machine.seed does not exist yet) — B3.
         let machine_unit = "ployzd-machine-core_1";
         let gateway_unit = "ployzd-gateway";
-        for unit in [machine_unit, gateway_unit] {
-            assert_unit_active(&core, cluster.core(), unit).await;
-        }
-        let machine_seed_before = core
-            .exec_on(
-                cluster.core(),
-                &["test", "-f", "/var/lib/ployz/nats/machine.seed"],
-            )
-            .await;
-        assert!(
-            !machine_seed_before.success(),
-            "machine.seed must not exist before activate"
-        );
-        assert_journal_contains(&core, &[machine_unit, gateway_unit], "awaiting-credentials").await;
-        let machine_pid_before = unit_main_pid(&core, cluster.core(), machine_unit).await;
-        let gateway_pid_before = unit_main_pid(&core, cluster.core(), gateway_unit).await;
-
-        // Activate through the product CLI inside the machine, authenticated
-        // with the keeper-minted operator credential.
-        let activation_id = activate_first_machine(&core).await;
-
-        // The activation operation is a completed machine-add with the full
-        // mint event sequence recorded as operation events.
-        let status = operation_status(&core, &activation_id).await;
-        let OperationStatus::MachineAdd { state, .. } = status else {
-            panic!("activation is not a machine add: {status:?}");
-        };
-        assert_eq!(
-            state,
-            MachineAddOperationState::Completed,
-            "activation not completed"
-        );
-        let events = terminal_operation_events(&core, &activation_id).await;
-        assert_machine_add_event_sequence(&events, &machine_id("core_1"));
-
-        // Data plane truth: all four units active.
         for unit in ["nats-server", "ployzd-control", machine_unit, gateway_unit] {
             assert_unit_active(&core, cluster.core(), unit).await;
         }
 
-        // machine.seed exists now, written by ployzd control (B3 sequencing).
         let machine_seed = read_file_from_container(
             &docker,
             &cluster.core().container_id,
@@ -247,23 +199,8 @@ async fn scenario_init_and_activate_first_machine() {
             "machine.seed is an NKey user seed"
         );
 
-        // The awaiting machine/gateway picked the seed up in-process: they now
-        // publish observations (the machine snapshot fills in) while their unit
-        // MainPIDs never changed — no restart was required or issued.
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
-        let machine_pid_after = unit_main_pid(&core, cluster.core(), machine_unit).await;
-        let gateway_pid_after = unit_main_pid(&core, cluster.core(), gateway_unit).await;
-        assert_eq!(
-            machine_pid_before, machine_pid_after,
-            "machine unit must not restart across activate"
-        );
-        assert_eq!(
-            gateway_pid_before, gateway_pid_after,
-            "gateway unit must not restart across activate"
-        );
 
-        // The core machine's minted public key landed in the authority file next
-        // to the install-time principals.
         let authorized =
             read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await
@@ -275,7 +212,6 @@ async fn scenario_init_and_activate_first_machine() {
             );
         }
 
-        // Bootstrap KV buckets and streams exist on the secured server.
         assert_bootstrap_resources_exist(&core).await;
     })
     .await;

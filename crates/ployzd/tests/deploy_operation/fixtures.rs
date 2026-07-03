@@ -17,10 +17,7 @@ use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
     OperatorHint, RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
 };
-use ployz_core::state::{
-    ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceCommit,
-    ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveRoute, ExpectedActiveService,
-};
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, operation_id, revision_id, service_id,
 };
@@ -236,58 +233,29 @@ fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
 }
 
 pub(super) struct RecordingActiveState {
-    pub(super) requests: Vec<ActiveServiceCommitRequest>,
+    pub(super) requests: Vec<ActiveServiceState>,
     pub(super) removals: Vec<ServiceId>,
-    outcome: ActiveServiceCommit,
 }
 
 pub(super) struct RecordingRouteState {
-    pub(super) requests: Vec<ActiveRouteCommitRequest>,
-    outcome: ActiveRouteCommit,
+    pub(super) requests: Vec<ActiveRouteState>,
 }
 
 impl RecordingRouteState {
     pub(super) fn stored() -> Self {
         Self {
             requests: Vec::new(),
-            outcome: ActiveRouteCommit::Stored {
-                revision: CoreStateRevision::new(1),
-            },
-        }
-    }
-
-    pub(super) fn stale_mismatch() -> Self {
-        let route = route_target("api.example.com", 443);
-        Self {
-            requests: Vec::new(),
-            outcome: ActiveRouteCommit::ActiveRouteChanged {
-                expected_current: ExpectedActiveRoute::Absent,
-                current: Some(ActiveRouteState {
-                    namespace_id: namespace_id("default"),
-                    target: route.clone(),
-                    endpoint_port: route_port(8080),
-                    service_id: service_id("svc_other"),
-                    revision_id: revision_id("rev_other"),
-                }),
-                attempted: ActiveRouteState {
-                    namespace_id: namespace_id("default"),
-                    target: route,
-                    endpoint_port: route_port(8080),
-                    service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
-                },
-            },
         }
     }
 }
 
 impl ActiveRouteCommitter for RecordingRouteState {
-    async fn commit_active_route(
+    async fn replace_active_route(
         &mut self,
-        request: ActiveRouteCommitRequest,
-    ) -> Result<ActiveRouteCommit, ActiveRouteCommitError> {
-        self.requests.push(request);
-        Ok(self.outcome.clone())
+        state: ActiveRouteState,
+    ) -> Result<(), ActiveRouteCommitError> {
+        self.requests.push(state);
+        Ok(())
     }
 }
 
@@ -296,32 +264,17 @@ impl RecordingActiveState {
         Self {
             requests: Vec::new(),
             removals: Vec::new(),
-            outcome: ActiveServiceCommit::Stored {
-                revision: CoreStateRevision::new(1),
-            },
-        }
-    }
-
-    pub(super) fn stale_mismatch() -> Self {
-        Self {
-            requests: Vec::new(),
-            removals: Vec::new(),
-            outcome: ActiveServiceCommit::ActiveServiceChanged {
-                expected_current: ExpectedActiveService::Revision(revision_id("rev_old")),
-                current_revision: Some(revision_id("rev_other")),
-                attempted_revision: revision_id("rev_2"),
-            },
         }
     }
 }
 
 impl ActiveServiceCommitter for RecordingActiveState {
-    async fn commit_active_service(
+    async fn replace_active_service(
         &mut self,
-        request: ActiveServiceCommitRequest,
-    ) -> Result<ActiveServiceCommit, ActiveServiceCommitError> {
-        self.requests.push(request);
-        Ok(self.outcome.clone())
+        state: ActiveServiceState,
+    ) -> Result<(), ActiveServiceCommitError> {
+        self.requests.push(state);
+        Ok(())
     }
 
     async fn remove_active_service(
@@ -336,14 +289,12 @@ impl ActiveServiceCommitter for RecordingActiveState {
 pub(super) struct HangingActiveState;
 
 impl ActiveServiceCommitter for HangingActiveState {
-    async fn commit_active_service(
+    async fn replace_active_service(
         &mut self,
-        _request: ActiveServiceCommitRequest,
-    ) -> Result<ActiveServiceCommit, ActiveServiceCommitError> {
+        _state: ActiveServiceState,
+    ) -> Result<(), ActiveServiceCommitError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
-        Ok(ActiveServiceCommit::Stored {
-            revision: CoreStateRevision::new(1),
-        })
+        Ok(())
     }
 
     async fn remove_active_service(
@@ -352,6 +303,24 @@ impl ActiveServiceCommitter for HangingActiveState {
     ) -> Result<(), ActiveServiceCommitError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
+    }
+}
+
+pub(super) struct LostLockActiveState;
+
+impl ActiveServiceCommitter for LostLockActiveState {
+    async fn replace_active_service(
+        &mut self,
+        _state: ActiveServiceState,
+    ) -> Result<(), ActiveServiceCommitError> {
+        Err(ActiveServiceCommitError::NamespaceLockLost)
+    }
+
+    async fn remove_active_service(
+        &mut self,
+        _service_id: ServiceId,
+    ) -> Result<(), ActiveServiceCommitError> {
+        Err(ActiveServiceCommitError::NamespaceLockLost)
     }
 }
 

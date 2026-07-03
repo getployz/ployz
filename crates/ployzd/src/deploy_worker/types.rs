@@ -6,9 +6,7 @@ use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RoutePort,
 };
-use ployz_core::state::{
-    ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveService,
-};
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use std::time::Duration;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
@@ -26,8 +24,7 @@ pub struct DeployExecutionCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionCommand {
     pub(super) request: DeployServiceRequest,
-    pub(super) expected_active: ExpectedActiveService,
-    pub(super) route_commit: Option<ActiveRouteCommitRequest>,
+    pub(super) route_commit: Option<ActiveRouteState>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -47,11 +44,6 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn namespace_cleanup_candidates(&self) -> &[DeployCleanupContainer] {
         &self.namespace_cleanup_candidates
-    }
-
-    #[must_use]
-    pub fn expected_active(&self) -> &ExpectedActiveService {
-        self.first_service().expected_active()
     }
 
     #[must_use]
@@ -107,11 +99,6 @@ impl DeployExecutionCommand {
 
 impl DeployServiceExecutionCommand {
     #[must_use]
-    pub fn expected_active(&self) -> &ExpectedActiveService {
-        &self.expected_active
-    }
-
-    #[must_use]
     pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
         &self.existing_replicas
     }
@@ -127,17 +114,16 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
-    pub fn active_service_commit_request(&self) -> ActiveServiceCommitRequest {
-        ActiveServiceCommitRequest {
+    pub fn active_service_state(&self) -> ActiveServiceState {
+        ActiveServiceState {
             namespace_id: self.request.namespace_id.clone(),
             service_id: self.request.service_id.clone(),
-            expected_current: self.expected_active.clone(),
-            target_revision: self.request.target_revision.clone(),
+            active_revision: self.request.target_revision.clone(),
         }
     }
 
     #[must_use]
-    pub fn active_route_commit_request(&self) -> Option<ActiveRouteCommitRequest> {
+    pub fn active_route_state(&self) -> Option<ActiveRouteState> {
         self.route_commit.clone()
     }
 }

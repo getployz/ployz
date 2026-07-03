@@ -8,11 +8,7 @@ use crate::config::DnsProcessConfig;
 use crate::dns::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
 use crate::dns_source::load_dns_projection_update_from_nats;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::process_support::{
-    BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
-    record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
-};
-use futures_util::StreamExt;
+use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
@@ -20,13 +16,12 @@ use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 const DNS_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DNS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
-const DNS_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 
 pub struct RunningDnsProcessRuntime {
     runtime: Arc<Mutex<DnsRuntime>>,
@@ -86,50 +81,32 @@ pub async fn start_dns_process_runtime_with_client(
     let health = Arc::new(Mutex::new(DnsProcessHealth {
         last_attempt: None,
         consecutive_failures: 0,
-        last_watch_failure: None,
-        consecutive_watch_failures: 0,
     }));
+    let stores = open_dns_process_stores(client).await?;
     let (shutdown, _) = broadcast::channel(2);
-    let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
     let task_runtime = Arc::clone(&runtime);
     let task_health = Arc::clone(&health);
     let mut refresh_shutdown = shutdown.subscribe();
-    let refresh_client = client.clone();
     let refresh_task = tokio::spawn(async move {
         let mut backoff = refresh_interval;
-        let mut source = DnsProcessSource::new(refresh_client);
-        let mut refresh_wake_rx = refresh_wake_rx;
+        let source = DnsProcessSource::new(stores);
 
         loop {
-            drain_refresh_wakes(&mut refresh_wake_rx);
             let attempt = source.refresh_with_timeout(&task_runtime).await;
             backoff = record_dns_attempt(&task_health, attempt, refresh_interval, backoff);
 
-            match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
-            {
-                RefreshDelay::Elapsed | RefreshDelay::Woken => {}
-                RefreshDelay::WakeClosed | RefreshDelay::Shutdown => break,
+            tokio::select! {
+                () = tokio::time::sleep(backoff) => {}
+                _ = refresh_shutdown.recv() => break,
             }
         }
-    });
-    let watch_client = client.clone();
-    let watch_health = Arc::clone(&health);
-    let mut watch_shutdown = shutdown.subscribe();
-    let watch_task = tokio::spawn(async move {
-        wake_dns_refresh_on_nats_changes(
-            watch_client,
-            refresh_wake,
-            watch_health,
-            &mut watch_shutdown,
-        )
-        .await;
     });
 
     Ok(RunningDnsProcessRuntime {
         runtime,
         health,
         shutdown,
-        tasks: vec![refresh_task, watch_task],
+        tasks: vec![refresh_task],
     })
 }
 
@@ -137,8 +114,6 @@ pub async fn start_dns_process_runtime_with_client(
 pub struct DnsProcessHealth {
     pub last_attempt: Option<DnsProcessAttempt>,
     pub consecutive_failures: u64,
-    pub last_watch_failure: Option<DnsWatchFailure>,
-    pub consecutive_watch_failures: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,28 +130,17 @@ pub enum DnsProcessAttempt {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DnsWatchFailure {
-    Open { message: String },
-    Stream { message: String },
-    Ended { source: &'static str },
-}
-
 struct DnsProcessSource {
-    client: NatsClient,
-    stores: LazyHandle<DnsProcessStores>,
+    stores: DnsProcessStores,
 }
 
 impl DnsProcessSource {
-    fn new(client: NatsClient) -> Self {
-        Self {
-            client,
-            stores: LazyHandle::new(),
-        }
+    fn new(stores: DnsProcessStores) -> Self {
+        Self { stores }
     }
 
     async fn refresh_with_timeout(
-        &mut self,
+        &self,
         runtime: &Mutex<DnsRuntime>,
     ) -> Result<DnsRuntimeTick, DnsProcessRuntimeError> {
         tokio::time::timeout(DNS_REFRESH_TIMEOUT, self.refresh(runtime))
@@ -187,22 +151,17 @@ impl DnsProcessSource {
     }
 
     async fn refresh(
-        &mut self,
+        &self,
         runtime: &Mutex<DnsRuntime>,
     ) -> Result<DnsRuntimeTick, DnsProcessRuntimeError> {
-        let stores = self.stores().await?;
-        let update =
-            load_dns_projection_update_from_nats(&stores.core_state, &stores.observations).await;
+        let update = load_dns_projection_update_from_nats(
+            &self.stores.core_state,
+            &self.stores.observations,
+        )
+        .await;
         let mut runtime = runtime.lock().expect("dns runtime lock is not poisoned");
 
         Ok(runtime.apply_source_update(update))
-    }
-
-    async fn stores(&mut self) -> Result<&DnsProcessStores, DnsProcessRuntimeError> {
-        let client = &self.client;
-        self.stores
-            .get_or_open(async || open_dns_process_stores(client.clone()).await)
-            .await
     }
 }
 
@@ -231,140 +190,6 @@ async fn open_dns_process_stores(
         core_state,
         observations,
     })
-}
-
-async fn wake_dns_refresh_on_nats_changes(
-    client: NatsClient,
-    refresh_wake: mpsc::Sender<()>,
-    health: Arc<Mutex<DnsProcessHealth>>,
-    shutdown: &mut broadcast::Receiver<()>,
-) {
-    loop {
-        let opened = tokio::select! {
-            opened = open_dns_change_watchers(client.clone()) => opened,
-            _ = shutdown.recv() => break,
-        };
-        match opened {
-            Ok(mut watchers) => {
-                match watch_dns_changes(&mut watchers, &refresh_wake, &health, shutdown).await {
-                    DnsWatchLoopEnd::Shutdown => break,
-                    DnsWatchLoopEnd::Restart => {}
-                }
-            }
-            Err(error) => {
-                record_dns_watch_failure(
-                    &health,
-                    DnsWatchFailure::Open {
-                        message: error.to_string(),
-                    },
-                );
-                if sleep_or_shutdown(DNS_WATCH_RESTART_DELAY, shutdown).await {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-struct DnsChangeWatchers {
-    routes: async_nats::jetstream::kv::Watch,
-    gateway_statuses: async_nats::jetstream::kv::Watch,
-    public_ips: async_nats::jetstream::kv::Watch,
-}
-
-async fn open_dns_change_watchers(
-    client: NatsClient,
-) -> Result<DnsChangeWatchers, DnsProcessRuntimeError> {
-    let stores = open_dns_process_stores(client).await?;
-    let routes = stores
-        .core_state
-        .watch_active_route_changes()
-        .await
-        .map_err(DnsProcessRuntimeError::WatchRoutes)?;
-    let gateway_statuses = stores
-        .observations
-        .watch_gateway_status_changes()
-        .await
-        .map_err(DnsProcessRuntimeError::WatchObservations)?;
-    let public_ips = stores
-        .observations
-        .watch_machine_public_ip_changes()
-        .await
-        .map_err(DnsProcessRuntimeError::WatchObservations)?;
-
-    Ok(DnsChangeWatchers {
-        routes,
-        gateway_statuses,
-        public_ips,
-    })
-}
-
-async fn watch_dns_changes(
-    watchers: &mut DnsChangeWatchers,
-    refresh_wake: &mpsc::Sender<()>,
-    health: &Mutex<DnsProcessHealth>,
-    shutdown: &mut broadcast::Receiver<()>,
-) -> DnsWatchLoopEnd {
-    loop {
-        let event = tokio::select! {
-            route = watchers.routes.next() => watch_event_change("routes", route),
-            status = watchers.gateway_statuses.next() => {
-                watch_event_change("gateway statuses", status)
-            }
-            public_ip = watchers.public_ips.next() => {
-                watch_event_change("machine public ips", public_ip)
-            }
-            _ = shutdown.recv() => return DnsWatchLoopEnd::Shutdown,
-        };
-        match event {
-            DnsWatchEvent::Changed => {
-                record_dns_watch_success(health);
-                let _ = refresh_wake.try_send(());
-            }
-            DnsWatchEvent::Failed(failure) => {
-                record_dns_watch_failure(health, failure);
-                return DnsWatchLoopEnd::Restart;
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DnsWatchLoopEnd {
-    Restart,
-    Shutdown,
-}
-
-enum DnsWatchEvent {
-    Changed,
-    Failed(DnsWatchFailure),
-}
-
-fn watch_event_change(
-    source: &'static str,
-    event: Option<
-        Result<async_nats::jetstream::kv::Entry, async_nats::jetstream::kv::WatcherError>,
-    >,
-) -> DnsWatchEvent {
-    match event {
-        Some(Ok(_)) => DnsWatchEvent::Changed,
-        Some(Err(error)) => DnsWatchEvent::Failed(DnsWatchFailure::Stream {
-            message: error.to_string(),
-        }),
-        None => DnsWatchEvent::Failed(DnsWatchFailure::Ended { source }),
-    }
-}
-
-fn record_dns_watch_success(health: &Mutex<DnsProcessHealth>) {
-    let mut health = health.lock().expect("dns health lock is not poisoned");
-    health.last_watch_failure = None;
-    health.consecutive_watch_failures = 0;
-}
-
-fn record_dns_watch_failure(health: &Mutex<DnsProcessHealth>, failure: DnsWatchFailure) {
-    let mut health = health.lock().expect("dns health lock is not poisoned");
-    health.last_watch_failure = Some(failure);
-    health.consecutive_watch_failures += 1;
 }
 
 fn record_dns_attempt(
@@ -442,8 +267,6 @@ pub enum DnsProcessRuntimeError {
     ConnectNats(NatsConnectError),
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
-    WatchRoutes(ployz_nats::core_state::ActiveRouteStoreError),
-    WatchObservations(ObservationStoreError),
     RefreshTimedOut { timeout: Duration },
     ShutdownSignal(std::io::Error),
 }
@@ -458,10 +281,6 @@ impl fmt::Display for DnsProcessRuntimeError {
             }
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")
-            }
-            Self::WatchRoutes(error) => write!(formatter, "failed to watch routes: {error}"),
-            Self::WatchObservations(error) => {
-                write!(formatter, "failed to watch observations: {error}")
             }
             Self::RefreshTimedOut { timeout } => {
                 write!(
@@ -489,15 +308,13 @@ mod tests {
         let health = Mutex::new(DnsProcessHealth {
             last_attempt: None,
             consecutive_failures: 0,
-            last_watch_failure: None,
-            consecutive_watch_failures: 0,
         });
         let interval = Duration::from_secs(1);
 
         let next = record_dns_attempt(
             &health,
             Ok(DnsRuntimeTick {
-                state: DnsProjectionState::Unavailable,
+                state: DnsProjectionState::unavailable(),
                 served: None,
                 serving: DnsServingState::LastKnownGood {
                     record_count: 1,
@@ -528,8 +345,6 @@ mod tests {
         let health = Mutex::new(DnsProcessHealth {
             last_attempt: None,
             consecutive_failures: 0,
-            last_watch_failure: None,
-            consecutive_watch_failures: 0,
         });
 
         let next = record_dns_attempt(

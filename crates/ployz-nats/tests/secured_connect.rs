@@ -3,7 +3,7 @@
 //! rejected, subject permissions are enforced, and per-principal inbox
 //! prefixes make reply sniffing impossible.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
@@ -243,13 +243,24 @@ async fn controller_can_serve_and_call_operation_api_subjects() {
         }
     });
 
-    let response = tokio::time::timeout(
-        EVENT_TIMEOUT,
-        caller_client.request(API_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
-    )
-    .await
-    .expect("request does not hang")
-    .expect("controller receives the API response");
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    let response = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(
+            remaining,
+            caller_client.request(API_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+        )
+        .await
+        {
+            Ok(Ok(response)) => break response,
+            Ok(Err(error)) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let _ = error;
+            }
+            Ok(Err(error)) => panic!("controller receives the API response: {error:?}"),
+            Err(_) => panic!("request does not hang"),
+        }
+    };
 
     assert_eq!(response.payload.as_ref(), b"activated");
 }

@@ -4,8 +4,6 @@ use ployz_core::ids::{ContainerId, MachineId, RevisionId, ServiceId};
 use ployz_core::machine_runtime::{ContainerEndpoint, MachineContainerObservationSnapshot};
 use ployz_core::ops::{RoutePort, RouteTarget};
 
-use crate::projection::ProjectionState;
-
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +92,21 @@ pub enum GatewayProjectionUpdate {
     SourceUnavailable(GatewayProjectionError),
 }
 
-pub type GatewayProjectionState = ProjectionState<GatewayProjection, GatewayProjectionError>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayProjectionState {
+    pub last_good: Option<GatewayProjection>,
+    pub last_error: Option<GatewayProjectionError>,
+}
+
+impl GatewayProjectionState {
+    #[must_use]
+    pub const fn unavailable() -> Self {
+        Self {
+            last_good: None,
+            last_error: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayProjectionError {
@@ -110,12 +122,28 @@ pub fn apply_gateway_update(
 ) -> GatewayProjectionState {
     match update {
         GatewayProjectionUpdate::SourceAvailable(input) => match project_gateway(input) {
-            Ok(projection) => GatewayProjectionState::Current(projection),
-            Err(error) => previous.source_failed(error),
+            Ok(projection) => GatewayProjectionState {
+                last_good: Some(projection),
+                last_error: None,
+            },
+            Err(error) => GatewayProjectionState {
+                last_error: Some(error),
+                ..previous
+            },
         },
-        GatewayProjectionUpdate::SourceInvalid(error) => previous.source_failed(error),
+        GatewayProjectionUpdate::SourceInvalid(error) => GatewayProjectionState {
+            last_error: Some(error),
+            ..previous
+        },
         GatewayProjectionUpdate::SourceUnavailable(error) => {
-            previous.source_unavailable_with_error(error)
+            if previous.last_good.is_some() && previous.last_error.is_some() {
+                previous
+            } else {
+                GatewayProjectionState {
+                    last_error: Some(error),
+                    ..previous
+                }
+            }
         }
     }
 }

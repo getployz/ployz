@@ -7,10 +7,7 @@ use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
 };
-use ployz_core::state::{
-    ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveRoute,
-    ExpectedActiveService,
-};
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use ployz_test_support::ids::failure_message;
 use ployzd::deploy_worker::{
     ActiveRouteCommitter, ActiveServiceCommitter, DataplanePreparer, DeployCleanupResult,
@@ -166,11 +163,10 @@ async fn deploy_worker_runs_containers_then_completes() {
     );
     assert_eq!(
         active_state.requests,
-        vec![ActiveServiceCommitRequest {
+        vec![ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            expected_current: ExpectedActiveService::Absent,
-            target_revision: revision_id("rev_2"),
+            active_revision: revision_id("rev_2"),
         }]
     );
     assert_eq!(
@@ -424,7 +420,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             },
         )]
     );
-    assert_eq!(active_state.removals, vec![service_id("svc_api")]);
+    assert!(active_state.removals.is_empty());
     assert!(runtime.requests.is_empty());
     assert_eq!(health.checked, Vec::<Vec<DeployContainerForAssert>>::new());
     assert_eq!(
@@ -1041,11 +1037,10 @@ async fn routed_deploy_commits_route_before_completion() {
 
     assert_eq!(
         route_state.requests,
-        vec![ActiveRouteCommitRequest {
+        vec![ActiveRouteState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
-            expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
         }]
@@ -1081,66 +1076,6 @@ async fn routed_deploy_commits_route_before_completion() {
         &recorder.records,
         DeployRunningStage::RouteCutover,
         DeployRunningStage::ActiveServiceCommit,
-    );
-}
-
-#[tokio::test]
-async fn routed_deploy_fails_before_completion_when_route_is_stale() {
-    let mut recorder = RecordingOperations::default();
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stale_mismatch();
-    let mut active_state = RecordingActiveState::stored();
-    let command = routed_deploy_command(1);
-
-    let error = execute_deploy(
-        command,
-        DeployExecutionPorts {
-            recorder: &mut recorder,
-            dataplane: &mut wireguard_ebpf,
-            machine_runtime: &mut runtime,
-            health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
-        },
-    )
-    .await
-    .expect_err("stale route cutover fails deploy");
-
-    assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            source,
-            failure:
-                DeployOperationFailure::RouteCutoverFailed {
-                    route,
-                    reason: ployz_core::ops::RouteCutoverFailureReason::RouteRejected { .. },
-                    retained_artifacts,
-                },
-            ..
-        } if matches!(*source, DeployExecutionError::ActiveRouteCommitRejected { .. })
-            && route == route_target("api.example.com", 443)
-            && retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
-    ));
-    assert_eq!(route_state.requests.len(), 1);
-    assert!(active_state.requests.is_empty());
-    assert_eq!(
-        recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Failed {
-            failure: DeployOperationFailure::RouteCutoverFailed {
-                route: route_target("api.example.com", 443),
-                reason: ployz_core::ops::RouteCutoverFailureReason::RouteRejected {
-                    message: failure_message("route changed before cutover"),
-                },
-                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
-            }
-        }))
-    );
-    assert!(
-        !recorder
-            .records
-            .contains(&RecordedOperation::Transition(DeployTransition::completed()))
     );
 }
 
@@ -1316,17 +1251,16 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
 }
 
 #[tokio::test]
-async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
+async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_before_commit() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stale_mismatch();
-    let command = deploy_command(1);
+    let mut active_state = LostLockActiveState;
 
     let error = execute_deploy(
-        command,
+        deploy_command(1),
         DeployExecutionPorts {
             recorder: &mut recorder,
             dataplane: &mut wireguard_ebpf,
@@ -1337,53 +1271,30 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
         },
     )
     .await
-    .expect_err("stale active commit fails");
+    .expect_err("lost namespace lock fails the operation through the worker path");
 
     assert!(matches!(
         error,
         DeployExecutionError::Failed {
             source,
+            failure: DeployOperationFailure::ControlPlaneCommitFailed { .. },
             ..
-        } if matches!(*source, DeployExecutionError::ActiveServiceCommitRejected { .. })
+        } if matches!(
+            *source,
+            DeployExecutionError::CommitActiveService(
+                ployzd::deploy_worker::ActiveServiceCommitError::NamespaceLockLost
+            )
+        )
     ));
     assert_eq!(
-        recorder.records,
-        vec![
-            RecordedOperation::Transition(DeployTransition::Planning),
-            RecordedOperation::PlanCreated { replica_count: 1 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingDataplane,
-            }),
-            RecordedOperation::DataplanePrepared { machine_count: 1 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            RecordedOperation::ContainerStarted {
-                machine_id: machine_id("machine_a"),
-                container_id: container_id("ctr_1"),
-            },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            }),
-            RecordedOperation::HealthCheckStarted,
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: active_service_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::ActiveServiceCommitRejected {
-                    service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
-                    reason: ployz_core::ops::ActiveServiceCommitFailure::ActiveServiceChanged {
-                        expected_current: ployz_core::state::ExpectedActiveService::Revision(
-                            revision_id("rev_old"),
-                        ),
-                        current_revision: Some(revision_id("rev_other")),
-                        attempted_revision: revision_id("rev_2"),
-                    },
-                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
-                }
-            }),
-        ]
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Failed {
+            failure: DeployOperationFailure::ControlPlaneCommitFailed {
+                service_id: service_id("svc_api"),
+                revision_id: revision_id("rev_2"),
+                message: failure_message("namespace lock was lost before active service commit"),
+                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+            }
+        }))
     );
-    assert_eq!(active_state.requests.len(), 1);
 }

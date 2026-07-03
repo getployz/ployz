@@ -1,10 +1,8 @@
-use super::resources::PlannedResource;
 use super::{
-    BootstrapPlan, BootstrapResourceAction, BootstrapResourceKind, BootstrapResourceRef,
-    BootstrapResourceRefusal, ExistingResources, ResourceReplicas,
+    BootstrapPlan, BootstrapResourceKind, BootstrapResourceRef, BootstrapResourceRefusal,
+    ResourceReplicas,
 };
 use crate::kv::{KvBucketSpec, NatsIoTimeout, with_io_timeout};
-use crate::objects::ObjectBucketSpec;
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 use async_nats::jetstream;
 use async_nats::jetstream::ErrorCode;
@@ -22,9 +20,6 @@ pub async fn assure_nats_resources(
     for stream in &plan.streams {
         assure_stream(jetstream, stream).await?;
     }
-    for bucket in &plan.object_buckets {
-        assure_object_bucket(jetstream, bucket).await?;
-    }
 
     Ok(())
 }
@@ -34,20 +29,18 @@ async fn assure_kv_bucket(
     expected: &KvBucketSpec,
 ) -> Result<(), BootstrapAssuranceError> {
     let existing = load_existing_kv_bucket(jetstream, expected).await?;
-    match kv_bucket_action(expected, existing.as_ref()).action {
-        BootstrapResourceAction::Adopt => Ok(()),
-        BootstrapResourceAction::Refuse { reason } => {
-            Err(BootstrapAssuranceError::RefuseResource {
-                resource: ResourceLookup::KvBucket(expected.name).resource_ref(),
-                reason,
-            })
-        }
-        BootstrapResourceAction::Create => match create_kv_bucket(jetstream, expected).await {
+    match compare_kv_bucket(expected, existing.as_ref()) {
+        ResourceComparison::Unchanged => Ok(()),
+        ResourceComparison::ShapeDrift { reason } => Err(BootstrapAssuranceError::RefuseResource {
+            resource: ResourceLookup::KvBucket(expected.name).resource_ref(),
+            reason,
+        }),
+        ResourceComparison::Missing => match create_kv_bucket(jetstream, expected).await {
             Ok(()) => Ok(()),
             Err(error) => adopt_after_create_error(
                 error,
                 load_existing_kv_bucket(jetstream, expected).await?,
-                |observed| kv_bucket_action(expected, observed),
+                |observed| compare_kv_bucket(expected, observed),
             ),
         },
     }
@@ -58,44 +51,18 @@ async fn assure_stream(
     expected: &StreamSpec,
 ) -> Result<(), BootstrapAssuranceError> {
     let existing = load_existing_stream(jetstream, expected).await?;
-    match stream_action(expected, existing.as_ref()).action {
-        BootstrapResourceAction::Adopt => Ok(()),
-        BootstrapResourceAction::Refuse { reason } => {
-            Err(BootstrapAssuranceError::RefuseResource {
-                resource: ResourceLookup::Stream(expected.name).resource_ref(),
-                reason,
-            })
-        }
-        BootstrapResourceAction::Create => match create_stream(jetstream, expected).await {
+    match compare_stream(expected, existing.as_ref()) {
+        ResourceComparison::Unchanged => Ok(()),
+        ResourceComparison::ShapeDrift { reason } => Err(BootstrapAssuranceError::RefuseResource {
+            resource: ResourceLookup::Stream(expected.name).resource_ref(),
+            reason,
+        }),
+        ResourceComparison::Missing => match create_stream(jetstream, expected).await {
             Ok(()) => Ok(()),
             Err(error) => adopt_after_create_error(
                 error,
                 load_existing_stream(jetstream, expected).await?,
-                |observed| stream_action(expected, observed),
-            ),
-        },
-    }
-}
-
-async fn assure_object_bucket(
-    jetstream: &jetstream::Context,
-    expected: &ObjectBucketSpec,
-) -> Result<(), BootstrapAssuranceError> {
-    let existing = load_existing_object_bucket(jetstream, expected).await?;
-    match object_bucket_action(expected, existing.as_ref()).action {
-        BootstrapResourceAction::Adopt => Ok(()),
-        BootstrapResourceAction::Refuse { reason } => {
-            Err(BootstrapAssuranceError::RefuseResource {
-                resource: ResourceLookup::ObjectBucket(expected.name).resource_ref(),
-                reason,
-            })
-        }
-        BootstrapResourceAction::Create => match create_object_bucket(jetstream, expected).await {
-            Ok(()) => Ok(()),
-            Err(error) => adopt_after_create_error(
-                error,
-                load_existing_object_bucket(jetstream, expected).await?,
-                |observed| object_bucket_action(expected, observed),
+                |observed| compare_stream(expected, observed),
             ),
         },
     }
@@ -104,47 +71,12 @@ async fn assure_object_bucket(
 fn adopt_after_create_error<T>(
     create_error: BootstrapAssuranceError,
     observed: Option<T>,
-    decide: impl FnOnce(Option<&T>) -> super::BootstrapResourceDecision,
+    compare: impl FnOnce(Option<&T>) -> ResourceComparison,
 ) -> Result<(), BootstrapAssuranceError> {
-    match decide(observed.as_ref()).action {
-        BootstrapResourceAction::Adopt => Ok(()),
-        BootstrapResourceAction::Create | BootstrapResourceAction::Refuse { .. } => {
-            Err(create_error)
-        }
+    match compare(observed.as_ref()) {
+        ResourceComparison::Unchanged => Ok(()),
+        ResourceComparison::Missing | ResourceComparison::ShapeDrift { .. } => Err(create_error),
     }
-}
-
-fn kv_bucket_action(
-    expected: &KvBucketSpec,
-    observed: Option<&KvBucketSpec>,
-) -> super::BootstrapResourceDecision {
-    let existing = ExistingResources {
-        kv_buckets: observed.cloned().into_iter().collect(),
-        ..ExistingResources::default()
-    };
-    PlannedResource::KvBucket(expected).bootstrap_decision(&existing.view())
-}
-
-fn stream_action(
-    expected: &StreamSpec,
-    observed: Option<&StreamSpec>,
-) -> super::BootstrapResourceDecision {
-    let existing = ExistingResources {
-        streams: observed.cloned().into_iter().collect(),
-        ..ExistingResources::default()
-    };
-    PlannedResource::Stream(expected).bootstrap_decision(&existing.view())
-}
-
-fn object_bucket_action(
-    expected: &ObjectBucketSpec,
-    observed: Option<&ObjectBucketSpec>,
-) -> super::BootstrapResourceDecision {
-    let existing = ExistingResources {
-        object_buckets: observed.cloned().into_iter().collect(),
-        ..ExistingResources::default()
-    };
-    PlannedResource::ObjectBucket(expected).bootstrap_decision(&existing.view())
 }
 
 async fn load_existing_kv_bucket(
@@ -200,24 +132,122 @@ fn observed_stream(
     spec
 }
 
-async fn load_existing_object_bucket(
-    jetstream: &jetstream::Context,
-    expected: &ObjectBucketSpec,
-) -> Result<Option<ObjectBucketSpec>, BootstrapAssuranceError> {
-    let Some(config) =
-        load_existing_stream_config(jetstream, ResourceLookup::ObjectBucket(expected.name)).await?
-    else {
-        return Ok(None);
-    };
-
-    Ok(Some(observed_object_bucket(
-        expected.name,
-        observed_replicas(config.num_replicas)?,
-    )))
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResourceComparison {
+    Missing,
+    Unchanged,
+    ShapeDrift { reason: BootstrapResourceRefusal },
 }
 
-fn observed_object_bucket(name: &'static str, replicas: ResourceReplicas) -> ObjectBucketSpec {
-    ObjectBucketSpec::new(name).with_observed_replicas(replicas)
+fn compare_kv_bucket(
+    expected: &KvBucketSpec,
+    observed: Option<&KvBucketSpec>,
+) -> ResourceComparison {
+    let Some(observed) = observed else {
+        return ResourceComparison::Missing;
+    };
+    let KvBucketSpec {
+        name: expected_name,
+        replicas: expected_replicas,
+    } = expected;
+    let KvBucketSpec {
+        name: observed_name,
+        replicas: observed_replicas,
+    } = observed;
+
+    if expected_name != observed_name {
+        return shape_drift("name", expected_name, observed_name);
+    }
+
+    if expected_replicas != observed_replicas {
+        return replica_drift(expected_replicas.as_usize(), observed_replicas.as_usize());
+    }
+
+    ResourceComparison::Unchanged
+}
+
+fn compare_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> ResourceComparison {
+    let Some(observed) = observed else {
+        return ResourceComparison::Missing;
+    };
+    let StreamSpec {
+        name: expected_name,
+        subjects: expected_subjects,
+        retention: expected_retention,
+        storage: expected_storage,
+        replicas: expected_replicas,
+        discard: expected_discard,
+    } = expected;
+    let StreamSpec {
+        name: observed_name,
+        subjects: observed_subjects,
+        retention: observed_retention,
+        storage: observed_storage,
+        replicas: observed_replicas,
+        discard: observed_discard,
+    } = observed;
+
+    if expected_name != observed_name {
+        return shape_drift("name", expected_name, observed_name);
+    }
+
+    if expected_subjects != observed_subjects {
+        return shape_drift(
+            "subjects",
+            &format!("{expected_subjects:?}"),
+            &format!("{observed_subjects:?}"),
+        );
+    }
+
+    if expected_retention != observed_retention {
+        return shape_drift(
+            "retention",
+            &format!("{expected_retention:?}"),
+            &format!("{observed_retention:?}"),
+        );
+    }
+
+    if expected_storage != observed_storage {
+        return shape_drift(
+            "storage",
+            &format!("{expected_storage:?}"),
+            &format!("{observed_storage:?}"),
+        );
+    }
+
+    if expected_discard != observed_discard {
+        return shape_drift(
+            "discard",
+            &format!("{expected_discard:?}"),
+            &format!("{observed_discard:?}"),
+        );
+    }
+
+    if expected_replicas != observed_replicas {
+        return replica_drift(expected_replicas.as_usize(), observed_replicas.as_usize());
+    }
+
+    ResourceComparison::Unchanged
+}
+
+fn replica_drift(expected: usize, observed: usize) -> ResourceComparison {
+    ResourceComparison::ShapeDrift {
+        reason: BootstrapResourceRefusal::ConfigurationDrift {
+            field: "replicas",
+            expected: expected.to_string(),
+            observed: observed.to_string(),
+        },
+    }
+}
+
+fn shape_drift(field: &'static str, expected: &str, observed: &str) -> ResourceComparison {
+    ResourceComparison::ShapeDrift {
+        reason: BootstrapResourceRefusal::ConfigurationDrift {
+            field,
+            expected: expected.to_owned(),
+            observed: observed.to_owned(),
+        },
+    }
 }
 
 fn observed_replicas(value: usize) -> Result<ResourceReplicas, BootstrapAssuranceError> {
@@ -336,27 +366,6 @@ async fn create_stream(
     })
 }
 
-async fn create_object_bucket(
-    jetstream: &jetstream::Context,
-    bucket: &ObjectBucketSpec,
-) -> Result<(), BootstrapAssuranceError> {
-    with_bootstrap_timeout(
-        "object bucket create",
-        jetstream.create_object_store(jetstream::object_store::Config {
-            bucket: bucket.name.to_owned(),
-            storage: jetstream::stream::StorageType::File,
-            num_replicas: bucket.replicas().as_usize(),
-            ..Default::default()
-        }),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|source| BootstrapAssuranceError::CreateObjectBucket {
-        bucket: bucket.name,
-        source,
-    })
-}
-
 async fn with_bootstrap_timeout<T, E: fmt::Display>(
     operation: &'static str,
     future: impl Future<Output = Result<T, E>>,
@@ -414,10 +423,6 @@ pub enum BootstrapAssuranceError {
         stream: &'static str,
         source: BootstrapIoError,
     },
-    CreateObjectBucket {
-        bucket: &'static str,
-        source: BootstrapIoError,
-    },
 }
 
 impl fmt::Display for BootstrapAssuranceError {
@@ -451,12 +456,6 @@ impl fmt::Display for BootstrapAssuranceError {
             Self::CreateStream { stream, source } => {
                 write!(formatter, "failed to assure stream {stream}: {source}")
             }
-            Self::CreateObjectBucket { bucket, source } => {
-                write!(
-                    formatter,
-                    "failed to assure Object Store bucket {bucket}: {source}"
-                )
-            }
         }
     }
 }
@@ -467,7 +466,6 @@ impl std::error::Error for BootstrapAssuranceError {}
 enum ResourceLookup {
     KvBucket(&'static str),
     Stream(&'static str),
-    ObjectBucket(&'static str),
 }
 
 impl ResourceLookup {
@@ -475,7 +473,6 @@ impl ResourceLookup {
         match self {
             Self::KvBucket(name) => format!("KV_{name}"),
             Self::Stream(name) => name.to_owned(),
-            Self::ObjectBucket(name) => format!("OBJ_{name}"),
         }
     }
 
@@ -487,10 +484,6 @@ impl ResourceLookup {
             },
             Self::Stream(name) => BootstrapResourceRef {
                 kind: BootstrapResourceKind::Stream,
-                name,
-            },
-            Self::ObjectBucket(name) => BootstrapResourceRef {
-                kind: BootstrapResourceKind::ObjectBucket,
                 name,
             },
         }
