@@ -9,6 +9,7 @@
 use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::OperationStatus;
+use ployz_core::permissions::namespace_lock_state_kv_write_scope;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -224,6 +225,51 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
             user.principal == NatsPrincipal::User && user.nkey_public == cloud_public
         }),
         "adopted extra User credential survives the render"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+/// Startup render repairs authorization files whose principal set is still
+/// current but whose permission profile was rendered by an older binary.
+#[tokio::test]
+async fn startup_renders_current_authorization_permissions() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let namespace_lock_scope = namespace_lock_state_kv_write_scope();
+    let existing = std::fs::read_to_string(nats.server().authorized_users_path())
+        .expect("fixture authority file is readable");
+    assert!(
+        existing.contains(&namespace_lock_scope),
+        "fixture starts with current controller permissions"
+    );
+    let stale = existing.replace(&format!("\"{namespace_lock_scope}\", "), "");
+    assert!(
+        !stale.contains(&namespace_lock_scope),
+        "stale fixture removes the namespace-lock publish scope"
+    );
+    std::fs::write(nats.server().authorized_users_path(), stale)
+        .expect("stale authority file writes");
+
+    let reload = nats.reload_runner();
+    let config = nats.control_config();
+    let runtime = nats
+        .start_control_with_reload(&config, reload.clone())
+        .await;
+
+    let repaired = std::fs::read_to_string(nats.server().authorized_users_path())
+        .expect("repaired authorized-users file is readable");
+    assert!(
+        repaired.contains(&namespace_lock_scope),
+        "startup render restores the current controller permission profile"
+    );
+    assert_eq!(
+        reload.outcomes().len(),
+        1,
+        "startup render reloads NATS after repairing stale permissions"
     );
 
     runtime
