@@ -718,7 +718,7 @@ pub enum GatewayProcessRuntimeError {
     OpenObservations(ObservationStoreError),
     WriteObservations(ObservationStoreError),
     UpdatePingoraRoutes(PingoraRouteRegistryError),
-    WatchRoutes(ployz_nats::core_state::ActiveRouteStoreError),
+    WatchRoutes(ployz_nats::core_state::RouteBindingStoreError),
     WatchObservations(ObservationStoreError),
     RefreshTimedOut {
         timeout: Duration,

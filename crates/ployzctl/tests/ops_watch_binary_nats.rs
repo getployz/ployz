@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{NamespaceId, RevisionId};
+use ployz_core::ids::{NamespaceId, NamespaceRevisionId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, OperationEvent, OperationEventReplayPage,
     OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
@@ -191,12 +191,12 @@ fn replayed(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
 fn deploy_request() -> ployz_core::deploy::DeployRequest {
     ployz_core::deploy::DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
+        namespace_revision_id: NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }

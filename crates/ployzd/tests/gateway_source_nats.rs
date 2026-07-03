@@ -1,10 +1,10 @@
 use async_nats::jetstream;
 use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::ActiveRouteState;
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -34,12 +34,19 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let target = route_target("api.example.com", 443);
 
     routes
-        .replace_active_route(&ActiveRouteState {
+        .replace_serving_target_entry(&ServingTargetEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
+        })
+        .await
+        .expect("serving target entry stores");
+    routes
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("route stores");
@@ -71,7 +78,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
             upstreams: vec![GatewayUpstream {
                 machine_id: machine_id("machine_7"),
                 container_id: container_id("ctr_7"),
-                endpoint: endpoint("10.0.0.7", 8080),
+                address: socket_addr("10.0.0.7", 8080),
             }],
             unroutable_containers: vec![],
         }]
@@ -90,12 +97,19 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
     let target = route_target("api.example.com", 443);
 
     routes
-        .replace_active_route(&ActiveRouteState {
+        .replace_serving_target_entry(&ServingTargetEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_api"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
+        })
+        .await
+        .expect("serving target entry stores");
+    routes
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("route stores");
@@ -149,12 +163,11 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
         .get_key_value(KV_CORE_BUCKET)
         .await
         .expect("open raw core bucket");
-    let payload = serde_json::to_vec(&ActiveRouteState {
+    let payload = serde_json::to_vec(&RouteBindingState {
         namespace_id: namespace_id("default"),
         target: route_target("api.example.com", 443),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_1"),
     })
     .expect("route state encodes");
     core_bucket
@@ -169,7 +182,7 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
     else {
         panic!("gateway source should be invalid, got {update:?}");
     };
-    assert!(message.contains("active route state key"));
+    assert!(message.contains("route binding state key"));
 }
 
 struct TestNats {
@@ -222,11 +235,11 @@ fn managed_observation(
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id(service_id_value),
-        revision_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
+        namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::running_at(endpoint("10.0.0.7", 8080)),
+        state: ContainerRuntimeState::running_at(endpoint_ip("10.0.0.7")),
     }
 }
 
@@ -234,9 +247,10 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
-fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
-    ContainerEndpoint {
-        ip: ip.parse().expect("valid endpoint ip"),
-        port: route_port(port),
-    }
+fn endpoint_ip(ip: &str) -> std::net::IpAddr {
+    ip.parse().expect("valid endpoint ip")
+}
+
+fn socket_addr(ip: &str, port: u16) -> std::net::SocketAddr {
+    std::net::SocketAddr::new(endpoint_ip(ip), port)
 }

@@ -1,16 +1,17 @@
 use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    ActiveMachineState, ActiveMachineStateKey, ActiveRouteState, ActiveRouteStateKey,
-    ActiveServiceState, ActiveServiceStateKey,
+    ActiveMachineState, ActiveMachineStateKey, RouteBindingState, RouteBindingStateKey,
+    ServingTargetEntry, ActiveServiceStateKey,
 };
 use ployz_nats::core_state::{
-    ActiveRouteStoreError, AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire,
+    RouteBindingStoreError, AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire,
     NamespaceLockRenew,
 };
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_test_support::ids::{
-    machine_id, machine_name, namespace_id, operation_id, revision_id, route_hostname, route_port,
+    machine_id, machine_name, namespace_id, namespace_revision_entry_id, operation_id,
+    route_hostname, route_port,
     service_id,
 };
 
@@ -18,16 +19,16 @@ use ployz_test_support::ids::{
 async fn active_service_state_round_trips_through_kv_core() {
     let nats = test_nats().await;
     let store = core_state_store(&nats).await;
-    let state = active_service_state("svc_api", "rev_1");
+    let state = serving_target_entry_state("svc_api", "rev_1");
 
     store
-        .replace_active_service(&state)
+        .replace_serving_target_entry(&state)
         .await
         .expect("active state stores");
 
     assert_eq!(
         store
-            .active_service(&service_id("svc_api"))
+            .serving_target_entry(&service_id("svc_api"))
             .await
             .expect("active state loads"),
         Some(state)
@@ -38,21 +39,21 @@ async fn active_service_state_round_trips_through_kv_core() {
 async fn active_service_replace_overwrites_current_revision() {
     let nats = test_nats().await;
     let store = core_state_store(&nats).await;
-    let first = active_service_state("svc_api", "rev_1");
-    let second = active_service_state("svc_api", "rev_2");
+    let first = serving_target_entry_state("svc_api", "rev_1");
+    let second = serving_target_entry_state("svc_api", "rev_2");
 
     store
-        .replace_active_service(&first)
+        .replace_serving_target_entry(&first)
         .await
         .expect("first active state stores");
     store
-        .replace_active_service(&second)
+        .replace_serving_target_entry(&second)
         .await
         .expect("second active state stores");
 
     assert_eq!(
         store
-            .active_service(&service_id("svc_api"))
+            .serving_target_entry(&service_id("svc_api"))
             .await
             .expect("active state loads"),
         Some(second)
@@ -63,24 +64,24 @@ async fn active_service_replace_overwrites_current_revision() {
 async fn active_service_replace_succeeds_after_delete_marker() {
     let nats = test_nats().await;
     let store = core_state_store(&nats).await;
-    let state = active_service_state("svc_api", "rev_1");
+    let state = serving_target_entry_state("svc_api", "rev_1");
 
     store
-        .replace_active_service(&state)
+        .replace_serving_target_entry(&state)
         .await
         .expect("active state stores");
     store
-        .remove_active_service(&state.service_id)
+        .remove_serving_target_entry(&state.service_id)
         .await
         .expect("active state removes");
     store
-        .replace_active_service(&state)
+        .replace_serving_target_entry(&state)
         .await
         .expect("active state replaces after delete");
 
     assert_eq!(
         store
-            .active_service(&state.service_id)
+            .serving_target_entry(&state.service_id)
             .await
             .expect("active state loads"),
         Some(state)
@@ -91,24 +92,24 @@ async fn active_service_replace_succeeds_after_delete_marker() {
 async fn active_services_list_skips_deleted_keys() {
     let nats = test_nats().await;
     let store = core_state_store(&nats).await;
-    let api = active_service_state("svc_api", "rev_2");
-    let worker = active_service_state("svc_worker", "rev_1");
+    let api = serving_target_entry_state("svc_api", "rev_2");
+    let worker = serving_target_entry_state("svc_worker", "rev_1");
 
     store
-        .replace_active_service(&api)
+        .replace_serving_target_entry(&api)
         .await
         .expect("api service stores");
     store
-        .replace_active_service(&worker)
+        .replace_serving_target_entry(&worker)
         .await
         .expect("worker service stores");
     store
-        .remove_active_service(&worker.service_id)
+        .remove_serving_target_entry(&worker.service_id)
         .await
         .expect("worker service removes");
 
     assert_eq!(
-        store.active_services().await.expect("services list"),
+        store.serving_target_entries().await.expect("services list"),
         vec![api]
     );
 }
@@ -126,10 +127,10 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         .await
         .expect("open test KV_CORE bucket");
 
-    let wrong_payload = serde_json::to_vec(&ActiveServiceState {
+    let wrong_payload = serde_json::to_vec(&ServingTargetEntry {
         namespace_id: namespace_id("default"),
         service_id: other_service_id.clone(),
-        active_revision: revision_id("rev_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("rev_1"),
     })
     .expect("encode wrong active state");
     bucket
@@ -138,11 +139,11 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         .expect("write corrupt active state");
 
     let error = store
-        .active_service(&target_service_id)
+        .serving_target_entry(&target_service_id)
         .await
         .expect_err("wrong service payload is rejected");
     match error {
-        CoreStateStoreError::CorruptActiveServiceState {
+        CoreStateStoreError::CorruptServingTargetEntry {
             key: actual_key,
             expected_service_id,
             actual_service_id,
@@ -201,44 +202,44 @@ async fn active_machines_list_sorted_by_machine_id() {
 async fn active_route_state_round_trips_through_kv_core() {
     let nats = test_nats().await;
     let store = core_state_store(&nats).await;
-    let state = active_route_state(&route_target("API.example.com", 443), "svc_api", "rev_1");
+    let state = active_route_state(&route_target("API.example.com", 443), "svc_api", 8080);
 
     store
-        .replace_active_route(&state)
+        .replace_route_binding(&state)
         .await
         .expect("route state stores");
 
     assert_eq!(
         store
-            .active_route(&state.target)
+            .route_binding(&state.target)
             .await
-            .expect("active route loads"),
+            .expect("route binding loads"),
         Some(state)
     );
 }
 
 #[tokio::test]
-async fn active_route_replace_overwrites_current_revision() {
+async fn active_route_replace_overwrites_current_endpoint_port() {
     let nats = test_nats().await;
     let store = core_state_store(&nats).await;
     let target = route_target("api.example.com", 443);
-    let first = active_route_state(&target, "svc_api", "rev_1");
-    let second = active_route_state(&target, "svc_api", "rev_2");
+    let first = active_route_state(&target, "svc_api", 3000);
+    let second = active_route_state(&target, "svc_api", 8080);
 
     store
-        .replace_active_route(&first)
+        .replace_route_binding(&first)
         .await
         .expect("first route stores");
     store
-        .replace_active_route(&second)
+        .replace_route_binding(&second)
         .await
         .expect("second route stores");
 
     assert_eq!(
         store
-            .active_route(&target)
+            .route_binding(&target)
             .await
-            .expect("active route loads"),
+            .expect("route binding loads"),
         Some(second)
     );
 }
@@ -251,23 +252,23 @@ async fn active_routes_lists_only_route_state_sorted_by_target() {
     let www = route_target("www.example.com", 443);
 
     store
-        .replace_active_service(&active_service_state("svc_api", "rev_1"))
+        .replace_serving_target_entry(&serving_target_entry_state("svc_api", "rev_1"))
         .await
         .expect("service state stores");
     store
-        .replace_active_route(&active_route_state(&www, "svc_web", "rev_1"))
+        .replace_route_binding(&active_route_state(&www, "svc_web", 8080))
         .await
         .expect("www route stores");
     store
-        .replace_active_route(&active_route_state(&api, "svc_api", "rev_2"))
+        .replace_route_binding(&active_route_state(&api, "svc_api", 8080))
         .await
         .expect("api route stores");
 
     assert_eq!(
-        store.active_routes().await.expect("routes list"),
+        store.route_bindings().await.expect("routes list"),
         vec![
-            active_route_state(&api, "svc_api", "rev_2"),
-            active_route_state(&www, "svc_web", "rev_1"),
+            active_route_state(&api, "svc_api", 8080),
+            active_route_state(&www, "svc_web", 8080),
         ]
     );
 }
@@ -278,19 +279,18 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
     let store = core_state_store(&nats).await;
     let target = route_target("api.example.com", 443);
     let other_target = route_target("www.example.com", 443);
-    let key = ActiveRouteStateKey::from_target(&target);
+    let key = RouteBindingStateKey::from_target(&target);
     let bucket = nats
         .jetstream
         .get_key_value(KV_CORE_BUCKET)
         .await
         .expect("open test KV_CORE bucket");
 
-    let wrong_payload = serde_json::to_vec(&ActiveRouteState {
+    let wrong_payload = serde_json::to_vec(&RouteBindingState {
         namespace_id: namespace_id("default"),
         target: other_target.clone(),
         endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
     })
     .expect("encode wrong route state");
     bucket
@@ -299,11 +299,11 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
         .expect("write corrupt route state");
 
     let error = store
-        .active_route(&target)
+        .route_binding(&target)
         .await
         .expect_err("wrong route payload is rejected");
     match error {
-        ActiveRouteStoreError::CorruptActiveRouteState {
+        RouteBindingStoreError::CorruptActiveRouteState {
             key: actual_key,
             expected_target,
             actual_target,
@@ -443,7 +443,7 @@ fn active_service_state_key_matches_kv_core_path() {
 #[test]
 fn active_route_state_key_matches_kv_core_path() {
     assert_eq!(
-        ActiveRouteStateKey::from_target(&route_target("API.example.com", 443)).as_str(),
+        RouteBindingStateKey::from_target(&route_target("API.example.com", 443)).as_str(),
         "routes.6170692e6578616d706c652e636f6d.443"
     );
 }
@@ -482,21 +482,20 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
-fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> ActiveRouteState {
-    ActiveRouteState {
+fn active_route_state(target: &RouteTarget, service: &str, endpoint_port: u16) -> RouteBindingState {
+    RouteBindingState {
         namespace_id: namespace_id("default"),
         target: target.clone(),
-        endpoint_port: route_port(8080),
+        endpoint_port: route_port(endpoint_port),
         service_id: service_id(service),
-        revision_id: revision_id(revision),
     }
 }
 
-fn active_service_state(service: &str, revision: &str) -> ActiveServiceState {
-    ActiveServiceState {
+fn serving_target_entry_state(service: &str, revision: &str) -> ServingTargetEntry {
+    ServingTargetEntry {
         namespace_id: namespace_id("default"),
         service_id: service_id(service),
-        active_revision: revision_id(revision),
+        namespace_revision_entry_id: namespace_revision_entry_id(revision),
     }
 }
 

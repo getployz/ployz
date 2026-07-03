@@ -27,7 +27,7 @@ fn matching_operation_step_and_request_labels_reuse_existing_container() {
 fn same_operation_step_with_different_request_metadata_conflicts() {
     let expected = run_labels("op_123", "step_1");
     let mut conflicting_labels = expected.clone();
-    conflicting_labels.revision_id = namespace_revision_entry_id("entry_2");
+    conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_2");
 
     assert_eq!(
         decide_container_run(
@@ -126,7 +126,7 @@ fn existing_container(
     existing_container_with_state(
         container_id,
         labels,
-        ExistingManagedContainerState::Running { endpoint: None },
+        ExistingManagedContainerState::Running { ip: None },
     )
 }
 
@@ -145,10 +145,9 @@ fn existing_container_with_state(
 fn run_labels(operation_id: &str, step_id: &str) -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: self::operation_id(operation_id),
         step_id: self::step_id(step_id),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }

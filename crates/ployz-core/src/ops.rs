@@ -46,7 +46,7 @@ pub enum DeployRunningStage {
     StartingContainers,
     WaitingForHealth,
     RouteCutover,
-    ActiveServiceCommit,
+    ServingTargetCommit,
     RemovingSupersededContainers,
 }
 

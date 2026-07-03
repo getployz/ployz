@@ -29,8 +29,8 @@ fn operation_subjects_use_validated_operation_ids() {
         "plz.v1.op.op_123.deploy.plan.created"
     );
     assert_eq!(
-        op_deploy_running(&op_id, DeployRunningStage::ActiveServiceCommit),
-        "plz.v1.op.op_123.deploy.running.active_service_commit"
+        op_deploy_running(&op_id, DeployRunningStage::ServingTargetCommit),
+        "plz.v1.op.op_123.deploy.running.serving_target_commit"
     );
     assert_eq!(
         op_deploy_dataplane_prepared(&op_id),

@@ -31,7 +31,7 @@ pub use ployz_core::deploy::{
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
+    OperationId, ServiceId, StepId, SubjectTokenError,
 };
 pub use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
@@ -47,7 +47,7 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
@@ -66,7 +66,7 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
-    ActiveMachineState, ActiveRouteState, ActiveServiceState, GatewayServingStatus,
+    ActiveMachineState, RouteBindingState, ServingTargetEntry, GatewayServingStatus,
     GatewayStatusObservation, MachinePublicIpObservation,
 };
 
@@ -257,7 +257,7 @@ pub struct ServiceListResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSnapshot {
-    pub active: ActiveServiceState,
+    pub active: ServingTargetEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -275,7 +275,7 @@ pub struct RuntimeSnapshotResult {
 pub struct RuntimeSnapshot {
     pub machines: Vec<MachineSnapshot>,
     pub services: Vec<ServiceSnapshot>,
-    pub routes: Vec<ActiveRouteState>,
+    pub routes: Vec<RouteBindingState>,
     pub containers: Vec<ManagedContainerObservation>,
     pub revisions: Vec<RuntimeServiceRevision>,
     pub releases: Vec<RuntimeServiceRelease>,

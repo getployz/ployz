@@ -1,16 +1,17 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
     DeployPreparationInput, DeployRoute, DeployServicePlan, DeployServiceRequest,
-    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, plan_service_deploy,
+    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_service_deploy,
     prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::{ActiveRouteState, ActiveServiceState};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     operation_id, service_id, step_id,
@@ -19,7 +20,7 @@ use ployz_test_support::ids::{
 #[test]
 fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     let left = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
-    let right = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 3, Some((8080, 443)));
+    let right = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 }));
 
     assert_eq!(
         left.namespace_revision_entry_id(),
@@ -67,7 +68,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
     );
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None).namespace_revision_entry_id(),
-        service_spec("svc_api", "nginx:latest", 3, Some((8080, 443))).namespace_revision_entry_id()
+        service_spec("svc_api", "nginx:latest", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 })).namespace_revision_entry_id()
     );
 }
 
@@ -179,12 +180,11 @@ fn deploy_plan_requires_eligible_machine() {
 fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(2),
-        active_service: Some(ActiveServiceState {
+        serving_target_entry: Some(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: namespace_revision_entry_id("entry_old"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
         }),
-        active_routes: Vec::new(),
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         observed_machines: vec![observed_machine(
             "machine_b",
@@ -223,8 +223,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                 ),
             ],
         )],
-    })
-    .expect("deploy preparation succeeds");
+    });
 
     assert_eq!(prepared.request, deploy_request(2));
     assert_eq!(
@@ -251,8 +250,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
-        active_service: None,
-        active_routes: Vec::new(),
+        serving_target_entry: None,
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         observed_machines: vec![observed_machine(
             "machine_b",
@@ -263,7 +261,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
                     "svc_api",
                     "entry_1",
                     ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
                 ),
                 observed_container(
                     "machine_b",
@@ -271,12 +269,11 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
                     "svc_api",
                     "entry_1",
                     ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_at(endpoint("10.0.0.3", 8080)),
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.3")),
                 ),
             ],
         )],
-    })
-    .expect("deploy preparation succeeds");
+    });
 
     assert_eq!(
         prepared.existing_replicas,
@@ -288,7 +285,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
 }
 
 #[test]
-fn deploy_preparation_commits_multiple_routes_and_removes_omitted_service_routes() {
+fn deploy_preparation_commits_multiple_routes_per_service() {
     let mut request = deploy_request(1);
     request.routes = vec![
         deploy_route("api.example.com", 443, 8080),
@@ -297,50 +294,91 @@ fn deploy_preparation_commits_multiple_routes_and_removes_omitted_service_routes
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
-        active_service: None,
-        active_routes: vec![
-            ActiveRouteState {
-                namespace_id: namespace_id("default"),
-                target: route_target("admin.example.com", 443),
-                endpoint_port: route_port(8080),
-                service_id: service_id("svc_api"),
-                revision_id: namespace_revision_entry_id("entry_old"),
-            },
-            ActiveRouteState {
-                namespace_id: namespace_id("default"),
-                target: route_target("other.example.com", 443),
-                endpoint_port: route_port(8080),
-                service_id: service_id("svc_worker"),
-                revision_id: namespace_revision_entry_id("entry_worker"),
-            },
-        ],
+        serving_target_entry: None,
         eligible_machines: vec![machine_id("machine_a")],
         observed_machines: Vec::new(),
-    })
-    .expect("route reconciliation succeeds");
+    });
 
     assert_eq!(
         prepared.route_commits,
         vec![
-            ActiveRouteState {
+            RouteBindingState {
                 namespace_id: namespace_id("default"),
                 target: route_target("api.example.com", 443),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
-                revision_id: namespace_revision_entry_id("entry_1"),
             },
-            ActiveRouteState {
+            RouteBindingState {
                 namespace_id: namespace_id("default"),
                 target: route_target("www.example.com", 443),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
-                revision_id: namespace_revision_entry_id("entry_1"),
             },
         ]
     );
+}
+
+#[test]
+fn namespace_route_removals_detach_undeclared_targets_including_omitted_services() {
+    // `admin` is owned by a declared service but no longer declared;
+    // `orphan` is owned by a service the manifest omits entirely. Both are
+    // detached: the manifest is the full desired route state.
+    let removals = namespace_route_binding_removals(
+        &namespace_id("default"),
+        &[
+            route_target("api.example.com", 443),
+            route_target("www.example.com", 443),
+        ],
+        &[
+            route_binding_state("admin.example.com", "svc_api"),
+            route_binding_state("orphan.example.com", "svc_omitted"),
+            route_binding_state("api.example.com", "svc_api"),
+        ],
+    );
+
     assert_eq!(
-        prepared.route_removals,
-        vec![route_target("admin.example.com", 443)]
+        removals,
+        vec![
+            route_target("admin.example.com", 443),
+            route_target("orphan.example.com", 443),
+        ]
+    );
+}
+
+#[test]
+fn namespace_route_removals_ignore_other_namespaces() {
+    let mut foreign = route_binding_state("other.example.com", "svc_api");
+    foreign.namespace_id = namespace_id("other");
+
+    assert!(namespace_route_binding_removals(&namespace_id("default"), &[], &[foreign]).is_empty());
+}
+
+#[test]
+fn namespace_serving_removals_unpublish_omitted_services_only() {
+    let removals = namespace_serving_target_removals(
+        &namespace_id("default"),
+        &[service_id("svc_api")],
+        &[
+            ServingTargetEntry {
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_api"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
+            },
+            ServingTargetEntry {
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_omitted"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
+            },
+        ],
+    );
+
+    assert_eq!(
+        removals,
+        vec![ServingTargetEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_omitted"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
+        }]
     );
 }
 
@@ -351,48 +389,70 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
-        active_service: None,
-        active_routes: vec![ActiveRouteState {
-            namespace_id: namespace_id("default"),
-            target: route_target("api.example.com", 443),
-            endpoint_port: route_port(3000),
-            service_id: service_id("svc_api"),
-            revision_id: namespace_revision_entry_id("entry_old"),
-        }],
+        serving_target_entry: None,
         eligible_machines: Vec::new(),
         observed_machines: Vec::new(),
-    })
-    .expect("routed deploy preparation succeeds");
+    });
 
     assert_eq!(
         prepared.route_commits,
-        vec![ActiveRouteState {
+        vec![RouteBindingState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: namespace_revision_entry_id("entry_1"),
         }]
     );
-    assert!(prepared.route_removals.is_empty());
     assert!(prepared.existing_replicas.is_empty());
     assert!(prepared.cleanup_candidates.is_empty());
+}
+
+#[test]
+fn namespace_route_removals_keep_targets_reassigned_to_another_service() {
+    // `moved.example.com` was owned by `svc_api` before this deploy and is
+    // now declared by a sibling service in the same manifest. Removal is a
+    // namespace-level decision, so the moved target is not detached.
+    let removals = namespace_route_binding_removals(
+        &namespace_id("default"),
+        &[route_target("moved.example.com", 443)],
+        &[route_binding_state("moved.example.com", "svc_api")],
+    );
+
+    assert!(removals.is_empty());
+}
+
+#[test]
+fn namespace_revision_entry_id_pins_the_versioned_encoding() {
+    // Golden pin: this digest covers the encoding version tag, service id,
+    // and image reference. It must only change through a deliberate
+    // encoding version bump (ADR 0022) - an unintended change here means
+    // every running container would be replaced after upgrade.
+    let entry_id = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None)
+        .namespace_revision_entry_id();
+
+    assert_eq!(
+        entry_id.as_str(),
+        "4352bcaf84b6851f55968256ba6d1b84a1781fa273564663a9d2c5468bc8b14a"
+    );
+}
+
+struct SpecRoute {
+    public_port: u16,
+    endpoint_port: u16,
 }
 
 fn service_spec(
     service: &str,
     image: &str,
     replicas: u16,
-    route: Option<(u16, u16)>,
+    route: Option<SpecRoute>,
 ) -> ployz_core::deploy::DeployServiceSpec {
     ployz_core::deploy::DeployServiceSpec {
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         routes: route
-            .map(|(endpoint_port, public_port)| {
-                vec![deploy_route("api.example.com", public_port, endpoint_port)]
-            })
+            .map(|route| vec![deploy_route("api.example.com", route.public_port, route.endpoint_port)])
             .unwrap_or_default(),
     }
 }
@@ -406,6 +466,15 @@ fn planning_input(
         eligible_machines: eligible_machines.into_iter().collect(),
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
+    }
+}
+
+fn route_binding_state(hostname: &str, service: &str) -> RouteBindingState {
+    RouteBindingState {
+        namespace_id: namespace_id("default"),
+        target: route_target(hostname, 443),
+        endpoint_port: route_port(8080),
+        service_id: service_id(service),
     }
 }
 
@@ -469,11 +538,8 @@ fn route_port(port: u16) -> RoutePort {
     RoutePort::try_new(port).expect("valid route port")
 }
 
-fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
-    ContainerEndpoint {
-        ip: ip.parse().expect("valid container endpoint ip"),
-        port: route_port(port),
-    }
+fn endpoint_ip(ip: &str) -> std::net::IpAddr {
+    ip.parse().expect("valid container endpoint ip")
 }
 
 fn existing_replica(machine: &str, container: &str) -> ExistingServiceReplica {
@@ -496,11 +562,10 @@ fn cleanup_container_with_entry(
         machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id(namespace_revision_entry),
+        namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry),
         operation_id: operation_id("op_existing"),
         step_id: step_id(container),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
 
@@ -524,7 +589,7 @@ fn observed_container(
         machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id(service),
-        revision_id: namespace_revision_entry_id(revision),
+        namespace_revision_entry_id: namespace_revision_entry_id(revision),
         operation_id: operation_id("op_existing"),
         step_id: step_id(container),
         kind,

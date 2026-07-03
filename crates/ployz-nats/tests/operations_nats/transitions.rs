@@ -93,7 +93,7 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
-                stage: DeployRunningStage::ActiveServiceCommit,
+                stage: DeployRunningStage::ServingTargetCommit,
             },
         )
         .await
@@ -102,11 +102,10 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_old"),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_old"),
+        namespace_revision_entry_id: namespace_revision_entry_id("rev_old"),
         operation_id: operation_id("op_old"),
         step_id: StepId::try_new("step_old").expect("valid step id"),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     };
     repository
         .record_deploy_evidence(
@@ -249,7 +248,7 @@ async fn record_deploy_running(
         DeployRunningStage::PreparingDataplane,
         DeployRunningStage::StartingContainers,
         DeployRunningStage::WaitingForHealth,
-        DeployRunningStage::ActiveServiceCommit,
+        DeployRunningStage::ServingTargetCommit,
     ] {
         repository
             .record_deploy_transition(

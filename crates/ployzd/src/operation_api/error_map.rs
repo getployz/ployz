@@ -323,7 +323,7 @@ fn operation_submit_core_state_failure(
         | CoreStateStoreError::Get { .. }
         | CoreStateStoreError::Delete { .. }
         | CoreStateStoreError::ListKeys { .. }
-        | CoreStateStoreError::CorruptActiveServiceState { .. }
+        | CoreStateStoreError::CorruptServingTargetEntry { .. }
         | CoreStateStoreError::CorruptKey { .. } => OperationSubmitStatusFailure::GetStatus,
         CoreStateStoreError::CasConflict { .. } => OperationSubmitStatusFailure::CasConflict,
         CoreStateStoreError::Timeout { .. } => OperationSubmitStatusFailure::Timeout,

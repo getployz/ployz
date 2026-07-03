@@ -10,7 +10,7 @@ use crate::ids::{
 };
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use crate::ops::{RoutePort, RouteTarget};
-use crate::state::{ActiveRouteState, ActiveServiceState};
+use crate::state::{RouteBindingState, ServingTargetEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -138,19 +138,16 @@ pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
-    pub revision_id: NamespaceRevisionEntryId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint_port: Option<RoutePort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput {
     pub request: DeployServiceRequest,
-    pub active_service: Option<ActiveServiceState>,
-    pub active_routes: Vec<ActiveRouteState>,
+    pub serving_target_entry: Option<ServingTargetEntry>,
     pub eligible_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }
@@ -158,8 +155,7 @@ pub struct DeployPreparationInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeploy {
     pub request: DeployServiceRequest,
-    pub route_commits: Vec<ActiveRouteState>,
-    pub route_removals: Vec<RouteTarget>,
+    pub route_commits: Vec<RouteBindingState>,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -263,24 +259,56 @@ pub enum DeployPlanError {
     NoEligibleMachines,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DeployPreparationError {}
-
-pub fn prepare_deploy(
-    input: DeployPreparationInput,
-) -> Result<PreparedDeploy, DeployPreparationError> {
-    let route_reconciliation = active_route_reconciliation(&input.request, input.active_routes);
+#[must_use]
+pub fn prepare_deploy(input: DeployPreparationInput) -> PreparedDeploy {
+    let route_commits = route_binding_commits(&input.request);
     let existing_replicas = existing_replicas(&input.request, &input.observed_machines);
     let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_machines);
 
-    Ok(PreparedDeploy {
+    PreparedDeploy {
         request: input.request,
-        route_commits: route_reconciliation.commits,
-        route_removals: route_reconciliation.removals,
+        route_commits,
         eligible_machines: input.eligible_machines,
         existing_replicas,
         cleanup_candidates,
-    })
+    }
+}
+
+/// Route binding removals are a namespace-level decision: the manifest is
+/// the full desired state, so any stored binding whose target no service in
+/// the manifest declares is detached - including bindings owned by services
+/// the manifest omits entirely.
+#[must_use]
+pub fn namespace_route_binding_removals(
+    namespace_id: &NamespaceId,
+    declared_targets: &[RouteTarget],
+    stored_bindings: &[RouteBindingState],
+) -> Vec<RouteTarget> {
+    stored_bindings
+        .iter()
+        .filter(|binding| {
+            binding.namespace_id == *namespace_id && !declared_targets.contains(&binding.target)
+        })
+        .map(|binding| binding.target.clone())
+        .collect()
+}
+
+/// Serving target entries of services the manifest omits are unpublished:
+/// manifest omission removes a service from the namespace, so its entry
+/// must not stay serveable in stored state.
+#[must_use]
+pub fn namespace_serving_target_removals(
+    namespace_id: &NamespaceId,
+    declared_services: &[ServiceId],
+    stored_entries: &[ServingTargetEntry],
+) -> Vec<ServingTargetEntry> {
+    stored_entries
+        .iter()
+        .filter(|entry| {
+            entry.namespace_id == *namespace_id && !declared_services.contains(&entry.service_id)
+        })
+        .cloned()
+        .collect()
 }
 
 fn existing_replicas(
@@ -291,7 +319,7 @@ fn existing_replicas(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service_revision(
+            container.is_running_service_entry(
                 &request.service_id,
                 &request.namespace_revision_entry_id,
             )
@@ -317,51 +345,26 @@ fn cleanup_candidates(
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             service_id: container.service_id.clone(),
-            revision_id: container.revision_id.clone(),
+            namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
             operation_id: container.operation_id.clone(),
             step_id: container.step_id.clone(),
             kind: container.kind,
-            endpoint_port: container
-                .running_service_endpoint()
-                .map(|endpoint| endpoint.port),
         })
         .collect()
 }
 
-struct RouteReconciliation {
-    commits: Vec<ActiveRouteState>,
-    removals: Vec<RouteTarget>,
-}
-
-fn active_route_reconciliation(
-    request: &DeployServiceRequest,
-    active_routes: Vec<ActiveRouteState>,
-) -> RouteReconciliation {
-    let commits = request
+fn route_binding_commits(request: &DeployServiceRequest) -> Vec<RouteBindingState> {
+    request
         .routes
         .iter()
         .cloned()
-        .map(|route| ActiveRouteState {
+        .map(|route| RouteBindingState {
             namespace_id: request.namespace_id.clone(),
             target: route.target,
             endpoint_port: route.endpoint_port,
             service_id: request.service_id.clone(),
-            revision_id: request.namespace_revision_entry_id.clone(),
         })
-        .collect::<Vec<_>>();
-    let removals = active_routes
-        .into_iter()
-        .filter(|active_route| {
-            active_route.service_id == request.service_id
-                && !request
-                    .routes
-                    .iter()
-                    .any(|route| route.target == active_route.target)
-        })
-        .map(|active_route| active_route.target)
-        .collect();
-
-    RouteReconciliation { commits, removals }
+        .collect()
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {

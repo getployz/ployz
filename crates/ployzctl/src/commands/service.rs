@@ -97,7 +97,7 @@ impl ServiceInspectOutput {
         format!(
             "service {}\nactive-revision {}\n",
             self.service.active.service_id.as_str(),
-            self.service.active.active_revision.as_str(),
+            self.service.active.namespace_revision_entry_id.as_str(),
         )
     }
 }
@@ -106,6 +106,6 @@ fn render_service_summary(service: &ServiceSnapshot) -> String {
     format!(
         "{} active-revision {}",
         service.active.service_id.as_str(),
-        service.active.active_revision.as_str(),
+        service.active.namespace_revision_entry_id.as_str(),
     )
 }

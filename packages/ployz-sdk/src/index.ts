@@ -34,8 +34,9 @@ export {
   operationId,
   operationIdempotencyKey,
   operatorHint,
+  namespaceRevisionEntryId,
+  namespaceRevisionId,
   replicaCount,
-  revisionId,
   routeHostname,
   routePort,
   serviceId,
@@ -53,8 +54,9 @@ import {
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
+  namespaceRevisionEntryId,
+  namespaceRevisionId,
   replicaCount,
-  revisionId,
   routeHostname,
   routePort,
   serviceId,
@@ -132,14 +134,14 @@ export interface PloyzDeployInput {
   operationId: string;
   namespaceId?: string;
   serviceId: string;
-  targetRevision: string;
+  namespaceRevisionId: string;
   image: string;
   replicas: number;
-  route?: {
+  routes?: Array<{
     hostname: string;
     port: number;
     endpointPort: number;
-  };
+  }>;
 }
 
 export interface PloyzMachineAddInput {
@@ -320,23 +322,19 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
     operation_id: operationId(input.operationId),
     target: {
       namespace_id: namespaceId(input.namespaceId ?? "default"),
-      target_revision: revisionId(input.targetRevision),
+      namespace_revision_id: namespaceRevisionId(input.namespaceRevisionId),
       services: [
         {
           service_id: serviceId(input.serviceId),
           image: imageReference(input.image),
           replicas: replicaCount(input.replicas),
-          ...(input.route
-            ? {
-                route: {
-                  target: {
-                    hostname: routeHostname(input.route.hostname),
-                    port: routePort(input.route.port),
-                  },
-                  endpoint_port: routePort(input.route.endpointPort),
-                },
-              }
-            : {}),
+          routes: (input.routes ?? []).map((route) => ({
+            target: {
+              hostname: routeHostname(route.hostname),
+              port: routePort(route.port),
+            },
+            endpoint_port: routePort(route.endpointPort),
+          })),
         },
       ],
     },

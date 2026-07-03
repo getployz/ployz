@@ -1,22 +1,31 @@
 //! Gateway projection runtime.
 
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionEntryId, ServiceId};
-use ployz_core::machine_runtime::{ContainerEndpoint, MachineContainerObservationSnapshot};
+use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::{RoutePort, RouteTarget};
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayRoute {
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
-    pub revision_id: NamespaceRevisionEntryId,
+}
+
+/// One service entry of the current serving target: the entry identity whose
+/// containers may serve that service (ADR 0023, ADR 0024).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayServingEntry {
+    pub service_id: ServiceId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjectionInput {
     pub routes: Vec<GatewayRoute>,
+    pub serving: Vec<GatewayServingEntry>,
     pub observed_machines: Vec<GatewayMachineObservation>,
 }
 
@@ -48,7 +57,8 @@ pub struct GatewayProjectedRoute {
 pub struct GatewayUpstream {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
-    pub endpoint: ContainerEndpoint,
+    /// Container endpoint-network IP dialed on the route's endpoint port.
+    pub address: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,27 +70,23 @@ pub struct GatewayUnroutableContainer {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct GatewayUpstreamKey {
     service_id: ServiceId,
-    revision_id: NamespaceRevisionEntryId,
-    endpoint_port: RoutePort,
+    namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
 
 impl GatewayUpstreamKey {
-    fn for_route(route: &GatewayRoute) -> Self {
+    fn for_serving_entry(entry: &GatewayServingEntry) -> Self {
         Self {
-            service_id: route.service_id.clone(),
-            revision_id: route.revision_id.clone(),
-            endpoint_port: route.endpoint_port,
+            service_id: entry.service_id.clone(),
+            namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
         }
     }
 
     fn for_container(
         container: &ployz_core::machine_runtime::ManagedContainerObservation,
-        endpoint_port: RoutePort,
     ) -> Self {
         Self {
             service_id: container.service_id.clone(),
-            revision_id: container.revision_id.clone(),
-            endpoint_port,
+            namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
         }
     }
 }
@@ -164,18 +170,43 @@ pub fn project_gateway(
         previous_target = Some(&route.target);
     }
 
+    let serving_by_service = input
+        .serving
+        .iter()
+        .map(|entry| (entry.service_id.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
     let indexed_containers = index_fresh_running_containers(&input.observed_machines);
     let mut routes = Vec::with_capacity(input_routes.len());
     for route in input_routes {
-        let key = GatewayUpstreamKey::for_route(&route);
+        // A binding whose service is absent from the serving target stays
+        // attached with no upstreams; the gateway answers unavailable
+        // instead of treating the route as invalid state (ADR 0024).
+        let Some(serving_entry) = serving_by_service.get(&route.service_id) else {
+            routes.push(GatewayProjectedRoute {
+                target: route.target,
+                upstreams: Vec::new(),
+                unroutable_containers: Vec::new(),
+            });
+            continue;
+        };
+        let key = GatewayUpstreamKey::for_serving_entry(serving_entry);
         let upstreams = indexed_containers
-            .upstreams_by_revision
+            .addresses_by_entry
             .get(&key)
-            .cloned()
+            .map(|containers| {
+                containers
+                    .iter()
+                    .map(|container| GatewayUpstream {
+                        machine_id: container.machine_id.clone(),
+                        container_id: container.container_id.clone(),
+                        address: SocketAddr::new(container.ip, route.endpoint_port.get()),
+                    })
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         let unroutable_containers = indexed_containers
-            .unroutable_by_revision
-            .get(&GatewayRevisionKey::for_route(&route))
+            .unroutable_by_entry
+            .get(&key)
             .cloned()
             .unwrap_or_default();
         routes.push(GatewayProjectedRoute {
@@ -188,17 +219,23 @@ pub fn project_gateway(
     Ok(GatewayProjection { routes })
 }
 
+struct GatewayContainerAddress {
+    machine_id: MachineId,
+    container_id: ContainerId,
+    ip: std::net::IpAddr,
+}
+
 struct IndexedGatewayContainers {
-    upstreams_by_revision: BTreeMap<GatewayUpstreamKey, Vec<GatewayUpstream>>,
-    unroutable_by_revision: BTreeMap<GatewayRevisionKey, Vec<GatewayUnroutableContainer>>,
+    addresses_by_entry: BTreeMap<GatewayUpstreamKey, Vec<GatewayContainerAddress>>,
+    unroutable_by_entry: BTreeMap<GatewayUpstreamKey, Vec<GatewayUnroutableContainer>>,
 }
 
 fn index_fresh_running_containers(
     observed_machines: &[GatewayMachineObservation],
 ) -> IndexedGatewayContainers {
-    let mut upstreams_by_revision: BTreeMap<GatewayUpstreamKey, Vec<GatewayUpstream>> =
+    let mut addresses_by_entry: BTreeMap<GatewayUpstreamKey, Vec<GatewayContainerAddress>> =
         BTreeMap::new();
-    let mut unroutable_by_revision: BTreeMap<GatewayRevisionKey, Vec<GatewayUnroutableContainer>> =
+    let mut unroutable_by_entry: BTreeMap<GatewayUpstreamKey, Vec<GatewayUnroutableContainer>> =
         BTreeMap::new();
 
     for container in observed_machines
@@ -209,40 +246,35 @@ fn index_fresh_running_containers(
         if !container.is_running_service() {
             continue;
         }
-        match container.running_service_endpoint() {
-            Some(endpoint) => {
-                let key = GatewayUpstreamKey::for_container(container, endpoint.port);
-                upstreams_by_revision
-                    .entry(key)
-                    .or_default()
-                    .push(GatewayUpstream {
-                        machine_id: container.machine_id.clone(),
-                        container_id: container.container_id.clone(),
-                        endpoint: endpoint.clone(),
-                    })
-            }
-            None => {
-                let key = GatewayRevisionKey::for_container(container);
-                unroutable_by_revision
-                    .entry(key)
-                    .or_default()
-                    .push(GatewayUnroutableContainer {
-                        machine_id: container.machine_id.clone(),
-                        container_id: container.container_id.clone(),
-                    })
-            }
+        let key = GatewayUpstreamKey::for_container(container);
+        match container.running_service_ip() {
+            Some(ip) => addresses_by_entry
+                .entry(key)
+                .or_default()
+                .push(GatewayContainerAddress {
+                    machine_id: container.machine_id.clone(),
+                    container_id: container.container_id.clone(),
+                    ip,
+                }),
+            None => unroutable_by_entry
+                .entry(key)
+                .or_default()
+                .push(GatewayUnroutableContainer {
+                    machine_id: container.machine_id.clone(),
+                    container_id: container.container_id.clone(),
+                }),
         }
     }
 
-    for upstreams in upstreams_by_revision.values_mut() {
-        upstreams.sort_by(|left, right| {
+    for addresses in addresses_by_entry.values_mut() {
+        addresses.sort_by(|left, right| {
             left.machine_id
                 .cmp(&right.machine_id)
                 .then_with(|| left.container_id.cmp(&right.container_id))
         });
     }
 
-    for containers in unroutable_by_revision.values_mut() {
+    for containers in unroutable_by_entry.values_mut() {
         containers.sort_by(|left, right| {
             left.machine_id
                 .cmp(&right.machine_id)
@@ -251,29 +283,7 @@ fn index_fresh_running_containers(
     }
 
     IndexedGatewayContainers {
-        upstreams_by_revision,
-        unroutable_by_revision,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct GatewayRevisionKey {
-    service_id: ServiceId,
-    revision_id: NamespaceRevisionEntryId,
-}
-
-impl GatewayRevisionKey {
-    fn for_route(route: &GatewayRoute) -> Self {
-        Self {
-            service_id: route.service_id.clone(),
-            revision_id: route.revision_id.clone(),
-        }
-    }
-
-    fn for_container(container: &ployz_core::machine_runtime::ManagedContainerObservation) -> Self {
-        Self {
-            service_id: container.service_id.clone(),
-            revision_id: container.revision_id.clone(),
-        }
+        addresses_by_entry,
+        unroutable_by_entry,
     }
 }

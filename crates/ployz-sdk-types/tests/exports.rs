@@ -44,7 +44,7 @@ fn sdk_exports_core_wire_types() {
         service_id: service_id.clone(),
     };
     let state = DeployOperationState::Accepted;
-    let running = DeployRunningStage::ActiveServiceCommit;
+    let running = DeployRunningStage::ServingTargetCommit;
     let _deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         namespace_revision_id: NamespaceRevisionId::try_new("rev_1")
@@ -78,7 +78,7 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&running).expect("running state serializes"),
-        r#""active_service_commit""#
+        r#""serving_target_commit""#
     );
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),

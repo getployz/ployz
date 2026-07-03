@@ -2,10 +2,10 @@
 
 use crate::gateway::{
     GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectionError,
-    GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
+    GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
 };
-use ployz_core::state::ActiveRouteState;
-use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_nats::core_state::{RouteBindingStoreError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{
     AsyncNatsObservationStore, MachineContainerObservationRecord, ObservationStoreError,
 };
@@ -71,7 +71,13 @@ pub async fn load_gateway_projection_input_from_nats_with_stale_after(
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let routes = async {
         core_state
-            .active_routes()
+            .route_bindings()
+            .await
+            .map_err(GatewaySourceError::from)
+    };
+    let serving = async {
+        core_state
+            .serving_target_entries()
             .await
             .map_err(GatewaySourceError::from)
     };
@@ -81,10 +87,12 @@ pub async fn load_gateway_projection_input_from_nats_with_stale_after(
             .await
             .map_err(GatewaySourceError::from)
     };
-    let (routes, observed_machines) = tokio::try_join!(routes, observed_machines)?;
+    let (routes, serving, observed_machines) =
+        tokio::try_join!(routes, serving, observed_machines)?;
 
     Ok(gateway_projection_input_from_state(
         routes,
+        serving,
         observed_machines,
         now_unix_nanos(),
         stale_after,
@@ -108,33 +116,33 @@ impl fmt::Display for GatewaySourceError {
     }
 }
 
-impl From<ActiveRouteStoreError> for GatewaySourceError {
-    fn from(error: ActiveRouteStoreError) -> Self {
+impl From<RouteBindingStoreError> for GatewaySourceError {
+    fn from(error: RouteBindingStoreError) -> Self {
         match error {
-            ActiveRouteStoreError::Decode(error) => Self::Invalid {
-                message: format!("decode active route state: {error}"),
+            RouteBindingStoreError::Decode(error) => Self::Invalid {
+                message: format!("decode route binding state: {error}"),
             },
-            ActiveRouteStoreError::CorruptActiveRouteState {
+            RouteBindingStoreError::CorruptActiveRouteState {
                 key,
                 expected_target,
                 actual_target,
             } => Self::Invalid {
                 message: format!(
-                    "active route state at {key} belongs to {actual_target:?}, not {expected_target:?}"
+                    "route binding state at {key} belongs to {actual_target:?}, not {expected_target:?}"
                 ),
             },
-            ActiveRouteStoreError::CorruptKey { key, actual_key } => Self::Invalid {
+            RouteBindingStoreError::CorruptKey { key, actual_key } => Self::Invalid {
                 message: format!(
-                    "active route state key {key} does not match encoded target key {actual_key}"
+                    "route binding state key {key} does not match encoded target key {actual_key}"
                 ),
             },
-            error @ (ActiveRouteStoreError::Encode(_)
-            | ActiveRouteStoreError::Put { .. }
-            | ActiveRouteStoreError::Delete { .. }
-            | ActiveRouteStoreError::ListKeys { .. }
-            | ActiveRouteStoreError::Watch { .. }
-            | ActiveRouteStoreError::Get { .. }
-            | ActiveRouteStoreError::Timeout { .. }) => Self::Unavailable {
+            error @ (RouteBindingStoreError::Encode(_)
+            | RouteBindingStoreError::Put { .. }
+            | RouteBindingStoreError::Delete { .. }
+            | RouteBindingStoreError::ListKeys { .. }
+            | RouteBindingStoreError::Watch { .. }
+            | RouteBindingStoreError::Get { .. }
+            | RouteBindingStoreError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),
             },
         }
@@ -167,13 +175,21 @@ impl From<ObservationStoreError> for GatewaySourceError {
 }
 
 fn gateway_projection_input_from_state(
-    routes: Vec<ActiveRouteState>,
+    routes: Vec<RouteBindingState>,
+    serving: Vec<ServingTargetEntry>,
     observed_machines: Vec<MachineContainerObservationRecord>,
     now_unix_nanos: i128,
     stale_after: Duration,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
+        serving: serving
+            .into_iter()
+            .map(|state| GatewayServingEntry {
+                service_id: state.service_id,
+                namespace_revision_entry_id: state.namespace_revision_entry_id,
+            })
+            .collect(),
         observed_machines: observed_machines
             .into_iter()
             .map(|record| GatewayMachineObservation {
@@ -184,12 +200,46 @@ fn gateway_projection_input_from_state(
     }
 }
 
-fn gateway_route_from_state(state: ActiveRouteState) -> GatewayRoute {
+fn gateway_route_from_state(state: RouteBindingState) -> GatewayRoute {
     GatewayRoute {
         target: state.target,
         endpoint_port: state.endpoint_port,
         service_id: state.service_id,
-        revision_id: state.revision_id,
+    }
+}
+
+impl From<CoreStateStoreError> for GatewaySourceError {
+    fn from(error: CoreStateStoreError) -> Self {
+        match error {
+            CoreStateStoreError::Decode(error) => Self::Invalid {
+                message: format!("decode serving target entry state: {error}"),
+            },
+            CoreStateStoreError::CorruptServingTargetEntry {
+                key,
+                expected_service_id,
+                actual_service_id,
+            } => Self::Invalid {
+                message: format!(
+                    "serving target entry state at {key} belongs to {actual_service_id:?}, not {expected_service_id:?}"
+                ),
+            },
+            CoreStateStoreError::CorruptKey { key, actual_key } => Self::Invalid {
+                message: format!(
+                    "serving target entry state key {key} does not match encoded key {actual_key}"
+                ),
+            },
+            error @ (CoreStateStoreError::OpenBucket { .. }
+            | CoreStateStoreError::Encode(_)
+            | CoreStateStoreError::Put { .. }
+            | CoreStateStoreError::CasConflict { .. }
+            | CoreStateStoreError::Get { .. }
+            | CoreStateStoreError::Delete { .. }
+            | CoreStateStoreError::ListKeys { .. }
+            | CoreStateStoreError::CorruptNamespaceLock { .. }
+            | CoreStateStoreError::Timeout { .. }) => Self::Unavailable {
+                message: error.to_string(),
+            },
+        }
     }
 }
 

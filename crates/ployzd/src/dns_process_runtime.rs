@@ -1,6 +1,6 @@
 //! Runtime wiring for the DNS role.
 //!
-//! `ployzd dns` is a supervised watcher process: it consumes active route
+//! `ployzd dns` is a supervised watcher process: it consumes route binding
 //! state and gateway observations from NATS, keeps a last-known-good answer
 //! table, and exposes typed health. It owns no command surface.
 

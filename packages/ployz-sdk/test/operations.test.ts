@@ -29,7 +29,7 @@ import {
   opsListRequest,
   PloyzApiError,
   PloyzClient,
-  revisionId,
+  namespaceRevisionEntryId,
   runtimeSnapshotRequest,
   serviceInspectRequest,
   serviceId,
@@ -340,12 +340,13 @@ test("sdk maps raw deploy input to the wire request", () => {
     operation_id: "op_123",
     target: {
       namespace_id: "default",
-      target_revision: "rev_2",
+      namespace_revision_id: "rev_2",
       services: [
         {
           service_id: "svc_api",
           image: "ghcr.io/acme/api:rev-2",
           replicas: 1,
+          routes: [],
         },
       ],
     },
@@ -353,25 +354,27 @@ test("sdk maps raw deploy input to the wire request", () => {
   assert.deepEqual(
     deploySubmitRequest({
       ...deployInput(),
-      route: { hostname: "api.example.com", port: 443, endpointPort: 8080 },
+      routes: [{ hostname: "api.example.com", port: 443, endpointPort: 8080 }],
     }),
     {
       operation_id: "op_123",
       target: {
         namespace_id: "default",
-        target_revision: "rev_2",
+        namespace_revision_id: "rev_2",
         services: [
           {
             service_id: "svc_api",
             image: "ghcr.io/acme/api:rev-2",
             replicas: 1,
-            route: {
-              target: {
-                hostname: "api.example.com",
-                port: 443,
+            routes: [
+              {
+                target: {
+                  hostname: "api.example.com",
+                  port: 443,
+                },
+                endpoint_port: 8080,
               },
-              endpoint_port: 8080,
-            },
+            ],
           },
         ],
       },
@@ -844,7 +847,7 @@ function defaultFixture(): OperationFixture {
         active: {
           namespace_id: namespaceId("default"),
           service_id: serviceId("svc_api"),
-          active_revision: revisionId("rev_2"),
+          namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
         },
       },
     ],
@@ -866,7 +869,7 @@ function defaultFixture(): OperationFixture {
           active: {
             namespace_id: namespaceId("default"),
             service_id: serviceId("svc_api"),
-            active_revision: revisionId("rev_2"),
+            namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
           },
         },
       ],
@@ -876,14 +879,14 @@ function defaultFixture(): OperationFixture {
         {
           namespace_id: namespaceId("default"),
           service_id: serviceId("svc_api"),
-          revision_id: revisionId("rev_2"),
+          namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
         },
       ],
       releases: [
         {
           namespace_id: namespaceId("default"),
           service_id: serviceId("svc_api"),
-          revision_id: revisionId("rev_2"),
+          namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
           routes: [],
         },
       ],
@@ -917,7 +920,7 @@ function deployInput() {
   return {
     operationId: "op_123",
     serviceId: "svc_api",
-    targetRevision: "rev_2",
+    namespaceRevisionId: "rev_2",
     image: "ghcr.io/acme/api:rev-2",
     replicas: 1,
   };

@@ -1,14 +1,14 @@
 //! NATS-backed canonical current-state adapters.
 
 mod active_machine;
-mod active_route;
-mod active_service;
+mod route_binding;
+mod serving_target_entry;
 mod namespace_lock;
 mod nats_authorized_user;
 
 use crate::kv::{KV_CORE_BUCKET, KvListError, NatsIoTimeout, with_io_timeout};
 pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};
-pub use active_route::ActiveRouteStoreError;
+pub use route_binding::RouteBindingStoreError;
 use async_nats::jetstream;
 pub use namespace_lock::{
     NAMESPACE_LOCK_RENEW_INTERVAL_MS, NAMESPACE_LOCK_TTL_MS, NamespaceLockAcquire,
@@ -66,7 +66,7 @@ pub enum CoreStateStoreError {
     ListKeys {
         message: String,
     },
-    CorruptActiveServiceState {
+    CorruptServingTargetEntry {
         key: String,
         expected_service_id: ServiceId,
         actual_service_id: ServiceId,
@@ -90,20 +90,20 @@ impl fmt::Display for CoreStateStoreError {
             Self::OpenBucket { bucket, message } => {
                 write!(formatter, "open bucket {bucket}: {message}")
             }
-            Self::Encode(error) => write!(formatter, "encode active service state: {error}"),
-            Self::Decode(error) => write!(formatter, "decode active service state: {error}"),
+            Self::Encode(error) => write!(formatter, "encode serving target entry state: {error}"),
+            Self::Decode(error) => write!(formatter, "decode serving target entry state: {error}"),
             Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
             Self::CasConflict { message } => write!(formatter, "cas conflict: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
-            Self::ListKeys { message } => write!(formatter, "list active service keys: {message}"),
-            Self::CorruptActiveServiceState {
+            Self::ListKeys { message } => write!(formatter, "list serving target entry keys: {message}"),
+            Self::CorruptServingTargetEntry {
                 key,
                 expected_service_id,
                 actual_service_id,
             } => write!(
                 formatter,
-                "active service state at {} belongs to {}, not {}",
+                "serving target entry state at {} belongs to {}, not {}",
                 key,
                 actual_service_id.as_str(),
                 expected_service_id.as_str()

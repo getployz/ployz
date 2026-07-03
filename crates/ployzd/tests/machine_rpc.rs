@@ -61,7 +61,6 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .as_slice(),
         [MachineContainerRunRpcRequest {
             image: image("registry.example/api:rev_2"),
-            endpoint: None,
             container: managed_container_spec()
         }]
     );
@@ -150,7 +149,7 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
         container_id: container_id("ctr_existing"),
         expected: managed_labels(),
         actual: ManagedContainerLabels {
-            revision_id: namespace_revision_entry_id("entry_other"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
             ..managed_labels()
         },
     };
@@ -175,7 +174,7 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
             container_id: container_id("ctr_existing"),
             expected: managed_labels(),
             actual: ManagedContainerLabels {
-                revision_id: namespace_revision_entry_id("entry_other"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
                 ..managed_labels()
             },
         }
@@ -569,7 +568,6 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
-        endpoint: None,
         container: managed_container_spec(),
     }
 }
@@ -577,7 +575,7 @@ fn run_request() -> MachineContainerRunRpcRequest {
 fn managed_container_spec() -> MachineContainerRunSpec {
     MachineContainerRunSpec {
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_2"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
@@ -587,11 +585,10 @@ fn managed_container_spec() -> MachineContainerRunSpec {
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_2"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
 

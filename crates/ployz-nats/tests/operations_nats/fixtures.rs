@@ -19,7 +19,7 @@ pub(super) use ployz_test_support::ids::{
     cancellation_reason, cert_id, container_id, event_replay_limit, event_sequence,
     failure_message, idempotency_key, join_token_expires_at as expires_at,
     join_token_redeemed_at as joined_at, machine_id, machine_name, namespace_id, operation_id,
-    raw_join_token, revision_id, service_id,
+    namespace_revision_entry_id, namespace_revision_id, raw_join_token, service_id,
 };
 pub(super) use ployz_test_support::nats::TestNats;
 
@@ -52,7 +52,7 @@ pub(super) fn empty_deploy_submission(operation_id: &str) -> DeployOperationSubm
         operation_id: self::operation_id(operation_id),
         target: DeployRequest {
             namespace_id: namespace_id("production"),
-            target_revision: revision_id("rev_empty"),
+            namespace_revision_id: namespace_revision_id("rev_empty"),
             services: Vec::new(),
         },
     }
@@ -137,7 +137,7 @@ pub(super) fn deploy_plan() -> DeployPlan {
 pub(super) fn deploy_plan_on(machine: &str) -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),
             steps: vec![DeployPlanStep::RunContainer {
@@ -152,13 +152,13 @@ pub(super) fn deploy_plan_on(machine: &str) -> DeployPlan {
 pub(super) fn planning_failure(message: &str) -> DeployOperationFailure {
     DeployOperationFailure::PlanningFailed {
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         message: failure_message(message),
     }
 }
 
 pub(super) fn active_service_running() -> DeployRunningStage {
-    DeployRunningStage::ActiveServiceCommit
+    DeployRunningStage::ServingTargetCommit
 }
 
 pub(super) fn cert_challenge(hostname: &str) -> AcmeHttp01Challenge {

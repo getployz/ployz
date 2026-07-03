@@ -8,7 +8,7 @@ use ployz_test_support::ids::{
 };
 use ployzd::docker::labels::{
     CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError, ManagedContainerLabels,
-    OPERATION_ID_LABEL, REVISION_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
+    OPERATION_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
 };
 
 #[test]
@@ -37,7 +37,7 @@ fn managed_containers_render_required_ployz_labels() {
         Some("svc_api")
     );
     assert_eq!(
-        labels.get(REVISION_LABEL).map(String::as_str),
+        labels.get(NAMESPACE_REVISION_ENTRY_LABEL).map(String::as_str),
         Some("entry_1")
     );
     assert_eq!(
@@ -103,7 +103,7 @@ fn managed_observation(
         machine_id: machine_id("machine_7"),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
@@ -114,10 +114,9 @@ fn managed_observation(
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
