@@ -42,11 +42,6 @@ impl RunningMachineProcessRuntime {
         self.observer.shutdown().await;
         self.machine_service.shutdown().await
     }
-
-    #[must_use]
-    pub fn observer_health(&self) -> MachineObserverHealth {
-        self.observer.health()
-    }
 }
 
 pub async fn start_machine_process_runtime(
@@ -139,19 +134,11 @@ pub enum MachineObserverAttempt {
 }
 
 struct RunningMachineObserverRuntime {
-    health: Arc<Mutex<MachineObserverHealth>>,
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<()>,
 }
 
 impl RunningMachineObserverRuntime {
-    fn health(&self) -> MachineObserverHealth {
-        self.health
-            .lock()
-            .expect("machine observer health lock is not poisoned")
-            .clone()
-    }
-
     async fn shutdown(self) {
         let _ = self.shutdown.send(());
         let _ = self.task.await;
@@ -189,11 +176,7 @@ where
         }
     });
 
-    RunningMachineObserverRuntime {
-        health,
-        shutdown,
-        task,
-    }
+    RunningMachineObserverRuntime { shutdown, task }
 }
 
 fn record_observer_attempt(

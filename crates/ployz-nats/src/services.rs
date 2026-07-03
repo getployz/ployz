@@ -3,8 +3,6 @@
 use std::fmt;
 
 pub const SERVICE_API_PING_SUBJECT: &str = "$SRV.PING";
-pub const SERVICE_API_INFO_SUBJECT: &str = "$SRV.INFO";
-pub const SERVICE_API_STATS_SUBJECT: &str = "$SRV.STATS";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsServiceSpec {
@@ -193,10 +191,4 @@ pub fn discover_services(
         })
         .map(NatsServiceSpec::ping)
         .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NatsRequestFailure {
-    NoResponders { subject: String },
-    Timeout { subject: String },
 }

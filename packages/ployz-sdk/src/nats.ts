@@ -66,13 +66,6 @@ export class PloyzNatsTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_NATS_REQUEST_TIMEOUT_MS;
   }
 
-  request<E extends PloyzApiEndpoint>(
-    endpoint: E,
-    request: OperationApiRequestByEndpoint[E],
-  ): Promise<OperationApiResponseByEndpoint[E]> {
-    return this.#request(endpoint, request);
-  }
-
   async close(): Promise<void> {
     await this.#connection.close?.();
   }
@@ -85,7 +78,7 @@ export class PloyzNatsTransport {
     await this.close();
   }
 
-  async #request<E extends PloyzApiEndpoint>(
+  async request<E extends PloyzApiEndpoint>(
     endpoint: E,
     request: OperationApiRequestByEndpoint[E],
   ): Promise<OperationApiResponseByEndpoint[E]> {
