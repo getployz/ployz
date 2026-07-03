@@ -1,9 +1,13 @@
 //! Deploy policy and planning models.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::num::NonZeroU16;
 
-use crate::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId};
+use crate::ids::{
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, ServiceId, StepId,
+};
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{ActiveRouteState, ActiveServiceState};
@@ -13,7 +17,7 @@ use crate::state::{ActiveRouteState, ActiveServiceState};
 #[serde(deny_unknown_fields)]
 pub struct DeployRequest {
     pub namespace_id: NamespaceId,
-    pub target_revision: RevisionId,
+    pub namespace_revision_id: NamespaceRevisionId,
     pub services: Vec<DeployServiceSpec>,
 }
 
@@ -43,7 +47,8 @@ impl DeployRequest {
             .map(|service| DeployServiceRequest {
                 namespace_id: self.namespace_id.clone(),
                 service_id: service.service_id.clone(),
-                target_revision: self.target_revision.clone(),
+                namespace_revision_id: self.namespace_revision_id.clone(),
+                namespace_revision_entry_id: service.namespace_revision_entry_id(),
                 image: service.image.clone(),
                 replicas: service.replicas,
                 route: service.route.clone(),
@@ -63,13 +68,41 @@ pub struct DeployServiceSpec {
     pub route: Option<DeployRoute>,
 }
 
+impl DeployServiceSpec {
+    const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
+        "ployz.namespace_revision_entry.v1";
+
+    #[must_use]
+    pub fn namespace_revision_entry_id(&self) -> NamespaceRevisionEntryId {
+        namespace_revision_entry_id_for(&self.service_id, &self.image)
+    }
+}
+
+#[must_use]
+pub fn namespace_revision_entry_id_for(
+    service_id: &ServiceId,
+    image: &ImageReference,
+) -> NamespaceRevisionEntryId {
+    let mut hasher = Sha256::new();
+    hasher.update(DeployServiceSpec::NAMESPACE_REVISION_ENTRY_ENCODING_VERSION);
+    hasher.update(b"\nservice_id=");
+    hasher.update(service_id.as_str());
+    hasher.update(b"\nimage=");
+    hasher.update(image.as_str());
+    hasher.update(b"\n");
+    let digest = hasher.finalize();
+    NamespaceRevisionEntryId::try_new(format!("{digest:x}"))
+        .expect("sha256 hex digest is a subject token")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployServiceRequest {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
-    pub target_revision: RevisionId,
+    pub namespace_revision_id: NamespaceRevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,7 +138,7 @@ pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub revision_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
@@ -136,7 +169,7 @@ pub struct PreparedDeploy {
 #[serde(deny_unknown_fields)]
 pub struct DeployPlan {
     pub namespace_id: NamespaceId,
-    pub target_revision: RevisionId,
+    pub namespace_revision_id: NamespaceRevisionId,
     pub services: Vec<DeployServicePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleanup_containers: Vec<DeployCleanupContainer>,
@@ -262,8 +295,10 @@ fn existing_replicas(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service_revision(&request.service_id, &request.target_revision)
-                && reusable_for_route(container, request.route.as_ref())
+            container.is_running_service_revision(
+                &request.service_id,
+                &request.namespace_revision_entry_id,
+            ) && reusable_for_route(container, request.route.as_ref())
         })
         .map(|container| ExistingServiceReplica {
             machine_id: container.machine_id.clone(),
@@ -334,18 +369,18 @@ fn active_route_commit_request(
         target,
         endpoint_port,
         service_id: request.service_id.clone(),
-        revision_id: request.target_revision.clone(),
+        revision_id: request.namespace_revision_entry_id.clone(),
     }))
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
     let service_plan = plan_deploy_service(input)?;
-    let target_revision = service_plan.target_revision;
+    let namespace_revision_id = service_plan.namespace_revision_id;
     let cleanup_containers = service_plan.cleanup_containers;
     Ok(DeployPlan {
         namespace_id: NamespaceId::try_new(service_plan.service_id.as_str().to_owned())
             .expect("service id is a valid namespace id"),
-        target_revision,
+        namespace_revision_id,
         services: vec![DeployServicePlan {
             service_id: service_plan.service_id,
             steps: service_plan.steps,
@@ -356,7 +391,7 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
 
 pub fn plan_namespace_deploy(
     namespace_id: NamespaceId,
-    target_revision: RevisionId,
+    namespace_revision_id: NamespaceRevisionId,
     services: Vec<DeployPlanningInput>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> Result<DeployPlan, DeployPlanError> {
@@ -373,7 +408,7 @@ pub fn plan_namespace_deploy(
 
     Ok(DeployPlan {
         namespace_id,
-        target_revision,
+        namespace_revision_id,
         services: service_plans,
         cleanup_containers,
     })
@@ -382,7 +417,7 @@ pub fn plan_namespace_deploy(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploySingleServicePlan {
     pub service_id: ServiceId,
-    pub target_revision: RevisionId,
+    pub namespace_revision_id: NamespaceRevisionId,
     pub steps: Vec<DeployPlanStep>,
     pub cleanup_containers: Vec<DeployCleanupContainer>,
 }
@@ -451,7 +486,7 @@ fn plan_deploy_service(
 
     Ok(DeploySingleServicePlan {
         service_id: input.request.service_id,
-        target_revision: input.request.target_revision,
+        namespace_revision_id: input.request.namespace_revision_id,
         steps,
         cleanup_containers,
     })

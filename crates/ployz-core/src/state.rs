@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
-use crate::ids::{MachineId, NamespaceId, OperationId, RevisionId, ServiceId};
+use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{MachineSubstrateVersions, RoutePort, RouteTarget};
 use crate::wire::id_prefixed_state_key;
@@ -30,7 +30,7 @@ pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 pub struct ActiveServiceState {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
-    pub active_revision: RevisionId,
+    pub active_revision: NamespaceRevisionEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +41,7 @@ pub struct ActiveRouteState {
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub revision_id: NamespaceRevisionEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

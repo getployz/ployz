@@ -12,8 +12,64 @@ use ployz_core::machine_runtime::{
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, operation_id, revision_id, service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
+    operation_id, service_id, step_id,
 };
+
+#[test]
+fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
+    let left = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+    let right = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 3, Some((8080, 443)));
+
+    assert_eq!(
+        left.namespace_revision_entry_id(),
+        right.namespace_revision_entry_id()
+    );
+    assert_eq!(
+        left.namespace_revision_entry_id().as_str(),
+        "4352bcaf84b6851f55968256ba6d1b84a1781fa273564663a9d2c5468bc8b14a"
+    );
+}
+
+#[test]
+fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
+    let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+
+    assert_ne!(
+        base.namespace_revision_entry_id(),
+        service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None).namespace_revision_entry_id()
+    );
+    assert_eq!(
+        service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
+            .namespace_revision_entry_id()
+            .as_str(),
+        "4b4081f4e61dd4321291177042ce920b4f10ae5b18e4f4c6f590da95555ac5eb"
+    );
+    assert_ne!(
+        base.namespace_revision_entry_id(),
+        service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None).namespace_revision_entry_id()
+    );
+    assert_eq!(
+        service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
+            .namespace_revision_entry_id()
+            .as_str(),
+        "3e7c6ae98166d296b94679c6bbe108f6782692c06f8489f0686075d2c3b8501e"
+    );
+}
+
+#[test]
+fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
+    assert_eq!(
+        service_spec("svc_api", "nginx:latest", 1, None)
+            .namespace_revision_entry_id()
+            .as_str(),
+        "238bbf3691ef5e99ec39743592000604b58356e2568703e01c2e6822a87f3a81"
+    );
+    assert_eq!(
+        service_spec("svc_api", "nginx:latest", 1, None).namespace_revision_entry_id(),
+        service_spec("svc_api", "nginx:latest", 3, Some((8080, 443))).namespace_revision_entry_id()
+    );
+}
 
 #[test]
 fn new_service_plan_runs_replicas_across_eligible_machines() {
@@ -126,7 +182,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
         active_service: Some(ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: revision_id("rev_old"),
+            active_revision: namespace_revision_entry_id("entry_old"),
         }),
         active_route: None,
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
@@ -137,7 +193,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "machine_b",
                     "ctr_target",
                     "svc_api",
-                    "rev_1",
+                    "entry_1",
                     ManagedContainerKind::Service,
                     ContainerRuntimeState::running_unroutable(),
                 ),
@@ -145,7 +201,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "machine_b",
                     "ctr_old",
                     "svc_api",
-                    "rev_old",
+                    "entry_old",
                     ManagedContainerKind::Service,
                     ContainerRuntimeState::running_unroutable(),
                 ),
@@ -153,7 +209,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "machine_b",
                     "ctr_job",
                     "svc_api",
-                    "rev_1",
+                    "entry_1",
                     ManagedContainerKind::Job,
                     ContainerRuntimeState::running_unroutable(),
                 ),
@@ -161,7 +217,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "machine_b",
                     "ctr_exited",
                     "svc_api",
-                    "rev_1",
+                    "entry_1",
                     ManagedContainerKind::Service,
                     ContainerRuntimeState::Exited,
                 ),
@@ -182,8 +238,8 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     assert_eq!(
         prepared.cleanup_candidates,
         vec![
-            cleanup_container_with_revision("machine_b", "ctr_target", "rev_1"),
-            cleanup_container_with_revision("machine_b", "ctr_old", "rev_old"),
+            cleanup_container_with_revision("machine_b", "ctr_target", "entry_1"),
+            cleanup_container_with_revision("machine_b", "ctr_old", "entry_old"),
         ]
     );
 }
@@ -205,7 +261,7 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
                     "machine_b",
                     "ctr_wrong_port",
                     "svc_api",
-                    "rev_1",
+                    "entry_1",
                     ManagedContainerKind::Service,
                     ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
                 ),
@@ -213,7 +269,7 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
                     "machine_b",
                     "ctr_target",
                     "svc_api",
-                    "rev_1",
+                    "entry_1",
                     ManagedContainerKind::Service,
                     ContainerRuntimeState::running_at(endpoint("10.0.0.3", 8080)),
                 ),
@@ -242,7 +298,7 @@ fn deploy_preparation_rejects_active_route_for_another_target() {
                 target: route_target("admin.example.com", 443),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_old"),
+                revision_id: namespace_revision_entry_id("entry_old"),
             }),
             eligible_machines: vec![machine_id("machine_a")],
             observed_machines: Vec::new(),
@@ -267,7 +323,7 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_old"),
+            revision_id: namespace_revision_entry_id("entry_old"),
         }),
         eligible_machines: vec![machine_id("machine_a")],
         observed_machines: Vec::new(),
@@ -284,9 +340,25 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            revision_id: namespace_revision_entry_id("entry_1"),
         }
     );
+}
+
+fn service_spec(
+    service: &str,
+    image: &str,
+    replicas: u16,
+    route: Option<(u16, u16)>,
+) -> ployz_core::deploy::DeployServiceSpec {
+    ployz_core::deploy::DeployServiceSpec {
+        service_id: service_id(service),
+        image: ImageReference::try_new(image).expect("valid image"),
+        replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        route: route.map(|(endpoint_port, public_port)| {
+            deploy_route("api.example.com", public_port, endpoint_port)
+        }),
+    }
 }
 
 fn planning_input(
@@ -305,7 +377,8 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
     DeployServiceRequest {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
-        target_revision: revision_id("rev_1"),
+        namespace_revision_id: namespace_revision_id("rev_1"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         route: None,
@@ -318,7 +391,7 @@ fn deploy_plan(
 ) -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("svc_api"),
-        target_revision: revision_id("rev_1"),
+        namespace_revision_id: namespace_revision_id("rev_1"),
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),
             steps,
@@ -387,7 +460,7 @@ fn cleanup_container_with_revision(
         machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id("svc_api"),
-        revision_id: revision_id(revision),
+        revision_id: namespace_revision_entry_id(revision),
         operation_id: operation_id("op_existing"),
         step_id: step_id(container),
         kind: ManagedContainerKind::Service,
@@ -415,7 +488,7 @@ fn observed_container(
         machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id(service),
-        revision_id: revision_id(revision),
+        revision_id: namespace_revision_entry_id(revision),
         operation_id: operation_id("op_existing"),
         step_id: step_id(container),
         kind,

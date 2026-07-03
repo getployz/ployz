@@ -30,8 +30,8 @@ pub use ployz_core::deploy::{
     ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
-    CertId, ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId,
-    SubjectTokenError,
+    CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
 };
 pub use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
