@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{ImageReference, ReplicaCount};
-use ployz_core::ids::{RevisionId, ServiceId};
+use ployz_core::ids::{NamespaceRevisionId, ServiceId};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -37,20 +37,23 @@ async fn binary_deploy_calls_nats_service() {
                     .as_str()
                     .starts_with("op_deploy_svc_api_")
             );
+            let [service] = request.target.services.as_slice() else {
+                panic!("deploy request has one service");
+            };
             assert_eq!(
-                request.target.services[0].service_id,
+                service.service_id,
                 ServiceId::try_new("svc_api").expect("valid service id")
             );
             assert_eq!(
-                request.target.target_revision,
-                RevisionId::try_new("rev_2").expect("valid revision id")
+                request.target.namespace_revision_id,
+                NamespaceRevisionId::try_new("rev_2").expect("valid revision id")
             );
             assert_eq!(
-                request.target.services[0].image,
+                service.image,
                 ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image")
             );
             assert_eq!(
-                request.target.services[0].replicas,
+                service.replicas,
                 ReplicaCount::try_new(1).expect("valid replicas")
             );
 

@@ -8,13 +8,13 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
     ReplayedOperationEvent,
 };
-use ployz_core::state::ActiveServiceState;
+use ployz_core::state::ServingTargetEntry;
 use ployz_sdk_types::{LogsTailLines, ServiceSnapshot};
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::commands::init::{
@@ -960,13 +960,13 @@ fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOp
     }
 }
 
-fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
+fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
-        active: ActiveServiceState {
+        active: ServingTargetEntry {
             namespace_id: ployz_core::ids::NamespaceId::try_new("default")
                 .expect("valid namespace id"),
             service_id: ServiceId::try_new(service_id).expect("valid service id"),
-            active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(namespace_revision_entry_id).expect("valid revision id"),
         },
     }
 }
@@ -974,12 +974,12 @@ fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
+        namespace_revision_id: NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServiceSpec {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }

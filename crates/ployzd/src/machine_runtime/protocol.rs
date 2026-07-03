@@ -11,7 +11,7 @@ use ployz_core::ids::{
 };
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::ManagedContainerKind;
-use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint, RoutePort};
+use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 
 /// Shared machine RPC response envelope: every endpoint answers either with its
@@ -32,15 +32,9 @@ pub trait MachineRpcResponder {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ContainerEndpointRequest {
-    pub port: RoutePort,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MachineContainerRunSpec {
     pub service_id: ServiceId,
-    pub revision_id: NamespaceRevisionEntryId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
@@ -97,8 +91,6 @@ pub enum MachineEnsureEndpointNetworkDomainError {
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunRpcRequest {
     pub image: ImageReference,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<ContainerEndpointRequest>,
     pub container: MachineContainerRunSpec,
 }
 

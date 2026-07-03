@@ -93,7 +93,10 @@ pub fn deploy_target_with_route(
     endpoint_port: u16,
 ) -> DeployRequest {
     let mut request = deploy_target(service);
-    request.services[0].routes.push(DeployRoute {
+    let [service_spec] = request.services.as_mut_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    service_spec.routes.push(DeployRoute {
         target: RouteTarget::new(route_hostname(hostname), route_port(gateway_port)),
         endpoint_port: route_port(endpoint_port),
     });

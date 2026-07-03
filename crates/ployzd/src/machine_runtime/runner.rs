@@ -2,10 +2,10 @@ use std::future::Future;
 
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::machine_runtime::ContainerEndpoint;
+use std::net::IpAddr;
 
 use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use crate::machine_runtime::protocol::{ContainerEndpointRequest, MachineContainerRunSpec};
+use crate::machine_runtime::protocol::MachineContainerRunSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {
@@ -16,7 +16,7 @@ pub struct ExistingManagedContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExistingManagedContainerState {
-    Running { endpoint: Option<ContainerEndpoint> },
+    Running { ip: Option<IpAddr> },
     StartableStopped,
     NotStartable { description: String },
 }
@@ -24,22 +24,17 @@ pub enum ExistingManagedContainerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateManagedContainer {
     pub image: ImageReference,
-    pub endpoint: Option<ContainerEndpointRequest>,
     pub labels: ManagedContainerLabels,
 }
 
 #[must_use]
-pub fn managed_container_labels(
-    spec: &MachineContainerRunSpec,
-    endpoint: Option<&ContainerEndpointRequest>,
-) -> ManagedContainerLabels {
+pub fn managed_container_labels(spec: &MachineContainerRunSpec) -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: spec.service_id.clone(),
-        revision_id: spec.revision_id.clone(),
+        namespace_revision_entry_id: spec.namespace_revision_entry_id.clone(),
         operation_id: spec.operation_id.clone(),
         step_id: spec.step_id.clone(),
         kind: spec.kind,
-        endpoint_port: endpoint.map(|endpoint| endpoint.port),
     }
 }
 

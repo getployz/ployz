@@ -22,7 +22,7 @@ use ployz_core::ops::{
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
-    ActiveMachineState, ActiveRouteState, ActiveServiceState, GatewayServingStatus,
+    ActiveMachineState, RouteBindingState, ServingTargetEntry, GatewayServingStatus,
     GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_core::subjects::OperationApiEndpoint;
@@ -269,10 +269,10 @@ async fn control_runtime_serves_active_service_queries() {
         .await
         .expect("open core state");
     core_state
-        .replace_active_service(&ActiveServiceState {
+        .replace_serving_target_entry(&ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: namespace_revision_entry_id("entry_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         })
         .await
         .expect("service state stores");
@@ -287,7 +287,7 @@ async fn control_runtime_serves_active_service_queries() {
     };
     assert_eq!(service.active.service_id, service_id("svc_api"));
     assert_eq!(
-        service.active.active_revision,
+        service.active.namespace_revision_entry_id,
         namespace_revision_entry_id("entry_2")
     );
 
@@ -299,7 +299,7 @@ async fn control_runtime_serves_active_service_queries() {
         .expect("service inspects");
     assert_eq!(inspected.active.service_id, service_id("svc_api"));
     assert_eq!(
-        inspected.active.active_revision,
+        inspected.active.namespace_revision_entry_id,
         namespace_revision_entry_id("entry_2")
     );
 
@@ -326,23 +326,22 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("active machine stores");
     core_state
-        .replace_active_service(&ActiveServiceState {
+        .replace_serving_target_entry(&ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: namespace_revision_entry_id("entry_2"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         })
         .await
-        .expect("active service stores");
+        .expect("serving target entry stores");
     core_state
-        .replace_active_route(&ActiveRouteState {
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: namespace_revision_entry_id("entry_2"),
         })
         .await
-        .expect("active route stores");
+        .expect("route binding stores");
     observations
         .replace_machine_containers(
             &MachineContainerObservationSnapshot::try_new(
@@ -351,7 +350,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
                     machine_id: machine_id("machine_a"),
                     container_id: ployz_test_support::ids::container_id("ctr_api"),
                     service_id: service_id("svc_api"),
-                    revision_id: namespace_revision_entry_id("entry_2"),
+                    namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
                     operation_id: operation_id("op_deploy"),
                     step_id: ployz_test_support::ids::step_id("step_run"),
                     kind: ManagedContainerKind::Service,
@@ -479,11 +478,11 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .expect("open core state");
     assert_eq!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .serving_target_entry(&service_id("svc_api"))
             .await
-            .expect("active service reads")
-            .expect("active service committed")
-            .active_revision,
+            .expect("serving target entry reads")
+            .expect("serving target committed")
+            .namespace_revision_entry_id,
         deploy_target_entry_id("svc_api")
     );
     let duplicate = api
@@ -750,7 +749,10 @@ fn deploy_target_with_route(
     endpoint_port: u16,
 ) -> DeployRequest {
     let mut target = deploy_target(service_id);
-    target.services[0].routes = vec![DeployRoute {
+    let [service] = target.services.as_mut_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    service.routes = vec![DeployRoute {
         target: RouteTarget::new(route_hostname("api.example.com"), route_port(gateway_port)),
         endpoint_port: route_port(endpoint_port),
     }];

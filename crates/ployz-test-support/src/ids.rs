@@ -3,7 +3,7 @@
 
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, RevisionId, ServiceId, StepId,
+    OperationId, ServiceId, StepId,
 };
 use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
 use ployz_core::ops::{
@@ -34,11 +34,6 @@ pub fn idempotency_key(value: &str) -> OperationIdempotencyKey {
 #[must_use]
 pub fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
-}
-
-#[must_use]
-pub fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
 }
 
 #[must_use]

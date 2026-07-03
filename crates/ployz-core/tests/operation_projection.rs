@@ -796,7 +796,7 @@ fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
 }
 
 fn active_service_running() -> DeployRunningStage {
-    DeployRunningStage::ActiveServiceCommit
+    DeployRunningStage::ServingTargetCommit
 }
 
 fn issued_join_token() -> IssuedJoinToken {

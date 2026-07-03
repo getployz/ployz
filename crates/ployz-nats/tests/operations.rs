@@ -9,7 +9,8 @@ use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, Oper
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
 use ployz_test_support::ids::{
-    cert_id, container_id, machine_id, namespace_id, operation_id, revision_id, service_id, step_id,
+    cert_id, container_id, machine_id, namespace_id, namespace_revision_entry_id,
+    namespace_revision_id, operation_id, service_id, step_id,
 };
 
 #[test]
@@ -45,11 +46,11 @@ fn deploy_transition_append_uses_stable_small_message_id() {
 
     assert_eq!(
         append.subject(),
-        "plz.v1.op.op_123.deploy.running.active_service_commit"
+        "plz.v1.op.op_123.deploy.running.serving_target_commit"
     );
     assert_eq!(
         append.message_id().as_str(),
-        "deploy.event.op_123.running.active_service_commit"
+        "deploy.event.op_123.running.serving_target_commit"
     );
 }
 
@@ -188,18 +189,17 @@ fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_old"),
+        namespace_revision_entry_id: namespace_revision_entry_id("rev_old"),
         operation_id: operation_id("op_existing"),
         step_id: step_id(container),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
 
 fn deploy_plan() -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("default"),
-        target_revision: ployz_core::ids::RevisionId::try_new("rev_2").expect("valid revision id"),
+        namespace_revision_id: ployz_core::ids::NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),
             steps: vec![DeployPlanStep::RunContainer {
@@ -212,7 +212,7 @@ fn deploy_plan() -> DeployPlan {
 }
 
 fn active_service_running() -> DeployRunningStage {
-    DeployRunningStage::ActiveServiceCommit
+    DeployRunningStage::ServingTargetCommit
 }
 
 fn image(value: &str) -> ImageReference {
@@ -226,12 +226,12 @@ fn replicas(value: u16) -> ReplicaCount {
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             replicas: replicas(1),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }

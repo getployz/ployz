@@ -1,5 +1,5 @@
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::RevisionId;
+use ployz_core::ids::{NamespaceRevisionEntryId, NamespaceRevisionId};
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
@@ -7,7 +7,7 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
-    ActiveMachineState, ActiveServiceState, GatewayServingStatus, GatewayStatusObservation,
+    ActiveMachineState, ServingTargetEntry, GatewayServingStatus, GatewayStatusObservation,
     MachinePublicIpObservation,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
@@ -667,23 +667,23 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: ployz_core::ids::NamespaceId::try_new("default").expect("valid namespace id"),
-        target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
+        namespace_revision_id: NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServiceSpec {
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }
 
-fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
+fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
-        active: ActiveServiceState {
+        active: ServingTargetEntry {
             namespace_id: ployz_core::ids::NamespaceId::try_new("default")
                 .expect("valid namespace id"),
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
-            active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(namespace_revision_entry_id).expect("valid revision id"),
         },
     }
 }

@@ -607,7 +607,7 @@ mod tests {
     fn deploy_prepare_request_carries_endpoint_routes_for_target_machines() {
         let plan = DeployPlan {
             namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
-            target_revision: crate::ids::RevisionId::try_new("rev_1").expect("valid revision id"),
+            namespace_revision_id: crate::ids::NamespaceRevisionId::try_new("rev_1").expect("valid revision id"),
             services: vec![crate::deploy::DeployServicePlan {
                 service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
                 steps: vec![
@@ -646,7 +646,7 @@ mod tests {
     fn dataplane_prepare_request_declares_membership_only() {
         let plan = DeployPlan {
             namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
-            target_revision: crate::ids::RevisionId::try_new("rev_1").expect("valid revision id"),
+            namespace_revision_id: crate::ids::NamespaceRevisionId::try_new("rev_1").expect("valid revision id"),
             services: vec![crate::deploy::DeployServicePlan {
                 service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
                 steps: vec![

@@ -24,7 +24,7 @@ fn operation_state_serializes_with_stable_wire_names() {
 
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
-        r#"{"state":"running","stage":"active_service_commit"}"#
+        r#"{"state":"running","stage":"serving_target_commit"}"#
     );
 }
 
@@ -489,7 +489,7 @@ fn cancellation_reasons_are_non_empty() {
 }
 
 fn active_service_running() -> DeployRunningStage {
-    DeployRunningStage::ActiveServiceCommit
+    DeployRunningStage::ServingTargetCommit
 }
 
 fn wireguard_public_key(value: &str) -> WireGuardPublicKey {

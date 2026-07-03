@@ -20,13 +20,13 @@ use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
     OperatorHint, RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
 };
-use ployz_core::state::{ActiveRouteState, ActiveServiceState};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     operation_id, service_id,
 };
 use ployzd::deploy_worker::{
-    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
+    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitError, ServingTargetCommitter,
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     DeployServiceExecutionFacts, MachineContainerRuntime, MachineContainerRuntimeError,
@@ -237,12 +237,12 @@ fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
 }
 
 pub(super) struct RecordingActiveState {
-    pub(super) requests: Vec<ActiveServiceState>,
+    pub(super) requests: Vec<ServingTargetEntry>,
     pub(super) removals: Vec<ServiceId>,
 }
 
 pub(super) struct RecordingRouteState {
-    pub(super) requests: Vec<ActiveRouteState>,
+    pub(super) requests: Vec<RouteBindingState>,
     pub(super) removals: Vec<RouteTarget>,
 }
 
@@ -255,19 +255,19 @@ impl RecordingRouteState {
     }
 }
 
-impl ActiveRouteCommitter for RecordingRouteState {
-    async fn replace_active_route(
+impl RouteBindingCommitter for RecordingRouteState {
+    async fn replace_route_binding(
         &mut self,
-        state: ActiveRouteState,
-    ) -> Result<(), ActiveRouteCommitError> {
+        state: RouteBindingState,
+    ) -> Result<(), RouteBindingCommitError> {
         self.requests.push(state);
         Ok(())
     }
 
-    async fn remove_active_route(
+    async fn remove_route_binding(
         &mut self,
         target: RouteTarget,
-    ) -> Result<(), ActiveRouteCommitError> {
+    ) -> Result<(), RouteBindingCommitError> {
         self.removals.push(target);
         Ok(())
     }
@@ -282,19 +282,19 @@ impl RecordingActiveState {
     }
 }
 
-impl ActiveServiceCommitter for RecordingActiveState {
-    async fn replace_active_service(
+impl ServingTargetCommitter for RecordingActiveState {
+    async fn replace_serving_target_entry(
         &mut self,
-        state: ActiveServiceState,
-    ) -> Result<(), ActiveServiceCommitError> {
+        state: ServingTargetEntry,
+    ) -> Result<(), ServingTargetCommitError> {
         self.requests.push(state);
         Ok(())
     }
 
-    async fn remove_active_service(
+    async fn remove_serving_target_entry(
         &mut self,
         service_id: ServiceId,
-    ) -> Result<(), ActiveServiceCommitError> {
+    ) -> Result<(), ServingTargetCommitError> {
         self.removals.push(service_id);
         Ok(())
     }
@@ -302,19 +302,19 @@ impl ActiveServiceCommitter for RecordingActiveState {
 
 pub(super) struct HangingActiveState;
 
-impl ActiveServiceCommitter for HangingActiveState {
-    async fn replace_active_service(
+impl ServingTargetCommitter for HangingActiveState {
+    async fn replace_serving_target_entry(
         &mut self,
-        _state: ActiveServiceState,
-    ) -> Result<(), ActiveServiceCommitError> {
+        _state: ServingTargetEntry,
+    ) -> Result<(), ServingTargetCommitError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
     }
 
-    async fn remove_active_service(
+    async fn remove_serving_target_entry(
         &mut self,
         _service_id: ServiceId,
-    ) -> Result<(), ActiveServiceCommitError> {
+    ) -> Result<(), ServingTargetCommitError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
     }
@@ -322,19 +322,19 @@ impl ActiveServiceCommitter for HangingActiveState {
 
 pub(super) struct LostLockActiveState;
 
-impl ActiveServiceCommitter for LostLockActiveState {
-    async fn replace_active_service(
+impl ServingTargetCommitter for LostLockActiveState {
+    async fn replace_serving_target_entry(
         &mut self,
-        _state: ActiveServiceState,
-    ) -> Result<(), ActiveServiceCommitError> {
-        Err(ActiveServiceCommitError::NamespaceLockLost)
+        _state: ServingTargetEntry,
+    ) -> Result<(), ServingTargetCommitError> {
+        Err(ServingTargetCommitError::NamespaceLockLost)
     }
 
-    async fn remove_active_service(
+    async fn remove_serving_target_entry(
         &mut self,
         _service_id: ServiceId,
-    ) -> Result<(), ActiveServiceCommitError> {
-        Err(ActiveServiceCommitError::NamespaceLockLost)
+    ) -> Result<(), ServingTargetCommitError> {
+        Err(ServingTargetCommitError::NamespaceLockLost)
     }
 }
 
@@ -641,9 +641,11 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             }],
         },
         DeployExecutionFacts {
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
             services: vec![DeployServiceExecutionFacts {
-                active_service: None,
-                active_routes: Vec::new(),
+                serving_target_entry: None,
+                route_bindings: Vec::new(),
             }],
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_machines: Vec::new(),
@@ -719,9 +721,11 @@ fn prepared_deploy_command(
             }],
         },
         DeployExecutionFacts {
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
             services: vec![DeployServiceExecutionFacts {
-                active_service: None,
-                active_routes: Vec::new(),
+                serving_target_entry: None,
+                route_bindings: Vec::new(),
             }],
             dataplane_machines: Vec::new(),
             eligible_machines,
@@ -755,6 +759,20 @@ pub(super) fn empty_deploy_command_with_running_container(
             services: Vec::new(),
         },
         DeployExecutionFacts {
+            namespace_route_bindings: vec![RouteBindingState {
+                namespace_id: namespace_id("default"),
+                target: RouteTarget::new(
+                    RouteHostname::try_new("api.example.com").expect("valid route hostname"),
+                    route_port(443),
+                ),
+                endpoint_port: route_port(8080),
+                service_id: service_id("svc_api"),
+            }],
+            namespace_serving_entries: vec![ServingTargetEntry {
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_api"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
+            }],
             services: Vec::new(),
             dataplane_machines: Vec::new(),
             eligible_machines: vec![self::machine_id("machine_a")],
@@ -797,7 +815,7 @@ fn observed_service_container_with_entry(
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id,
+        namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
@@ -806,7 +824,7 @@ fn observed_service_container_with_entry(
 }
 
 pub(super) fn active_service_running() -> DeployRunningStage {
-    DeployRunningStage::ActiveServiceCommit
+    DeployRunningStage::ServingTargetCommit
 }
 
 pub(super) fn target_namespace_revision_id() -> NamespaceRevisionId {
@@ -865,11 +883,10 @@ pub(super) fn cleanup_container_with_entry(
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id,
+        namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
 

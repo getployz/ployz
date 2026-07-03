@@ -13,7 +13,7 @@
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
 use crate::state::{
-    ACTIVE_MACHINE_STATE_PREFIX, ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX,
+    ACTIVE_MACHINE_STATE_PREFIX, ROUTE_BINDING_STATE_PREFIX, SERVING_TARGET_ENTRY_PREFIX,
     GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
     MachineContainerObservationKey, MachinePublicIpObservationKey, NAMESPACE_LOCK_STATE_PREFIX,
     NATS_AUTHORIZED_USER_PREFIX,
@@ -53,12 +53,12 @@ pub fn inbox_subscribe_scope(principal: &NatsPrincipal) -> String {
 
 #[must_use]
 pub fn active_service_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_SERVICE_STATE_PREFIX}.*")
+    format!("$KV.{KV_CORE_BUCKET}.{SERVING_TARGET_ENTRY_PREFIX}.*")
 }
 
 #[must_use]
 pub fn active_route_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_ROUTE_STATE_PREFIX}.*.*")
+    format!("$KV.{KV_CORE_BUCKET}.{ROUTE_BINDING_STATE_PREFIX}.*.*")
 }
 
 #[must_use]

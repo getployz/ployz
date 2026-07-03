@@ -6,7 +6,8 @@ use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
 };
-use ployz_core::state::ActiveServiceState;
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     operation_id, service_id,
@@ -20,9 +21,11 @@ use std::time::Duration;
 async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
         services: vec![DeployServiceExecutionFacts {
-            active_service: None,
-            active_routes: Vec::new(),
+            serving_target_entry: None,
+            route_bindings: Vec::new(),
         }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
@@ -60,13 +63,15 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
         services: vec![DeployServiceExecutionFacts {
-            active_service: Some(ActiveServiceState {
+            serving_target_entry: Some(ServingTargetEntry {
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
-                active_revision: namespace_revision_entry_id("entry_old"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
             }),
-            active_routes: Vec::new(),
+            route_bindings: Vec::new(),
         }],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
@@ -102,6 +107,77 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
     );
 }
 
+#[tokio::test]
+async fn manifest_omission_removes_serving_entry_routes_and_containers() {
+    // The manifest declares only `svc_api`; `svc_worker` is omitted. Its
+    // serving entry is unpublished, its route binding detached, and its
+    // running container becomes a cleanup candidate - manifest omission
+    // removes a service from the namespace.
+    let request = deploy_request();
+    let omitted_target = RouteTarget::new(
+        RouteHostname::try_new("worker.example.com").expect("valid route hostname"),
+        RoutePort::try_new(443).expect("valid route port"),
+    );
+    let omitted_container = MachineContainerObservationSnapshot::try_new(
+        machine_id("machine_a"),
+        [observed_service_container_with_service(
+            "machine_a",
+            "ctr_worker",
+            "entry_worker",
+            "svc_worker",
+        )],
+    )
+    .expect("valid machine observation snapshot");
+    let facts = DeployExecutionFacts {
+        namespace_route_bindings: vec![RouteBindingState {
+            namespace_id: namespace_id("default"),
+            target: omitted_target.clone(),
+            endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
+            service_id: service_id("svc_worker"),
+        }],
+        namespace_serving_entries: vec![
+            ServingTargetEntry {
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_api"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_api"),
+            },
+            ServingTargetEntry {
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_worker"),
+                namespace_revision_entry_id: namespace_revision_entry_id("entry_worker"),
+            },
+        ],
+        services: vec![DeployServiceExecutionFacts {
+            serving_target_entry: None,
+            route_bindings: Vec::new(),
+        }],
+        eligible_machines: vec![machine_id("machine_a")],
+        dataplane_machines: Vec::new(),
+        observed_machines: vec![omitted_container.clone()],
+        namespace_cleanup_candidates: ployzd::deploy_worker::namespace_cleanup_candidates(&[
+            omitted_container,
+        ]),
+        step_timeout: Duration::from_secs(5),
+    };
+
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts)
+        .expect("deploy command preparation succeeds");
+
+    assert_eq!(command.route_binding_removals(), [omitted_target]);
+    assert_eq!(
+        command.serving_target_removals(),
+        [ServingTargetEntry {
+            namespace_id: namespace_id("default"),
+            service_id: service_id("svc_worker"),
+            namespace_revision_entry_id: namespace_revision_entry_id("entry_worker"),
+        }]
+    );
+    let [candidate] = command.namespace_cleanup_candidates() else {
+        panic!("omitted service container is a cleanup candidate");
+    };
+    assert_eq!(candidate.service_id, service_id("svc_worker"));
+}
+
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
@@ -117,7 +193,11 @@ fn deploy_request() -> DeployRequest {
 }
 
 fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
-    deploy_request().services[0].namespace_revision_entry_id()
+    let request = deploy_request();
+    let [service] = request.services.as_slice() else {
+        panic!("deploy request fixture has one service");
+    };
+    service.namespace_revision_entry_id()
 }
 
 fn existing_service_replica(
@@ -151,11 +231,10 @@ fn cleanup_container_with_entry(
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id,
+        namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
 
@@ -180,7 +259,7 @@ fn observed_service_container_with_entry(
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id,
+        namespace_revision_entry_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,

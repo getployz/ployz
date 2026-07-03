@@ -334,7 +334,7 @@ const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::RouteCutover => "running:route-cutover",
-        DeployRunningStage::ActiveServiceCommit => "running:active-service-commit",
+        DeployRunningStage::ServingTargetCommit => "running:active-service-commit",
         DeployRunningStage::RemovingSupersededContainers => {
             "running:removing-superseded-containers"
         }

@@ -14,7 +14,7 @@ use ployz_core::deploy::{
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::machine_runtime::{
-    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
     ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::{
@@ -22,7 +22,7 @@ use ployz_core::ops::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
     OperationStatus, RouteTarget,
 };
-use ployz_core::state::{ActiveRouteState, MachinePublicIpObservation};
+use ployz_core::state::{RouteBindingState, MachinePublicIpObservation};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
@@ -47,8 +47,8 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 use ployz_test_support::ids::{container_id, step_id};
 use ployz_test_support::ids::{
-    event_replay_limit, event_sequence, machine_id, namespace_id, operation_id, revision_id,
-    route_hostname, route_port, service_id,
+    event_replay_limit, event_sequence, machine_id, namespace_id, namespace_revision_entry_id,
+    namespace_revision_id, operation_id, route_hostname, route_port, service_id,
 };
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
@@ -241,12 +241,12 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .expect("open core state store");
     assert_eq!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .serving_target_entry(&service_id("svc_api"))
             .await
-            .expect("active service reads")
-            .expect("active service committed")
-            .active_revision,
-        revision_id("rev_2")
+            .expect("serving target entry reads")
+            .expect("serving target committed")
+            .namespace_revision_entry_id,
+        namespace_revision_entry_id("rev_2")
     );
     assert_eq!(
         operation_events(&api, operation_id("op_e2e_run"), accepted.start_sequence).await?,
@@ -262,7 +262,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 operation_id: operation_id("op_e2e_run"),
                 plan: plan_namespace_deploy(
                     namespace_id("default"),
-                    revision_id("rev_2"),
+                    namespace_revision_id("rev_2"),
                     vec![DeployPlanningInput {
                         request: deploy_service_target("svc_api"),
                         eligible_machines: vec![machine_id("machine_a")],
@@ -322,7 +322,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployRunning {
                 operation_id: operation_id("op_e2e_run"),
-                stage: DeployRunningStage::ActiveServiceCommit,
+                stage: DeployRunningStage::ServingTargetCommit,
             },
             OperationEvent::DeployCompleted {
                 operation_id: operation_id("op_e2e_run"),
@@ -641,12 +641,11 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .await
         .expect("open core state store");
     routes
-        .replace_active_route(&ActiveRouteState {
+        .replace_route_binding(&RouteBindingState {
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname.clone(), route_port),
             endpoint_port: self::route_port(second_upstream.port()),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
         })
         .await
         .expect("route can change without control runtime");
@@ -658,14 +657,11 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
                     machine_id: machine_id("machine_a"),
                     container_id: container_id("ctr_after_control_down"),
                     service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
+                    namespace_revision_entry_id: namespace_revision_entry_id("rev_2"),
                     operation_id: operation_id("op_e2e_control_down_route"),
                     step_id: step_id("step_after_control_down"),
                     kind: ManagedContainerKind::Service,
-                    state: ContainerRuntimeState::running_at(endpoint(
-                        "127.0.0.1",
-                        second_upstream.port(),
-                    )),
+                    state: ContainerRuntimeState::running_at(endpoint_ip("127.0.0.1")),
                 }],
             )
             .expect("manual observation matches machine"),
@@ -913,12 +909,12 @@ fn replicas(value: u16) -> ReplicaCount {
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             replicas: replicas(1),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }
@@ -941,20 +937,19 @@ fn deploy_target_with_route(
     let [service] = target.services.as_mut_slice() else {
         panic!("deploy target has one service");
     };
-    service.route = Some(DeployRoute {
+    service.routes = vec![DeployRoute {
         target: RouteTarget::new(route_hostname(hostname), self::route_port(route_port)),
         endpoint_port: self::route_port(endpoint_port),
-    });
+    }];
     target
 }
 
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:probe"),
-        endpoint: None,
         container: MachineContainerRunSpec {
             service_id: service_id("svc_probe"),
-            revision_id: revision_id("rev_probe"),
+            namespace_revision_entry_id: namespace_revision_entry_id("rev_probe"),
             operation_id: operation_id("op_probe"),
             step_id: step_id("step_probe"),
             kind: ManagedContainerKind::Service,
@@ -987,8 +982,8 @@ async fn wait_for_gateway_upstream(
         if runtime.served_projection().is_some_and(|projection| {
             projection.routes.iter().any(|route| {
                 route.upstreams.iter().any(|upstream| {
-                    upstream.endpoint.ip.to_string() == endpoint_ip
-                        && upstream.endpoint.port.get() == endpoint_port
+                    upstream.address.ip().to_string() == endpoint_ip
+                        && upstream.address.port() == endpoint_port
                 })
             })
         }) {
@@ -1007,11 +1002,8 @@ fn machine_public_ip(machine_id: &str, last_octet: u8) -> MachinePublicIpObserva
     }
 }
 
-fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
-    ContainerEndpoint {
-        ip: ip.parse().expect("valid endpoint ip"),
-        port: route_port(port),
-    }
+fn endpoint_ip(ip: &str) -> std::net::IpAddr {
+    ip.parse().expect("valid endpoint ip")
 }
 
 fn assert_smoke_response(response: &str) {

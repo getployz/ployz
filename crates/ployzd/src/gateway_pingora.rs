@@ -42,7 +42,7 @@ impl PingoraRouteRegistry {
             let upstreams = route
                 .upstreams
                 .iter()
-                .map(|upstream| SocketAddr::new(upstream.endpoint.ip, upstream.endpoint.port.get()))
+                .map(|upstream| upstream.address)
                 .collect::<Vec<_>>();
             routes.insert(
                 route.target.clone(),

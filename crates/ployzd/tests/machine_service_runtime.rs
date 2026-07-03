@@ -147,7 +147,6 @@ async fn machine_runtime_service_creates_missing_container() {
         state.creates(),
         vec![CreateManagedContainer {
             image: image("registry.example/api:rev_2"),
-            endpoint: None,
             labels: managed_labels(),
         }]
     );
@@ -299,7 +298,7 @@ async fn machine_runtime_service_reports_existing_start_failure_without_created_
 async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error() {
     let nats = test_nats().await;
     let mut conflicting_labels = managed_labels();
-    conflicting_labels.revision_id = namespace_revision_entry_id("entry_other");
+    conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_other");
     let state = RecordingRunnerState::default();
     let service = start_machine_runtime_service(
         nats.machine_a.clone(),
@@ -1124,7 +1123,6 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
-        endpoint: None,
         container: managed_container_spec(),
     }
 }
@@ -1155,7 +1153,7 @@ fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
 fn managed_container_spec() -> MachineContainerRunSpec {
     MachineContainerRunSpec {
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_2"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
@@ -1169,7 +1167,7 @@ fn existing_container(
     existing_container_with_state(
         container_id,
         labels,
-        ExistingManagedContainerState::Running { endpoint: None },
+        ExistingManagedContainerState::Running { ip: None },
     )
 }
 
@@ -1188,11 +1186,10 @@ fn existing_container_with_state(
 fn managed_labels() -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: service_id("svc_api"),
-        revision_id: namespace_revision_entry_id("entry_2"),
+        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
-        endpoint_port: None,
     }
 }
 

@@ -1,5 +1,4 @@
 use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
-use ployz_core::machine_runtime::ContainerEndpoint;
 use ployz_core::ops::{RouteHostnameError, RouteTarget};
 use ployz_test_support::ids::{container_id, machine_id, route_hostname, route_port};
 use ployzd::gateway::{GatewayProjectedRoute, GatewayProjection, GatewayUpstream};
@@ -218,10 +217,7 @@ fn upstream_to_endpoint(ip: &str, port: u16) -> GatewayUpstream {
     GatewayUpstream {
         machine_id: machine_id("machine_1"),
         container_id: container_id("ctr_1"),
-        endpoint: ContainerEndpoint {
-            ip: ip.parse().expect("valid endpoint ip"),
-            port: route_port(port),
-        },
+        address: SocketAddr::new(ip.parse().expect("valid endpoint ip"), port),
     }
 }
 
