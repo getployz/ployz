@@ -450,11 +450,13 @@ fn managed_container(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     containers::observation(machine_id_value, container_id_value)
-        .service(service_id_value)
-        .entry(namespace_revision_entry_id_value)
-        .operation("op_1")
-        .step("step_1")
-        .kind(kind)
+        .with(
+            containers::identity(service_id_value)
+                .entry(namespace_revision_entry_id_value)
+                .operation("op_1")
+                .step("step_1")
+                .kind(kind),
+        )
         .state(state)
         .build()
 }

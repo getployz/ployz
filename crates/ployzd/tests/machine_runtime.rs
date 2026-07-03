@@ -5,6 +5,7 @@ use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
     machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
@@ -85,7 +86,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
             MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id.clone(),
-                expected_identity: managed_labels("run_1"),
+                expected_identity: managed_identity("run_1"),
             },
         )
         .await
@@ -194,26 +195,16 @@ async fn assert_observed_running(
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:rev-2"),
-        container: ManagedContainerIdentity {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-            operation_id: operation_id("op_123"),
-            step_id: step_id(step),
-            kind: ManagedContainerKind::Service,
-        },
+        container: managed_identity(step),
     }
 }
 
-fn managed_labels(step: &str) -> ManagedContainerIdentity {
-    ManagedContainerIdentity {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        operation_id: operation_id("op_123"),
-        step_id: step_id(step),
-        kind: ManagedContainerKind::Service,
-    }
+fn managed_identity(step: &str) -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_2")
+        .operation("op_123")
+        .step(step)
+        .build()
 }
 
 fn image(value: &str) -> ImageReference {

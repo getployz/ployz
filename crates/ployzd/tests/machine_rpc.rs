@@ -59,7 +59,7 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .as_slice(),
         [MachineContainerRunRpcRequest {
             image: image("registry.example/api:rev_2"),
-            container: managed_container_spec()
+            container: managed_identity()
         }]
     );
 }
@@ -566,16 +566,8 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
-        container: managed_container_spec(),
+        container: managed_identity(),
     }
-}
-
-fn managed_container_spec() -> ManagedContainerIdentity {
-    containers::identity("svc_api")
-        .entry("entry_2")
-        .operation("op_123")
-        .step("run_1")
-        .build()
 }
 
 fn managed_identity() -> ManagedContainerIdentity {

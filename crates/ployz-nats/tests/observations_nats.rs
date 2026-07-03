@@ -314,9 +314,12 @@ fn managed_observation_for(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     containers::observation(machine_id_value, container_id_value)
-        .entry("rev_1")
-        .operation("op_123")
-        .step("step_1")
+        .with(
+            containers::identity("svc_api")
+                .entry("rev_1")
+                .operation("op_123")
+                .step("step_1"),
+        )
         .state(state)
         .build()
 }

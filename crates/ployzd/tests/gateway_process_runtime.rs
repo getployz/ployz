@@ -353,9 +353,12 @@ fn managed_observation_with_endpoint(
     ip: &str,
 ) -> ManagedContainerObservation {
     containers::observation(machine_id_value, container_id_value)
-        .entry("entry_1")
-        .operation("op_123")
-        .step("step_1")
+        .with(
+            containers::identity("svc_api")
+                .entry("entry_1")
+                .operation("op_123")
+                .step("step_1"),
+        )
         .running_at(ip.parse().expect("valid endpoint ip"))
         .build()
 }

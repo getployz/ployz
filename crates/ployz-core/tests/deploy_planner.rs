@@ -653,11 +653,13 @@ fn observed_container(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     containers::observation(machine, container)
-        .service(service)
-        .entry(revision)
-        .operation("op_existing")
-        .step(container)
-        .kind(kind)
+        .with(
+            containers::identity(service)
+                .entry(revision)
+                .operation("op_existing")
+                .step(container)
+                .kind(kind),
+        )
         .state(state)
         .build()
 }

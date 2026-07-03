@@ -232,10 +232,12 @@ fn managed_observation(
     namespace_revision_entry_id_value: &str,
 ) -> ManagedContainerObservation {
     containers::observation(machine_id_value, container_id_value)
-        .service(service_id_value)
-        .entry(namespace_revision_entry_id_value)
-        .operation("op_123")
-        .step("step_1")
+        .with(
+            containers::identity(service_id_value)
+                .entry(namespace_revision_entry_id_value)
+                .operation("op_123")
+                .step("step_1"),
+        )
         .running_at(endpoint_ip("10.0.0.7"))
         .build()
 }

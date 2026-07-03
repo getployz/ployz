@@ -815,9 +815,12 @@ fn observed_service_container_with_entry(
     namespace_revision_entry_id: NamespaceRevisionEntryId,
 ) -> ManagedContainerObservation {
     containers::observation(machine_id, container_id)
-        .entry(namespace_revision_entry_id.as_str())
-        .operation("op_existing")
-        .step(&format!("existing_{container_id}"))
+        .with(
+            containers::identity("svc_api")
+                .entry(namespace_revision_entry_id.as_str())
+                .operation("op_existing")
+                .step(&format!("existing_{container_id}")),
+        )
         .running_unroutable()
         .build()
 }

@@ -465,10 +465,12 @@ fn managed_observation_with_entry(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     containers::observation(machine_id, container_id)
-        .service(service_id)
-        .entry(namespace_revision_entry_id.as_str())
-        .operation("op_existing")
-        .step(&format!("existing_{container_id}"))
+        .with(
+            containers::identity(service_id)
+                .entry(namespace_revision_entry_id.as_str())
+                .operation("op_existing")
+                .step(&format!("existing_{container_id}")),
+        )
         .state(state)
         .build()
 }
