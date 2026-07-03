@@ -27,8 +27,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 const GATEWAY_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -36,18 +36,22 @@ const GATEWAY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GATEWAY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
 
 pub struct RunningGatewayProcessRuntime {
     runtime: Arc<Mutex<GatewayRuntime>>,
     health: Arc<Mutex<GatewayProcessHealth>>,
     listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
+    pingora_shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
 }
 
 impl RunningGatewayProcessRuntime {
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
+        let _ = self.pingora_shutdown.send(true);
         for task in self.tasks {
             let _ = task.await;
         }
@@ -123,6 +127,24 @@ pub async fn start_gateway_process_runtime_with_client(
         consecutive_status_publish_failures: 0,
     }));
     let (shutdown, _) = broadcast::channel(2);
+    let (pingora_shutdown, pingora_shutdown_rx) = watch::channel(false);
+    let pingora_health = Arc::clone(&health);
+    let pingora_registry = registry.clone();
+    let http_task = tokio::task::spawn_blocking(move || {
+        run_pingora_gateway_server(
+            listen_addr,
+            listener_port,
+            pingora_registry,
+            pingora_health,
+            pingora_shutdown_rx,
+        );
+    });
+    if let Err(error) = wait_for_gateway_listener_ready(listen_addr, &http_task).await {
+        let _ = pingora_shutdown.send(true);
+        let _ = http_task.await;
+        return Err(error);
+    }
+
     let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
     let task_runtime = Arc::clone(&runtime);
     let task_registry = registry.clone();
@@ -165,18 +187,6 @@ pub async fn start_gateway_process_runtime_with_client(
         )
         .await;
     });
-    let pingora_shutdown_rx = shutdown.subscribe();
-    let pingora_health = Arc::clone(&health);
-    let pingora_registry = registry.clone();
-    let http_task = tokio::task::spawn_blocking(move || {
-        run_pingora_gateway_server(
-            listen_addr,
-            listener_port,
-            pingora_registry,
-            pingora_health,
-            pingora_shutdown_rx,
-        );
-    });
     let health_registry = registry.clone();
     let mut health_shutdown = shutdown.subscribe();
     let health_task = tokio::spawn(async move {
@@ -188,6 +198,7 @@ pub async fn start_gateway_process_runtime_with_client(
         health,
         listen_addr,
         shutdown,
+        pingora_shutdown,
         tasks: vec![refresh_task, watch_task, http_task, health_task],
     })
 }
@@ -589,10 +600,6 @@ fn record_gateway_http_failure(health: &Mutex<GatewayProcessHealth>, failure: Ga
 async fn resolve_gateway_listen_addr(
     listen_addr: SocketAddr,
 ) -> Result<SocketAddr, GatewayProcessRuntimeError> {
-    if listen_addr.port() != 0 {
-        return Ok(listen_addr);
-    }
-
     let listener = TcpListener::bind(listen_addr).await.map_err(|source| {
         GatewayProcessRuntimeError::BindHttp {
             addr: listen_addr,
@@ -606,12 +613,34 @@ async fn resolve_gateway_listen_addr(
     Ok(resolved)
 }
 
+async fn wait_for_gateway_listener_ready(
+    listen_addr: SocketAddr,
+    http_task: &JoinHandle<()>,
+) -> Result<(), GatewayProcessRuntimeError> {
+    let deadline = tokio::time::Instant::now() + GATEWAY_LISTENER_READY_TIMEOUT;
+    loop {
+        if tokio::time::timeout(GATEWAY_LISTENER_READY_POLL, TcpStream::connect(listen_addr))
+            .await
+            .is_ok_and(|connected| connected.is_ok())
+        {
+            return Ok(());
+        }
+        if http_task.is_finished() || tokio::time::Instant::now() >= deadline {
+            return Err(GatewayProcessRuntimeError::HttpListenerNotReady {
+                addr: listen_addr,
+                timeout: GATEWAY_LISTENER_READY_TIMEOUT,
+            });
+        }
+        tokio::time::sleep(GATEWAY_LISTENER_READY_POLL).await;
+    }
+}
+
 fn run_pingora_gateway_server(
     listen_addr: SocketAddr,
     listener_port: RoutePort,
     registry: PingoraRouteRegistry,
     health: Arc<Mutex<GatewayProcessHealth>>,
-    shutdown: broadcast::Receiver<()>,
+    shutdown: watch::Receiver<bool>,
 ) {
     let mut conf = ServerConf::default();
     conf.grace_period_seconds = Some(0);
@@ -634,14 +663,17 @@ fn run_pingora_gateway_server(
 }
 
 struct GatewayPingoraShutdown {
-    shutdown: tokio::sync::Mutex<broadcast::Receiver<()>>,
+    shutdown: watch::Receiver<bool>,
 }
 
 #[async_trait::async_trait]
 impl ShutdownSignalWatch for GatewayPingoraShutdown {
     async fn recv(&self) -> ShutdownSignal {
-        let mut shutdown = self.shutdown.lock().await;
-        let _ = shutdown.recv().await;
+        let mut shutdown = self.shutdown.clone();
+        if *shutdown.borrow() {
+            return ShutdownSignal::GracefulTerminate;
+        }
+        let _ = shutdown.changed().await;
         ShutdownSignal::GracefulTerminate
     }
 }
@@ -680,6 +712,10 @@ pub enum GatewayProcessRuntimeError {
         source: std::io::Error,
     },
     ReadHttpListenerAddr(std::io::Error),
+    HttpListenerNotReady {
+        addr: SocketAddr,
+        timeout: Duration,
+    },
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     WriteObservations(ObservationStoreError),
@@ -707,6 +743,13 @@ impl fmt::Display for GatewayProcessRuntimeError {
                 write!(
                     formatter,
                     "failed to read gateway HTTP listener address: {error}"
+                )
+            }
+            Self::HttpListenerNotReady { addr, timeout } => {
+                write!(
+                    formatter,
+                    "gateway HTTP listener {addr} was not ready after {}s",
+                    timeout.as_secs()
                 )
             }
             Self::OpenCoreState(error) => {
@@ -821,5 +864,17 @@ mod tests {
         );
 
         assert_eq!(next, Duration::from_secs(4));
+    }
+
+    #[tokio::test]
+    async fn pingora_shutdown_observes_signal_sent_before_recv() {
+        let (shutdown, receiver) = watch::channel(false);
+        shutdown.send(true).expect("shutdown signal sends");
+        let shutdown = GatewayPingoraShutdown { shutdown: receiver };
+
+        assert!(matches!(
+            shutdown.recv().await,
+            ShutdownSignal::GracefulTerminate
+        ));
     }
 }
