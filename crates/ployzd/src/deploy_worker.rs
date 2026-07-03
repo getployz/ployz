@@ -467,6 +467,7 @@ fn retained_container_identity(
     container: &DeployContainer,
 ) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: command.request.namespace_id.clone(),
         service_id: container.service_id.clone(),
         revision_id: container.revision_id.clone(),
         operation_id: command.operation_id.clone(),
@@ -477,6 +478,7 @@ fn retained_container_identity(
 
 fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: target.namespace_id.clone(),
         service_id: target.service_id.clone(),
         revision_id: target.revision_id.clone(),
         operation_id: target.operation_id.clone(),
@@ -726,6 +728,7 @@ where
         image: service.request.image.clone(),
         endpoint,
         container: MachineContainerRunSpec {
+            namespace_id: service.request.namespace_id.clone(),
             service_id: service.request.service_id.clone(),
             revision_id: service.request.target_revision.clone(),
             operation_id: command.operation_id.clone(),

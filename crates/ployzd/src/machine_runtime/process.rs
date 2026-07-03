@@ -312,6 +312,7 @@ where
         .map(|container| ManagedContainerObservation {
             machine_id: machine_id.clone(),
             container_id: container.container_id,
+            namespace_id: container.labels.namespace_id,
             service_id: container.labels.service_id,
             revision_id: container.labels.revision_id,
             operation_id: container.labels.operation_id,
@@ -418,6 +419,7 @@ mod tests {
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
+    use ployz_core::ids::NamespaceId;
     use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
     use ployz_core::machine_runtime::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
@@ -763,6 +765,7 @@ mod tests {
 
     fn labels(step: &str) -> crate::docker::labels::ManagedContainerLabels {
         crate::docker::labels::ManagedContainerLabels {
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
             operation_id: operation_id("op_123"),

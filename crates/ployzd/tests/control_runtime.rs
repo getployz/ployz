@@ -289,6 +289,7 @@ async fn control_runtime_serves_active_service_queries() {
 
     let inspected = api
         .service_inspect(&ServiceInspectRequest {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
         })
         .await
@@ -343,6 +344,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
                 [ManagedContainerObservation {
                     machine_id: machine_id("machine_a"),
                     container_id: ployz_test_support::ids::container_id("ctr_api"),
+                    namespace_id: namespace_id("default"),
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_2"),
                     operation_id: operation_id("op_deploy"),
@@ -472,7 +474,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .expect("open core state");
     assert_eq!(
         core_state
-            .active_service(&service_id("svc_api"))
+            .active_service(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active service reads")
             .expect("active service committed")

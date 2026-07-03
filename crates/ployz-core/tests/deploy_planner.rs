@@ -189,6 +189,32 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 }
 
 #[test]
+fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request: deploy_request(1),
+        active_service: None,
+        active_route: None,
+        eligible_machines: vec![machine_id("machine_a")],
+        observed_machines: vec![observed_machine(
+            "machine_b",
+            [observed_container_in_namespace(
+                "other",
+                "machine_b",
+                "ctr_other_namespace",
+                "svc_api",
+                "rev_1",
+                ManagedContainerKind::Service,
+                ContainerRuntimeState::running_unroutable(),
+            )],
+        )],
+    })
+    .expect("deploy preparation succeeds");
+
+    assert!(prepared.existing_replicas.is_empty());
+    assert!(prepared.cleanup_candidates.is_empty());
+}
+
+#[test]
 fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
     let mut request = deploy_request(2);
     request.route = Some(deploy_route("api.example.com", 443, 8080));
@@ -386,6 +412,7 @@ fn cleanup_container_with_revision(
     DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         revision_id: revision_id(revision),
         operation_id: operation_id("op_existing"),
@@ -411,9 +438,24 @@ fn observed_container(
     kind: ManagedContainerKind,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
+    observed_container_in_namespace(
+        "default", machine, container, service, revision, kind, state,
+    )
+}
+
+fn observed_container_in_namespace(
+    namespace: &str,
+    machine: &str,
+    container: &str,
+    service: &str,
+    revision: &str,
+    kind: ManagedContainerKind,
+    state: ContainerRuntimeState,
+) -> ManagedContainerObservation {
     ManagedContainerObservation {
         machine_id: machine_id(machine),
         container_id: container_id(container),
+        namespace_id: namespace_id(namespace),
         service_id: service_id(service),
         revision_id: revision_id(revision),
         operation_id: operation_id("op_existing"),

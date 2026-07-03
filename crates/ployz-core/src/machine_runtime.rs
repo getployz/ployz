@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use crate::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+use crate::ids::{ContainerId, MachineId, NamespaceId, OperationId, RevisionId, ServiceId, StepId};
 use crate::ops::RoutePort;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +83,7 @@ pub struct ContainerEndpoint {
 pub struct ManagedContainerObservation {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
     pub operation_id: OperationId,
@@ -100,10 +101,12 @@ impl ManagedContainerObservation {
     #[must_use]
     pub fn is_running_service_revision(
         &self,
+        namespace_id: &NamespaceId,
         service_id: &ServiceId,
         revision_id: &RevisionId,
     ) -> bool {
         self.is_running_service()
+            && self.namespace_id == *namespace_id
             && self.service_id == *service_id
             && self.revision_id == *revision_id
     }
