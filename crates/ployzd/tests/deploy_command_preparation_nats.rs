@@ -448,6 +448,7 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
+        substrate_versions: None,
     }
 }
 

@@ -15,10 +15,10 @@ pub use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
 };
 pub use repository::{
-    AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
-    AcceptedMachineAddSubmission, AsyncNatsOperationRepository, BackupOperationSubmission,
-    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinRedemption, OperationStatusWrite, RecordBackupEventError, RecordCertEventError,
+    AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
+    AcceptedMachineUpdateSubmission, AsyncNatsOperationRepository, CertOperationSubmission,
+    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinRedemption,
+    MachineUpdateOperationSubmission, OperationStatusWrite, RecordCertEventError,
     RecordDeployEvidenceError, RecordDeployTransitionError, RecordLifecycleEventError,
     RecordMachineAddEventError, RecordMachineJoinReportError, RecordOperationEventError,
     RecordedMachineJoinReport, RedeemMachineJoinTokenError, RedeemedMachineJoin,

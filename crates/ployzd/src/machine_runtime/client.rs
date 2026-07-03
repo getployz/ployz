@@ -10,9 +10,12 @@ use crate::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineRunContainerOutcome,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
+    MachineSubstrateUpdateRpcRequest,
 };
-use ployz_core::ids::MachineId;
+use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
@@ -42,6 +45,24 @@ pub struct NatsMachineDataplanePreparer {
 pub struct NatsMachineLogsTailer {
     client: async_nats::Client,
     request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineSubstrateUpdater {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineSubstrateUpdateRuntimeError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    UpdateFailed {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +161,93 @@ impl NatsMachineLogsTailer {
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
+    }
+}
+
+impl NatsMachineSubstrateUpdater {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn update_substrate(
+        &self,
+        machine_id: &MachineId,
+        request: MachineSubstrateUpdateRpcRequest,
+    ) -> Result<(), MachineSubstrateUpdateRuntimeError> {
+        call_machine::<MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::SubstrateUpdate,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => {
+                MachineSubstrateUpdateRuntimeError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                }
+            }
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn report_substrate_versions(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<MachineSubstrateVersions, MachineSubstrateUpdateRuntimeError> {
+        call_machine::<MachineSubstrateReportRpcOk, MachineSubstrateUpdateDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::SubstrateReport,
+            &MachineSubstrateReportRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map(|ok| ok.reported)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => {
+                MachineSubstrateUpdateRuntimeError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                }
+            }
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+}
+
+impl MachineSubstrateUpdateRuntimeError {
+    pub fn into_operation_failure(self) -> MachineUpdateFailure {
+        match self {
+            Self::Unavailable { machine_id, reason } => MachineUpdateFailure::MachineUnavailable {
+                machine_id,
+                message: ployz_core::ops::FailureMessage::try_new(format!("{reason:?}"))
+                    .expect("machine runtime unavailable reason is non-empty"),
+            },
+            Self::UpdateFailed {
+                machine_id,
+                message,
+            } => MachineUpdateFailure::UpdateRejected {
+                machine_id,
+                message,
+            },
+        }
     }
 }
 
@@ -289,6 +397,17 @@ impl MachineLogsTailDomainError {
             } => MachineLogsTailRuntimeError::ReadFailed {
                 machine_id,
                 container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl MachineSubstrateUpdateDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineSubstrateUpdateRuntimeError {
+        match self {
+            Self::UpdateFailed { message } => MachineSubstrateUpdateRuntimeError::UpdateFailed {
+                machine_id,
                 message,
             },
         }

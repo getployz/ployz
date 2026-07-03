@@ -4,13 +4,14 @@ use std::path::PathBuf;
 
 use clap::Args;
 use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
-use ployz_core::install::{MachineJoinBundle, MachineJoinClusterName};
+use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
+use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::GatewayServingStatus;
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineInspectRequest, MachineListRequest,
-    MachineListResult, MachineSnapshot,
+    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineInspectRequest,
+    MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateRequest,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -22,6 +23,7 @@ use crate::bootstrap_command::{
     BootstrapInstaller, BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME,
     DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
+use crate::client_ids::generate_client_machine_update_id;
 use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::ssh::SshTarget;
@@ -105,6 +107,9 @@ pub struct MachineInitCommand {
     /// `--release-manifest` override; `None` derives the URL from the
     /// version and the remote machine architecture.
     pub release_manifest_url: Option<String>,
+    /// Return after the activation operation is accepted instead of waiting
+    /// for terminal status.
+    pub detach: bool,
     /// Recorded in the install spec so machine-add prints real install
     /// lines; also the default installer source.
     pub bootstrap_url: MachineBootstrapUrl,
@@ -158,6 +163,9 @@ pub struct MachineAddRemoteCommand {
     /// Gateway and DNS default to install (R8); `--no-gateway` opts out
     /// of the gateway role for this machine.
     pub roles: InstallRolePolicy,
+    /// Return after the remote join installer is delivered instead of
+    /// waiting for terminal status.
+    pub detach: bool,
     /// `--installer-script`: run an installer already on the remote machine
     /// instead of the accepted bootstrap URL (test seam).
     pub installer_script: Option<String>,
@@ -197,6 +205,46 @@ impl MachineAddRemoteOutput {
             self.operation_id.as_str(),
             self.machine_id.as_str(),
         )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddRemoteDetachedOutput {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+}
+
+impl MachineAddRemoteDetachedOutput {
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "operation {}\nmachine {}\nwatch ployzctl ops watch {}\n",
+            self.operation_id.as_str(),
+            self.machine_id.as_str(),
+            self.operation_id.as_str(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddCommand {
+    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
+    pub machine_id: MachineId,
+    pub name: MachineName,
+    pub roles: InstallRolePolicy,
+}
+
+impl MachineAddCommand {
+    #[must_use]
+    pub fn into_request(self) -> MachineAddRequest {
+        MachineAddRequest {
+            operation_id: self.operation_id,
+            idempotency_key: self.idempotency_key,
+            machine_id: self.machine_id,
+            name: self.name,
+            roles: self.roles,
+        }
     }
 }
 
@@ -287,6 +335,27 @@ impl MachineAddOutput {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineUpdateOutput {
+    pub accepted: AcceptedOperation,
+}
+
+impl MachineUpdateOutput {
+    #[must_use]
+    pub const fn from_accepted(accepted: AcceptedOperation) -> Self {
+        Self { accepted }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "operation {}\nwatch ployzctl ops watch {}\n",
+            self.accepted.operation_id.as_str(),
+            self.accepted.operation_id.as_str()
+        )
+    }
+}
+
 impl fmt::Debug for MachineAddOutput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -301,13 +370,68 @@ impl fmt::Debug for MachineAddOutput {
     }
 }
 
+/// `machine add` keeps both shapes: the quick-start remote-target mode
+/// (`machine add root@host`) and the low-level explicit mode for tests and
+/// automation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedMachineAdd {
+    Explicit(MachineAddCommand),
+    Remote(MachineAddRemoteCommand),
+}
+
 pub(crate) fn machine_add_command(
     parsed: MachineAddCli,
+) -> Result<ParsedMachineAdd, PloyzctlCliError> {
+    match parsed.into_mode()? {
+        MachineAddCliMode::Remote {
+            target,
+            name,
+            roles,
+            detach,
+            installer_script,
+        } => {
+            let target =
+                SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
+            let identity_override = name
+                .as_deref()
+                .map(MachineIdentity::from_name_override)
+                .transpose()
+                .map_err(|error| invalid_value("--name", error))?;
+            Ok(ParsedMachineAdd::Remote(MachineAddRemoteCommand {
+                target,
+                identity_override,
+                roles,
+                detach,
+                installer_script: validate_installer_script(installer_script)?,
+            }))
+        }
+        MachineAddCliMode::Explicit {
+            operation,
+            idempotency_key,
+            machine,
+            name,
+            roles,
+        } => Ok(ParsedMachineAdd::Explicit(MachineAddCommand {
+            operation_id: OperationId::try_new(operation)
+                .map_err(|error| invalid_value("--operation", error))?,
+            idempotency_key: OperationIdempotencyKey::try_new(idempotency_key)
+                .map_err(|error| invalid_value("--idempotency-key", error))?,
+            machine_id: MachineId::try_new(machine)
+                .map_err(|error| invalid_value("--machine", error))?,
+            name: MachineName::try_new(name).map_err(|error| invalid_value("--name", error))?,
+            roles,
+        })),
+    }
+}
+
+pub(crate) fn machine_add_remote_command(
+    parsed: MachineAddRemoteCli,
 ) -> Result<MachineAddRemoteCommand, PloyzctlCliError> {
-    let MachineAddCli {
+    let MachineAddRemoteCli {
         target,
         name,
         roles,
+        detach,
         installer_script,
     } = parsed;
     let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
@@ -320,12 +444,51 @@ pub(crate) fn machine_add_command(
         target,
         identity_override,
         roles: roles.into_policy(),
+        detach,
         installer_script: validate_installer_script(installer_script)?,
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MachineAddCliMode {
+    Remote {
+        target: String,
+        name: Option<String>,
+        roles: InstallRolePolicy,
+        detach: bool,
+        installer_script: Option<String>,
+    },
+    Explicit {
+        operation: String,
+        idempotency_key: String,
+        machine: String,
+        name: String,
+        roles: InstallRolePolicy,
+    },
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct MachineAddCli {
+    /// Remote machine to join (`user@host`); the quick-start mode.
+    target: Option<String>,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, conflicts_with = "target")]
+    machine: Option<String>,
+    #[arg(long, conflicts_with = "target")]
+    operation: Option<String>,
+    #[arg(long, conflicts_with = "target")]
+    idempotency_key: Option<String>,
+    #[command(flatten)]
+    roles: RolePolicyCli,
+    #[arg(long, requires = "target")]
+    detach: bool,
+    #[arg(long, requires = "target")]
+    installer_script: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MachineAddRemoteCli {
     /// Remote machine to join (`user@host`).
     target: String,
     #[arg(long)]
@@ -333,7 +496,57 @@ pub(crate) struct MachineAddCli {
     #[command(flatten)]
     roles: RolePolicyCli,
     #[arg(long)]
+    pub detach: bool,
+    #[arg(long)]
     installer_script: Option<String>,
+}
+
+impl MachineAddCli {
+    fn into_mode(self) -> Result<MachineAddCliMode, PloyzctlCliError> {
+        let Self {
+            target,
+            name,
+            machine,
+            operation,
+            idempotency_key,
+            roles,
+            detach,
+            installer_script,
+        } = self;
+        let roles = roles.into_policy();
+
+        if let Some(target) = target {
+            return Ok(MachineAddCliMode::Remote {
+                target,
+                name,
+                roles,
+                detach,
+                installer_script,
+            });
+        }
+
+        Ok(MachineAddCliMode::Explicit {
+            operation: require_explicit_machine_add_value(operation, "--operation")?,
+            idempotency_key: require_explicit_machine_add_value(
+                idempotency_key,
+                "--idempotency-key",
+            )?,
+            machine: require_explicit_machine_add_value(machine, "--machine")?,
+            name: require_explicit_machine_add_value(name, "--name")?,
+            roles,
+        })
+    }
+}
+
+fn require_explicit_machine_add_value(
+    value: Option<String>,
+    flag: &'static str,
+) -> Result<String, PloyzctlCliError> {
+    value.ok_or_else(|| {
+        crate::commands::cli_error(format!(
+            "{flag} is required (or pass USER@HOST for a remote machine add)"
+        ))
+    })
 }
 
 pub(crate) fn machine_init_command(
@@ -346,6 +559,7 @@ pub(crate) fn machine_init_command(
         version,
         channel,
         release_manifest,
+        detach,
         bootstrap_url,
         cluster_name,
         installer_script,
@@ -396,6 +610,7 @@ pub(crate) fn machine_init_command(
         roles,
         release,
         release_manifest_url,
+        detach,
         bootstrap_url,
         cluster_name,
         installer_script: validate_installer_script(installer_script)?,
@@ -430,6 +645,8 @@ pub(crate) struct MachineInitCli {
     #[arg(long)]
     release_manifest: Option<String>,
     #[arg(long)]
+    detach: bool,
+    #[arg(long)]
     bootstrap_url: Option<String>,
     #[arg(long)]
     cluster_name: Option<String>,
@@ -456,6 +673,25 @@ pub struct MachineInspectCommand {
     pub machine_id: MachineId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineUpdateCommand {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
+    pub detach: bool,
+}
+
+impl MachineUpdateCommand {
+    #[must_use]
+    pub fn into_request(self) -> MachineUpdateRequest {
+        MachineUpdateRequest {
+            operation_id: self.operation_id,
+            machine_id: self.machine_id,
+            target_version: self.target_version,
+        }
+    }
+}
+
 impl MachineInspectCommand {
     #[must_use]
     pub fn into_request(self) -> MachineInspectRequest {
@@ -474,9 +710,40 @@ pub(crate) fn machine_inspect_command(
     Ok(MachineInspectCommand { machine_id })
 }
 
+pub(crate) fn machine_update_command(
+    parsed: MachineUpdateCli,
+) -> Result<MachineUpdateCommand, PloyzctlCliError> {
+    let machine_id = MachineId::try_new(parsed.machine_id)
+        .map_err(|error| invalid_value("<machine_id>", error))?;
+    let target_version = InstallArtifactVersion::try_new(parsed.version)
+        .map_err(|error| invalid_value("--version", error))?;
+    let operation_id = generate_client_machine_update_id(&machine_id)
+        .map_err(|error| PloyzctlCliError::InvalidValue {
+            flag: "<machine_id>",
+            message: error.to_string(),
+        })?
+        .operation_id;
+
+    Ok(MachineUpdateCommand {
+        operation_id,
+        machine_id,
+        target_version,
+        detach: parsed.detach,
+    })
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct MachineInspectCli {
     machine_id: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MachineUpdateCli {
+    machine_id: String,
+    #[arg(long)]
+    version: String,
+    #[arg(long)]
+    detach: bool,
 }
 
 #[derive(Debug, Args)]
@@ -526,25 +793,44 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
+            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\nsubstrate {}\n",
             self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
             render_public_ip(&self.machine),
             render_gateway(&self.machine),
             self.machine.observed_container_count,
+            render_substrate_versions(&self.machine),
         )
     }
 }
 
 fn render_machine_summary(machine: &MachineSnapshot) -> String {
     format!(
-        "{} {} public-ip {} gateway {} containers {}",
+        "{} {} public-ip {} gateway {} containers {} substrate {}",
         machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
         render_public_ip(machine),
         render_gateway(machine),
         machine.observed_container_count,
+        render_substrate_versions(machine),
+    )
+}
+
+fn render_substrate_versions(machine: &MachineSnapshot) -> String {
+    let Some(versions) = &machine.active.substrate_versions else {
+        return "ployzd unknown keeper unknown".to_owned();
+    };
+    format!(
+        "ployzd {} keeper {}",
+        versions
+            .ployzd
+            .as_ref()
+            .map_or("unknown", |version| version.as_str()),
+        versions
+            .keeper
+            .as_ref()
+            .map_or("unknown", |version| version.as_str())
     )
 }
 

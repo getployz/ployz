@@ -2,25 +2,25 @@ use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
-use ployz_core::backup::BackupTarget;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, MachineId, OperationId};
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 use ployz_core::ops::{
-    BackupTransition, CertOperationFailure, DeployCompletionOutcome, DeployEvidence,
-    DeployTransition, EventSequence, EventSequenceError, OperationEvent, OperationEventReplayLimit,
-    OperationEventReplayPage, ReplayedOperationEvent,
+    CertOperationFailure, DeployCompletionOutcome, DeployEvidence, DeployTransition, EventSequence,
+    EventSequenceError, MachineSubstrateVersions, MachineUpdateFailure, OperationEvent,
+    OperationEventReplayLimit, OperationEventReplayPage, ReplayedOperationEvent,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::subjects::{
-    op_backup_completed, op_backup_failed, op_backup_running, op_backup_submitted, op_cancelled,
-    op_cert_challenge_published, op_cert_completed, op_cert_failed, op_cert_submitted,
-    op_cert_validation_started, op_deploy_cleanup_finished, op_deploy_completed,
+    op_cancelled, op_cert_challenge_published, op_cert_completed, op_cert_failed,
+    op_cert_submitted, op_cert_validation_started, op_deploy_cleanup_finished, op_deploy_completed,
     op_deploy_container_started, op_deploy_dataplane_prepared, op_deploy_failed,
     op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
     op_deploy_running, op_deploy_submitted, op_machine_add_completed,
     op_machine_add_credential_provisioned, op_machine_add_failed, op_machine_add_joined,
-    op_machine_add_submitted, op_watch,
+    op_machine_add_submitted, op_machine_update_completed, op_machine_update_failed,
+    op_machine_update_running, op_machine_update_submitted, op_watch,
 };
 
 use crate::kv::{NatsIoTimeout, with_io_timeout};
@@ -199,23 +199,62 @@ impl OperationEventAppend {
     }
 
     #[must_use]
-    pub fn backup_submitted(operation_id: OperationId, target: BackupTarget) -> Self {
+    pub fn machine_update_submitted(
+        operation_id: OperationId,
+        machine_id: MachineId,
+        target_version: InstallArtifactVersion,
+    ) -> Self {
         let message_operation_id = operation_id.clone();
         Self::from_event(
             submitted_message_id(&message_operation_id),
-            OperationEvent::BackupCreateSubmitted {
+            OperationEvent::MachineUpdateSubmitted {
                 operation_id,
-                target,
+                machine_id,
+                target_version,
             },
         )
     }
 
     #[must_use]
-    pub fn backup_transition(operation_id: &OperationId, transition: &BackupTransition) -> Self {
-        let event = backup_transition_event(operation_id, transition);
+    pub fn machine_update_running(operation_id: &OperationId, machine_id: &MachineId) -> Self {
         Self::from_event(
-            backup_transition_message_id(operation_id, transition),
-            event,
+            MessageId::new(format!("machine.update.running.{}", operation_id.as_str())),
+            OperationEvent::MachineUpdateRunning {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_update_completed(
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        reported: MachineSubstrateVersions,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.update.terminal.{}", operation_id.as_str())),
+            OperationEvent::MachineUpdateCompleted {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                reported,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_update_failed(
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        failure: MachineUpdateFailure,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.update.terminal.{}", operation_id.as_str())),
+            OperationEvent::MachineUpdateFailed {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                failure,
+            },
         )
     }
 
@@ -567,15 +606,18 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::MachineAddFailed { operation_id, .. } => {
             op_machine_add_failed(operation_id)
         }
-        OperationEvent::BackupCreateSubmitted { operation_id, .. } => {
-            op_backup_submitted(operation_id)
+        OperationEvent::MachineUpdateSubmitted { operation_id, .. } => {
+            op_machine_update_submitted(operation_id)
         }
-        OperationEvent::BackupRunning {
-            operation_id,
-            stage,
-        } => op_backup_running(operation_id, stage.clone()),
-        OperationEvent::BackupCompleted { operation_id, .. } => op_backup_completed(operation_id),
-        OperationEvent::BackupFailed { operation_id, .. } => op_backup_failed(operation_id),
+        OperationEvent::MachineUpdateRunning { operation_id, .. } => {
+            op_machine_update_running(operation_id)
+        }
+        OperationEvent::MachineUpdateCompleted { operation_id, .. } => {
+            op_machine_update_completed(operation_id)
+        }
+        OperationEvent::MachineUpdateFailed { operation_id, .. } => {
+            op_machine_update_failed(operation_id)
+        }
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }
 }
@@ -691,63 +733,12 @@ fn deploy_transition_event(
     }
 }
 
-fn backup_transition_event(
-    operation_id: &OperationId,
-    transition: &BackupTransition,
-) -> OperationEvent {
-    match transition {
-        BackupTransition::Running { stage } => OperationEvent::BackupRunning {
-            operation_id: operation_id.clone(),
-            stage: stage.clone(),
-        },
-        BackupTransition::Completed { manifest } => OperationEvent::BackupCompleted {
-            operation_id: operation_id.clone(),
-            manifest: manifest.clone(),
-        },
-        BackupTransition::Failed { failure } => OperationEvent::BackupFailed {
-            operation_id: operation_id.clone(),
-            failure: failure.clone(),
-        },
-        BackupTransition::Cancelled { reason } => OperationEvent::Cancelled {
-            operation_id: operation_id.clone(),
-            reason: reason.clone(),
-        },
-    }
-}
-
-fn backup_transition_message_id(
-    operation_id: &OperationId,
-    transition: &BackupTransition,
-) -> MessageId {
-    if backup_transition_is_terminal(transition) {
-        return MessageId::new(format!("backup.terminal.{}", operation_id.as_str()));
-    }
-
-    let suffix = match transition {
-        BackupTransition::Running { stage } => stage.as_subject(),
-        BackupTransition::Completed { .. }
-        | BackupTransition::Failed { .. }
-        | BackupTransition::Cancelled { .. } => "terminal",
-    };
-
-    MessageId::new(format!("backup.{suffix}.{}", operation_id.as_str()))
-}
-
 const fn deploy_transition_is_terminal(transition: &DeployTransition) -> bool {
     matches!(
         transition,
         DeployTransition::Completed { .. }
             | DeployTransition::Failed { .. }
             | DeployTransition::Cancelled { .. }
-    )
-}
-
-const fn backup_transition_is_terminal(transition: &BackupTransition) -> bool {
-    matches!(
-        transition,
-        BackupTransition::Completed { .. }
-            | BackupTransition::Failed { .. }
-            | BackupTransition::Cancelled { .. }
     )
 }
 

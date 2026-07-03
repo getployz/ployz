@@ -50,9 +50,9 @@ async fn operation_event_log_deduplicates_submits_across_operation_kinds() {
         .await
         .expect("first submit event stores");
     let second = event_log
-        .append(OperationEventAppend::backup_submitted(
+        .append(OperationEventAppend::cert_submitted(
             operation_id("op_123"),
-            backup_target("clusters/dev"),
+            cert_id("cert_api"),
         ))
         .await
         .expect("cross-kind duplicate submit is acknowledged");

@@ -138,7 +138,7 @@ fn machine_list_renders_machine_summaries() {
 
     assert_eq!(
         output,
-        "machine_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
+        "machine_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3 substrate ployzd unknown keeper unknown\n"
     );
 }
 
@@ -162,7 +162,7 @@ fn machine_inspect_renders_machine_detail() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\nsubstrate ployzd unknown keeper unknown\n"
     );
 }
 
@@ -175,7 +175,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\nsubstrate ployzd unknown keeper unknown\n"
     );
 }
 
@@ -194,6 +194,7 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
+            substrate_versions: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),
@@ -736,26 +737,65 @@ fn machine_add_accepts_dns_and_combined_role_opt_outs() {
         command.roles,
         InstallRolePolicy::install_all().without_dns()
     );
+
+    let PloyzctlCommand::MachineAdd(command) = parse(&[
+        "internal",
+        "machine-add",
+        "--machine",
+        "edge_2",
+        "--name",
+        "edge_2",
+        "--operation",
+        "op_machine",
+        "--idempotency-key",
+        "idem_machine",
+        "--no-gateway",
+        "--no-dns",
+    ]) else {
+        panic!("expected explicit machine add command");
+    };
+    assert_eq!(
+        command.roles,
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns()
+    );
 }
 
 #[test]
-fn machine_add_rejects_deleted_explicit_flags() {
+fn machine_add_explicit_flags_conflict_with_a_remote_target() {
     assert!(
         parse_command(
-            ["machine", "add", "root@203.0.113.11", "--machine", "edge_2"].map(str::to_owned)
+            [
+                "internal",
+                "machine-add",
+                "root@203.0.113.11",
+                "--machine",
+                "edge_2",
+            ]
+            .map(str::to_owned)
         )
         .is_err()
     );
 }
 
 #[test]
-fn machine_add_requires_remote_target() {
+fn machine_add_without_target_still_requires_explicit_flags() {
     let error = parse_command(
-        ["machine", "add", "--name", "edge_2", "--machine", "edge_2"].map(str::to_owned),
+        [
+            "internal",
+            "machine-add",
+            "--name",
+            "edge_2",
+            "--machine",
+            "edge_2",
+        ]
+        .map(str::to_owned),
     )
-    .expect_err("missing remote target fails");
+    .expect_err("missing operation id fails");
     let rendered = error.to_string();
-    assert!(rendered.contains("<TARGET>") || rendered.contains("unexpected argument"));
+    assert!(rendered.contains("--operation"));
+    assert!(rendered.contains("USER@HOST"));
 }
 
 // --- Cloud bootstrap command rendering ---

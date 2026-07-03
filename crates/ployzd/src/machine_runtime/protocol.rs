@@ -7,8 +7,9 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::ManagedContainerKind;
-use ployz_core::ops::{FailureMessage, OperatorHint, RoutePort};
+use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint, RoutePort};
 use serde::{Deserialize, Serialize};
 
 /// Shared machine RPC response envelope: every endpoint answers either with its
@@ -247,6 +248,58 @@ pub enum MachineLogsTailDomainError {
         message: FailureMessage,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineSubstrateUpdateRpcRequest {
+    pub operation_id: OperationId,
+    pub target_version: InstallArtifactVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineSubstrateUpdateRpcOk {
+    pub machine_id: MachineId,
+}
+
+impl MachineRpcResponder for MachineSubstrateUpdateRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type MachineSubstrateUpdateRpcResponse =
+    MachineRpcResponse<MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineSubstrateUpdateDomainError {
+    UpdateFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineSubstrateReportRpcRequest {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineSubstrateReportRpcOk {
+    pub machine_id: MachineId,
+    pub reported: MachineSubstrateVersions,
+}
+
+impl MachineRpcResponder for MachineSubstrateReportRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type MachineSubstrateReportRpcResponse =
+    MachineRpcResponse<MachineSubstrateReportRpcOk, MachineSubstrateUpdateDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

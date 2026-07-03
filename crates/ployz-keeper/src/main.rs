@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ployz_core::ids::MachineId;
-use ployz_core::install::{MachineJoinRuntimeNatsUrl, NatsMachineMaterialPaths};
+use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::install::{
+    InstallArtifactVersion, MachineJoinRuntimeNatsUrl, NatsMachineMaterialPaths,
+};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::plan_joined_machine_process_set;
@@ -15,6 +17,7 @@ use ployz_keeper::cli::{
 use ployz_keeper::cloud_client::get_text_url;
 use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
+use ployz_keeper::fsx::{FileMode, write_durable_file};
 use ployz_keeper::join::JOIN_MATERIAL_DIR;
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
@@ -38,6 +41,7 @@ use ployz_sdk_types::{
     MachineJoinRedeemed, MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
     MachineJoinTrustedNats, NatsCaCertificatePem,
 };
+use serde::Serialize;
 mod cloud_bootstrap_runner;
 
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -50,6 +54,7 @@ const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REDEEM_MATERIAL_ATTEMPTS: u32 = 150;
 const REDEEM_MATERIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
+const SUBSTRATE_VERSION_FILE: &str = "substrate-version.json";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
 const CLOUD_BOOTSTRAP_MAX_POLLS: u16 = 900;
@@ -144,6 +149,7 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let ployzd_version = artifacts.ployzd.version.clone();
     let ployzd = match artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd) {
         Ok(target) => target,
         Err(error) => {
@@ -221,12 +227,58 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    if let Some(operation_id) = &update.operation_id {
+        if let Err(message) = write_substrate_update_evidence(operation_id, ployzd_version) {
+            eprintln!(
+                "failed to write substrate update evidence: {}",
+                message.as_str()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     println!(
         "substrate updated to {} and restarted {} unit(s)",
         update.version.as_str(),
         units.len()
     );
     ExitCode::SUCCESS
+}
+
+#[derive(Serialize)]
+struct SubstrateUpdateEvidence {
+    operation_id: OperationId,
+    ployzd: InstallArtifactVersion,
+}
+
+fn write_substrate_update_evidence(
+    operation_id: &OperationId,
+    ployzd: InstallArtifactVersion,
+) -> Result<(), FailureMessage> {
+    let state_dir = Path::new(KEEPER_STATE_DIR);
+    std::fs::create_dir_all(state_dir).map_err(|error| {
+        FailureMessage::try_new(format!(
+            "failed to create keeper state directory {}: {error}",
+            state_dir.display()
+        ))
+        .expect("keeper state directory failure message is non-empty")
+    })?;
+    let contents = serde_json::to_vec(&SubstrateUpdateEvidence {
+        operation_id: operation_id.clone(),
+        ployzd,
+    })
+    .map_err(|error| {
+        FailureMessage::try_new(format!(
+            "failed to encode substrate update evidence: {error}"
+        ))
+        .expect("substrate update evidence encode message is non-empty")
+    })?;
+    write_durable_file(
+        state_dir,
+        SUBSTRATE_VERSION_FILE,
+        "substrate-version",
+        FileMode::Plain,
+        &contents,
+    )
 }
 
 fn load_versioned_release_manifest(url: &str) -> Result<ReleaseManifest, String> {

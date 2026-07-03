@@ -10,12 +10,13 @@ use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::machine_runtime::client::NatsMachineContainerRuntime;
+use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
-    MachineContainerRunSpec, MachineRunContainerOutcome,
+    MachineContainerRunSpec, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
+    MachineSubstrateReportRpcResponse,
 };
 use ployzd::services::machine_runtime_service;
 use std::sync::{Arc, Mutex};
@@ -217,6 +218,25 @@ async fn nats_machine_runtime_rejects_response_for_different_machine() {
 }
 
 #[tokio::test]
+async fn nats_machine_runtime_reports_substrate_versions() {
+    let nats = test_nats().await;
+    let _service =
+        start_substrate_report_service(nats.machine_a.clone(), &machine_id("machine_a")).await;
+    let runtime = NatsMachineSubstrateUpdater::new(nats.client);
+
+    let reported = runtime
+        .report_substrate_versions(&machine_id("machine_a"), &operation_id("op_update_1"))
+        .await
+        .expect("substrate report succeeds");
+
+    assert_eq!(
+        reported.ployzd.as_ref().map(|version| version.as_str()),
+        Some("0.2.0")
+    );
+    assert_eq!(reported.keeper, None);
+}
+
+#[tokio::test]
 async fn nats_machine_runtime_calls_container_remove_service() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -386,6 +406,51 @@ async fn start_container_remove_raw_service(
         })
         .await
         .expect("bind container.remove endpoint");
+    client.flush().await.expect("flush service subscription");
+    service
+}
+
+async fn start_substrate_report_service(
+    client: async_nats::Client,
+    machine_id: &MachineId,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let machine_id = machine_id.clone();
+    let spec = machine_runtime_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject
+                == machine_service(&machine_id, MachineServiceEndpoint::SubstrateReport)
+        })
+        .expect("substrate.report endpoint exists")
+        .clone();
+    let mut service = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, move |_request| {
+            let machine_id = machine_id.clone();
+            async move {
+                NatsServiceResponse::ok(
+                    serde_json::to_vec(&MachineSubstrateReportRpcResponse::Ok(
+                        MachineSubstrateReportRpcOk {
+                            machine_id,
+                            reported: ployz_core::ops::MachineSubstrateVersions {
+                                ployzd: Some(
+                                    ployz_core::install::InstallArtifactVersion::try_new("0.2.0")
+                                        .expect("test version is valid"),
+                                ),
+                                keeper: None,
+                            },
+                        },
+                    ))
+                    .expect("substrate report response encodes"),
+                )
+            }
+        })
+        .await
+        .expect("bind substrate.report endpoint");
     client.flush().await.expect("flush service subscription");
     service
 }

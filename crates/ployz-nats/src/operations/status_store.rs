@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use super::KV_OPS_BUCKET;
 use super::keys::{
-    MACHINE_ADD_SUBMISSION_KEY_PREFIX, machine_add_claim_key, machine_add_join_token_key,
-    machine_add_mint_claim_key, machine_add_secret_delivery_key, machine_add_submission_key,
-    operation_status_key,
+    MACHINE_ADD_SUBMISSION_KEY_PREFIX, OPERATION_STATUS_KEY_PREFIX, machine_add_claim_key,
+    machine_add_join_token_key, machine_add_mint_claim_key, machine_add_secret_delivery_key,
+    machine_add_submission_key, operation_status_key,
 };
 use crate::kv::{NatsIoTimeout, bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
 
@@ -482,6 +482,23 @@ impl AsyncNatsOperationStatusStore {
         serde_json::from_slice(&payload)
             .map(Some)
             .map_err(OperationStatusReadError::DecodeStatus)
+    }
+
+    pub async fn list(&self) -> Result<Vec<OperationStatus>, OperationStatusReadError> {
+        let entries =
+            bounded_bucket_key_scan_entries_with_prefix(&self.bucket, OPERATION_STATUS_KEY_PREFIX)
+                .await
+                .map_err(|error| OperationStatusReadError::GetStatus {
+                    message: error.message,
+                })?;
+        let mut statuses = Vec::with_capacity(entries.len());
+        for entry in entries {
+            statuses.push(
+                serde_json::from_slice::<OperationStatus>(&entry.value)
+                    .map_err(OperationStatusReadError::DecodeStatus)?,
+            );
+        }
+        Ok(statuses)
     }
 }
 

@@ -1,13 +1,12 @@
 //! Runtime wiring for the control role.
 
 use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
-use crate::backup_adapters::BackupAdapterRegistry;
-use crate::backup_runtime::BackupOperationRuntime;
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionMachineScope;
-use crate::machine_runtime::client::NatsMachineLogsTailer;
+use crate::machine_runtime::client::{NatsMachineLogsTailer, NatsMachineSubstrateUpdater};
+use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
     NatsAuthorizationStartError, NatsReloadRunner, SystemctlNatsReloadRunner,
@@ -29,7 +28,7 @@ const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
     deploy_tasks: TaskRegistry,
-    backup_tasks: TaskRegistry,
+    machine_update_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
     authorization: NatsAuthorizationRuntime,
 }
@@ -38,7 +37,7 @@ impl RunningControlRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
         self.deploy_tasks.abort_all();
-        self.backup_tasks.abort_all();
+        self.machine_update_tasks.abort_all();
         self.mint_tasks.abort_all();
         self.authorization.shutdown();
         Ok(())
@@ -51,47 +50,20 @@ pub async fn start_control_runtime(
     let client = connect_authenticated(&config.nats_connect, CONTROL_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(ControlRuntimeError::ConnectNats)?;
-    start_control_runtime_with_client_and_reload(
-        client,
-        config,
-        SystemctlNatsReloadRunner,
-        BackupAdapterRegistry::s3_default(),
-    )
-    .await
+    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
 }
 
 pub async fn start_control_runtime_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
-    start_control_runtime_with_client_and_reload(
-        client,
-        config,
-        SystemctlNatsReloadRunner,
-        BackupAdapterRegistry::s3_default(),
-    )
-    .await
-}
-
-pub async fn start_control_runtime_with_client_and_backup_adapters(
-    client: NatsClient,
-    config: &ControlProcessConfig,
-    backup_adapters: BackupAdapterRegistry,
-) -> Result<RunningControlRuntime, ControlRuntimeError> {
-    start_control_runtime_with_client_and_reload(
-        client,
-        config,
-        SystemctlNatsReloadRunner,
-        backup_adapters,
-    )
-    .await
+    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
 }
 
 pub async fn start_control_runtime_with_client_and_reload(
     client: NatsClient,
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
-    backup_adapters: BackupAdapterRegistry,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
     if config.machine_bootstrap.join_material.is_none() {
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
@@ -129,7 +101,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     .await
     .map_err(ControlRuntimeError::StartNatsAuthorization)?;
     let deploy_tasks = TaskRegistry::default();
-    let backup_tasks = TaskRegistry::default();
+    let machine_update_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
@@ -157,19 +129,25 @@ pub async fn start_control_runtime_with_client_and_reload(
         .await
         .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
-    let backup_runtime = BackupOperationRuntime::new(
-        jetstream,
+    let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
+    let machine_update_runtime = MachineUpdateOperationRuntime::new(
         controllers.clone(),
-        backup_adapters,
-        backup_tasks.clone(),
+        core_state.clone(),
+        machine_updater,
+        machine_update_tasks.clone(),
     );
     let operation_api = start_operation_api_service_with_handlers(
         client,
         OperationApiHandlers::execute_operations(
             controllers,
             deploy_runtime,
-            backup_runtime,
+            machine_update_runtime,
             machine_mint,
+            config
+                .deploy_machines
+                .first()
+                .cloned()
+                .ok_or(ControlRuntimeError::MissingDeployMachine)?,
             core_state,
             observations,
             logs_tailer,
@@ -181,7 +159,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     Ok(RunningControlRuntime {
         operation_api,
         deploy_tasks,
-        backup_tasks,
+        machine_update_tasks,
         mint_tasks,
         authorization,
     })
@@ -203,6 +181,7 @@ pub async fn run_control_until_shutdown(
 #[derive(Debug)]
 pub enum ControlRuntimeError {
     MissingMachineJoinTemplate,
+    MissingDeployMachine,
     ConnectNats(NatsConnectError),
     PlanBootstrap(BootstrapRefusal),
     AssureBootstrap(BootstrapAssuranceError),
@@ -221,6 +200,9 @@ impl fmt::Display for ControlRuntimeError {
         match self {
             Self::MissingMachineJoinTemplate => {
                 write!(formatter, "machine add requires configured join template")
+            }
+            Self::MissingDeployMachine => {
+                write!(formatter, "control runtime requires a deploy machine")
             }
             Self::ConnectNats(error) => write!(formatter, "{error}"),
             Self::PlanBootstrap(error) => write!(formatter, "NATS bootstrap refused: {error}"),

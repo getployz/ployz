@@ -8,18 +8,19 @@ pub use machine_join::{
     RedeemMachineJoinTokenError, RedeemedMachineJoin,
 };
 pub use submission::{
-    AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
-    AcceptedMachineAddSubmission, BackupOperationSubmission, CertOperationSubmission,
-    DeployOperationSubmission, MachineAddOperationSubmission, SubmitMachineAddError,
+    AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
+    AcceptedMachineUpdateSubmission, CertOperationSubmission, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineUpdateOperationSubmission, SubmitMachineAddError,
     SubmitOperationError,
 };
 
 use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::ops::{
-    BackupTransition, CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationProjection, OperationStatusSnapshot,
-    StatusProjectionError, project_operation_event, validate_fresh_deploy_evidence,
+    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
+    MachineSubstrateVersions, MachineUpdateFailure, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationProjection,
+    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
+    validate_fresh_deploy_evidence,
 };
 
 use super::events::{
@@ -133,19 +134,6 @@ impl AsyncNatsOperationRepository {
         .map(RecordOperationEventOutcome::into_status_write)
     }
 
-    pub async fn record_backup_transition(
-        &self,
-        operation_id: &OperationId,
-        transition: BackupTransition,
-    ) -> Result<OperationStatusWrite, RecordBackupEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::backup_transition(operation_id, &transition),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
-    }
-
     pub async fn record_machine_add_joined(
         &self,
         operation_id: &OperationId,
@@ -202,6 +190,47 @@ impl AsyncNatsOperationRepository {
         self.record_operation_event(
             operation_id,
             OperationEventAppend::machine_add_completed(operation_id, machine_id),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_update_running(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_update_running(operation_id, machine_id),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_update_completed(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        reported: MachineSubstrateVersions,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_update_completed(operation_id, machine_id, reported),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_update_failed(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        failure: MachineUpdateFailure,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_update_failed(operation_id, machine_id, failure),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -513,8 +542,6 @@ pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordCertEventError = RecordLifecycleEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
-pub type RecordBackupEventError = RecordLifecycleEventError;
-
 fn validate_stored_operation_event(
     operation_id: &OperationId,
     attempted_event: &OperationEvent,
@@ -633,10 +660,10 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::MachineAddCredentialProvisioned { .. }
         | OperationEvent::MachineAddCompleted { .. }
         | OperationEvent::MachineAddFailed { .. }
-        | OperationEvent::BackupCreateSubmitted { .. }
-        | OperationEvent::BackupRunning { .. }
-        | OperationEvent::BackupCompleted { .. }
-        | OperationEvent::BackupFailed { .. }
+        | OperationEvent::MachineUpdateSubmitted { .. }
+        | OperationEvent::MachineUpdateRunning { .. }
+        | OperationEvent::MachineUpdateCompleted { .. }
+        | OperationEvent::MachineUpdateFailed { .. }
         | OperationEvent::Cancelled { .. } => None,
     }
 }

@@ -4,25 +4,6 @@
     "start_sequence": "1",
     "watch_subject": "plz.v1.op.op_123.>"
   },
-  "backup_create_request": {
-    "operation_id": "op_backup",
-    "target": {
-      "addressing_style": "virtual_hosted",
-      "bucket": "ployz-backups",
-      "endpoint_url": null,
-      "key_prefix": "clusters/dev",
-      "kind": "s3",
-      "region": "us-east-1"
-    }
-  },
-  "backup_create_response": {
-    "status": "ok",
-    "value": {
-      "operation_id": "op_backup",
-      "start_sequence": "3",
-      "watch_subject": "plz.v1.op.op_backup.>"
-    }
-  },
   "cloud_bootstrap_callback_accepted": {
     "accepted_at_unix_seconds": 1893456060
   },
@@ -227,6 +208,19 @@
       "secret_delivery": {
         "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
       }
+    }
+  },
+  "machine_update_request": {
+    "machine_id": "machine_2",
+    "operation_id": "op_machine_update",
+    "target_version": "0.2.0"
+  },
+  "machine_update_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_machine_update",
+      "start_sequence": "9",
+      "watch_subject": "plz.v1.op.op_machine_update.>"
     }
   },
   "operation_event_replay_page": {

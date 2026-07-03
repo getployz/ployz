@@ -7,7 +7,6 @@
 //! own process wiring, TLS NATS connections, Docker clients, or CLI
 //! presentation.
 
-pub mod backup;
 pub mod cert;
 pub mod dataplane;
 pub mod deploy;

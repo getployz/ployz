@@ -2,8 +2,7 @@
 //! operation API error types. Pure functions; no I/O.
 
 use crate::controllers::{
-    BackupSubmitCommandError, MachineAddBootstrapMaterialError, MachineAddSubmitCommandError,
-    SubmitCommandError,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommandError, SubmitCommandError,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
@@ -17,16 +16,16 @@ use ployz_nats::operations::{
     ReplayOperationEventsError, SubmitOperationError,
 };
 use ployz_sdk_types::{
-    BackupCreateError, BootstrapMaterialFailure, DeploySubmitError, EventReplayFailure,
-    MachineAddError, MachineAddUnavailableSource, MachineJoinRedeemError,
-    MachineJoinRedeemUnavailableSource, MachineJoinReportError, MachineJoinReportUnavailableSource,
-    OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
-    OperationSubmitUnavailableSource, OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
+    BootstrapMaterialFailure, DeploySubmitError, EventReplayFailure, MachineAddError,
+    MachineAddUnavailableSource, MachineJoinRedeemError, MachineJoinRedeemUnavailableSource,
+    MachineJoinReportError, MachineJoinReportUnavailableSource, OperationSubmitClockFailure,
+    OperationSubmitEventFailure, OperationSubmitStatusFailure, OperationSubmitUnavailableSource,
+    OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
 };
 
 /// The endpoint-independent core of a submit command failure: either an
 /// unavailable source or the duplicate-sequence collision.
-enum SubmitFailure {
+pub(super) enum SubmitFailure {
     InvalidDeployTarget,
     ResourceBusy {
         namespace_id: ployz_core::ids::NamespaceId,
@@ -38,7 +37,7 @@ enum SubmitFailure {
     },
 }
 
-fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
+pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     match error {
         SubmitCommandError::Clock { .. } => {
             SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
@@ -100,36 +99,6 @@ pub(super) fn deploy_submit_error_from_submit_error(
         },
         SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             DeploySubmitError::DuplicateSequenceMismatch {
-                operation_id,
-                sequence,
-            }
-        }
-    }
-}
-
-pub(super) fn backup_create_error_from_submit_error(
-    operation_id: OperationId,
-    error: BackupSubmitCommandError,
-) -> BackupCreateError {
-    let submit = match error {
-        BackupSubmitCommandError::InvalidTarget(error) => {
-            return BackupCreateError::InvalidTarget {
-                operation_id,
-                field: error.field,
-                failure: error.failure,
-            };
-        }
-        BackupSubmitCommandError::Submit(error) => error,
-    };
-    match submit_failure(submit) {
-        SubmitFailure::InvalidDeployTarget => unreachable!("backup submit is not deploy target"),
-        SubmitFailure::ResourceBusy { .. } => unreachable!("backup submit has no namespace lock"),
-        SubmitFailure::Unavailable(source) => BackupCreateError::Unavailable {
-            operation_id,
-            source,
-        },
-        SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-            BackupCreateError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,
             }

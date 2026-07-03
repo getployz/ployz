@@ -15,12 +15,12 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
     LogsTailError, LogsTailRequest, LogsTailResult, LogsTailUnavailableSource, MachineInspectError,
     MachineListError, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
-    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, RuntimeDerivedCollectionSource,
-    RuntimeDerivedCollectionStatus, RuntimeProjectionSource, RuntimeProjectionSources,
-    RuntimeServiceInstance, RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot,
-    RuntimeSnapshotError, RuntimeSnapshotResult, RuntimeSnapshotUnavailableSource,
-    ServiceInspectError, ServiceListError, ServiceListResult, ServiceQueryUnavailableSource,
-    ServiceSnapshot,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusUnavailableSource,
+    OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
+    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
+    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
+    RuntimeSnapshotResult, RuntimeSnapshotUnavailableSource, ServiceInspectError, ServiceListError,
+    ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -668,6 +668,25 @@ pub async fn ops_status(
             },
         }),
     }
+}
+
+pub async fn ops_list(
+    controllers: &OperationControllers,
+    request: OpsListRequest,
+) -> Result<OpsListResult, OpsListError> {
+    let operations = controllers
+        .operation_statuses()
+        .await
+        .map_err(|error| OpsListError::Unavailable {
+            source: OpsStatusUnavailableSource::StatusStore {
+                failure: status_read_failure(&error),
+            },
+        })?
+        .into_iter()
+        .filter(|status| !request.active_only || !status.is_terminal())
+        .map(OperationStatusSnapshot::new)
+        .collect();
+    Ok(OpsListResult { operations })
 }
 
 pub async fn ops_watch(

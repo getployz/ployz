@@ -1,5 +1,5 @@
-use ployz_core::backup::BackupTarget;
 use ployz_core::ids::{CertId, MachineId, OperationId};
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
@@ -95,31 +95,47 @@ impl SubmitKind for CertOperationSubmission {
     }
 }
 
-impl SubmitKind for BackupOperationSubmission {
-    type Payload = BackupTarget;
-    const KIND: OperationKind = OperationKind::Backup;
+impl SubmitKind for MachineUpdateOperationSubmission {
+    type Payload = MachineUpdatePayload;
+    const KIND: OperationKind = OperationKind::MachineUpdate;
 
-    fn submitted_event(operation_id: OperationId, target: Self::Payload) -> OperationEventAppend {
-        OperationEventAppend::backup_submitted(operation_id, target)
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEventAppend {
+        OperationEventAppend::machine_update_submitted(
+            operation_id,
+            payload.machine_id,
+            payload.target_version,
+        )
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::BackupCreateSubmitted {
+        let OperationEvent::MachineUpdateSubmitted {
             operation_id,
-            target,
+            machine_id,
+            target_version,
         } = event
         else {
             return None;
         };
-        Some((operation_id, target))
+        Some((
+            operation_id,
+            MachineUpdatePayload {
+                machine_id,
+                target_version,
+            },
+        ))
     }
 
     fn accepted_status(
         operation_id: OperationId,
-        _target: &Self::Payload,
+        payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::backup_accepted(operation_id, sequence)
+        OperationStatus::machine_update_accepted(
+            operation_id,
+            payload.machine_id.clone(),
+            payload.target_version.clone(),
+            sequence,
+        )
     }
 }
 
@@ -163,22 +179,28 @@ impl AsyncNatsOperationRepository {
         })
     }
 
-    pub async fn submit_backup(
+    pub async fn submit_machine_update(
         &self,
-        submission: BackupOperationSubmission,
-    ) -> Result<AcceptedBackupSubmission, SubmitOperationError> {
-        let BackupOperationSubmission {
+        submission: MachineUpdateOperationSubmission,
+    ) -> Result<AcceptedMachineUpdateSubmission, SubmitOperationError> {
+        let MachineUpdateOperationSubmission {
             operation_id,
-            target,
+            machine_id,
+            target_version,
         } = submission;
+        let payload = MachineUpdatePayload {
+            machine_id,
+            target_version,
+        };
         let submitted = self
-            .submit_operation::<BackupOperationSubmission>(operation_id, target)
+            .submit_operation::<MachineUpdateOperationSubmission>(operation_id, payload)
             .await?;
 
-        Ok(AcceptedBackupSubmission {
+        Ok(AcceptedMachineUpdateSubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
-            target: submitted.payload,
+            machine_id: submitted.payload.machine_id,
+            target_version: submitted.payload.target_version,
             should_start_execution: submitted.should_start_execution,
         })
     }
@@ -516,9 +538,16 @@ pub struct MachineAddOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupOperationSubmission {
+pub struct MachineUpdateOperationSubmission {
     pub operation_id: OperationId,
-    pub target: BackupTarget,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MachineUpdatePayload {
+    machine_id: MachineId,
+    target_version: InstallArtifactVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -549,14 +578,15 @@ pub struct AcceptedMachineAddSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedBackupSubmission {
+pub struct AcceptedMachineUpdateSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
-    pub target: BackupTarget,
+    pub machine_id: MachineId,
+    pub target_version: InstallArtifactVersion,
     pub should_start_execution: bool,
 }
 
-/// How a deploy, cert, or backup submission fails inside the repository.
+/// How a deploy or cert submission fails inside the repository.
 #[derive(Debug)]
 pub enum SubmitOperationError {
     InvalidDeployTarget,

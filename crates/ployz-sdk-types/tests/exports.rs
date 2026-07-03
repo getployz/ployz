@@ -1,9 +1,8 @@
-use ployz_core::subjects::{OPERATION_API_ENDPOINTS, OperationApiEndpointExecution};
+use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
-    AcmeHttp01Challenge, ActiveCertState, BackupCreateError, BackupCreateRequest,
-    BackupCreateResponse, CertBundleRef, CertId, CertOperationState, CertRunningStage,
-    CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapAttemptId,
+    AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertId, CertOperationState,
+    CertRunningStage, CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapAttemptId,
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
@@ -19,20 +18,21 @@ use ployz_sdk_types::{
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
-    MachineSnapshot, NamespaceId, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError,
-    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount,
-    ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse, NamespaceId,
+    NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
+    RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi,
-        ServiceListApi,
+        MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -313,12 +313,12 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     .expect("fixture is json");
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
-    assert_fixture::<BackupCreateRequest>(&fixture, "backup_create_request");
     assert_fixture::<InitFirstMachineActivateRequest>(
         &fixture,
         "init_first_machine_activate_request",
     );
     assert_fixture::<MachineAddRequest>(&fixture, "machine_add_request");
+    assert_fixture::<MachineUpdateRequest>(&fixture, "machine_update_request");
     assert_fixture::<MachineJoinRedeemRequest>(&fixture, "machine_join_redeem_request");
     assert_fixture::<CloudBootstrapSessionCreateRequest>(
         &fixture,
@@ -335,12 +335,12 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
-    assert_fixture::<BackupCreateResponse>(&fixture, "backup_create_response");
     assert_fixture::<OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>>(
         &fixture,
         "init_first_machine_activate_response",
     );
     assert_fixture::<MachineAddResponse>(&fixture, "machine_add_response");
+    assert_fixture::<MachineUpdateResponse>(&fixture, "machine_update_response");
     assert_fixture::<MachineJoinRedeemResponse>(&fixture, "machine_join_redeem_response");
     assert_fixture::<OperationStatusSnapshot>(&fixture, "operation_status_snapshot");
     assert_fixture::<OpsStatusResponse>(&fixture, "ops_status_response");
@@ -367,6 +367,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         InitFirstMachineActivateError,
     >();
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
+    assert_contract::<MachineUpdateApi, MachineUpdateRequest, AcceptedOperation, MachineUpdateError>(
+    );
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
     );
@@ -392,6 +394,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         MachineJoinReported,
         MachineJoinReportError,
     >();
+    assert_contract::<OpsListApi, OpsListRequest, OpsListResult, OpsListError>();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
         OpsWatchApi,
@@ -399,9 +402,26 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         OperationEventReplayPage,
         ployz_sdk_types::OpsWatchError,
     >();
-    assert_contract::<BackupCreateApi, BackupCreateRequest, AcceptedOperation, BackupCreateError>();
-
-    assert_eq!(operation_api_contract_endpoints(), OPERATION_API_ENDPOINTS);
+    assert_eq!(
+        operation_api_contract_endpoints(),
+        [
+            OperationApiEndpoint::DeploySubmit,
+            OperationApiEndpoint::InitFirstMachineActivate,
+            OperationApiEndpoint::MachineAdd,
+            OperationApiEndpoint::MachineUpdate,
+            OperationApiEndpoint::MachineList,
+            OperationApiEndpoint::MachineInspect,
+            OperationApiEndpoint::MachineJoinRedeem,
+            OperationApiEndpoint::MachineJoinReport,
+            OperationApiEndpoint::ServiceList,
+            OperationApiEndpoint::ServiceInspect,
+            OperationApiEndpoint::RuntimeSnapshot,
+            OperationApiEndpoint::LogsTail,
+            OperationApiEndpoint::OpsList,
+            OperationApiEndpoint::OpsStatus,
+            OperationApiEndpoint::OpsWatch,
+        ]
+    );
     assert_eq!(
         operation_api_contract_rows(),
         vec![
@@ -431,6 +451,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineAddAccepted".to_owned(),
                 "MachineAddError".to_owned(),
                 "MachineAddResponse",
+            ),
+            (
+                "machine.update",
+                "plz.v1.svc.api.machine.update",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "MachineUpdateRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "MachineUpdateError".to_owned(),
+                "MachineUpdateResponse",
             ),
             (
                 "machine.list",
@@ -505,6 +534,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "LogsTailResponse",
             ),
             (
+                "ops.list",
+                "plz.v1.svc.api.ops.list",
+                OperationApiEndpointExecution::Query,
+                "OpsListRequest".to_owned(),
+                "OpsListResult".to_owned(),
+                "OpsListError".to_owned(),
+                "OpsListResponse",
+            ),
+            (
                 "ops.status",
                 "plz.v1.svc.api.ops.status",
                 OperationApiEndpointExecution::Query,
@@ -521,15 +559,6 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "OperationEventReplayPage".to_owned(),
                 "OpsWatchError".to_owned(),
                 "OpsWatchResponse",
-            ),
-            (
-                "backup.create",
-                "plz.v1.svc.api.backup.create",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "BackupCreateRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "BackupCreateError".to_owned(),
-                "BackupCreateResponse",
             ),
         ]
     );
