@@ -452,9 +452,8 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
 
 #[test]
 fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
-    // Ported from the parallel namespace fix (PR #215): another
-    // namespace's running container with the same service id is neither a
-    // reusable replica nor a cleanup candidate.
+    // Another namespace's running container with the same service id is
+    // neither a reusable replica nor a cleanup candidate.
     let mut foreign = observed_container(
         "machine_a",
         "ctr_foreign",
