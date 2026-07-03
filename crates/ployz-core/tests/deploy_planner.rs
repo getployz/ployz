@@ -23,12 +23,12 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     let right = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 }));
 
     assert_eq!(
-        left.namespace_revision_entry_id(),
-        right.namespace_revision_entry_id()
+        left.namespace_revision_entry_id(&namespace_id("default")),
+        right.namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
-        left.namespace_revision_entry_id().as_str(),
-        "4352bcaf84b6851f55968256ba6d1b84a1781fa273564663a9d2c5468bc8b14a"
+        left.namespace_revision_entry_id(&namespace_id("default")).as_str(),
+        "fd4d6147bc732c2c346e384ed64af5f31a61d47008b6ff7f03c2a9e97ddd5422"
     );
 }
 
@@ -37,24 +37,24 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
     let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
 
     assert_ne!(
-        base.namespace_revision_entry_id(),
-        service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None).namespace_revision_entry_id()
+        base.namespace_revision_entry_id(&namespace_id("default")),
+        service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None).namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
-            .namespace_revision_entry_id()
+            .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "4b4081f4e61dd4321291177042ce920b4f10ae5b18e4f4c6f590da95555ac5eb"
+        "78fa2c3fc094fa2155b302d6aa0852b08ec0e700df8c04d3c9383747e773871f"
     );
     assert_ne!(
-        base.namespace_revision_entry_id(),
-        service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None).namespace_revision_entry_id()
+        base.namespace_revision_entry_id(&namespace_id("default")),
+        service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None).namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
-            .namespace_revision_entry_id()
+            .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "3e7c6ae98166d296b94679c6bbe108f6782692c06f8489f0686075d2c3b8501e"
+        "8be3fe361e233e2c3d96f5ecd0eebe187ecef4eaa843fb043b2efcd55c3fa31a"
     );
 }
 
@@ -62,13 +62,13 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
 fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
-            .namespace_revision_entry_id()
+            .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "238bbf3691ef5e99ec39743592000604b58356e2568703e01c2e6822a87f3a81"
+        "807f86a22b5c896d141d935b6317008e62c0f73a2947775fe9ab98b11ddc6578"
     );
     assert_eq!(
-        service_spec("svc_api", "nginx:latest", 1, None).namespace_revision_entry_id(),
-        service_spec("svc_api", "nginx:latest", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 })).namespace_revision_entry_id()
+        service_spec("svc_api", "nginx:latest", 1, None).namespace_revision_entry_id(&namespace_id("default")),
+        service_spec("svc_api", "nginx:latest", 3, Some(SpecRoute { public_port: 443, endpoint_port: 8080 })).namespace_revision_entry_id(&namespace_id("default"))
     );
 }
 
@@ -428,11 +428,25 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
     // encoding version bump (ADR 0022) - an unintended change here means
     // every running container would be replaced after upgrade.
     let entry_id = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None)
-        .namespace_revision_entry_id();
+        .namespace_revision_entry_id(&namespace_id("default"));
 
     assert_eq!(
         entry_id.as_str(),
-        "4352bcaf84b6851f55968256ba6d1b84a1781fa273564663a9d2c5468bc8b14a"
+        "fd4d6147bc732c2c346e384ed64af5f31a61d47008b6ff7f03c2a9e97ddd5422"
+    );
+}
+
+#[test]
+fn namespace_revision_entry_id_differs_across_namespaces() {
+    // Two namespaces deploying the same service name and image must never
+    // share an entry identity: the id travels through labels and gateway
+    // matching, where a collision would serve one namespace's traffic from
+    // another namespace's containers (ADR 0022).
+    let spec = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+
+    assert_ne!(
+        spec.namespace_revision_entry_id(&namespace_id("team-a")),
+        spec.namespace_revision_entry_id(&namespace_id("team-b"))
     );
 }
 
@@ -561,6 +575,7 @@ fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry),
         operation_id: operation_id("op_existing"),
@@ -588,6 +603,7 @@ fn observed_container(
     ManagedContainerObservation {
         machine_id: machine_id(machine),
         container_id: container_id(container),
+        namespace_id: namespace_id("default"),
         service_id: service_id(service),
         namespace_revision_entry_id: namespace_revision_entry_id(revision),
         operation_id: operation_id("op_existing"),

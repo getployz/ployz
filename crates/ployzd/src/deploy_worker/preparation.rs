@@ -79,10 +79,15 @@ pub fn prepare_deploy_execution_command(
 
     // Manifest omission removes a service: its containers are cleanup
     // candidates on every deploy, not only when the manifest is empty.
+    // Only this namespace's containers qualify - a deploy must never
+    // remove another namespace's workloads.
     let namespace_cleanup_candidates = facts
         .namespace_cleanup_candidates
         .into_iter()
-        .filter(|candidate| !declared_services.contains(&candidate.service_id))
+        .filter(|candidate| {
+            candidate.namespace_id == request.namespace_id
+                && !declared_services.contains(&candidate.service_id)
+        })
         .collect();
 
     Ok(DeployExecutionCommand {
@@ -115,6 +120,7 @@ pub fn namespace_cleanup_candidates(
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
+            namespace_id: container.namespace_id.clone(),
             service_id: container.service_id.clone(),
             namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
             operation_id: container.operation_id.clone(),

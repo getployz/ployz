@@ -60,7 +60,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     let mut service_facts = Vec::new();
     for service in &service_requests {
         let serving_target_entry = core_state
-            .serving_target_entry(&service.service_id)
+            .serving_target_entry(&service.namespace_id, &service.service_id)
             .await
             .map_err(|source| DeployFactLoadError::ServingTargetEntryRead {
                 service_id: service.service_id.clone(),

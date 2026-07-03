@@ -90,7 +90,27 @@ pub enum GatewayServingStatus {
     Unavailable,
 }
 
-id_prefixed_state_key! { pub struct ActiveServiceStateKey; prefix: SERVING_TARGET_ENTRY_PREFIX; fn from_service_id(&ServiceId); }
+/// KV key for one serving target entry, scoped by namespace so equally
+/// named services in different namespaces never share a record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingTargetEntryKey(String);
+
+impl ServingTargetEntryKey {
+    #[must_use]
+    pub fn from_namespace_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
+        Self(format!(
+            "{}.{}.{}",
+            SERVING_TARGET_ENTRY_PREFIX,
+            namespace_id.as_str(),
+            service_id.as_str()
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteBindingStateKey(String);

@@ -4,6 +4,7 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
+    namespace_id,
     container_id, machine_id, namespace_revision_entry_id, operation_id, route_hostname,
     route_port, service_id, step_id,
 };
@@ -264,11 +265,13 @@ fn gateway_rejects_duplicate_route_targets() {
         project_gateway(GatewayProjectionInput {
             routes: vec![
                 GatewayRoute {
+                    namespace_id: namespace_id("default"),
                     target: route_target("API.example.com", 443),
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
                 },
                 GatewayRoute {
+                    namespace_id: namespace_id("default"),
                     target: target.clone(),
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
@@ -288,11 +291,13 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
     let update = GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
         routes: vec![
             GatewayRoute {
+                namespace_id: namespace_id("default"),
                 target: target.clone(),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
             },
             GatewayRoute {
+                namespace_id: namespace_id("default"),
                 target: target.clone(),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
@@ -401,6 +406,7 @@ fn observed_machine(
 
 fn gateway_route(hostname: &str, service_id_value: &str) -> GatewayRoute {
     GatewayRoute {
+        namespace_id: namespace_id("default"),
         target: route_target(hostname, 443),
         endpoint_port: route_port(8080),
         service_id: service_id(service_id_value),
@@ -412,6 +418,7 @@ fn serving_entry(
     namespace_revision_entry_id_value: &str,
 ) -> GatewayServingEntry {
     GatewayServingEntry {
+        namespace_id: namespace_id("default"),
         service_id: service_id(service_id_value),
         namespace_revision_entry_id: namespace_revision_entry_id(
             namespace_revision_entry_id_value,
@@ -447,6 +454,7 @@ fn managed_container(
     ManagedContainerObservation {
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
+        namespace_id: namespace_id("default"),
         service_id: service_id(service_id_value),
         namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry_id_value),
         operation_id: operation_id("op_1"),

@@ -312,6 +312,7 @@ where
         .map(|container| ManagedContainerObservation {
             machine_id: machine_id.clone(),
             container_id: container.container_id,
+            namespace_id: container.labels.namespace_id,
             service_id: container.labels.service_id,
             namespace_revision_entry_id: container.labels.namespace_revision_entry_id,
             operation_id: container.labels.operation_id,
@@ -761,6 +762,7 @@ mod tests {
 
     fn labels(step: &str) -> crate::docker::labels::ManagedContainerLabels {
         crate::docker::labels::ManagedContainerLabels {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
@@ -779,6 +781,10 @@ mod tests {
 
     fn operation_id(value: &str) -> OperationId {
         OperationId::try_new(value).expect("valid operation id")
+    }
+
+    fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
+        ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
     fn service_id(value: &str) -> ServiceId {

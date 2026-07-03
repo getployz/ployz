@@ -114,7 +114,10 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move {
-                    handlers.service_query().inspect(&request.service_id).await
+                    handlers
+                        .service_query()
+                        .inspect(&request.namespace_id, &request.service_id)
+                        .await
                 },
             )
             .await

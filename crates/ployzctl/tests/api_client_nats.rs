@@ -30,7 +30,7 @@ use ployz_sdk_types::{
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
-use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, namespace_id, operation_id};
 use ployzctl::api_client::{
     NatsServiceRequestFailure, OperationApiClient, OperationApiClientError,
 };
@@ -315,6 +315,7 @@ async fn operation_api_client_routes_service_inspect_success() {
 
     let result = api
         .service_inspect(&ServiceInspectRequest {
+            namespace_id: namespace_id("default"),
             service_id: ployz_core::ids::ServiceId::try_new("svc_api").expect("valid service id"),
         })
         .await

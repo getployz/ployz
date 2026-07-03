@@ -2,7 +2,7 @@ use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     ActiveMachineState, ActiveMachineStateKey, RouteBindingState, RouteBindingStateKey,
-    ServingTargetEntry, ActiveServiceStateKey,
+    ServingTargetEntry, ServingTargetEntryKey,
 };
 use ployz_nats::core_state::{
     RouteBindingStoreError, AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire,
@@ -28,10 +28,51 @@ async fn active_service_state_round_trips_through_kv_core() {
 
     assert_eq!(
         store
-            .serving_target_entry(&service_id("svc_api"))
+            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state loads"),
         Some(state)
+    );
+}
+
+#[tokio::test]
+async fn serving_target_entries_are_isolated_per_namespace() {
+    // Equally named services in different namespaces keep separate serving
+    // records: deploying one namespace must never overwrite another's
+    // serving target.
+    let nats = test_nats().await;
+    let store = core_state_store(&nats).await;
+    let mut team_a = serving_target_entry_state("web", "entry_a");
+    team_a.namespace_id = namespace_id("team-a");
+    let mut team_b = serving_target_entry_state("web", "entry_b");
+    team_b.namespace_id = namespace_id("team-b");
+
+    store
+        .replace_serving_target_entry(&team_a)
+        .await
+        .expect("team-a serving entry stores");
+    store
+        .replace_serving_target_entry(&team_b)
+        .await
+        .expect("team-b serving entry stores");
+
+    assert_eq!(
+        store
+            .serving_target_entry(&namespace_id("team-a"), &service_id("web"))
+            .await
+            .expect("team-a serving entry loads"),
+        Some(team_a)
+    );
+    store
+        .remove_serving_target_entry(&namespace_id("team-b"), &service_id("web"))
+        .await
+        .expect("team-b serving entry removes");
+    assert_eq!(
+        store
+            .serving_target_entry(&namespace_id("team-a"), &service_id("web"))
+            .await
+            .expect("team-a serving entry survives team-b removal"),
+        Some(serving_target_entry_state_for("team-a", "web", "entry_a"))
     );
 }
 
@@ -53,7 +94,7 @@ async fn active_service_replace_overwrites_current_revision() {
 
     assert_eq!(
         store
-            .serving_target_entry(&service_id("svc_api"))
+            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
             .await
             .expect("active state loads"),
         Some(second)
@@ -71,7 +112,7 @@ async fn active_service_replace_succeeds_after_delete_marker() {
         .await
         .expect("active state stores");
     store
-        .remove_serving_target_entry(&state.service_id)
+        .remove_serving_target_entry(&state.namespace_id, &state.service_id)
         .await
         .expect("active state removes");
     store
@@ -81,7 +122,7 @@ async fn active_service_replace_succeeds_after_delete_marker() {
 
     assert_eq!(
         store
-            .serving_target_entry(&state.service_id)
+            .serving_target_entry(&state.namespace_id, &state.service_id)
             .await
             .expect("active state loads"),
         Some(state)
@@ -104,7 +145,7 @@ async fn active_services_list_skips_deleted_keys() {
         .await
         .expect("worker service stores");
     store
-        .remove_serving_target_entry(&worker.service_id)
+        .remove_serving_target_entry(&worker.namespace_id, &worker.service_id)
         .await
         .expect("worker service removes");
 
@@ -120,7 +161,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
     let store = core_state_store(&nats).await;
     let target_service_id = service_id("svc_api");
     let other_service_id = service_id("svc_other");
-    let key = ActiveServiceStateKey::from_service_id(&target_service_id);
+    let key = ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &target_service_id);
     let bucket = nats
         .jetstream
         .get_key_value(KV_CORE_BUCKET)
@@ -139,7 +180,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         .expect("write corrupt active state");
 
     let error = store
-        .serving_target_entry(&target_service_id)
+        .serving_target_entry(&namespace_id("default"), &target_service_id)
         .await
         .expect_err("wrong service payload is rejected");
     match error {
@@ -435,8 +476,8 @@ async fn namespace_lock_renew_and_release_are_owner_scoped() {
 #[test]
 fn active_service_state_key_matches_kv_core_path() {
     assert_eq!(
-        ActiveServiceStateKey::from_service_id(&service_id("svc_api")).as_str(),
-        "services.svc_api"
+        ServingTargetEntryKey::from_namespace_service(&namespace_id("default"), &service_id("svc_api")).as_str(),
+        "services.default.svc_api"
     );
 }
 
@@ -488,6 +529,18 @@ fn active_route_state(target: &RouteTarget, service: &str, endpoint_port: u16) -
         target: target.clone(),
         endpoint_port: route_port(endpoint_port),
         service_id: service_id(service),
+    }
+}
+
+fn serving_target_entry_state_for(
+    namespace: &str,
+    service: &str,
+    revision: &str,
+) -> ServingTargetEntry {
+    ServingTargetEntry {
+        namespace_id: namespace_id(namespace),
+        service_id: service_id(service),
+        namespace_revision_entry_id: namespace_revision_entry_id(revision),
     }
 }
 

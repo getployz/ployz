@@ -101,6 +101,7 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
     let cleanup_target = DeployCleanupContainer {
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_old"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id("rev_old"),
         operation_id: operation_id("op_old"),

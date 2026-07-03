@@ -67,6 +67,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
         let observation = ManagedContainerObservation {
             machine_id: self.machine_id.clone(),
             container_id: container_id.clone(),
+            namespace_id: command.labels.namespace_id,
             service_id: command.labels.service_id,
             namespace_revision_entry_id: command.labels.namespace_revision_entry_id,
             operation_id: command.labels.operation_id,
@@ -247,6 +248,7 @@ impl MachineLogReader for ObservingContainerRunner {
 
 fn observation_identity(observation: &ManagedContainerObservation) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
+        namespace_id: observation.namespace_id.clone(),
         service_id: observation.service_id.clone(),
         namespace_revision_entry_id: observation.namespace_revision_entry_id.clone(),
         operation_id: observation.operation_id.clone(),
@@ -324,6 +326,7 @@ fn existing_container_from_observation(
     ExistingManagedContainer {
         container_id: observation.container_id.clone(),
         labels: ManagedContainerLabels {
+            namespace_id: observation.namespace_id.clone(),
             service_id: observation.service_id.clone(),
             namespace_revision_entry_id: observation.namespace_revision_entry_id.clone(),
             operation_id: observation.operation_id.clone(),

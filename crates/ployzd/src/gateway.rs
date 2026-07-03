@@ -1,6 +1,6 @@
 //! Gateway projection runtime.
 
-use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionEntryId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::{RoutePort, RouteTarget};
 
@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 pub struct GatewayRoute {
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
 }
 
@@ -18,6 +19,7 @@ pub struct GatewayRoute {
 /// containers may serve that service (ADR 0023, ADR 0024).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayServingEntry {
+    pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
@@ -173,7 +175,7 @@ pub fn project_gateway(
     let serving_by_service = input
         .serving
         .iter()
-        .map(|entry| (entry.service_id.clone(), entry))
+        .map(|entry| ((entry.namespace_id.clone(), entry.service_id.clone()), entry))
         .collect::<BTreeMap<_, _>>();
     let indexed_containers = index_fresh_running_containers(&input.observed_machines);
     let mut routes = Vec::with_capacity(input_routes.len());
@@ -181,7 +183,9 @@ pub fn project_gateway(
         // A binding whose service is absent from the serving target stays
         // attached with no upstreams; the gateway answers unavailable
         // instead of treating the route as invalid state (ADR 0024).
-        let Some(serving_entry) = serving_by_service.get(&route.service_id) else {
+        let Some(serving_entry) =
+            serving_by_service.get(&(route.namespace_id.clone(), route.service_id.clone()))
+        else {
             routes.push(GatewayProjectedRoute {
                 target: route.target,
                 upstreams: Vec::new(),

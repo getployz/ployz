@@ -5,6 +5,7 @@ use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
+    namespace_id,
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
@@ -196,6 +197,7 @@ fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:rev-2"),
         container: MachineContainerRunSpec {
+            namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
@@ -207,6 +209,7 @@ fn run_request(step: &str) -> MachineContainerRunRpcRequest {
 
 fn managed_labels(step: &str) -> ManagedContainerLabels {
     ManagedContainerLabels {
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
