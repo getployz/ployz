@@ -1,10 +1,8 @@
 use ployz_core::permissions::{
-    NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
-    active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
+    NatsPermissionProfile, ResponsePermission, core_state_kv_write_scope, inbox_prefix,
     inbox_subscribe_scope, kv_read_js_api_subjects, machine_observation_kv_write_subjects,
-    namespace_lock_state_kv_write_scope, nats_authorized_user_kv_write_scope,
-    operation_status_kv_write_scope,
 };
+use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
@@ -84,12 +82,12 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             OPS_STREAM_SUBJECT.to_owned(),
             "$JS.API.>".to_owned(),
             "$JS.ACK.>".to_owned(),
-            active_service_state_kv_write_scope(),
-            active_route_state_kv_write_scope(),
-            active_machine_state_kv_write_scope(),
-            namespace_lock_state_kv_write_scope(),
-            nats_authorized_user_kv_write_scope(),
-            operation_status_kv_write_scope(),
+            "$KV.KV_CORE.services.*.*".to_owned(),
+            "$KV.KV_CORE.routes.*.*".to_owned(),
+            "$KV.KV_CORE.machines.*".to_owned(),
+            "$KV.KV_CORE.namespace_locks.*".to_owned(),
+            "$KV.KV_CORE.nats_authorized_user.>".to_owned(),
+            "$KV.KV_OPS.>".to_owned(),
         ]
     );
     assert_eq!(
@@ -215,4 +213,81 @@ fn inbox_prefixes_are_distinct_per_principal() {
         }),
         "_INBOX_machine_machine_7"
     );
+}
+
+/// `*` matches exactly one token, `>` matches one or more trailing tokens —
+/// the NATS subject rules the server applies to these grants.
+fn subject_matches(pattern: &str, subject: &str) -> bool {
+    let mut pattern_tokens = pattern.split('.');
+    let mut subject_tokens = subject.split('.').peekable();
+    loop {
+        match (pattern_tokens.next(), subject_tokens.next()) {
+            (None, None) => return true,
+            (Some(">"), Some(_)) => return true,
+            (Some("*"), Some(_)) => {}
+            (Some(token), Some(subject_token)) if token == subject_token => {}
+            _ => return false,
+        }
+    }
+}
+
+#[test]
+fn every_state_key_family_pattern_spans_its_rendered_keys() {
+    use ployz_core::ids::{NamespaceId, ServiceId};
+    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+    use ployz_core::state::{
+        ActiveMachineStateKey, NamespaceLockStateKey, RouteBindingStateKey,
+        ServingTargetEntryKey,
+    };
+
+    let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
+    let service = ServiceId::try_new("web").expect("valid service id");
+    let target = RouteTarget::new(
+        RouteHostname::try_new("api.example.com").expect("valid route hostname"),
+        RoutePort::try_new(443).expect("valid route port"),
+    );
+
+    // One sample key per family: the single hand-maintained list, whose only
+    // job is to catch a key type bypassing the shared renderer.
+    let samples = [
+        (
+            CoreStateKeyFamily::ServingTargetEntry,
+            ServingTargetEntryKey::from_namespace_service(&namespace, &service)
+                .as_str()
+                .to_owned(),
+        ),
+        (
+            CoreStateKeyFamily::RouteBinding,
+            RouteBindingStateKey::from_target(&target).as_str().to_owned(),
+        ),
+        (
+            CoreStateKeyFamily::ActiveMachine,
+            ActiveMachineStateKey::from_machine_id(&machine_id("machine_7"))
+                .as_str()
+                .to_owned(),
+        ),
+        (
+            CoreStateKeyFamily::NamespaceLock,
+            NamespaceLockStateKey::from_namespace_id(&namespace)
+                .as_str()
+                .to_owned(),
+        ),
+        (
+            CoreStateKeyFamily::NatsAuthorizedUser,
+            "nats_authorized_user.machine.machine_7".to_owned(),
+        ),
+    ];
+
+    assert_eq!(samples.len(), CoreStateKeyFamily::ALL.len());
+    for (family, key) in samples {
+        assert!(
+            CoreStateKeyFamily::ALL.contains(&family),
+            "sample family {family:?} is missing from CoreStateKeyFamily::ALL"
+        );
+        assert!(
+            subject_matches(&family.wildcard_pattern(), &key),
+            "key {key} escapes its family pattern {}",
+            family.wildcard_pattern()
+        );
+    }
 }

@@ -9,7 +9,8 @@
 use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::OperationStatus;
-use ployz_core::permissions::namespace_lock_state_kv_write_scope;
+use ployz_core::permissions::core_state_kv_write_scope;
+use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -239,7 +240,7 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
 async fn startup_renders_current_authorization_permissions() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
-    let namespace_lock_scope = namespace_lock_state_kv_write_scope();
+    let namespace_lock_scope = core_state_kv_write_scope(CoreStateKeyFamily::NamespaceLock);
     let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     assert!(

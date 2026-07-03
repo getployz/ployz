@@ -13,10 +13,8 @@
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
 use crate::state::{
-    ACTIVE_MACHINE_STATE_PREFIX, ROUTE_BINDING_STATE_PREFIX, SERVING_TARGET_ENTRY_PREFIX,
-    GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
-    MachineContainerObservationKey, MachinePublicIpObservationKey, NAMESPACE_LOCK_STATE_PREFIX,
-    NATS_AUTHORIZED_USER_PREFIX,
+    CoreStateKeyFamily, GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
+    MachineContainerObservationKey, MachinePublicIpObservationKey,
 };
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
@@ -51,32 +49,18 @@ pub fn inbox_subscribe_scope(principal: &NatsPrincipal) -> String {
     format!("{}.>", inbox_prefix(principal))
 }
 
+/// The controller's KV write grant for one state-key family. The wildcard
+/// pattern comes from the key type itself (via [`CoreStateKeyFamily`]), so a
+/// key format and its grant cannot drift apart; this function only adds the
+/// bucket and decides nothing about key shape.
 #[must_use]
-pub fn active_service_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{SERVING_TARGET_ENTRY_PREFIX}.*.*")
+pub fn core_state_kv_write_scope(family: CoreStateKeyFamily) -> String {
+    format!("$KV.{KV_CORE_BUCKET}.{}", family.wildcard_pattern())
 }
 
-#[must_use]
-pub fn active_route_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{ROUTE_BINDING_STATE_PREFIX}.*.*")
-}
-
-#[must_use]
-pub fn active_machine_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_MACHINE_STATE_PREFIX}.*")
-}
-
-#[must_use]
-pub fn namespace_lock_state_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{NAMESPACE_LOCK_STATE_PREFIX}.*")
-}
-
-/// Control's writes of the durable authorized-principal set.
-#[must_use]
-pub fn nats_authorized_user_kv_write_scope() -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{NATS_AUTHORIZED_USER_PREFIX}.>")
-}
-
+/// Operation status writes span the whole `KV_OPS` bucket: status records
+/// are the bucket's only tenant, so this is a bucket grant rather than a
+/// [`CoreStateKeyFamily`] and is immune to key-arity drift.
 #[must_use]
 pub fn operation_status_kv_write_scope() -> String {
     format!("$KV.{KV_OPS_BUCKET}.>")
@@ -227,13 +211,9 @@ fn controller_publications() -> SubjectPermissions {
         OPS_STREAM_SUBJECT.to_owned(),
         JETSTREAM_API_SCOPE.to_owned(),
         JETSTREAM_ACK_SCOPE.to_owned(),
-        active_service_state_kv_write_scope(),
-        active_route_state_kv_write_scope(),
-        active_machine_state_kv_write_scope(),
-        namespace_lock_state_kv_write_scope(),
-        nats_authorized_user_kv_write_scope(),
-        operation_status_kv_write_scope(),
     ]);
+    allow.extend(CoreStateKeyFamily::ALL.map(core_state_kv_write_scope));
+    allow.push(operation_status_kv_write_scope());
     SubjectPermissions::allowing_all(allow)
 }
 

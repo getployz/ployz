@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{MachineSubstrateVersions, RoutePort, RouteTarget};
-use crate::wire::id_prefixed_state_key;
+use crate::wire::{id_prefixed_state_key, state_key_path};
 use std::net::{IpAddr, SocketAddr};
 
 pub const KV_CORE_BUCKET: &str = "KV_CORE";
@@ -98,12 +98,17 @@ pub struct ServingTargetEntryKey(String);
 impl ServingTargetEntryKey {
     #[must_use]
     pub fn from_namespace_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
-        Self(format!(
-            "{}.{}.{}",
+        Self(state_key_path(
             SERVING_TARGET_ENTRY_PREFIX,
-            namespace_id.as_str(),
-            service_id.as_str()
+            &[namespace_id.as_str(), service_id.as_str()],
         ))
+    }
+
+    /// The NATS subject pattern spanning every serving target entry key,
+    /// rendered by the same helper as the constructor.
+    #[must_use]
+    pub fn wildcard_pattern() -> String {
+        state_key_path(SERVING_TARGET_ENTRY_PREFIX, &["*", "*"])
     }
 
     #[must_use]
@@ -118,11 +123,20 @@ pub struct RouteBindingStateKey(String);
 impl RouteBindingStateKey {
     #[must_use]
     pub fn from_target(target: &RouteTarget) -> Self {
-        Self(format!(
-            "{ROUTE_BINDING_STATE_PREFIX}.{}.{}",
-            route_hostname_key_token(target),
-            target.port.get()
+        Self(state_key_path(
+            ROUTE_BINDING_STATE_PREFIX,
+            &[
+                route_hostname_key_token(target).as_str(),
+                target.port.get().to_string().as_str(),
+            ],
         ))
+    }
+
+    /// The NATS subject pattern spanning every route binding key, rendered
+    /// by the same helper as the constructor.
+    #[must_use]
+    pub fn wildcard_pattern() -> String {
+        state_key_path(ROUTE_BINDING_STATE_PREFIX, &["*", "*"])
     }
 
     #[must_use]
@@ -142,6 +156,44 @@ fn route_hostname_key_token(target: &RouteTarget) -> String {
 
 id_prefixed_state_key! { pub struct ActiveMachineStateKey; prefix: ACTIVE_MACHINE_STATE_PREFIX; fn from_machine_id(&MachineId); }
 id_prefixed_state_key! { pub struct NamespaceLockStateKey; prefix: NAMESPACE_LOCK_STATE_PREFIX; fn from_namespace_id(&NamespaceId); }
+
+/// Every KV_CORE write family. `permissions.rs` matches this exhaustively to
+/// build the controller grant, so a new key type cannot ship without an
+/// authority decision. Add new variants here, next to their key types, and
+/// extend [`CoreStateKeyFamily::ALL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreStateKeyFamily {
+    ServingTargetEntry,
+    RouteBinding,
+    ActiveMachine,
+    NamespaceLock,
+    NatsAuthorizedUser,
+}
+
+impl CoreStateKeyFamily {
+    pub const ALL: [Self; 5] = [
+        Self::ServingTargetEntry,
+        Self::RouteBinding,
+        Self::ActiveMachine,
+        Self::NamespaceLock,
+        Self::NatsAuthorizedUser,
+    ];
+
+    /// The NATS subject pattern spanning every key this family writes. Each
+    /// arm delegates to the key type's own pattern so the grant and the key
+    /// format come from one renderer; authorized-user records span nested
+    /// segments, so that family is an explicit `>` scope.
+    #[must_use]
+    pub fn wildcard_pattern(self) -> String {
+        match self {
+            Self::ServingTargetEntry => ServingTargetEntryKey::wildcard_pattern(),
+            Self::RouteBinding => RouteBindingStateKey::wildcard_pattern(),
+            Self::ActiveMachine => ActiveMachineStateKey::wildcard_pattern(),
+            Self::NamespaceLock => NamespaceLockStateKey::wildcard_pattern(),
+            Self::NatsAuthorizedUser => format!("{NATS_AUTHORIZED_USER_PREFIX}.>"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
