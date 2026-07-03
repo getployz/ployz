@@ -184,10 +184,23 @@ macro_rules! nonempty_text_newtype {
     };
 }
 
+/// Renders a KV state-key path from its prefix and segments. Key
+/// constructors and their permission wildcard patterns must both go through
+/// this one function so a key format and its grant cannot drift apart.
+pub(crate) fn state_key_path(prefix: &str, segments: &[&str]) -> String {
+    let mut path = String::from(prefix);
+    for segment in segments {
+        path.push('.');
+        path.push_str(segment);
+    }
+    path
+}
+
 /// Defines a KV storage-key newtype derived from a single typed id as
-/// `"{PREFIX}.{id}"`. These keys are constructed in-process to address KV
-/// records and never cross the JSON wire, so they carry no serde derives.
-/// Keys with extra path segments, hashing, or wire serialization stay explicit.
+/// `"{PREFIX}.{id}"`, plus the `wildcard_pattern` that spans every key of
+/// that shape. These keys are constructed in-process to address KV records
+/// and never cross the JSON wire, so they carry no serde derives. Keys with
+/// extra path segments, hashing, or wire serialization stay explicit.
 macro_rules! id_prefixed_state_key {
     (
         pub struct $name:ident;
@@ -200,7 +213,14 @@ macro_rules! id_prefixed_state_key {
         impl $name {
             #[must_use]
             pub fn $ctor(id: &$idty) -> Self {
-                Self(format!("{}.{}", $prefix, id.as_str()))
+                Self($crate::wire::state_key_path($prefix, &[id.as_str()]))
+            }
+
+            /// The NATS subject pattern spanning every key of this shape,
+            /// rendered by the same helper as the constructor.
+            #[must_use]
+            pub fn wildcard_pattern() -> String {
+                $crate::wire::state_key_path($prefix, &["*"])
             }
 
             #[must_use]
