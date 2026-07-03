@@ -244,6 +244,14 @@ _Avoid_: Background reconciliation, stored desired state, unbounded live scan, s
 A read-side or data-plane view built from durable control-plane state and fresh NATS observations, without live machine RPC. Gateways, DNS, Cloud subscriptions, and CLI watch surfaces use passive runtime projections to stay current without owning mutations.
 _Avoid_: Mutating operation snapshot, live RPC requirement, hidden reconciliation
 
+**Managed Container Identity**:
+The single record of what a managed container is and where it came from: its namespace, service, and namespace revision entry identity, plus the operation, step, and container kind that created it. It is rendered into Docker labels as recovery evidence, reported in machine observations, sent in machine run commands, and compared for cleanup fencing - one struct everywhere, so the copies cannot drift.
+_Avoid_: Label set, container spec, flattened identity fields
+
+**Container Provenance**:
+The half of a managed container identity stamped by the executing operation rather than derived from deploy input: the operation id and step id that created the container. Provenance is never consumed apart from the full identity; it is a named concept, not a separate type.
+_Avoid_: Audit trail, creation metadata
+
 **Service Container**:
 A Docker container that belongs to a service in a namespace. Service containers are runtime evidence for planning and inspection, but they are not the canonical service definition.
 _Avoid_: Replica as container identity

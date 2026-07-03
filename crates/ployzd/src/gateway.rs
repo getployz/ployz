@@ -71,6 +71,7 @@ pub struct GatewayUnroutableContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct GatewayUpstreamKey {
+    namespace_id: NamespaceId,
     service_id: ServiceId,
     namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
@@ -78,6 +79,7 @@ struct GatewayUpstreamKey {
 impl GatewayUpstreamKey {
     fn for_serving_entry(entry: &GatewayServingEntry) -> Self {
         Self {
+            namespace_id: entry.namespace_id.clone(),
             service_id: entry.service_id.clone(),
             namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
         }
@@ -87,8 +89,12 @@ impl GatewayUpstreamKey {
         container: &ployz_core::machine_runtime::ManagedContainerObservation,
     ) -> Self {
         Self {
-            service_id: container.service_id.clone(),
-            namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
+            namespace_id: container.identity.namespace_id.clone(),
+            service_id: container.identity.service_id.clone(),
+            namespace_revision_entry_id: container
+                .identity
+                .namespace_revision_entry_id
+                .clone(),
         }
     }
 }

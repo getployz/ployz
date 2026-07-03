@@ -35,10 +35,10 @@ pub use preparation::{
     namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 
-use crate::docker::labels::ManagedContainerIdentity;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use crate::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerRunSpec, MachineContainerStopRpcRequest,
+    MachineContainerStopRpcRequest,
     MachineEnsureEndpointNetworkRpcRequest,
 };
 pub use types::{
@@ -482,14 +482,7 @@ fn retained_container_identity(
 }
 
 fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
-    ManagedContainerIdentity {
-        namespace_id: target.namespace_id.clone(),
-        service_id: target.service_id.clone(),
-        namespace_revision_entry_id: target.namespace_revision_entry_id.clone(),
-        operation_id: target.operation_id.clone(),
-        step_id: target.step_id.clone(),
-        kind: target.kind,
-    }
+    target.identity.clone()
 }
 
 fn inspect_hint(container_id: &ployz_core::ids::ContainerId) -> OperatorHint {
@@ -771,7 +764,7 @@ where
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let request = MachineContainerRunRpcRequest {
         image: service.request.image.clone(),
-        container: MachineContainerRunSpec {
+        container: ManagedContainerIdentity {
             namespace_id: service.request.namespace_id.clone(),
             service_id: service.request.service_id.clone(),
             namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),

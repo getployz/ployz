@@ -12,9 +12,9 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
-    operation_id, service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id, service_id,
 };
 
 #[test]
@@ -449,7 +449,7 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
         ManagedContainerKind::Service,
         ContainerRuntimeState::running_unroutable(),
     );
-    foreign.namespace_id = namespace_id("other");
+    foreign.identity.namespace_id = namespace_id("other");
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(1),
         serving_target_entry: None,
@@ -600,12 +600,11 @@ fn cleanup_container_with_entry(
     DeployCleanupContainer {
         machine_id: machine_id(machine),
         container_id: container_id(container),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        namespace_revision_entry_id: namespace_revision_entry_id(namespace_revision_entry),
-        operation_id: operation_id("op_existing"),
-        step_id: step_id(container),
-        kind: ManagedContainerKind::Service,
+        identity: containers::identity("svc_api")
+            .entry(namespace_revision_entry)
+            .operation("op_existing")
+            .step(container)
+            .build(),
     }
 }
 
@@ -625,15 +624,13 @@ fn observed_container(
     kind: ManagedContainerKind,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        machine_id: machine_id(machine),
-        container_id: container_id(container),
-        namespace_id: namespace_id("default"),
-        service_id: service_id(service),
-        namespace_revision_entry_id: namespace_revision_entry_id(revision),
-        operation_id: operation_id("op_existing"),
-        step_id: step_id(container),
-        kind,
-        state,
-    }
+    let mut observation = containers::observation(machine, container)
+        .service(service)
+        .entry(revision)
+        .operation("op_existing")
+        .step(container)
+        .kind(kind)
+        .build();
+    observation.state = state;
+    observation
 }

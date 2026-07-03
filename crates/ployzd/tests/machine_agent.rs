@@ -3,7 +3,7 @@ use ployz_test_support::ids::{
     namespace_id,
     container_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
-use ployzd::docker::labels::ManagedContainerLabels;
+use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployzd::machine_runtime::runner::{
     ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunConflict,
     MachineContainerRunDecision, decide_container_run,
@@ -53,7 +53,7 @@ fn different_step_does_not_reuse_container() {
 
     assert_eq!(
         decide_container_run(&expected, [existing_container("ctr_other", other_step)]),
-        MachineContainerRunDecision::Create { labels: expected }
+        MachineContainerRunDecision::Create { identity: expected }
     );
 }
 
@@ -122,7 +122,7 @@ fn duplicate_operation_step_matches_are_ambiguous() {
 
 fn existing_container(
     container_id: &str,
-    labels: ManagedContainerLabels,
+    labels: ManagedContainerIdentity,
 ) -> ExistingManagedContainer {
     existing_container_with_state(
         container_id,
@@ -133,18 +133,18 @@ fn existing_container(
 
 fn existing_container_with_state(
     container_id: &str,
-    labels: ManagedContainerLabels,
+    labels: ManagedContainerIdentity,
     state: ExistingManagedContainerState,
 ) -> ExistingManagedContainer {
     ExistingManagedContainer {
         container_id: self::container_id(container_id),
-        labels,
+        identity: labels,
         state,
     }
 }
 
-fn run_labels(operation_id: &str, step_id: &str) -> ManagedContainerLabels {
-    ManagedContainerLabels {
+fn run_labels(operation_id: &str, step_id: &str) -> ManagedContainerIdentity {
+    ManagedContainerIdentity {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
