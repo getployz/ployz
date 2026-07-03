@@ -54,7 +54,8 @@ build_linux_artifacts() {
     --volume "${CARGO_GIT_DIR}:/usr/local/cargo/git" \
     --workdir /work \
     "${BUILD_IMAGE}" \
-    bash -lc 'set -euo pipefail
+    bash -c 'set -euo pipefail
+export PATH="/usr/local/cargo/bin:${PATH}"
 apt-get update
 apt-get install -y --no-install-recommends cmake
 rm -rf /var/lib/apt/lists/*
