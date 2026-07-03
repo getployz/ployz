@@ -289,7 +289,7 @@ pub struct RuntimeSnapshot {
 pub struct RuntimeServiceRevision {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -297,7 +297,7 @@ pub struct RuntimeServiceRevision {
 pub struct RuntimeServiceRelease {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub routes: Vec<RouteTarget>,
 }
 
@@ -308,7 +308,7 @@ pub struct RuntimeServiceInstance {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub state: ContainerRuntimeState,

@@ -1,7 +1,8 @@
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::{DeployPlanError, DeployRoute};
 use ployz_core::ids::{
-    ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
+    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
+    StepId, SubjectTokenError,
 };
 use ployz_core::ops::{
     DeployOperationFailure, FailureMessage, HealthCheckFailure, OperatorHint, RetainedArtifact,
@@ -26,8 +27,20 @@ fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
         .clone()
 }
 
-fn failure_revision_id(command: &DeployExecutionCommand) -> RevisionId {
-    command.request.target_revision.clone()
+fn failure_namespace_revision_id(command: &DeployExecutionCommand) -> NamespaceRevisionId {
+    command.request.namespace_revision_id.clone()
+}
+
+fn failure_namespace_revision_entry_id(
+    command: &DeployExecutionCommand,
+) -> NamespaceRevisionEntryId {
+    command
+        .services()
+        .first()
+        .expect("accepted deploy request has at least one service")
+        .request
+        .namespace_revision_entry_id
+        .clone()
 }
 
 fn failure_route(command: &DeployExecutionCommand) -> DeployRoute {
@@ -35,7 +48,8 @@ fn failure_route(command: &DeployExecutionCommand) -> DeployRoute {
         .request
         .services
         .iter()
-        .find_map(|service| service.route.clone())
+        .flat_map(|service| service.routes.iter().cloned())
+        .next()
         .expect("route commit errors only occur for routed deploys")
 }
 
@@ -241,13 +255,13 @@ impl DeployExecutionStep {
             },
             Self::CommitActiveService => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
                 message: timeout_failure_message("active service commit", timeout),
                 retained_artifacts,
             },
             Self::RecordOperationEvent => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
                 message: timeout_failure_message(self.as_str(), timeout),
                 retained_artifacts,
             },
@@ -262,7 +276,7 @@ impl DeployExecutionError {
     ) -> DeployOperationFailure {
         DeployOperationFailure::ControlPlaneCommitFailed {
             service_id: failure_service_id(command),
-            revision_id: failure_revision_id(command),
+            namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
             message: failure_message("operation progress could not be recorded"),
             retained_artifacts,
         }
@@ -291,7 +305,7 @@ impl DeployExecutionError {
         match self {
             Self::Plan(_) | Self::StepId(_) => DeployOperationFailure::PlanningFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message("deploy planning failed"),
             },
             Self::StepTimedOut { step, timeout } => {
@@ -387,13 +401,13 @@ impl ActiveServiceCommitError {
         match self {
             Self::Store(_) => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
                 message: failure_message("active service state could not be committed"),
                 retained_artifacts,
             },
             Self::NamespaceLockLost => DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: failure_service_id(command),
-                revision_id: failure_revision_id(command),
+                namespace_revision_entry_id: failure_namespace_revision_entry_id(command),
                 message: failure_message("namespace lock was lost before active service commit"),
                 retained_artifacts,
             },

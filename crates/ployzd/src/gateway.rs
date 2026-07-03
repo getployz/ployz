@@ -1,6 +1,6 @@
 //! Gateway projection runtime.
 
-use ployz_core::ids::{ContainerId, MachineId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::machine_runtime::{ContainerEndpoint, MachineContainerObservationSnapshot};
 use ployz_core::ops::{RoutePort, RouteTarget};
 
@@ -11,7 +11,7 @@ pub struct GatewayRoute {
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
-    pub revision_id: RevisionId,
+    pub revision_id: NamespaceRevisionEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub struct GatewayUnroutableContainer {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct GatewayUpstreamKey {
     service_id: ServiceId,
-    revision_id: RevisionId,
+    revision_id: NamespaceRevisionEntryId,
     endpoint_port: RoutePort,
 }
 
@@ -259,7 +259,7 @@ fn index_fresh_running_containers(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct GatewayRevisionKey {
     service_id: ServiceId,
-    revision_id: RevisionId,
+    revision_id: NamespaceRevisionEntryId,
 }
 
 impl GatewayRevisionKey {

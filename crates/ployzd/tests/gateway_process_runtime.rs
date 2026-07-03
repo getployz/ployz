@@ -8,8 +8,8 @@ use ployz_core::state::{ActiveRouteState, GatewayServingStatus};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, operation_id, revision_id, route_hostname, route_port,
-    service_id, step_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
+    route_hostname, route_port, service_id, step_id,
 };
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
@@ -97,7 +97,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
             target: route_target("api.example.com", runtime.listen_addr().port()),
             endpoint_port: route_port(upstream.port()),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            revision_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("route stores");
@@ -165,7 +165,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_1"),
+            revision_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("route stores");
@@ -341,7 +341,7 @@ fn managed_observation_with_endpoint(
         machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_1"),
+        revision_id: namespace_revision_entry_id("entry_1"),
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,

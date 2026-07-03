@@ -4,7 +4,9 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{machine_id, operation_id, revision_id, service_id, step_id};
+use ployz_test_support::ids::{
+    machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
+};
 use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
@@ -175,7 +177,10 @@ async fn assert_observed_running(
         .expect("created container is observed");
 
     assert_eq!(observation.service_id, service_id("svc_api"));
-    assert_eq!(observation.revision_id, revision_id("rev_2"));
+    assert_eq!(
+        observation.revision_id,
+        namespace_revision_entry_id("entry_2")
+    );
     assert_eq!(observation.operation_id, operation_id("op_123"));
     assert_eq!(observation.step_id, step_id("run_1"));
     assert_eq!(observation.kind, ManagedContainerKind::Service);
@@ -191,7 +196,7 @@ fn run_request(step: &str) -> MachineContainerRunRpcRequest {
         endpoint: None,
         container: MachineContainerRunSpec {
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            revision_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
@@ -202,7 +207,7 @@ fn run_request(step: &str) -> MachineContainerRunRpcRequest {
 fn managed_labels(step: &str) -> ManagedContainerLabels {
     ManagedContainerLabels {
         service_id: service_id("svc_api"),
-        revision_id: revision_id("rev_2"),
+        revision_id: namespace_revision_entry_id("entry_2"),
         operation_id: operation_id("op_123"),
         step_id: step_id(step),
         kind: ManagedContainerKind::Service,

@@ -43,6 +43,24 @@ impl AsyncNatsCoreStateStore {
         decode_active_route_state(target, &key, &payload).map(Some)
     }
 
+    pub async fn remove_active_route(
+        &self,
+        target: &RouteTarget,
+    ) -> Result<(), ActiveRouteStoreError> {
+        let key = ActiveRouteStateKey::from_target(target);
+        with_io_timeout(
+            "active route state delete",
+            self.bucket.delete(key.as_str()),
+        )
+        .await?
+        .map_err(|error| ActiveRouteStoreError::Delete {
+            key: key.as_str().to_owned(),
+            message: error.to_string(),
+        })?;
+
+        Ok(())
+    }
+
     pub async fn active_routes(&self) -> Result<Vec<ActiveRouteState>, ActiveRouteStoreError> {
         let route_key_prefix = format!("{}.", ployz_core::state::ACTIVE_ROUTE_STATE_PREFIX);
         list_current(
@@ -82,6 +100,10 @@ pub enum ActiveRouteStoreError {
         key: String,
         message: String,
     },
+    Delete {
+        key: String,
+        message: String,
+    },
     Get {
         key: String,
         message: String,
@@ -112,6 +134,7 @@ impl fmt::Display for ActiveRouteStoreError {
             Self::Encode(error) => write!(formatter, "encode active route state: {error}"),
             Self::Decode(error) => write!(formatter, "decode active route state: {error}"),
             Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
+            Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::ListKeys { message } => write!(formatter, "list active route keys: {message}"),
             Self::Watch { message } => write!(formatter, "watch active route keys: {message}"),

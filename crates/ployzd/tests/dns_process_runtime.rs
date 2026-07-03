@@ -6,7 +6,7 @@ use ployz_core::state::{
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    machine_id, namespace_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, namespace_id, namespace_revision_entry_id, route_hostname, route_port, service_id,
 };
 use ployzd::dns::DnsAnswer;
 use ployzd::dns_process_runtime::{
@@ -108,7 +108,7 @@ impl TestNats {
                 target: RouteTarget::new(route_hostname(hostname), route_port(443)),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_1"),
+                revision_id: namespace_revision_entry_id("entry_1"),
             })
             .await
             .expect("route stores");

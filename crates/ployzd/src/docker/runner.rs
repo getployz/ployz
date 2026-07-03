@@ -603,7 +603,7 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 mod tests {
     use super::*;
     use ployz_core::deploy::ImageReference;
-    use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::ManagedContainerKind;
 
     #[test]
@@ -887,7 +887,7 @@ mod tests {
     fn managed_labels() -> ManagedContainerLabels {
         ManagedContainerLabels {
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            revision_id: namespace_revision_entry_id("entry_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
@@ -903,8 +903,8 @@ mod tests {
         ServiceId::try_new(value).expect("valid service id")
     }
 
-    fn revision_id(value: &str) -> RevisionId {
-        RevisionId::try_new(value).expect("valid revision id")
+    fn namespace_revision_entry_id(value: &str) -> NamespaceRevisionEntryId {
+        NamespaceRevisionEntryId::try_new(value).expect("valid namespace revision entry id")
     }
 
     fn operation_id(value: &str) -> OperationId {

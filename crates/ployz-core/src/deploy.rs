@@ -51,7 +51,7 @@ impl DeployRequest {
                 namespace_revision_entry_id: service.namespace_revision_entry_id(),
                 image: service.image.clone(),
                 replicas: service.replicas,
-                route: service.route.clone(),
+                routes: service.routes.clone(),
             })
             .collect()
     }
@@ -64,8 +64,8 @@ pub struct DeployServiceSpec {
     pub service_id: ServiceId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route: Option<DeployRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<DeployRoute>,
 }
 
 impl DeployServiceSpec {
@@ -105,8 +105,8 @@ pub struct DeployServiceRequest {
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route: Option<DeployRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<DeployRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,7 +150,7 @@ pub struct DeployCleanupContainer {
 pub struct DeployPreparationInput {
     pub request: DeployServiceRequest,
     pub active_service: Option<ActiveServiceState>,
-    pub active_route: Option<ActiveRouteState>,
+    pub active_routes: Vec<ActiveRouteState>,
     pub eligible_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }
@@ -158,7 +158,8 @@ pub struct DeployPreparationInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeploy {
     pub request: DeployServiceRequest,
-    pub route_commit: Option<ActiveRouteState>,
+    pub route_commits: Vec<ActiveRouteState>,
+    pub route_removals: Vec<RouteTarget>,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -263,24 +264,19 @@ pub enum DeployPlanError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DeployPreparationError {
-    #[error("active route state belongs to {actual_route:?}, not {expected_route:?}")]
-    ActiveRouteMismatch {
-        expected_route: RouteTarget,
-        actual_route: RouteTarget,
-    },
-}
+pub enum DeployPreparationError {}
 
 pub fn prepare_deploy(
     input: DeployPreparationInput,
 ) -> Result<PreparedDeploy, DeployPreparationError> {
-    let route_commit = active_route_commit_request(&input.request, input.active_route)?;
+    let route_reconciliation = active_route_reconciliation(&input.request, input.active_routes);
     let existing_replicas = existing_replicas(&input.request, &input.observed_machines);
     let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_machines);
 
     Ok(PreparedDeploy {
         request: input.request,
-        route_commit,
+        route_commits: route_reconciliation.commits,
+        route_removals: route_reconciliation.removals,
         eligible_machines: input.eligible_machines,
         existing_replicas,
         cleanup_candidates,
@@ -298,7 +294,7 @@ fn existing_replicas(
             container.is_running_service_revision(
                 &request.service_id,
                 &request.namespace_revision_entry_id,
-            ) && reusable_for_route(container, request.route.as_ref())
+            )
         })
         .map(|container| ExistingServiceReplica {
             machine_id: container.machine_id.clone(),
@@ -332,45 +328,40 @@ fn cleanup_candidates(
         .collect()
 }
 
-fn reusable_for_route(
-    container: &crate::machine_runtime::ManagedContainerObservation,
-    route: Option<&DeployRoute>,
-) -> bool {
-    let Some(route) = route else {
-        return true;
-    };
-
-    container
-        .running_service_endpoint()
-        .is_some_and(|endpoint| endpoint.port == route.endpoint_port)
+struct RouteReconciliation {
+    commits: Vec<ActiveRouteState>,
+    removals: Vec<RouteTarget>,
 }
 
-fn active_route_commit_request(
+fn active_route_reconciliation(
     request: &DeployServiceRequest,
-    active_route: Option<ActiveRouteState>,
-) -> Result<Option<ActiveRouteState>, DeployPreparationError> {
-    let Some(route) = request.route.clone() else {
-        return Ok(None);
-    };
-    let target = route.target;
-    let endpoint_port = route.endpoint_port;
+    active_routes: Vec<ActiveRouteState>,
+) -> RouteReconciliation {
+    let commits = request
+        .routes
+        .iter()
+        .cloned()
+        .map(|route| ActiveRouteState {
+            namespace_id: request.namespace_id.clone(),
+            target: route.target,
+            endpoint_port: route.endpoint_port,
+            service_id: request.service_id.clone(),
+            revision_id: request.namespace_revision_entry_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let removals = active_routes
+        .into_iter()
+        .filter(|active_route| {
+            active_route.service_id == request.service_id
+                && !request
+                    .routes
+                    .iter()
+                    .any(|route| route.target == active_route.target)
+        })
+        .map(|active_route| active_route.target)
+        .collect();
 
-    if let Some(route) = active_route
-        && route.target != target
-    {
-        return Err(DeployPreparationError::ActiveRouteMismatch {
-            expected_route: target,
-            actual_route: route.target,
-        });
-    }
-
-    Ok(Some(ActiveRouteState {
-        namespace_id: request.namespace_id.clone(),
-        target,
-        endpoint_port,
-        service_id: request.service_id.clone(),
-        revision_id: request.namespace_revision_entry_id.clone(),
-    }))
+    RouteReconciliation { commits, removals }
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {

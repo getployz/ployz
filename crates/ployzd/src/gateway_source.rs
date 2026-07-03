@@ -130,6 +130,7 @@ impl From<ActiveRouteStoreError> for GatewaySourceError {
             },
             error @ (ActiveRouteStoreError::Encode(_)
             | ActiveRouteStoreError::Put { .. }
+            | ActiveRouteStoreError::Delete { .. }
             | ActiveRouteStoreError::ListKeys { .. }
             | ActiveRouteStoreError::Watch { .. }
             | ActiveRouteStoreError::Get { .. }

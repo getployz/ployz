@@ -92,17 +92,17 @@ export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
 export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
 
-export type DeployRequest = { namespace_id: NamespaceId, target_revision: RevisionId, services: Array<DeployServiceSpec>, };
+export type DeployRequest = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServiceSpec>, };
 
-export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, route?: DeployRoute | null, };
+export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, routes?: Array<DeployRoute>, };
 
 export type DeployRoute = { target: RouteTarget, endpoint_port: RoutePort, };
 
-export type DeployPlan = { namespace_id: NamespaceId, target_revision: RevisionId, services: Array<DeployServicePlan>, cleanup_containers?: Array<DeployCleanupContainer>, };
+export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServicePlan>, cleanup_containers?: Array<DeployCleanupContainer>, };
 
 export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
 
-export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
+export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
 
 export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
 
@@ -112,7 +112,7 @@ export type ContainerEndpoint = { ip: string, port: RoutePort, };
 
 export type ContainerRuntimeState = { "state": "running", endpoint?: ContainerEndpoint | null, } | { "state": "exited" };
 
-export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, state: ContainerRuntimeState, };
 
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
@@ -204,7 +204,7 @@ export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reas
 
 export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
-export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
@@ -228,9 +228,9 @@ export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle
 
 export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, substrate_versions?: MachineSubstrateVersions | null, };
 
-export type ActiveRouteState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: RevisionId, };
+export type ActiveRouteState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, revision_id: NamespaceRevisionEntryId, };
 
-export type ActiveServiceState = { namespace_id: NamespaceId, service_id: ServiceId, active_revision: RevisionId, };
+export type ActiveServiceState = { namespace_id: NamespaceId, service_id: ServiceId, active_revision: NamespaceRevisionEntryId, };
 
 export type MachinePublicIpObservation = { machine_id: MachineId, public_ip: string, };
 
@@ -284,11 +284,11 @@ export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, };
 
 export type RuntimeSnapshot = { machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<ActiveRouteState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
 
-export type RuntimeServiceRevision = { namespace_id: NamespaceId, service_id: ServiceId, revision_id: RevisionId, };
+export type RuntimeServiceRevision = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, };
 
-export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: ServiceId, revision_id: RevisionId, routes: Array<RouteTarget>, };
+export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, routes: Array<RouteTarget>, };
 
-export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
+export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
 
 export type RuntimeProjectionSources = { core_state: RuntimeProjectionSource, observations: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
 

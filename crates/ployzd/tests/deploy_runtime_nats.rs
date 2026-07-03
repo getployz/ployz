@@ -65,7 +65,10 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     )
     .await
     .expect("accepted deploy runs");
-    assert_eq!(outcome.target_revision, revision_id("rev_2"));
+    assert_eq!(
+        outcome.namespace_revision_id,
+        target_namespace_revision_id()
+    );
     assert_eq!(runtime.requests.len(), 1);
     let [(run_machine_id, run_request)] = runtime.requests.as_slice() else {
         panic!("expected one container run request");
@@ -79,7 +82,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             .expect("active state reads")
             .expect("active state committed")
             .active_revision,
-        revision_id("rev_2")
+        target_namespace_revision_entry_id()
     );
     assert!(matches!(
         controllers
@@ -373,13 +376,13 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
                     failure:
                         DeployOperationFailure::PlanningFailed {
                             service_id: failed_service_id,
-                            revision_id: failed_revision_id,
+                            namespace_revision_id: failed_namespace_revision_id,
                             ..
                         },
                 },
             ..
         }) if failed_service_id == service_id("svc_api")
-            && failed_revision_id == revision_id("rev_2")
+            && failed_namespace_revision_id == target_namespace_revision_id()
     ));
 }
 
@@ -525,12 +528,12 @@ fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
 fn deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: target_namespace_revision_id(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }

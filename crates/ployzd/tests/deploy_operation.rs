@@ -93,7 +93,10 @@ async fn deploy_worker_runs_containers_then_completes() {
     )
     .await
     .expect("deploy succeeds");
-    assert_eq!(outcome.target_revision, revision_id("rev_2"));
+    assert_eq!(
+        outcome.namespace_revision_id,
+        target_namespace_revision_id()
+    );
     assert_eq!(outcome.terminal_event, DeployTerminalEvent::Recorded);
     assert_eq!(
         outcome
@@ -166,7 +169,7 @@ async fn deploy_worker_runs_containers_then_completes() {
         vec![ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: revision_id("rev_2"),
+            active_revision: target_namespace_revision_entry_id(),
         }]
     );
     assert_eq!(
@@ -296,12 +299,12 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
                 expected_identity: cleanup_expected_identity(&cleanup_container(
                     "machine_b",
                     "ctr_old",
-                    "rev_old",
+                    "entry_old",
                 )),
             },
         )]
     );
-    let cleanup_target = cleanup_container("machine_b", "ctr_old", "rev_old");
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
     assert_eq!(
         outcome.cleanup,
         vec![DeployCleanupResult::Removed(cleanup_target.clone())]
@@ -351,7 +354,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
     .expect("deploy succeeds even when old-container cleanup fails");
 
     assert_eq!(active_state.requests.len(), 1);
-    let cleanup_target = cleanup_container("machine_b", "ctr_old", "rev_old");
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
     assert_eq!(
         outcome.cleanup,
         vec![DeployCleanupResult::Failed {
@@ -408,7 +411,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
     .await
     .expect("empty deploy succeeds");
 
-    let cleanup_target = cleanup_container("machine_b", "ctr_old", "rev_old");
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
     assert_eq!(
         runtime.removals,
         vec![(
@@ -808,7 +811,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::PlanningFailed {
                     service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
+                    namespace_revision_id: target_namespace_revision_id(),
                     message: ployz_core::ops::FailureMessage::try_new("deploy planning failed")
                         .expect("valid failure message"),
                 }
@@ -1042,7 +1045,7 @@ async fn routed_deploy_commits_route_before_completion() {
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
-            revision_id: revision_id("rev_2"),
+            revision_id: target_namespace_revision_entry_id(),
         }]
     );
     assert_eq!(active_state.requests.len(), 1);
@@ -1145,7 +1148,10 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
     )
     .await
     .expect("active commit succeeds even when the completed event is rejected");
-    assert_eq!(outcome.target_revision, revision_id("rev_2"));
+    assert_eq!(
+        outcome.namespace_revision_id,
+        target_namespace_revision_id()
+    );
     assert_eq!(outcome.terminal_event, DeployTerminalEvent::Missing);
 
     assert_eq!(
@@ -1241,7 +1247,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::ControlPlaneCommitFailed {
                     service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
+                    namespace_revision_entry_id: target_namespace_revision_entry_id(),
                     message: failure_message("active service commit timed out after 1ms"),
                     retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
                 }
@@ -1291,7 +1297,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::ControlPlaneCommitFailed {
                 service_id: service_id("svc_api"),
-                revision_id: revision_id("rev_2"),
+                namespace_revision_entry_id: target_namespace_revision_entry_id(),
                 message: failure_message("namespace lock was lost before active service commit"),
                 retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
             }

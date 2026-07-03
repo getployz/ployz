@@ -6,8 +6,8 @@ use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
-    CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, SubjectToken,
-    SubjectTokenError,
+    CertId, ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
+    ServiceId, SubjectToken, SubjectTokenError,
 };
 use crate::install::InstallArtifactVersion;
 use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
@@ -175,12 +175,12 @@ pub struct MachineSubstrateVersions {
 pub enum DeployOperationFailure {
     PlanningFailed {
         service_id: ServiceId,
-        revision_id: RevisionId,
+        namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
     ArtifactUnavailable {
         service_id: ServiceId,
-        revision_id: RevisionId,
+        namespace_revision_entry_id: NamespaceRevisionEntryId,
         reason: ArtifactUnavailableReason,
     },
     DataplaneUnavailable {
@@ -209,7 +209,7 @@ pub enum DeployOperationFailure {
     },
     ControlPlaneCommitFailed {
         service_id: ServiceId,
-        revision_id: RevisionId,
+        namespace_revision_entry_id: NamespaceRevisionEntryId,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },

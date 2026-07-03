@@ -456,7 +456,7 @@ pub fn operation_contract_fixture() -> Value {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     };
     let accepted = accepted_operation("op_123", 1);

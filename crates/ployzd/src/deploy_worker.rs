@@ -14,7 +14,7 @@ use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
-    OperatorHint, RetainedArtifact, RoutePort,
+    OperatorHint, RetainedArtifact,
 };
 
 pub use facts::{
@@ -133,7 +133,7 @@ where
         .map_err(|source| run.fail(source))?;
     let plan = plan_namespace_deploy(
         command.request.namespace_id.clone(),
-        command.request.target_revision.clone(),
+        command.request.namespace_revision_id.clone(),
         command
             .services()
             .iter()
@@ -200,12 +200,11 @@ where
                     slot,
                 } => containers.push(DeployContainer {
                     service_id: service.request.service_id.clone(),
-                    revision_id: service.request.target_revision.clone(),
+                    revision_id: service.request.namespace_revision_entry_id.clone(),
                     machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     step_id: deploy_step_id(*slot)
                         .map_err(|source| run.fail(DeployExecutionError::StepId(source)))?,
-                    required_endpoint_port: required_endpoint_port(service),
                 }),
                 DeployPlanStep::RunContainer { machine_id, slot } => {
                     let run_result = with_step_timeout(
@@ -271,11 +270,9 @@ where
         }
     }
 
-    if command
-        .services()
-        .iter()
-        .any(|service| service.active_route_state().is_some())
-    {
+    if command.services().iter().any(|service| {
+        !service.active_route_states().is_empty() || !service.active_route_removals().is_empty()
+    }) {
         record_running_stage(
             command,
             &mut *ports.recorder,
@@ -316,7 +313,7 @@ where
 
     let outcome = DeployExecutionOutcome {
         namespace_id: plan.namespace_id,
-        target_revision: plan.target_revision,
+        namespace_revision_id: plan.namespace_revision_id,
         containers,
         cleanup,
         terminal_event,
@@ -454,11 +451,10 @@ fn retained_created_container(
     let step_id = deploy_step_id(slot).ok()?;
     Some(DeployContainer {
         service_id: service.request.service_id.clone(),
-        revision_id: service.request.target_revision.clone(),
+        revision_id: service.request.namespace_revision_entry_id.clone(),
         machine_id: machine_id.clone(),
         container_id: container_id.clone(),
         step_id,
-        required_endpoint_port: required_endpoint_port(service),
     })
 }
 
@@ -573,18 +569,29 @@ pub(super) async fn cutover_route<C>(
 where
     C: ActiveRouteCommitter,
 {
-    let Some(state) = service.active_route_state() else {
-        return Ok(());
-    };
+    for state in service.active_route_states() {
+        with_step_timeout(
+            command,
+            DeployExecutionStep::CommitRoute {
+                route: state.target.clone(),
+            },
+            route_state.replace_active_route(state.clone()),
+        )
+        .await?;
+    }
 
-    with_step_timeout(
-        command,
-        DeployExecutionStep::CommitRoute {
-            route: state.target.clone(),
-        },
-        route_state.replace_active_route(state),
-    )
-    .await
+    for target in service.active_route_removals() {
+        with_step_timeout(
+            command,
+            DeployExecutionStep::CommitRoute {
+                route: target.clone(),
+            },
+            route_state.remove_active_route(target.clone()),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 async fn prepare_dataplane<D>(
@@ -715,19 +722,18 @@ where
     N: MachineContainerRuntime,
 {
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
-    let endpoint = service
-        .request
-        .route
-        .as_ref()
-        .map(|route| ContainerEndpointRequest {
-            port: route.endpoint_port,
-        });
     let request = MachineContainerRunRpcRequest {
         image: service.request.image.clone(),
-        endpoint,
+        endpoint: service
+            .request
+            .routes
+            .first()
+            .map(|route| ContainerEndpointRequest {
+                port: route.endpoint_port,
+            }),
         container: MachineContainerRunSpec {
             service_id: service.request.service_id.clone(),
-            revision_id: service.request.target_revision.clone(),
+            revision_id: service.request.namespace_revision_entry_id.clone(),
             operation_id: command.operation_id.clone(),
             step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
@@ -739,21 +745,12 @@ where
         .await
         .map(|outcome| DeployContainer {
             service_id: service.request.service_id.clone(),
-            revision_id: service.request.target_revision.clone(),
+            revision_id: service.request.namespace_revision_entry_id.clone(),
             machine_id: machine_id.clone(),
             container_id: outcome.container_id().clone(),
             step_id,
-            required_endpoint_port: required_endpoint_port(service),
         })
         .map_err(DeployExecutionError::RunContainer)
-}
-
-fn required_endpoint_port(service: &DeployServiceExecutionCommand) -> Option<RoutePort> {
-    service
-        .request
-        .route
-        .as_ref()
-        .map(|route| route.endpoint_port)
 }
 
 fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {

@@ -3,7 +3,7 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
     ReplicaCount,
 };
-use ployz_core::ids::{OperationId, StepId};
+use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, StepId};
 use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
@@ -15,7 +15,8 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, operation_id, revision_id, route_port, service_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
+    operation_id, route_port, service_id,
 };
 use ployzd::deploy_worker::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
@@ -32,18 +33,18 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         .replace_active_service(&ActiveServiceState {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
-            active_revision: revision_id("rev_1"),
+            active_revision: namespace_revision_entry_id("entry_old"),
         })
         .await
         .expect("active service stores");
     observations
         .replace_machine_containers(&machine_snapshot(
             "machine_a",
-            [managed_observation(
+            [managed_observation_with_entry(
                 "machine_a",
                 "ctr_target",
                 "svc_api",
-                "rev_2",
+                target_namespace_revision_entry_id(),
                 ContainerRuntimeState::running_unroutable(),
             )],
         ))
@@ -58,14 +59,14 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                     "machine_b",
                     "ctr_old",
                     "svc_api",
-                    "rev_1",
+                    "entry_old",
                     ContainerRuntimeState::running_unroutable(),
                 ),
                 managed_observation(
                     "machine_b",
                     "ctr_stopped",
                     "svc_api",
-                    "rev_2",
+                    "entry_target",
                     ContainerRuntimeState::Exited,
                 ),
             ],
@@ -96,8 +97,12 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     assert_eq!(
         command.cleanup_candidates(),
         [
-            cleanup_container("machine_a", "ctr_target", "rev_2"),
-            cleanup_container("machine_b", "ctr_old", "rev_1"),
+            cleanup_container_with_entry(
+                "machine_a",
+                "ctr_target",
+                target_namespace_revision_entry_id()
+            ),
+            cleanup_container("machine_b", "ctr_old", "entry_old"),
         ]
     );
     assert_eq!(
@@ -124,11 +129,11 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     edge_observations
         .replace_machine_containers(&machine_snapshot(
             "edge_2",
-            [managed_observation(
+            [managed_observation_with_entry(
                 "edge_2",
                 "ctr_target",
                 "svc_api",
-                "rev_2",
+                target_namespace_revision_entry_id(),
                 ContainerRuntimeState::running_unroutable(),
             )],
         ))
@@ -243,7 +248,7 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let wrong_service_state = ActiveServiceState {
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_worker"),
-        active_revision: revision_id("rev_1"),
+        active_revision: namespace_revision_entry_id("entry_old"),
     };
     nats.jetstream
         .get_key_value(KV_CORE_BUCKET)
@@ -393,27 +398,31 @@ async fn test_nats() -> TestNats {
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        target_revision: revision_id("rev_2"),
+        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")
                 .expect("valid image reference"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            route: None,
+            routes: Vec::new(),
         }],
     }
 }
 
 fn routed_deploy_request() -> DeployRequest {
     let mut request = deploy_request();
-    request.services[0].route = Some(DeployRoute {
+    request.services[0].routes = vec![DeployRoute {
         target: RouteTarget {
             hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
             port: route_port(8080),
         },
         endpoint_port: route_port(80),
-    });
+    }];
     request
+}
+
+fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
+    deploy_request().services[0].namespace_revision_entry_id()
 }
 
 fn machine_snapshot(
@@ -428,14 +437,30 @@ fn managed_observation(
     machine_id: &str,
     container_id: &str,
     service_id: &str,
-    revision_id: &str,
+    namespace_revision_entry_id: &str,
+    state: ContainerRuntimeState,
+) -> ManagedContainerObservation {
+    managed_observation_with_entry(
+        machine_id,
+        container_id,
+        service_id,
+        self::namespace_revision_entry_id(namespace_revision_entry_id),
+        state,
+    )
+}
+
+fn managed_observation_with_entry(
+    machine_id: &str,
+    container_id: &str,
+    service_id: &str,
+    namespace_revision_entry_id: NamespaceRevisionEntryId,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: self::service_id(service_id),
-        revision_id: self::revision_id(revision_id),
+        revision_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
@@ -455,13 +480,25 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
 fn cleanup_container(
     machine_id: &str,
     container_id: &str,
-    revision_id: &str,
+    namespace_revision_entry_id: &str,
+) -> DeployCleanupContainer {
+    cleanup_container_with_entry(
+        machine_id,
+        container_id,
+        self::namespace_revision_entry_id(namespace_revision_entry_id),
+    )
+}
+
+fn cleanup_container_with_entry(
+    machine_id: &str,
+    container_id: &str,
+    namespace_revision_entry_id: NamespaceRevisionEntryId,
 ) -> DeployCleanupContainer {
     DeployCleanupContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
-        revision_id: self::revision_id(revision_id),
+        revision_id: namespace_revision_entry_id,
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
