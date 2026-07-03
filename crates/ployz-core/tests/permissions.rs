@@ -219,7 +219,7 @@ fn inbox_prefixes_are_distinct_per_principal() {
 /// the NATS subject rules the server applies to these grants.
 fn subject_matches(pattern: &str, subject: &str) -> bool {
     let mut pattern_tokens = pattern.split('.');
-    let mut subject_tokens = subject.split('.').peekable();
+    let mut subject_tokens = subject.split('.');
     loop {
         match (pattern_tokens.next(), subject_tokens.next()) {
             (None, None) => return true,
@@ -234,57 +234,64 @@ fn subject_matches(pattern: &str, subject: &str) -> bool {
 #[test]
 fn every_state_key_family_pattern_spans_its_rendered_keys() {
     use ployz_core::ids::{NamespaceId, ServiceId};
+    use ployz_core::nats_config::{NatsAuthorizedUser, NatsUserPublicKey};
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+    use ployz_core::security::NatsPrincipal;
     use ployz_core::state::{
-        ActiveMachineStateKey, NamespaceLockStateKey, RouteBindingStateKey, ServingTargetEntryKey,
+        ActiveMachineStateKey, NamespaceLockStateKey, NatsAuthorizedUserKey, RouteBindingStateKey,
+        ServingTargetEntryKey,
     };
 
-    let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
-    let service = ServiceId::try_new("web").expect("valid service id");
-    let target = RouteTarget::new(
-        RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-        RoutePort::try_new(443).expect("valid route port"),
-    );
+    // One sample key per family, produced by the REAL production
+    // constructor, matched against the family's own pattern. Driven by
+    // CoreStateKeyFamily::ALL and an exhaustive match, so a new family
+    // cannot compile without a sample and cannot ship unspanned.
+    fn sample_key(family: CoreStateKeyFamily) -> String {
+        let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
+        let service = ServiceId::try_new("web").expect("valid service id");
+        match family {
+            CoreStateKeyFamily::ServingTargetEntry => {
+                ServingTargetEntryKey::from_namespace_service(&namespace, &service)
+                    .as_str()
+                    .to_owned()
+            }
+            CoreStateKeyFamily::RouteBinding => {
+                let target = RouteTarget::new(
+                    RouteHostname::try_new("api.example.com").expect("valid route hostname"),
+                    RoutePort::try_new(443).expect("valid route port"),
+                );
+                RouteBindingStateKey::from_target(&target)
+                    .as_str()
+                    .to_owned()
+            }
+            CoreStateKeyFamily::ActiveMachine => {
+                ActiveMachineStateKey::from_machine_id(&machine_id("machine_7"))
+                    .as_str()
+                    .to_owned()
+            }
+            CoreStateKeyFamily::NamespaceLock => {
+                NamespaceLockStateKey::from_namespace_id(&namespace)
+                    .as_str()
+                    .to_owned()
+            }
+            CoreStateKeyFamily::NatsAuthorizedUser => {
+                NatsAuthorizedUserKey::from_user(&NatsAuthorizedUser {
+                    principal: NatsPrincipal::Machine {
+                        machine_id: machine_id("machine_7"),
+                    },
+                    nkey_public: NatsUserPublicKey::try_new(
+                        "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4",
+                    )
+                    .expect("valid nkey"),
+                })
+                .as_str()
+                .to_owned()
+            }
+        }
+    }
 
-    // One sample key per family: the single hand-maintained list, whose only
-    // job is to catch a key type bypassing the shared renderer.
-    let samples = [
-        (
-            CoreStateKeyFamily::ServingTargetEntry,
-            ServingTargetEntryKey::from_namespace_service(&namespace, &service)
-                .as_str()
-                .to_owned(),
-        ),
-        (
-            CoreStateKeyFamily::RouteBinding,
-            RouteBindingStateKey::from_target(&target)
-                .as_str()
-                .to_owned(),
-        ),
-        (
-            CoreStateKeyFamily::ActiveMachine,
-            ActiveMachineStateKey::from_machine_id(&machine_id("machine_7"))
-                .as_str()
-                .to_owned(),
-        ),
-        (
-            CoreStateKeyFamily::NamespaceLock,
-            NamespaceLockStateKey::from_namespace_id(&namespace)
-                .as_str()
-                .to_owned(),
-        ),
-        (
-            CoreStateKeyFamily::NatsAuthorizedUser,
-            "nats_authorized_user.machine.machine_7".to_owned(),
-        ),
-    ];
-
-    assert_eq!(samples.len(), CoreStateKeyFamily::ALL.len());
-    for (family, key) in samples {
-        assert!(
-            CoreStateKeyFamily::ALL.contains(&family),
-            "sample family {family:?} is missing from CoreStateKeyFamily::ALL"
-        );
+    for family in CoreStateKeyFamily::ALL {
+        let key = sample_key(family);
         assert!(
             subject_matches(&family.wildcard_pattern(), &key),
             "key {key} escapes its family pattern {}",

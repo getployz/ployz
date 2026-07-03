@@ -8,13 +8,10 @@
 use super::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use crate::kv::{bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
 use ployz_core::nats_config::NatsAuthorizedUser;
-use ployz_core::state::NATS_AUTHORIZED_USER_PREFIX;
+use ployz_core::state::{NATS_AUTHORIZED_USER_PREFIX, NatsAuthorizedUserKey};
 
 fn authorized_user_key(user: &NatsAuthorizedUser) -> String {
-    format!(
-        "{NATS_AUTHORIZED_USER_PREFIX}.{}",
-        user.authority_record_key()
-    )
+    NatsAuthorizedUserKey::from_user(user).as_str().to_owned()
 }
 
 impl AsyncNatsCoreStateStore {

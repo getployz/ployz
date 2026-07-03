@@ -20,5 +20,6 @@ pub mod permissions;
 pub mod roles;
 pub mod security;
 pub mod state;
+pub(crate) mod state_key;
 pub mod subjects;
 pub(crate) mod wire;

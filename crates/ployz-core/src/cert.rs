@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::CertId;
 use crate::ops::RouteHostname;
-use crate::wire::{id_prefixed_state_key, positive_u64_wire_error, positive_u64_wire_newtype};
+use crate::state_key::id_prefixed_state_key;
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
