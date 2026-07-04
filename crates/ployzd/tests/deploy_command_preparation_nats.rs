@@ -9,6 +9,7 @@ use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
+use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ServingTargetEntryKey};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -161,6 +162,48 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
 }
 
 #[tokio::test]
+async fn nats_preparation_excludes_draining_machines_from_placement() {
+    let nats = test_nats().await;
+    let (core_state, observations) = nats.stores();
+    core_state
+        .replace_active_machine(&active_machine("edge_2"))
+        .await
+        .expect("active edge stores");
+    let mut draining = active_machine("edge_3");
+    draining.lifecycle = MachineLifecycle::Draining;
+    core_state
+        .replace_active_machine(&draining)
+        .await
+        .expect("draining edge stores");
+    for machine in ["edge_2", "edge_3"] {
+        nats.machine_observations(machine)
+            .await
+            .replace_machine_containers(&machine_snapshot(machine, []))
+            .await
+            .expect("observations store");
+    }
+
+    let command = prepare_command_from_nats(
+        operation_id("op_123"),
+        deploy_request(),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
+        &core_state,
+        &observations,
+        Duration::from_secs(7),
+    )
+    .await;
+
+    assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
+    assert_eq!(
+        command.unusable_machines(),
+        [ployz_core::ops::UnusableMachine {
+            machine_id: machine_id("edge_3"),
+            reason: ployz_core::machine_usability::MachineUsabilityReason::Draining,
+        }]
+    );
+}
+
+#[tokio::test]
 async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
@@ -168,6 +211,11 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
+    nats.machine_observations("edge_2")
+        .await
+        .replace_machine_containers(&machine_snapshot("edge_2", []))
+        .await
+        .expect("edge observations store");
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
@@ -373,6 +421,7 @@ async fn test_nats() -> TestNats {
         machine_id("machine_a"),
         machine_id("machine_b"),
         machine_id("edge_2"),
+        machine_id("edge_3"),
         machine_id("core_1"),
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
@@ -475,6 +524,7 @@ fn managed_observation_with_entry(
 
 fn active_machine(machine_id: &str) -> ActiveMachineState {
     ActiveMachineState {
+        lifecycle: MachineLifecycle::Active,
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),

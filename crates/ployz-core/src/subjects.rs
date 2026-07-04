@@ -24,12 +24,16 @@ pub const API_SERVICE_LIST: &str = "plz.v1.svc.api.service.list";
 pub const API_SERVICE_INSPECT: &str = "plz.v1.svc.api.service.inspect";
 pub const API_RUNTIME_SNAPSHOT: &str = "plz.v1.svc.api.runtime.snapshot";
 pub const API_LOGS_TAIL: &str = "plz.v1.svc.api.logs.tail";
+pub const API_MACHINE_DRAIN: &str = "plz.v1.svc.api.machine.drain";
+pub const API_MACHINE_RESUME: &str = "plz.v1.svc.api.machine.resume";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
     MachineUpdate,
+    MachineDrain,
+    MachineResume,
     MachineList,
     MachineInspect,
     MachineJoinRedeem,
@@ -58,6 +62,8 @@ impl OperationApiEndpoint {
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
             Self::MachineUpdate => "machine.update",
+            Self::MachineDrain => "machine.drain",
+            Self::MachineResume => "machine.resume",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
             Self::MachineJoinRedeem => "machine.join.redeem",
@@ -79,6 +85,8 @@ impl OperationApiEndpoint {
             Self::InitFirstMachineActivate => API_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => API_MACHINE_ADD,
             Self::MachineUpdate => API_MACHINE_UPDATE,
+            Self::MachineDrain => API_MACHINE_DRAIN,
+            Self::MachineResume => API_MACHINE_RESUME,
             Self::MachineList => API_MACHINE_LIST,
             Self::MachineInspect => API_MACHINE_INSPECT,
             Self::MachineJoinRedeem => API_MACHINE_JOIN_REDEEM,
@@ -96,9 +104,11 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn execution(self) -> OperationApiEndpointExecution {
         match self {
-            Self::DeploySubmit | Self::MachineAdd | Self::MachineUpdate => {
-                OperationApiEndpointExecution::AcceptsOperation
-            }
+            Self::DeploySubmit
+            | Self::MachineAdd
+            | Self::MachineUpdate
+            | Self::MachineDrain
+            | Self::MachineResume => OperationApiEndpointExecution::AcceptsOperation,
             Self::InitFirstMachineActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
                 OperationApiEndpointExecution::MutatesOperation
             }

@@ -213,7 +213,8 @@ fn operation_id(status: &OperationStatus) -> &OperationId {
         OperationStatus::Deploy { id, .. }
         | OperationStatus::Cert { id, .. }
         | OperationStatus::MachineAdd { id, .. }
-        | OperationStatus::MachineUpdate { id, .. } => id,
+        | OperationStatus::MachineUpdate { id, .. }
+        | OperationStatus::MachineLifecycle { id, .. } => id,
     }
 }
 
@@ -223,6 +224,7 @@ const fn operation_kind(status: &OperationStatus) -> &'static str {
         OperationStatus::Cert { .. } => "cert",
         OperationStatus::MachineAdd { .. } => "machine-add",
         OperationStatus::MachineUpdate { .. } => "machine-update",
+        OperationStatus::MachineLifecycle { .. } => "machine-lifecycle",
     }
 }
 
@@ -255,6 +257,31 @@ fn operation_subject(status: &OperationStatus) -> String {
             machine_id.as_str(),
             target_version.as_str()
         ),
+        OperationStatus::MachineLifecycle {
+            machine_id, target, ..
+        } => format!(
+            "machine {} target-lifecycle {}",
+            machine_id.as_str(),
+            machine_lifecycle_name(*target)
+        ),
+    }
+}
+
+const fn machine_lifecycle_name(lifecycle: ployz_sdk_types::MachineLifecycle) -> &'static str {
+    match lifecycle {
+        ployz_sdk_types::MachineLifecycle::Active => "active",
+        ployz_sdk_types::MachineLifecycle::Draining => "draining",
+    }
+}
+
+const fn machine_lifecycle_state(
+    state: &ployz_sdk_types::MachineLifecycleOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::MachineLifecycleOperationState::Accepted => "accepted",
+        ployz_sdk_types::MachineLifecycleOperationState::Completed => "completed",
+        ployz_sdk_types::MachineLifecycleOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::MachineLifecycleOperationState::Cancelled { .. } => "cancelled",
     }
 }
 
@@ -264,6 +291,9 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
         OperationStatus::MachineUpdate { state, .. } => machine_update_state(state).to_owned(),
+        OperationStatus::MachineLifecycle { state, .. } => {
+            machine_lifecycle_state(state).to_owned()
+        }
     }
 }
 
@@ -282,6 +312,10 @@ const fn last_event_sequence(status: &OperationStatus) -> EventSequence {
             ..
         }
         | OperationStatus::MachineUpdate {
+            last_event_sequence,
+            ..
+        }
+        | OperationStatus::MachineLifecycle {
             last_event_sequence,
             ..
         } => *last_event_sequence,
@@ -432,6 +466,9 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::MachineUpdateRunning { .. } => "machine.update.running",
         OperationEvent::MachineUpdateCompleted { .. } => "machine.update.completed",
         OperationEvent::MachineUpdateFailed { .. } => "machine.update.failed",
+        OperationEvent::MachineLifecycleSubmitted { .. } => "machine.lifecycle.submitted",
+        OperationEvent::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed",
+        OperationEvent::MachineLifecycleFailed { .. } => "machine.lifecycle.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

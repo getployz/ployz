@@ -773,11 +773,8 @@ async fn deploy_worker_records_planning_before_plan_failure() {
         vec![
             RecordedOperation::Transition(DeployTransition::Planning),
             RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::PlanningFailed {
-                    service_id: service_id("svc_api"),
-                    namespace_revision_id: target_namespace_revision_id(1),
-                    message: ployz_core::ops::FailureMessage::try_new("deploy planning failed")
-                        .expect("valid failure message"),
+                failure: DeployOperationFailure::NoUsableMachines {
+                    reasons: Vec::new(),
                 }
             }),
         ]

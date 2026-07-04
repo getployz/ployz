@@ -4,6 +4,10 @@ use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
+use ployz_core::machine_usability::{
+    MachineUsabilityVerdict, ObservationFreshness, machine_usability,
+};
+use ployz_core::ops::UnusableMachine;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
@@ -52,8 +56,8 @@ pub async fn load_deploy_execution_facts_from_nats(
             }
         })
     };
-    let machine_scope = load_active_machine_scope(core_state, machine_scope);
-    let (route_bindings, serving_entries, machine_scope) =
+    let machine_scope = load_active_machine_scope(core_state, observations, machine_scope);
+    let (route_bindings, serving_entries, (machine_scope, unusable_machines)) =
         tokio::try_join!(route_bindings, serving_entries, machine_scope)?;
     let namespace_route_bindings = route_bindings
         .into_iter()
@@ -73,6 +77,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         namespace_route_bindings,
         namespace_serving_entries,
         eligible_machines: machine_scope.eligible_machines,
+        unusable_machines,
         dataplane_machines,
         observed_machines,
         namespace_cleanup_candidates,
@@ -95,24 +100,66 @@ fn routed_dataplane_machines(
     sorted_unique_machines(fallback_machines.iter())
 }
 
+/// Applies the Machine Usability View to placement: eligible machines are
+/// the placement-usable subset; every rejection is returned with its typed
+/// reason so an empty eligible set fails the deploy with evidence. The
+/// pre-cluster fallback scope (no machine records yet) is used unfiltered.
 async fn load_active_machine_scope(
     core_state: &AsyncNatsCoreStateStore,
+    observations: &AsyncNatsObservationStore,
     fallback: DeployExecutionMachineScope,
-) -> Result<DeployExecutionMachineScope, DeployFactLoadError> {
+) -> Result<(DeployExecutionMachineScope, Vec<UnusableMachine>), DeployFactLoadError> {
     let machines = core_state.active_machines().await.map_err(|source| {
         DeployFactLoadError::ActiveMachineRead {
             message: source.to_string(),
         }
     })?;
     if machines.is_empty() {
-        return Ok(fallback);
+        return Ok((fallback, Vec::new()));
+    }
+    let observed_at = observations
+        .machine_snapshot_records()
+        .await
+        .map_err(|source| DeployFactLoadError::ActiveMachineRead {
+            message: source.to_string(),
+        })?
+        .into_iter()
+        .map(|record| {
+            (
+                record.snapshot.machine_id().clone(),
+                record.observed_at_unix_nanos,
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let now_unix_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+
+    let mut eligible = Vec::new();
+    let mut observed_ids = Vec::new();
+    let mut unusable = Vec::new();
+    for machine in machines {
+        observed_ids.push(machine.machine_id.clone());
+        let freshness =
+            ObservationFreshness::from_age(observed_at.get(&machine.machine_id).map(|observed| {
+                Duration::from_nanos(now_unix_nanos.saturating_sub(*observed).max(0) as u64)
+            }));
+        match machine_usability(machine.lifecycle, freshness).placement {
+            MachineUsabilityVerdict::Usable => eligible.push(machine.machine_id),
+            MachineUsabilityVerdict::Unusable { reason } => unusable.push(UnusableMachine {
+                machine_id: machine.machine_id,
+                reason,
+            }),
+        }
     }
 
-    Ok(DeployExecutionMachineScope::same_machines(
-        machines
-            .into_iter()
-            .map(|machine| machine.machine_id)
-            .collect(),
+    Ok((
+        DeployExecutionMachineScope {
+            eligible_machines: eligible,
+            observed_machine_ids: observed_ids,
+        },
+        unusable,
     ))
 }
 

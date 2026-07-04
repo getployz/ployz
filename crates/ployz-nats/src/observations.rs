@@ -202,6 +202,36 @@ impl AsyncNatsObservationStore {
             .map_err(ObservationStoreError::Decode)
     }
 
+    pub async fn machine_snapshot_record(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Option<MachineContainerObservationRecord>, ObservationStoreError> {
+        let key = MachineContainerObservationKey::from_machine_id(machine_id);
+        let Some(entry) = with_io_timeout(
+            "machine observation snapshot entry get",
+            self.bucket.entry(key.as_str()),
+        )
+        .await?
+        .map_err(|error| ObservationStoreError::Get {
+            key: key.as_str().to_owned(),
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+        if entry.operation != jetstream::kv::Operation::Put {
+            return Ok(None);
+        }
+
+        let snapshot: MachineContainerObservationSnapshot =
+            serde_json::from_slice(&entry.value).map_err(ObservationStoreError::Decode)?;
+        Ok(Some(MachineContainerObservationRecord {
+            snapshot,
+            observed_at_unix_nanos: entry.created.unix_timestamp_nanos(),
+            revision: entry.revision,
+        }))
+    }
+
     pub async fn machine_snapshots(
         &self,
     ) -> Result<Vec<MachineContainerObservationSnapshot>, ObservationStoreError> {

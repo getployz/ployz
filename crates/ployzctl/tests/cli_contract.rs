@@ -304,6 +304,27 @@ fn cli_dispatches_machine_list_request() {
 }
 
 #[test]
+fn cli_dispatches_machine_drain_and_resume_requests() {
+    let command = parse_command(["machine", "drain", "machine_2"].map(str::to_owned))
+        .expect("machine drain command parses");
+    let PloyzctlCommand::MachineDrain(command) = command else {
+        panic!("expected machine drain command");
+    };
+    let request = command.into_request();
+    assert_eq!(request.machine_id.as_str(), "machine_2");
+    assert!(request.operation_id.as_str().starts_with("op_drain_"));
+
+    let command = parse_command(["machine", "resume", "machine_2"].map(str::to_owned))
+        .expect("machine resume command parses");
+    let PloyzctlCommand::MachineResume(command) = command else {
+        panic!("expected machine resume command");
+    };
+    let request = command.into_request();
+    assert_eq!(request.machine_id.as_str(), "machine_2");
+    assert!(request.operation_id.as_str().starts_with("op_resume_"));
+}
+
+#[test]
 fn cli_dispatches_machine_inspect_request() {
     let command = parse_command(["machine", "inspect", "machine_2"].map(str::to_owned))
         .expect("machine inspect command parses");

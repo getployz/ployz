@@ -637,6 +637,7 @@ async fn wait_for_matching_snapshot(
                 public_ip,
                 gateway,
                 observed_container_count,
+                usability: _,
             } = snapshot;
             *active == before.active
                 && *public_ip == before.public_ip

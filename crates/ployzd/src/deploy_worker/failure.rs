@@ -299,7 +299,12 @@ impl DeployExecutionError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
-            Self::Plan(_) | Self::StepId(_) => DeployOperationFailure::PlanningFailed {
+            Self::Plan(DeployPlanError::NoEligibleMachines) => {
+                DeployOperationFailure::NoUsableMachines {
+                    reasons: command.unusable_machines.clone(),
+                }
+            }
+            Self::StepId(_) => DeployOperationFailure::PlanningFailed {
                 service_id: failure_service_id(command),
                 namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message("deploy planning failed"),
@@ -662,6 +667,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
             retained_artifacts, ..
         } => retained_artifacts,
         DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::NoUsableMachines { .. }
         | DeployOperationFailure::ArtifactUnavailable { .. } => return,
     };
 

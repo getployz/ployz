@@ -14,7 +14,8 @@ use ployz_nats::observations::{
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_GATEWAY_OBSERVATION_STALE_AFTER: Duration = Duration::from_secs(30);
+const DEFAULT_GATEWAY_OBSERVATION_STALE_AFTER: Duration =
+    ployz_core::machine_usability::OBSERVATION_STALE_AFTER;
 
 pub async fn load_gateway_projection_update_from_nats(
     core_state: &AsyncNatsCoreStateStore,

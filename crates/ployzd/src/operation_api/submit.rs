@@ -3,7 +3,8 @@
 
 use crate::controllers::{
     DeploySubmitCommand, MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError,
-    MachineAddSubmitCommand, MachineUpdateSubmitCommand, OperationControllers,
+    MachineAddSubmitCommand, MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand,
+    OperationControllers,
 };
 use crate::nats_authorization::MintRequest;
 use ployz_core::ids::OperationId;
@@ -11,7 +12,8 @@ use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinToken, MachineUpdateError, MachineUpdateRequest,
+    MachineAddRequest, MachineDrainRequest, MachineJoinToken, MachineLifecycleError,
+    MachineResumeRequest, MachineUpdateError, MachineUpdateRequest,
 };
 
 use super::OperationApiHandlers;
@@ -180,6 +182,86 @@ pub async fn machine_update(
         })?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
     handlers.machine_update_runtime().start(accepted);
+
+    Ok(operation)
+}
+
+pub async fn machine_drain(
+    handlers: &OperationApiHandlers,
+    request: MachineDrainRequest,
+) -> Result<AcceptedOperation, MachineLifecycleError> {
+    machine_lifecycle(
+        handlers,
+        request.operation_id,
+        request.machine_id,
+        ployz_core::state::MachineLifecycle::Draining,
+    )
+    .await
+}
+
+pub async fn machine_resume(
+    handlers: &OperationApiHandlers,
+    request: MachineResumeRequest,
+) -> Result<AcceptedOperation, MachineLifecycleError> {
+    machine_lifecycle(
+        handlers,
+        request.operation_id,
+        request.machine_id,
+        ployz_core::state::MachineLifecycle::Active,
+    )
+    .await
+}
+
+async fn machine_lifecycle(
+    handlers: &OperationApiHandlers,
+    operation_id: ployz_core::ids::OperationId,
+    machine_id: ployz_core::ids::MachineId,
+    target: ployz_core::state::MachineLifecycle,
+) -> Result<AcceptedOperation, MachineLifecycleError> {
+    let target_machine = handlers
+        .core_state
+        .active_machine(&machine_id)
+        .await
+        .map_err(|error| MachineLifecycleError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: error.to_string(),
+        })?;
+    if target_machine.is_none() {
+        return Err(MachineLifecycleError::NoSuchMachine {
+            operation_id,
+            machine_id,
+        });
+    }
+    let accepted = handlers
+        .controllers()
+        .submit_machine_lifecycle(MachineLifecycleSubmitCommand {
+            operation_id: operation_id.clone(),
+            machine_id,
+            target,
+        })
+        .await
+        .map_err(|error| match super::error_map::submit_failure(error) {
+            super::error_map::SubmitFailure::InvalidDeployTarget => {
+                unreachable!("machine lifecycle submit is not deploy target")
+            }
+            super::error_map::SubmitFailure::ResourceBusy { .. } => {
+                unreachable!("machine lifecycle submit has no namespace lock")
+            }
+            super::error_map::SubmitFailure::Unavailable { message } => {
+                MachineLifecycleError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                }
+            }
+            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                MachineLifecycleError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                }
+            }
+        })?;
+    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
+    handlers.machine_lifecycle_runtime().start(accepted);
 
     Ok(operation)
 }

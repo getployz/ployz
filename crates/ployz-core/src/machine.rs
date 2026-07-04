@@ -292,6 +292,7 @@ pub fn active_machine_from_completed_add(
     };
 
     Ok(ActiveMachineState {
+        lifecycle: crate::state::MachineLifecycle::Active,
         machine_id,
         name,
         activated_by: operation_id,

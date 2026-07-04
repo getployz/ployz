@@ -1,5 +1,7 @@
+mod machine_lifecycle;
 mod machine_update;
 
+use super::MachineLifecycleOperationState;
 use super::classification::{
     CertEvent, ClassifiedOperationEvent, DeployEvent, MachineAddEvent, OperationSubjectRef,
 };
@@ -83,6 +85,7 @@ pub enum ProjectionOperationState {
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
     MachineUpdate(MachineUpdateOperationState),
+    MachineLifecycle(MachineLifecycleOperationState),
 }
 
 impl ProjectionOperationState {
@@ -93,6 +96,7 @@ impl ProjectionOperationState {
             Self::Cert(_) => OperationKind::Cert,
             Self::MachineAdd(_) => OperationKind::MachineAdd,
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
+            Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
         }
     }
 }
@@ -103,6 +107,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
+        OperationKind::MachineLifecycle => "machine-lifecycle",
     }
 }
 
@@ -114,6 +119,9 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         }
         OperationSubjectRef::MachineUpdate(machine_id) => {
             format!("machine-update {}", machine_id.as_str())
+        }
+        OperationSubjectRef::MachineLifecycle(machine_id) => {
+            format!("machine-lifecycle {}", machine_id.as_str())
         }
     }
 }
@@ -389,6 +397,25 @@ pub fn project_operation_event(
             };
             machine_update::project_event(fields, subject, event, event_sequence)
         }
+        ClassifiedOperationEvent::MachineLifecycle { subject, event, .. } => {
+            let OperationStatus::MachineLifecycle {
+                id,
+                machine_id,
+                target,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::MachineLifecycle));
+            };
+            let fields = machine_lifecycle::MachineLifecycleFields {
+                id,
+                machine_id,
+                target: *target,
+                state,
+            };
+            machine_lifecycle::project_event(fields, subject, event, event_sequence)
+        }
         ClassifiedOperationEvent::Cancelled {
             operation_id: _,
             reason,
@@ -448,6 +475,22 @@ pub fn project_operation_event(
                 MachineUpdateOperationState::Cancelled { reason },
                 event_sequence,
             ),
+            OperationStatus::MachineLifecycle {
+                id,
+                machine_id,
+                target,
+                state,
+                ..
+            } => machine_lifecycle::project_state(
+                machine_lifecycle::MachineLifecycleFields {
+                    id,
+                    machine_id,
+                    target: *target,
+                    state,
+                },
+                MachineLifecycleOperationState::Cancelled { reason },
+                event_sequence,
+            ),
         },
     }
 }
@@ -459,6 +502,18 @@ pub(super) fn kind_mismatch(
     StatusProjectionError::OperationKindMismatch {
         operation_id: current.id().clone(),
         expected: current.kind(),
+        actual,
+    }
+}
+
+pub(super) fn machine_lifecycle_mismatch(
+    operation_id: &OperationId,
+    expected_machine_id: &MachineId,
+    actual: OperationSubjectRef,
+) -> StatusProjectionError {
+    StatusProjectionError::OperationSubjectMismatch {
+        operation_id: operation_id.clone(),
+        expected: OperationSubjectRef::MachineLifecycle(expected_machine_id.clone()),
         actual,
     }
 }

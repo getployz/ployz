@@ -16,6 +16,7 @@ pub struct DeployExecutionFacts {
     pub namespace_route_bindings: Vec<RouteBindingState>,
     pub namespace_serving_entries: Vec<ServingTargetEntry>,
     pub eligible_machines: Vec<MachineId>,
+    pub unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub dataplane_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -83,6 +84,7 @@ pub fn prepare_deploy_execution_command(
         serving_target_removals,
         namespace_cleanup_candidates,
         dataplane_machines: facts.dataplane_machines,
+        unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,
     }
 }

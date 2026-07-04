@@ -23,6 +23,7 @@ pub struct DeployExecutionCommand {
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) dataplane_machines: Vec<MachineId>,
+    pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub(super) step_timeout: Duration,
 }
 
@@ -74,6 +75,11 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn eligible_machines(&self) -> &[MachineId] {
         self.first_service().eligible_machines()
+    }
+
+    #[must_use]
+    pub fn unusable_machines(&self) -> &[ployz_core::ops::UnusableMachine] {
+        &self.unusable_machines
     }
 
     #[must_use]

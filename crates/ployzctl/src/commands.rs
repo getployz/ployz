@@ -28,6 +28,8 @@ pub enum PloyzctlCommand {
     MachineAdd(machine::MachineAddCommand),
     MachineAddRemote(machine::MachineAddRemoteCommand),
     MachineUpdate(machine::MachineUpdateCommand),
+    MachineDrain(machine::MachineDrainCommand),
+    MachineResume(machine::MachineResumeCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
     ServiceList(service::ServiceListCommand),
@@ -123,6 +125,8 @@ enum MachineCli {
     Init(machine::MachineInitCli),
     Add(machine::MachineAddRemoteCli),
     Update(machine::MachineUpdateCli),
+    Drain(machine::MachineLifecycleCli),
+    Resume(machine::MachineLifecycleCli),
     #[command(alias = "ls")]
     List(machine::EmptyCli),
     Inspect(machine::MachineInspectCli),
@@ -166,6 +170,12 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             }
             MachineCli::Update(command) => {
                 machine::machine_update_command(command).map(PloyzctlCommand::MachineUpdate)
+            }
+            MachineCli::Drain(command) => {
+                machine::machine_drain_command(command).map(PloyzctlCommand::MachineDrain)
+            }
+            MachineCli::Resume(command) => {
+                machine::machine_resume_command(command).map(PloyzctlCommand::MachineResume)
             }
             MachineCli::List(command) => Ok(PloyzctlCommand::MachineList(
                 machine::machine_list_command(command),
