@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinSecretDelivery;
-use ployz_core::machine::{
-    MachineAddFailure, MachineAddOperationState, MachineCredentialProvisioningStep,
-};
+use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
 use ployz_core::nats_config::{MintedNatsUser, NatsAuthorizedUser, NatsUserSeed};
-use ployz_core::ops::{FailureMessage, OperationIdempotencyKey, OperationStatus};
+use ployz_core::ops::{
+    FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationStatus,
+};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;

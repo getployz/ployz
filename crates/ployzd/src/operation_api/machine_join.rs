@@ -132,7 +132,7 @@ async fn repair_completed_machine_join_report(
         id,
         machine_id,
         name,
-        state: ployz_core::machine::MachineAddOperationState::Completed,
+        state: ployz_core::ops::MachineAddOperationState::Completed,
         last_event_sequence,
         ..
     } = status
@@ -162,7 +162,7 @@ async fn activate_reported_machine(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
-        ployz_core::machine::MachineAddOperationState::Completed,
+        ployz_core::ops::MachineAddOperationState::Completed,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
         message: corrupt("completed machine-add did not produce active machine"),

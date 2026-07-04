@@ -1,0 +1,255 @@
+//! The Machine Add operation: a join token is minted, the machine joins,
+//! credentials are provisioned, and the machine activates. States,
+//! transitions, and status projection live together here; the failure type
+//! stays in `crate::machine` beside the join-flow evidence it renders.
+
+use serde::{Deserialize, Serialize};
+
+use crate::ids::{MachineId, OperationId};
+use crate::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
+use crate::roles::InstallRolePolicy;
+
+use super::events::OperationSubjectRef;
+use super::projection::{OperationProjection, ProjectionOperationState, StatusProjectionError};
+use super::text::CancellationReason;
+use super::{EventSequence, OperationStatus};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineAddOperationState {
+    Pending {
+        join_token: IssuedJoinToken,
+    },
+    Joining {
+        joined_at: JoinTokenRedeemedAt,
+    },
+    Completed,
+    Failed {
+        failure: MachineAddFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineAddOperationStateName {
+    Pending,
+    Joining,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl MachineAddOperationStateName {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Joining => "joining",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl MachineAddOperationState {
+    #[must_use]
+    pub const fn name(&self) -> MachineAddOperationStateName {
+        match self {
+            Self::Pending { .. } => MachineAddOperationStateName::Pending,
+            Self::Joining { .. } => MachineAddOperationStateName::Joining,
+            Self::Completed => MachineAddOperationStateName::Completed,
+            Self::Failed { .. } => MachineAddOperationStateName::Failed,
+            Self::Cancelled { .. } => MachineAddOperationStateName::Cancelled,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. }
+        )
+    }
+}
+
+/// Machine-add events after classification from the flat
+/// [`super::OperationEvent`] stream shape.
+pub(super) enum MachineAddEvent {
+    Submitted,
+    CredentialProvisioned,
+    Transition(MachineAddOperationState),
+}
+
+/// The destructured fields of [`OperationStatus::MachineAdd`].
+#[derive(Clone, Copy)]
+pub(super) struct MachineAddFields<'status> {
+    pub(super) id: &'status OperationId,
+    pub(super) machine_id: &'status MachineId,
+    pub(super) name: &'status MachineName,
+    pub(super) roles: InstallRolePolicy,
+    pub(super) state: &'status MachineAddOperationState,
+}
+
+impl MachineAddFields<'_> {
+    fn status_with(
+        &self,
+        state: MachineAddOperationState,
+        event_sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::MachineAdd {
+            id: self.id.clone(),
+            machine_id: self.machine_id.clone(),
+            name: self.name.clone(),
+            roles: self.roles,
+            state,
+            last_event_sequence: event_sequence,
+        }
+    }
+}
+
+pub(super) fn project_machine_add_event(
+    fields: MachineAddFields<'_>,
+    event_subject: OperationSubjectRef,
+    event: MachineAddEvent,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
+    if event_subject != OperationSubjectRef::MachineAdd(fields.machine_id.clone()) {
+        return Err(StatusProjectionError::OperationSubjectMismatch {
+            operation_id: fields.id.clone(),
+            expected: OperationSubjectRef::MachineAdd(fields.machine_id.clone()),
+            actual: event_subject,
+        });
+    }
+
+    match event {
+        MachineAddEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
+        MachineAddEvent::CredentialProvisioned => {
+            project_machine_add_credential_evidence(fields, event_sequence)
+        }
+        MachineAddEvent::Transition(attempted) => {
+            project_machine_add_state(fields, attempted, event_sequence)
+        }
+    }
+}
+
+/// Credential-provisioning steps are evidence: they advance the status
+/// cursor without changing the machine-add state. They are only recorded
+/// while the operation is live; once terminal, the evidence is satisfied.
+fn project_machine_add_credential_evidence(
+    fields: MachineAddFields<'_>,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
+    if fields.state.is_terminal() {
+        return Ok(OperationProjection::AlreadySatisfied);
+    }
+
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(fields.status_with(fields.state.clone(), event_sequence)),
+    })
+}
+
+pub(super) fn project_machine_add_state(
+    fields: MachineAddFields<'_>,
+    attempted: MachineAddOperationState,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
+    if fields.state == &attempted {
+        return Ok(OperationProjection::AlreadySatisfied);
+    }
+    if fields.state.is_terminal() {
+        return Err(StatusProjectionError::TerminalState {
+            operation_id: fields.id.clone(),
+            current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
+            attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
+        });
+    }
+    if !machine_add_transition_allowed(fields.state, &attempted) {
+        return Err(StatusProjectionError::InvalidTransition {
+            operation_id: fields.id.clone(),
+            current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
+            attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
+        });
+    }
+
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(fields.status_with(attempted, event_sequence)),
+    })
+}
+
+fn machine_add_transition_allowed(
+    current: &MachineAddOperationState,
+    attempted: &MachineAddOperationState,
+) -> bool {
+    match (current, attempted) {
+        (
+            MachineAddOperationState::Pending { .. },
+            MachineAddOperationState::Joining { .. } | MachineAddOperationState::Cancelled { .. },
+        )
+        | (
+            MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Completed | MachineAddOperationState::Cancelled { .. },
+        ) => true,
+        (
+            MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Failed { failure },
+        ) => machine_add_failure_allowed(current, failure),
+        (
+            MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Pending { .. },
+        )
+        | (MachineAddOperationState::Joining { .. }, MachineAddOperationState::Joining { .. })
+        | (MachineAddOperationState::Pending { .. }, MachineAddOperationState::Completed)
+        | (
+            MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. },
+            _,
+        ) => false,
+    }
+}
+
+fn machine_add_failure_allowed(
+    current: &MachineAddOperationState,
+    failure: &MachineAddFailure,
+) -> bool {
+    match (current, failure) {
+        (
+            MachineAddOperationState::Pending { .. },
+            MachineAddFailure::InvalidJoinToken
+            | MachineAddFailure::JoinTokenExpired { .. }
+            | MachineAddFailure::AuthorizationRenderFailed { .. }
+            | MachineAddFailure::NatsReloadFailed { .. }
+            | MachineAddFailure::MintedCredentialUnusable { .. }
+            | MachineAddFailure::CredentialEvidenceWriteFailed { .. },
+        )
+        | (
+            MachineAddOperationState::Joining { .. },
+            MachineAddFailure::BootstrapFailed { .. } | MachineAddFailure::ReadinessFailed { .. },
+        ) => true,
+        (
+            MachineAddOperationState::Pending { .. },
+            MachineAddFailure::BootstrapFailed { .. } | MachineAddFailure::ReadinessFailed { .. },
+        )
+        | (
+            MachineAddOperationState::Joining { .. },
+            MachineAddFailure::InvalidJoinToken
+            | MachineAddFailure::JoinTokenExpired { .. }
+            | MachineAddFailure::AuthorizationRenderFailed { .. }
+            | MachineAddFailure::NatsReloadFailed { .. }
+            | MachineAddFailure::MintedCredentialUnusable { .. }
+            | MachineAddFailure::CredentialEvidenceWriteFailed { .. },
+        )
+        | (
+            MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. },
+            _,
+        ) => false,
+    }
+}
