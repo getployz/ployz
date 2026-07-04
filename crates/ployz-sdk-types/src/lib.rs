@@ -49,8 +49,7 @@ pub use ployz_core::install::{
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
-    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName,
-    MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
+    MachineAddFailure, MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
@@ -61,6 +60,7 @@ pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
+    MachineAddOperationState, MachineAddOperationStateName,
     FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineLifecycleFailure,
     MachineLifecycleOperationState, MachineSubstrateVersions, MachineUpdateFailure,
     MachineUpdateOperationState, NonEmptyTextError, OperationEvent, OperationEventReplayCursor,

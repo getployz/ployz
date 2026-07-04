@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
-use crate::ops::{FailureMessage, OperationIdempotencyKey};
+use crate::ops::{
+    FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
+};
 use crate::state::ActiveMachineState;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -135,70 +137,6 @@ pub fn plan_first_machine_activation(
         ))?,
         name: MachineName::try_new(machine_id.as_str())?,
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineAddOperationState {
-    Pending {
-        join_token: IssuedJoinToken,
-    },
-    Joining {
-        joined_at: JoinTokenRedeemedAt,
-    },
-    Completed,
-    Failed {
-        failure: MachineAddFailure,
-    },
-    Cancelled {
-        reason: crate::ops::CancellationReason,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum MachineAddOperationStateName {
-    Pending,
-    Joining,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl MachineAddOperationStateName {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Joining => "joining",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-impl MachineAddOperationState {
-    #[must_use]
-    pub const fn name(&self) -> MachineAddOperationStateName {
-        match self {
-            Self::Pending { .. } => MachineAddOperationStateName::Pending,
-            Self::Joining { .. } => MachineAddOperationStateName::Joining,
-            Self::Completed => MachineAddOperationStateName::Completed,
-            Self::Failed { .. } => MachineAddOperationStateName::Failed,
-            Self::Cancelled { .. } => MachineAddOperationStateName::Cancelled,
-        }
-    }
-
-    #[must_use]
-    pub const fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. }
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
