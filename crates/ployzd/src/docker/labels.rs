@@ -4,6 +4,9 @@
 //! string pairs at container creation and parsed back from Docker summaries.
 //! The identity struct itself lives in `ployz-core`; this module owns only
 //! the label wire format.
+//!
+//! Changing a label name or required label intentionally breaks existing
+//! managed containers unless paired with container cleanup or a label migration.
 
 use std::collections::BTreeMap;
 

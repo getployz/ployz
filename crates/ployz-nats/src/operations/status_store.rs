@@ -27,12 +27,20 @@ pub struct AsyncNatsOperationStatusStore {
     bucket: jetstream::kv::Store,
 }
 
+/// Persisted `KV_OPS.deploy_claims.*` value.
+///
+/// Changing this shape intentionally breaks deploy idempotency/adoption unless
+/// paired with KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredDeployClaim {
     pub operation_id: OperationId,
     pub target: DeployRequest,
 }
 
+/// Persisted `KV_OPS.machine_add_submissions.*` value.
+///
+/// Changing this shape intentionally breaks machine-add resume/adoption unless
+/// paired with KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddSubmission {
     pub operation_id: OperationId,
@@ -46,6 +54,10 @@ pub struct StoredMachineAddSubmission {
     pub raw_join_token: RawJoinToken,
 }
 
+/// Persisted `KV_OPS.machine_add_claims.*` value.
+///
+/// Changing this shape intentionally breaks machine-add idempotency/adoption
+/// unless paired with KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddClaim {
     pub operation_id: OperationId,
@@ -57,6 +69,10 @@ pub struct StoredMachineAddClaim {
     pub raw_join_token: RawJoinToken,
 }
 
+/// Persisted `KV_OPS.machine_add_secret_deliveries.*` value.
+///
+/// Changing this shape intentionally breaks machine-add secret recovery unless
+/// paired with KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddSecretDelivery {
     pub operation_id: OperationId,
@@ -67,6 +83,10 @@ pub struct StoredMachineAddSecretDelivery {
 /// (ADR-0015 atomic resource claim). The first mint run stores its freshly
 /// generated material here before any render; concurrent or resumed runs
 /// adopt the claimed material and converge on the same secret delivery.
+///
+/// Persisted `KV_OPS.machine_add_mint_claims.*` value. Changing this shape
+/// intentionally breaks machine-add resume/adoption unless paired with KV
+/// cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddMintClaim {
     pub operation_id: OperationId,
@@ -74,6 +94,10 @@ pub struct StoredMachineAddMintClaim {
     pub nkey_seed: NatsUserSeed,
 }
 
+/// Persisted `KV_OPS.machine_add_join_tokens.*` value.
+///
+/// Changing this shape intentionally breaks join-token idempotency unless
+/// paired with KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddJoinToken {
     pub operation_id: OperationId,
