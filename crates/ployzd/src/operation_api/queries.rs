@@ -12,22 +12,21 @@ use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::{ActiveMachineReadError, AsyncNatsCoreStateStore};
+use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
-    LogsTailError, LogsTailRequest, LogsTailResult, LogsTailUnavailableSource, MachineInspectError,
-    MachineListError, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusUnavailableSource,
-    OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
+    LogsTailError, LogsTailRequest, LogsTailResult, MachineInspectError, MachineListError,
+    MachineListResult, MachineSnapshot, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
     RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
     RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
-    RuntimeSnapshotResult, RuntimeSnapshotUnavailableSource, ServiceInspectError, ServiceListError,
-    ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot,
+    RuntimeSnapshotResult, ServiceInspectError, ServiceListError, ServiceListResult,
+    ServiceSnapshot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::error_map::{ops_watch_error_from_replay_error, status_read_failure};
+use super::error_map::ops_watch_error_from_replay_error;
 
 #[derive(Clone)]
 pub struct MachineQueryRuntime {
@@ -72,24 +71,28 @@ impl RuntimeSnapshotQueryRuntime {
         let machines = machine_query
             .list()
             .await
-            .map_err(runtime_machine_error)?
+            .map_err(|MachineListError::Unavailable { message }| {
+                RuntimeSnapshotError::Unavailable { message }
+            })?
             .machines;
         let services = service_query
             .list()
             .await
-            .map_err(runtime_service_error)?
+            .map_err(|ServiceListError::Unavailable { message }| {
+                RuntimeSnapshotError::Unavailable { message }
+            })?
             .services;
-        let routes = self.core_state.route_bindings().await.map_err(|_| {
+        let routes = self.core_state.route_bindings().await.map_err(|error| {
             RuntimeSnapshotError::Unavailable {
-                source: RuntimeSnapshotUnavailableSource::CoreState,
+                message: error.to_string(),
             }
         })?;
         let containers = self
             .observations
             .machine_snapshot_records()
             .await
-            .map_err(|_| RuntimeSnapshotError::Unavailable {
-                source: RuntimeSnapshotUnavailableSource::Observations,
+            .map_err(|error| RuntimeSnapshotError::Unavailable {
+                message: error.to_string(),
             })?
             .into_iter()
             .flat_map(|record| record.snapshot.containers().to_vec())
@@ -181,8 +184,8 @@ impl LogsQueryRuntime {
             .observations
             .machine_snapshot_records()
             .await
-            .map_err(|_| LogsTailError::Unavailable {
-                source: LogsTailUnavailableSource::Observations,
+            .map_err(|error| LogsTailError::Unavailable {
+                message: error.to_string(),
                 machine_id: None,
             })?
             .into_iter()
@@ -215,8 +218,8 @@ impl LogsQueryRuntime {
             .observations
             .machine_snapshot(machine_id)
             .await
-            .map_err(|_| LogsTailError::Unavailable {
-                source: LogsTailUnavailableSource::Observations,
+            .map_err(|error| LogsTailError::Unavailable {
+                message: error.to_string(),
                 machine_id: Some(machine_id.clone()),
             })?
         else {
@@ -244,7 +247,9 @@ impl ServiceQueryRuntime {
             .core_state
             .serving_target_entries()
             .await
-            .map_err(service_list_core_error)?
+            .map_err(|error| ServiceListError::Unavailable {
+                message: error.to_string(),
+            })?
             .into_iter()
             .map(service_snapshot)
             .collect();
@@ -260,7 +265,9 @@ impl ServiceQueryRuntime {
             .core_state
             .serving_target_entry(namespace_id, service_id)
             .await
-            .map_err(service_inspect_core_error)?
+            .map_err(|error| ServiceInspectError::Unavailable {
+                message: error.to_string(),
+            })?
         else {
             return Err(ServiceInspectError::NoSuchService {
                 service_id: service_id.clone(),
@@ -452,17 +459,17 @@ impl MachineQueryRuntime {
     }
 
     pub(crate) async fn list(&self) -> Result<MachineListResult, MachineListError> {
-        let machines = self
-            .core_state
-            .active_machines()
-            .await
-            .map_err(machine_list_core_error)?;
+        let machines = self.core_state.active_machines().await.map_err(|error| {
+            MachineListError::Unavailable {
+                message: error.to_string(),
+            }
+        })?;
         let public_ips = self
             .observations
             .machine_public_ips()
             .await
-            .map_err(|_| MachineListError::Unavailable {
-                source: MachineQueryUnavailableSource::Observations,
+            .map_err(|error| MachineListError::Unavailable {
+                message: error.to_string(),
             })?
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
@@ -471,8 +478,8 @@ impl MachineQueryRuntime {
             .observations
             .gateway_statuses()
             .await
-            .map_err(|_| MachineListError::Unavailable {
-                source: MachineQueryUnavailableSource::Observations,
+            .map_err(|error| MachineListError::Unavailable {
+                message: error.to_string(),
             })?
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
@@ -481,8 +488,8 @@ impl MachineQueryRuntime {
             .observations
             .machine_snapshot_records()
             .await
-            .map_err(|_| MachineListError::Unavailable {
-                source: MachineQueryUnavailableSource::Observations,
+            .map_err(|error| MachineListError::Unavailable {
+                message: error.to_string(),
             })?
             .into_iter()
             .map(|record| {
@@ -517,35 +524,36 @@ impl MachineQueryRuntime {
             .core_state
             .active_machine(machine_id)
             .await
-            .map_err(machine_inspect_core_error)?
+            .map_err(|error| MachineInspectError::Unavailable {
+                message: error.to_string(),
+            })?
         else {
             return Err(MachineInspectError::NoSuchMachine {
                 machine_id: machine_id.clone(),
             });
         };
 
-        self.snapshot(machine).await.map_err(machine_inspect_error)
+        self.snapshot(machine)
+            .await
+            .map_err(|message| MachineInspectError::Unavailable { message })
     }
 
-    async fn snapshot(
-        &self,
-        active: ActiveMachineState,
-    ) -> Result<MachineSnapshot, MachineSnapshotError> {
+    async fn snapshot(&self, active: ActiveMachineState) -> Result<MachineSnapshot, String> {
         let public_ip = self
             .observations
             .machine_public_ip(&active.machine_id)
             .await
-            .map_err(|_| MachineSnapshotError::Observations)?;
+            .map_err(|error| error.to_string())?;
         let gateway = self
             .observations
             .gateway_status(&active.machine_id)
             .await
-            .map_err(|_| MachineSnapshotError::Observations)?;
+            .map_err(|error| error.to_string())?;
         let observed_container_count = self
             .observations
             .machine_snapshot(&active.machine_id)
             .await
-            .map_err(|_| MachineSnapshotError::Observations)?
+            .map_err(|error| error.to_string())?
             .map(|snapshot| snapshot.containers().len())
             .unwrap_or_default();
 
@@ -556,10 +564,6 @@ impl MachineQueryRuntime {
             observed_container_count,
         })
     }
-}
-
-enum MachineSnapshotError {
-    Observations,
 }
 
 fn logs_tail_machine_error(error: MachineLogsTailRuntimeError) -> LogsTailError {
@@ -576,73 +580,12 @@ fn logs_tail_machine_error(error: MachineLogsTailRuntimeError) -> LogsTailError 
             container_id,
             message,
         },
-        MachineLogsTailRuntimeError::Unavailable { machine_id, .. } => LogsTailError::Unavailable {
-            source: LogsTailUnavailableSource::MachineRpc,
-            machine_id: Some(machine_id),
-        },
-    }
-}
-
-fn machine_list_core_error(_error: ActiveMachineReadError) -> MachineListError {
-    MachineListError::Unavailable {
-        source: MachineQueryUnavailableSource::CoreState,
-    }
-}
-
-fn machine_inspect_core_error(_error: ActiveMachineReadError) -> MachineInspectError {
-    MachineInspectError::Unavailable {
-        source: MachineQueryUnavailableSource::CoreState,
-    }
-}
-
-fn machine_inspect_error(error: MachineSnapshotError) -> MachineInspectError {
-    match error {
-        MachineSnapshotError::Observations => MachineInspectError::Unavailable {
-            source: MachineQueryUnavailableSource::Observations,
-        },
-    }
-}
-
-fn service_list_core_error(
-    _error: ployz_nats::core_state::CoreStateStoreError,
-) -> ServiceListError {
-    ServiceListError::Unavailable {
-        source: ServiceQueryUnavailableSource::CoreState,
-    }
-}
-
-fn service_inspect_core_error(
-    _error: ployz_nats::core_state::CoreStateStoreError,
-) -> ServiceInspectError {
-    ServiceInspectError::Unavailable {
-        source: ServiceQueryUnavailableSource::CoreState,
-    }
-}
-
-fn runtime_machine_error(error: MachineListError) -> RuntimeSnapshotError {
-    match error {
-        MachineListError::Unavailable { source } => RuntimeSnapshotError::Unavailable {
-            source: match source {
-                MachineQueryUnavailableSource::CoreState => {
-                    RuntimeSnapshotUnavailableSource::CoreState
-                }
-                MachineQueryUnavailableSource::Observations => {
-                    RuntimeSnapshotUnavailableSource::Observations
-                }
-            },
-        },
-    }
-}
-
-fn runtime_service_error(error: ServiceListError) -> RuntimeSnapshotError {
-    match error {
-        ServiceListError::Unavailable { source } => RuntimeSnapshotError::Unavailable {
-            source: match source {
-                ServiceQueryUnavailableSource::CoreState => {
-                    RuntimeSnapshotUnavailableSource::CoreState
-                }
-            },
-        },
+        MachineLogsTailRuntimeError::Unavailable { machine_id, reason } => {
+            LogsTailError::Unavailable {
+                message: reason.failure_message().as_str().to_owned(),
+                machine_id: Some(machine_id),
+            }
+        }
     }
 }
 
@@ -662,9 +605,7 @@ pub async fn ops_status(
         Ok(None) => Err(ops_status_missing(&operation_id)),
         Err(error) => Err(OpsStatusError::Unavailable {
             operation_id,
-            source: OpsStatusUnavailableSource::StatusStore {
-                failure: status_read_failure(&error),
-            },
+            message: error.to_string(),
         }),
     }
 }
@@ -677,9 +618,7 @@ pub async fn ops_list(
         .operation_statuses()
         .await
         .map_err(|error| OpsListError::Unavailable {
-            source: OpsStatusUnavailableSource::StatusStore {
-                failure: status_read_failure(&error),
-            },
+            message: error.to_string(),
         })?
         .into_iter()
         .filter(|status| !request.active_only || !status.is_terminal())

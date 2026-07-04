@@ -65,10 +65,13 @@ pub struct MachineAddBootstrapMaterial {
     pub join_secret_delivery: MachineJoinSecretDelivery,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineAddBootstrapMaterialError {
+    #[error("clock: {message}")]
     Clock { message: String },
+    #[error("machine-add bootstrap material contains invalid join token material")]
     InvalidJoinTokenMaterial,
+    #[error("machine-add bootstrap material missing join template")]
     MissingJoinTemplate,
 }
 
