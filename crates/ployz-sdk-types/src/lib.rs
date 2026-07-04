@@ -57,9 +57,7 @@ pub use ployz_core::machine_runtime::{
     ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation,
 };
-pub use ployz_core::machine_usability::{
-    MachineUsability, MachineUsabilityReason, MachineUsabilityVerdict,
-};
+pub use ployz_core::machine_usability::MachineUsabilityReason;
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
@@ -408,7 +406,11 @@ pub struct MachineSnapshot {
     pub public_ip: Option<MachinePublicIpObservation>,
     pub gateway: Option<GatewayStatusObservation>,
     pub observed_container_count: usize,
-    pub usability: MachineUsability,
+    /// When this machine last self-reported, as display evidence for the
+    /// operator. Never an input to behavior: liveness surfaces at the point
+    /// of use (ADR 0027).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at_unix_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

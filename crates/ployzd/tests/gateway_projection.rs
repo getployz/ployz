@@ -9,15 +9,15 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::gateway::{
-    GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
-    GatewayProjection, GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
-    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry, GatewayUnroutableContainer,
-    GatewayUpstream, apply_gateway_update, project_gateway,
+    GatewayMachineObservation, GatewayProjectedRoute, GatewayProjection, GatewayProjectionError,
+    GatewayProjectionInput, GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute,
+    GatewayServingEntry, GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update,
+    project_gateway,
 };
 use std::net::SocketAddr;
 
 #[test]
-fn gateway_filters_stale_and_non_running_route_upstreams() {
+fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![
             gateway_route("WWW.example.com", "svc_web"),
@@ -28,7 +28,7 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
             serving_entry("svc_api", "entry_2"),
         ],
         observed_machines: vec![
-            fresh_machine(
+            observed_machine(
                 "machine_1",
                 vec![
                     service_container("machine_1", "api_good", "svc_api", "entry_2", running()),
@@ -45,11 +45,11 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
                     ),
                 ],
             ),
-            stale_machine(
+            observed_machine(
                 "machine_2",
                 vec![service_container(
                     "machine_2",
-                    "api_stale",
+                    "api_offline_later",
                     "svc_api",
                     "entry_2",
                     running(),
@@ -65,11 +65,18 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
             routes: vec![
                 GatewayProjectedRoute {
                     target: route_target("api.example.com", 443),
-                    upstreams: vec![GatewayUpstream {
-                        machine_id: machine_id("machine_1"),
-                        container_id: container_id("api_good"),
-                        address: socket_addr("10.0.0.1", 8080),
-                    }],
+                    upstreams: vec![
+                        GatewayUpstream {
+                            machine_id: machine_id("machine_1"),
+                            container_id: container_id("api_good"),
+                            address: socket_addr("10.0.0.1", 8080),
+                        },
+                        GatewayUpstream {
+                            machine_id: machine_id("machine_2"),
+                            container_id: container_id("api_offline_later"),
+                            address: socket_addr("10.0.0.1", 8080),
+                        },
+                    ],
                     unroutable_containers: vec![],
                 },
                 GatewayProjectedRoute {
@@ -91,7 +98,7 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
-        observed_machines: vec![fresh_machine(
+        observed_machines: vec![observed_machine(
             "machine_1",
             vec![service_container(
                 "machine_1",
@@ -127,7 +134,7 @@ fn gateway_dials_matching_containers_on_the_route_endpoint_port() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
-        observed_machines: vec![fresh_machine(
+        observed_machines: vec![observed_machine(
             "machine_1",
             vec![
                 service_container(
@@ -179,7 +186,7 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![],
-        observed_machines: vec![fresh_machine(
+        observed_machines: vec![observed_machine(
             "machine_1",
             vec![service_container(
                 "machine_1",
@@ -209,7 +216,7 @@ fn gateway_ignores_containers_with_a_different_entry_identity() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
-        observed_machines: vec![fresh_machine(
+        observed_machines: vec![observed_machine(
             "machine_1",
             vec![service_container(
                 "machine_1",
@@ -367,35 +374,11 @@ fn single_route_projection() -> GatewayProjection {
     }
 }
 
-fn fresh_machine(
-    machine_id_value: &str,
-    containers: Vec<ManagedContainerObservation>,
-) -> GatewayMachineObservation {
-    observed_machine(
-        machine_id_value,
-        GatewayObservationFreshness::Fresh,
-        containers,
-    )
-}
-
-fn stale_machine(
-    machine_id_value: &str,
-    containers: Vec<ManagedContainerObservation>,
-) -> GatewayMachineObservation {
-    observed_machine(
-        machine_id_value,
-        GatewayObservationFreshness::Stale,
-        containers,
-    )
-}
-
 fn observed_machine(
     machine_id_value: &str,
-    freshness: GatewayObservationFreshness,
     containers: Vec<ManagedContainerObservation>,
 ) -> GatewayMachineObservation {
     GatewayMachineObservation {
-        freshness,
         snapshot: MachineContainerObservationSnapshot::try_new(
             machine_id(machine_id_value),
             containers,

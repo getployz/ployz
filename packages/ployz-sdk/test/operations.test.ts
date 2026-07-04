@@ -825,11 +825,6 @@ function defaultFixture(): OperationFixture {
     },
     machine_snapshots: [
       {
-        usability: {
-          placement: { verdict: "usable" as const },
-          serving: { verdict: "usable" as const },
-          cleanup: { verdict: "usable" as const },
-        },
         active: {
           lifecycle: "active" as const,
           machine_id: machineId("machine_2"),
@@ -867,11 +862,6 @@ function defaultFixture(): OperationFixture {
     runtime_snapshot: {
       machines: [
         {
-          usability: {
-            placement: { verdict: "usable" as const },
-            serving: { verdict: "usable" as const },
-            cleanup: { verdict: "usable" as const },
-          },
           active: {
             lifecycle: "active" as const,
             machine_id: machineId("machine_2"),

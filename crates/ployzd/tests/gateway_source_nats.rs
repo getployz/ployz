@@ -16,11 +16,7 @@ use ployzd::gateway::{
     GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,
     project_gateway,
 };
-use ployzd::gateway_source::{
-    load_gateway_projection_update_from_nats,
-    load_gateway_projection_update_from_nats_with_stale_after,
-};
-use std::time::Duration;
+use ployzd::gateway_source::load_gateway_projection_update_from_nats;
 
 #[tokio::test]
 async fn gateway_source_loads_routes_and_current_observations_from_nats() {
@@ -80,70 +76,6 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
                 container_id: container_id("ctr_7"),
                 address: socket_addr("10.0.0.7", 8080),
             }],
-            unroutable_containers: vec![],
-        }]
-    );
-}
-
-#[tokio::test]
-async fn gateway_source_marks_old_observations_stale_before_projection() {
-    let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
-        .await
-        .expect("open observation store");
-    let target = route_target("api.example.com", 443);
-
-    routes
-        .replace_serving_target_entry(&ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        })
-        .await
-        .expect("serving target entry stores");
-    routes
-        .replace_route_binding(&RouteBindingState {
-            namespace_id: namespace_id("default"),
-            target: target.clone(),
-            endpoint_port: route_port(8080),
-            service_id: service_id("svc_api"),
-        })
-        .await
-        .expect("route stores");
-    AsyncNatsObservationStore::from_jetstream(&nats.machine_7_jetstream)
-        .await
-        .expect("open machine_7 observation store")
-        .replace_machine_containers(&machine_snapshot(
-            "machine_7",
-            [managed_observation(
-                "machine_7",
-                "ctr_7",
-                "svc_api",
-                "entry_1",
-            )],
-        ))
-        .await
-        .expect("machine snapshot stores");
-
-    let update = load_gateway_projection_update_from_nats_with_stale_after(
-        &routes,
-        &observations,
-        Duration::ZERO,
-    )
-    .await;
-    let GatewayProjectionUpdate::SourceAvailable(input) = update else {
-        panic!("gateway source should be available, got {update:?}");
-    };
-    let projection = project_gateway(input).expect("gateway projection succeeds");
-
-    assert_eq!(
-        projection.routes,
-        vec![GatewayProjectedRoute {
-            target,
-            upstreams: vec![],
             unroutable_containers: vec![],
         }]
     );

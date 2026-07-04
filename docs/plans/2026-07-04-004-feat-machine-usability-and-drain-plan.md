@@ -16,18 +16,19 @@ Grilled decisions:
 - Drain sets operator intent only: the machine leaves *new placement*
   immediately; running workloads keep serving and move off on the next
   deploy (ployz does not re-render manifests; no auto-migration).
-- Serving eligibility stays observation-driven; lifecycle does not
-  remove a draining machine's existing upstreams. Cleanup reachability
-  is untouched — a draining machine must accept removals to empty.
+- Lifecycle does not remove a draining machine's existing upstreams —
+  capacity leaves when the next deploy converges placement. Cleanup
+  reachability is untouched: a draining machine must accept removals
+  to empty.
 - Paired operations: `machine drain` / `machine resume`, one
   `MachineLifecycle` operation kind, target lifecycle in the payload,
   `Accepted → Completed | Failed`. Idempotent: submitting the current
   lifecycle completes trivially.
 - Observation cadence flips to the dumb drumbeat: machines publish
-  every 30s; one shared stale-after of 90s (three missed beats)
-  becomes the single freshness rule for gateway, DNS, machine API, and
-  the view. (Uncloud-style: each machine owns and reports its own
-  reality; consumers fold dumb rules over the pool.)
+  every 30s. Liveness is never inferred from observation age (ADR
+  0027): placement asks live (the run RPC today, bids later), gateway
+  upstreams fail at dial time, DNS answers change only via operations.
+  Observation age is display evidence only.
 - Rebuild test (ADR 0001/0016): lifecycle is control-side durable
   authority with on-disk evidence — a machine-lifecycles JSON file
   written atomically before the KV projection, adopted into KV on
@@ -35,9 +36,9 @@ Grilled decisions:
   commit was rejected because you drain unreachable machines; intent
   about a machine is not a machine-owned fact. SQLite consolidation is
   deliberately deferred to the ADR-0018 ledger work.
-- v1 reasons are the three with real signals: `Draining`,
-  `StaleObservation`, `NoRuntimeObservation`. The glossary's remaining
-  reasons land with their signals.
+- The only v1 usability reason is `Draining` (operator intent);
+  constraint-shaped reasons land with their signals. Liveness is never
+  a reason.
 - A deploy with zero usable machines fails with a typed
   `NoUsableMachines` failure carrying per-machine reasons.
 
@@ -47,18 +48,11 @@ Grilled decisions:
 
 - `MachineLifecycle { Active, Draining }` on `ActiveMachineState`
   (`#[serde(default)]` = `Active` so existing records decode).
-- `ops::usability` (or `machine_usability.rs`): pure module with
-  - `OBSERVATION_PUBLISH_INTERVAL` (30s) and
-    `OBSERVATION_STALE_AFTER` (90s) as the shared constants;
-  - `MachineUsabilityReason { Draining, StaleObservation,
-    NoRuntimeObservation }`;
-  - `machine_usability(lifecycle, last_observed_at, now) ->
-    MachineUsability` where `MachineUsability` carries three typed
-    verdicts: `placement`, `serving`, `cleanup`, each
-    `Usable | Unusable { reason }`. Placement is lifecycle- and
-    freshness-driven; serving is freshness-driven only; cleanup is
-    unusable only on `NoRuntimeObservation`.
-  - Table-driven unit tests; this is the one place the rules live.
+- `machine_usability.rs`: pure module with
+  `OBSERVATION_PUBLISH_INTERVAL` (30s), the single-variant
+  `MachineUsabilityReason { Draining }`, and
+  `placement_rejection(lifecycle)`. The control-side gate is interim:
+  bid-based placement moves the decline into the machine.
 
 ### 2. The MachineLifecycle operation
 
@@ -92,13 +86,13 @@ Grilled decisions:
   `usability.placement`; a deploy with zero usable machines fails
   `NoUsableMachines { reasons: Vec<(MachineId,
   MachineUsabilityReason)> }` (new typed deploy failure).
-- Gateway source: `DEFAULT_GATEWAY_OBSERVATION_STALE_AFTER` (30s)
-  replaced by the shared 90s constant; its private freshness enum
-  folds into the view's serving verdict.
-- DNS source: same substitution.
-- Machine API: `MachineSnapshot` gains `lifecycle` and a typed
-  `usability` summary (wire + TS addition) — a stale machine finally
-  renders as stale; `ployzctl machine inspect` prints reasons.
+- Gateway source: the staleness filter is removed entirely (ADR 0027
+  supersedes ADR 0009's serving-eligibility filtering); gateways serve
+  every observed container an operation promoted and handle dead
+  upstreams at dial time.
+- Machine API: `MachineSnapshot` gains `lifecycle` (on the active
+  record) and a raw `last_observed_at_unix_seconds` — display evidence
+  so silence renders as silence, never a behavioral input.
 - Machine observer: `MACHINE_OBSERVATION_INTERVAL` 1s → the shared
   30s constant (public-ip and gateway-status publishers align).
 
@@ -119,8 +113,7 @@ Grilled decisions:
 
 ## Verification
 
-1. View unit tests: table over (lifecycle × freshness) for all three
-   verdicts.
+1. Placement-rejection unit test (lifecycle-only by design).
 2. Operation integration (NATS): drain → machine record shows
    draining + evidence file written → deploy places nothing there
    (or fails NoUsableMachines when it was the only machine) → resume →
@@ -129,5 +122,5 @@ Grilled decisions:
    draining, mirroring the authorized-users adoption test.
 4. Golden pins extended for the new event family; wire-contract pin for
    the submitted event; TS regenerated and typechecked.
-5. Gateway/DNS tests updated for the 90s constant; full suite green,
-   zero warnings.
+5. Gateway staleness filtering removed with its tests; full suite
+   green, zero warnings.

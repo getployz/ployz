@@ -432,10 +432,6 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
-    observations
-        .replace_machine_containers(&containers::snapshot("machine_a", []))
-        .await
-        .expect("machine reports before placement");
     let machine_runtime = start_machine_runtime_service(
         machine_client.clone(),
         machine_id("machine_a"),
@@ -569,10 +565,6 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         })
         .await
         .expect("machine public ip stores");
-    observations
-        .replace_machine_containers(&containers::snapshot("machine_a", []))
-        .await
-        .expect("machine reports before placement");
     let machine_runtime = start_machine_runtime_service(
         machine_client.clone(),
         machine_id("machine_a"),

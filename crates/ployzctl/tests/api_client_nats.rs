@@ -635,18 +635,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
     }
 }
 
-fn fresh_usability() -> ployz_sdk_types::MachineUsability {
-    ployz_sdk_types::MachineUsability {
-        placement: ployz_sdk_types::MachineUsabilityVerdict::Usable,
-        serving: ployz_sdk_types::MachineUsabilityVerdict::Usable,
-        cleanup: ployz_sdk_types::MachineUsabilityVerdict::Usable,
-    }
-}
-
 fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
     let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
-        usability: fresh_usability(),
+        last_observed_at_unix_seconds: None,
         active: ActiveMachineState {
             lifecycle: MachineLifecycle::Active,
             machine_id: machine_id.clone(),
