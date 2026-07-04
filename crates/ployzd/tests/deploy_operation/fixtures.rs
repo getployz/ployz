@@ -749,7 +749,8 @@ pub(super) fn empty_deploy_command_with_running_container(
         )],
     )
     .expect("valid machine observation snapshot");
-    let namespace_cleanup_candidates = namespace_cleanup_candidates(&[snapshot.clone()]);
+    let namespace_cleanup_candidates =
+        namespace_cleanup_candidates(std::slice::from_ref(&snapshot));
     prepare_deploy_execution_command(
         operation_id("op_123"),
         DeployRequest {

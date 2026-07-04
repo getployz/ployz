@@ -723,7 +723,7 @@ mod tests {
             .running_unroutable()
             .build();
 
-        let instances = derive_runtime_instances(&[orphan.clone()]);
+        let instances = derive_runtime_instances(std::slice::from_ref(&orphan));
         let [instance] = instances.as_slice() else {
             panic!("orphaned container is projected as an instance");
         };

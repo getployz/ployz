@@ -54,18 +54,6 @@ pub async fn load_gateway_projection_update_from_nats_with_stale_after(
     }
 }
 
-pub async fn load_gateway_projection_input_from_nats(
-    core_state: &AsyncNatsCoreStateStore,
-    observations: &AsyncNatsObservationStore,
-) -> Result<GatewayProjectionInput, GatewaySourceError> {
-    load_gateway_projection_input_from_nats_with_stale_after(
-        core_state,
-        observations,
-        DEFAULT_GATEWAY_OBSERVATION_STALE_AFTER,
-    )
-    .await
-}
-
 pub async fn load_gateway_projection_input_from_nats_with_stale_after(
     core_state: &AsyncNatsCoreStateStore,
     observations: &AsyncNatsObservationStore,

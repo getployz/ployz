@@ -2,7 +2,7 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
     DeployPreparationInput, DeployRoute, DeployServicePlan, DeployServiceRequest,
     ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_service_deploy,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
     prepare_deploy,
 };
 use ployz_core::ids::MachineId;
@@ -97,7 +97,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
 #[test]
 fn new_service_plan_runs_replicas_across_eligible_machines() {
     assert_eq!(
-        plan_service_deploy(planning_input(
+        plan_single_service(planning_input(
             3,
             [machine_id("machine_a"), machine_id("machine_b")]
         ))
@@ -119,7 +119,7 @@ fn service_plan_reuses_running_target_entry_containers() {
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     assert_eq!(
-        plan_service_deploy(input).expect("plan succeeds"),
+        plan_single_service(input).expect("plan succeeds"),
         deploy_plan(
             vec![
                 use_existing_step("machine_b", "ctr_existing", 1),
@@ -140,7 +140,7 @@ fn service_plan_counts_duplicate_observations_once() {
     ];
 
     assert_eq!(
-        plan_service_deploy(input).expect("plan succeeds"),
+        plan_single_service(input).expect("plan succeeds"),
         deploy_plan(
             vec![
                 use_existing_step("machine_b", "ctr_existing", 1),
@@ -157,7 +157,7 @@ fn service_plan_does_not_require_eligible_machines_when_reality_already_satisfie
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     assert_eq!(
-        plan_service_deploy(input).expect("existing reality satisfies target"),
+        plan_single_service(input).expect("existing reality satisfies target"),
         deploy_plan(
             vec![use_existing_step("machine_b", "ctr_existing", 1)],
             Vec::new()
@@ -179,7 +179,7 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
     ];
 
     assert_eq!(
-        plan_service_deploy(input).expect("plan succeeds"),
+        plan_single_service(input).expect("plan succeeds"),
         deploy_plan(
             vec![use_existing_step("machine_b", "ctr_target_extra", 1)],
             vec![
@@ -193,7 +193,7 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
 #[test]
 fn deploy_plan_requires_eligible_machine() {
     assert_eq!(
-        plan_service_deploy(planning_input(1, [])),
+        plan_single_service(planning_input(1, [])),
         Err(DeployPlanError::NoEligibleMachines)
     );
 }
@@ -547,12 +547,23 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
     }
 }
 
+/// Plans one service through the namespace planner, the only production
+/// entry point.
+fn plan_single_service(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
+    plan_namespace_deploy(
+        namespace_id("default"),
+        namespace_revision_id("rev_1"),
+        vec![input],
+        Vec::new(),
+    )
+}
+
 fn deploy_plan(
     steps: Vec<DeployPlanStep>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> DeployPlan {
     DeployPlan {
-        namespace_id: namespace_id("svc_api"),
+        namespace_id: namespace_id("default"),
         namespace_revision_id: namespace_revision_id("rev_1"),
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),

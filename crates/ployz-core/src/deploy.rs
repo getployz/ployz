@@ -368,22 +368,6 @@ fn route_binding_commits(request: &DeployServiceRequest) -> Vec<RouteBindingStat
         .collect()
 }
 
-pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
-    let service_plan = plan_deploy_service(input)?;
-    let namespace_revision_id = service_plan.namespace_revision_id;
-    let cleanup_containers = service_plan.cleanup_containers;
-    Ok(DeployPlan {
-        namespace_id: NamespaceId::try_new(service_plan.service_id.as_str().to_owned())
-            .expect("service id is a valid namespace id"),
-        namespace_revision_id,
-        services: vec![DeployServicePlan {
-            service_id: service_plan.service_id,
-            steps: service_plan.steps,
-        }],
-        cleanup_containers,
-    })
-}
-
 pub fn plan_namespace_deploy(
     namespace_id: NamespaceId,
     namespace_revision_id: NamespaceRevisionId,

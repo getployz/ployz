@@ -1,7 +1,5 @@
 //! Controller wiring for operation execution.
 
-pub mod cert;
-
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::install::{
@@ -128,23 +126,6 @@ impl OperationControllers {
             core_state,
             machine_bootstrap,
         }
-    }
-
-    #[must_use]
-    pub fn for_test(
-        event_log: AsyncNatsOperationEventLog,
-        status_store: AsyncNatsOperationStatusStore,
-        core_state: AsyncNatsCoreStateStore,
-    ) -> Self {
-        Self::new(
-            event_log,
-            status_store,
-            core_state,
-            MachineAddBootstrapConfig::new(
-                MachineBootstrapUrl::try_new(crate::config::DEFAULT_MACHINE_BOOTSTRAP_URL)
-                    .expect("default machine bootstrap URL is valid"),
-            ),
-        )
     }
 
     pub async fn submit_deploy(

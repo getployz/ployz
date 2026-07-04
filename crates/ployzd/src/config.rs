@@ -666,15 +666,6 @@ impl ControlProcessConfig {
     }
 
     #[must_use]
-    pub fn with_machine_bootstrap_url(
-        mut self,
-        machine_bootstrap_url: MachineBootstrapUrl,
-    ) -> Self {
-        self.machine_bootstrap.bootstrap_url = machine_bootstrap_url;
-        self
-    }
-
-    #[must_use]
     pub fn with_machine_bootstrap(mut self, machine_bootstrap: MachineAddBootstrapConfig) -> Self {
         self.machine_bootstrap = machine_bootstrap;
         self
