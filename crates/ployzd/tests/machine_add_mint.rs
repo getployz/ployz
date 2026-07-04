@@ -6,7 +6,8 @@
 //! fixture's real `nats-server`, including the ADR-0015 single-writer
 //! fence and the ADR-0001 authority-file durability rules.
 
-use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
+use ployz_core::machine::MachineAddFailure;
+use ployz_core::ops::MachineAddOperationState;
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::OperationStatus;
 use ployz_core::permissions::core_state_kv_write_scope;

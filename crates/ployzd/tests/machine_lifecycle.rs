@@ -180,7 +180,7 @@ async fn seed_active_machine(core_state: &AsyncNatsCoreStateStore, machine: &str
         operation_id("op_add"),
         machine_id(machine),
         ployz_core::machine::MachineName::try_new(machine).expect("valid machine name"),
-        ployz_core::machine::MachineAddOperationState::Completed,
+        ployz_core::ops::MachineAddOperationState::Completed,
     )
     .expect("completed add activates");
     core_state

@@ -49,7 +49,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_rejects_duplicat
             machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
-            state: ployz_core::machine::MachineAddOperationState::Pending {
+            state: ployz_core::ops::MachineAddOperationState::Pending {
                 join_token: issued_join_token_for_raw("join_token"),
             },
             last_event_sequence: first.start_sequence,
@@ -433,7 +433,7 @@ async fn assert_machine_add_pending(
             machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
-            state: ployz_core::machine::MachineAddOperationState::Pending {
+            state: ployz_core::ops::MachineAddOperationState::Pending {
                 join_token: issued_join_token_for_raw("first_raw_join_token"),
             },
             last_event_sequence: start_sequence,
