@@ -421,8 +421,8 @@ A machine that has been explicitly excluded from new workload placement while ex
 _Avoid_: Temporary scheduler hint, daemon-local maintenance flag, serving disable
 
 **Drain Cancellation**:
-An explicit operation that returns a draining machine to normal placement eligibility. Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
-_Avoid_: Rollback, undelete, workload restore
+An explicit operation that returns a draining machine to normal placement eligibility; the canonical operation and command name is resume (`machine resume`). Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
+_Avoid_: Rollback, undelete, workload restore, activate (reserved for first-machine activation)
 
 **Machine Cleanup Reachability**:
 The ability to send machine-local cleanup commands to a machine for runtime material already on that machine. A draining machine may remain cleanup-reachable while it is fresh and authorized, even though it is not eligible for new workload placement.
@@ -561,12 +561,12 @@ Best-effort cleanup or expiry of stale observations for removed or inactive mach
 _Avoid_: Observation deletion as removal success, stale observation as authority
 
 **Machine Usability View**:
-A computed read model that explains how a machine may currently be used, including workload placement, cleanup reachability, and serving eligibility. It combines machine lifecycle, required capability, and either an operation runtime snapshot or passive runtime projection into typed eligibility outcomes with reasons, so deploy, gateway, and machine APIs do not each reimplement the rules.
-_Avoid_: Scattered eligibility checks, lifecycle as readiness, raw observation filtering everywhere, eligibility booleans
+The one rule set for whether a machine may take new workload placement, derived from durable operator intent (machine lifecycle) and future placement constraints. Liveness is never part of it: a dead machine answers at the point of use (an unanswered placement bid, a failed upstream dial), so no consumer infers availability from observation age.
+_Avoid_: Scattered eligibility checks, lifecycle as readiness, freshness as eligibility, eligibility booleans
 
 **Machine Usability Reason**:
-A typed explanation for why a machine is not currently usable for placement, cleanup, or serving. Initial reasons include draining, removed or not current, no operation runtime snapshot, stale observation, dataplane degraded, endpoint subnet mismatch, and placement constraint mismatch.
-_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision
+A typed explanation for why a machine is excluded from new workload placement. The current reason is draining; future reasons cover operator-declared placement constraints. Liveness is never a reason - offline machines fail at the point of use rather than being inferred out of the pool.
+_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision, stale-observation eligibility
 
 **Fresh Role Observation**:
 A recent observation from a role process such as a machine agent, gateway, or DNS process. Fresh role observations make a process visible for warning-only coordination and diagnostics, but they are not durable membership or operation quorum.

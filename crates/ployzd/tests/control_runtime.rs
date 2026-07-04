@@ -17,6 +17,7 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
+use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
     RouteBindingState, ServingTargetEntry,
@@ -707,6 +708,7 @@ fn replicas(value: u16) -> ReplicaCount {
 
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
+        lifecycle: MachineLifecycle::Active,
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),

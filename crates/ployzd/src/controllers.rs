@@ -51,6 +51,13 @@ pub struct MachineUpdateSubmitCommand {
     pub target_version: InstallArtifactVersion,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineLifecycleSubmitCommand {
+    pub operation_id: OperationId,
+    pub machine_id: ployz_core::ids::MachineId,
+    pub target: ployz_core::state::MachineLifecycle,
+}
+
 /// Bootstrap material available at submit time.
 ///
 /// The per-machine secret is still minted afterwards as bounded operation
@@ -208,6 +215,23 @@ impl OperationControllers {
                 machine_id: command.machine_id,
                 target_version: command.target_version,
             })
+            .await?)
+    }
+
+    pub async fn submit_machine_lifecycle(
+        &self,
+        command: MachineLifecycleSubmitCommand,
+    ) -> Result<ployz_nats::operations::AcceptedMachineLifecycleSubmission, SubmitCommandError>
+    {
+        Ok(self
+            .repository
+            .submit_machine_lifecycle(
+                ployz_nats::operations::MachineLifecycleOperationSubmission {
+                    operation_id: command.operation_id,
+                    machine_id: command.machine_id,
+                    target: command.target,
+                },
+            )
             .await?)
     }
 

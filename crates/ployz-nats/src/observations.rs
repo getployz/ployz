@@ -183,10 +183,20 @@ impl AsyncNatsObservationStore {
         &self,
         machine_id: &MachineId,
     ) -> Result<Option<MachineContainerObservationSnapshot>, ObservationStoreError> {
+        Ok(self
+            .machine_snapshot_record(machine_id)
+            .await?
+            .map(|record| record.snapshot))
+    }
+
+    pub async fn machine_snapshot_record(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Option<MachineContainerObservationRecord>, ObservationStoreError> {
         let key = MachineContainerObservationKey::from_machine_id(machine_id);
-        let Some(payload) = with_io_timeout(
-            "machine observation snapshot get",
-            self.bucket.get(key.as_str()),
+        let Some(entry) = with_io_timeout(
+            "machine observation snapshot entry get",
+            self.bucket.entry(key.as_str()),
         )
         .await?
         .map_err(|error| ObservationStoreError::Get {
@@ -196,10 +206,17 @@ impl AsyncNatsObservationStore {
         else {
             return Ok(None);
         };
+        if entry.operation != jetstream::kv::Operation::Put {
+            return Ok(None);
+        }
 
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(ObservationStoreError::Decode)
+        let snapshot: MachineContainerObservationSnapshot =
+            serde_json::from_slice(&entry.value).map_err(ObservationStoreError::Decode)?;
+        Ok(Some(MachineContainerObservationRecord {
+            snapshot,
+            observed_at_unix_nanos: entry.created.unix_timestamp_nanos(),
+            revision: entry.revision,
+        }))
     }
 
     pub async fn machine_snapshots(

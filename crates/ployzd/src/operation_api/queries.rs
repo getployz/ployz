@@ -446,6 +446,10 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
+fn unix_seconds_from_nanos(unix_nanos: i128) -> u64 {
+    u64::try_from(unix_nanos.max(0) / 1_000_000_000).unwrap_or(u64::MAX)
+}
+
 impl MachineQueryRuntime {
     #[must_use]
     pub(crate) fn new(
@@ -484,7 +488,7 @@ impl MachineQueryRuntime {
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
-        let container_counts = self
+        let container_observations = self
             .observations
             .machine_snapshot_records()
             .await
@@ -495,19 +499,22 @@ impl MachineQueryRuntime {
             .map(|record| {
                 (
                     record.snapshot.machine_id().clone(),
-                    record.snapshot.containers().len(),
+                    (
+                        record.snapshot.containers().len(),
+                        record.observed_at_unix_nanos,
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
         let mut snapshots = Vec::with_capacity(machines.len());
         for machine in machines {
+            let observation = container_observations.get(&machine.machine_id).copied();
             snapshots.push(MachineSnapshot {
                 public_ip: public_ips.get(&machine.machine_id).cloned(),
                 gateway: gateway_statuses.get(&machine.machine_id).cloned(),
-                observed_container_count: container_counts
-                    .get(&machine.machine_id)
-                    .copied()
-                    .unwrap_or_default(),
+                observed_container_count: observation.map(|(count, _)| count).unwrap_or_default(),
+                last_observed_at_unix_seconds: observation
+                    .map(|(_, observed_at)| unix_seconds_from_nanos(observed_at)),
                 active: machine,
             });
         }
@@ -549,19 +556,22 @@ impl MachineQueryRuntime {
             .gateway_status(&active.machine_id)
             .await
             .map_err(|error| error.to_string())?;
-        let observed_container_count = self
+        let observation = self
             .observations
-            .machine_snapshot(&active.machine_id)
+            .machine_snapshot_record(&active.machine_id)
             .await
-            .map_err(|error| error.to_string())?
-            .map(|snapshot| snapshot.containers().len())
-            .unwrap_or_default();
+            .map_err(|error| error.to_string())?;
 
         Ok(MachineSnapshot {
             active,
             public_ip,
             gateway,
-            observed_container_count,
+            observed_container_count: observation
+                .as_ref()
+                .map(|record| record.snapshot.containers().len())
+                .unwrap_or_default(),
+            last_observed_at_unix_seconds: observation
+                .map(|record| unix_seconds_from_nanos(record.observed_at_unix_nanos)),
         })
     }
 }

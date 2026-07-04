@@ -65,6 +65,45 @@ pub struct ActiveMachineState {
     pub activated_by: OperationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substrate_versions: Option<MachineSubstrateVersions>,
+    /// Durable operator intent for this machine (Machine Lifecycle in the
+    /// glossary). Absent in records written before lifecycle existed, so the
+    /// default is active.
+    #[serde(default)]
+    pub lifecycle: MachineLifecycle,
+}
+
+/// The durable operator-intent state of a current machine identity. Controls
+/// placement policy; runtime readiness comes from observations, never from
+/// lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineLifecycle {
+    #[default]
+    Active,
+    Draining,
+}
+
+/// Why a machine is excluded from new workload placement. Only operator
+/// intent excludes today; future reasons (placement constraints) join as
+/// their signals land. Liveness is never a reason (ADR 0027): a dead machine
+/// answers at the point of use — it does not reply to a placement RPC, and
+/// its upstreams fail at dial time. This control-side gate is interim: once
+/// placement is bid-based, a draining machine declines its own bids and the
+/// check moves into the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineUsabilityReason {
+    Draining,
+}
+
+#[must_use]
+pub fn placement_rejection(lifecycle: MachineLifecycle) -> Option<MachineUsabilityReason> {
+    match lifecycle {
+        MachineLifecycle::Active => None,
+        MachineLifecycle::Draining => Some(MachineUsabilityReason::Draining),
+    }
 }
 
 /// Persisted `KV_CORE.namespace_locks.*` value.
@@ -302,5 +341,19 @@ impl GatewayStatusObservationKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MachineLifecycle, MachineUsabilityReason, placement_rejection};
+
+    #[test]
+    fn only_draining_excludes_placement() {
+        assert_eq!(placement_rejection(MachineLifecycle::Active), None);
+        assert_eq!(
+            placement_rejection(MachineLifecycle::Draining),
+            Some(MachineUsabilityReason::Draining)
+        );
     }
 }

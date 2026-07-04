@@ -393,6 +393,18 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         MachineJoinReported,
         MachineJoinReportError,
     >();
+    assert_contract::<
+        ployz_sdk_types::operation_api::MachineDrainApi,
+        ployz_sdk_types::MachineLifecycleRequest,
+        AcceptedOperation,
+        ployz_sdk_types::MachineLifecycleError,
+    >();
+    assert_contract::<
+        ployz_sdk_types::operation_api::MachineResumeApi,
+        ployz_sdk_types::MachineLifecycleRequest,
+        AcceptedOperation,
+        ployz_sdk_types::MachineLifecycleError,
+    >();
     assert_contract::<OpsListApi, OpsListRequest, OpsListResult, OpsListError>();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
@@ -408,6 +420,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,
             OperationApiEndpoint::MachineUpdate,
+            OperationApiEndpoint::MachineDrain,
+            OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::MachineList,
             OperationApiEndpoint::MachineInspect,
             OperationApiEndpoint::MachineJoinRedeem,
@@ -459,6 +473,24 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "AcceptedOperation".to_owned(),
                 "MachineUpdateError".to_owned(),
                 "MachineUpdateResponse",
+            ),
+            (
+                "machine.drain",
+                "plz.v1.svc.api.machine.drain",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "MachineLifecycleRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "MachineLifecycleError".to_owned(),
+                "MachineDrainResponse",
+            ),
+            (
+                "machine.resume",
+                "plz.v1.svc.api.machine.resume",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "MachineLifecycleRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "MachineLifecycleError".to_owned(),
+                "MachineResumeResponse",
             ),
             (
                 "machine.list",

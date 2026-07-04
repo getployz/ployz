@@ -1,8 +1,8 @@
 //! Gateway projection source adapters.
 
 use crate::gateway::{
-    GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectionError,
-    GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
+    GatewayServingEntry,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::{
@@ -12,34 +12,11 @@ use ployz_nats::observations::{
     AsyncNatsObservationStore, MachineContainerObservationRecord, ObservationStoreError,
 };
 use std::fmt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-const DEFAULT_GATEWAY_OBSERVATION_STALE_AFTER: Duration = Duration::from_secs(30);
-
 pub async fn load_gateway_projection_update_from_nats(
     core_state: &AsyncNatsCoreStateStore,
     observations: &AsyncNatsObservationStore,
 ) -> GatewayProjectionUpdate {
-    load_gateway_projection_update_from_nats_with_stale_after(
-        core_state,
-        observations,
-        DEFAULT_GATEWAY_OBSERVATION_STALE_AFTER,
-    )
-    .await
-}
-
-pub async fn load_gateway_projection_update_from_nats_with_stale_after(
-    core_state: &AsyncNatsCoreStateStore,
-    observations: &AsyncNatsObservationStore,
-    stale_after: Duration,
-) -> GatewayProjectionUpdate {
-    match load_gateway_projection_input_from_nats_with_stale_after(
-        core_state,
-        observations,
-        stale_after,
-    )
-    .await
-    {
+    match load_gateway_projection_input_from_nats(core_state, observations).await {
         Ok(input) => GatewayProjectionUpdate::SourceAvailable(input),
         Err(GatewaySourceError::Invalid { message }) => {
             GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource {
@@ -54,10 +31,9 @@ pub async fn load_gateway_projection_update_from_nats_with_stale_after(
     }
 }
 
-pub async fn load_gateway_projection_input_from_nats_with_stale_after(
+pub async fn load_gateway_projection_input_from_nats(
     core_state: &AsyncNatsCoreStateStore,
     observations: &AsyncNatsObservationStore,
-    stale_after: Duration,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let routes = async {
         core_state
@@ -84,8 +60,6 @@ pub async fn load_gateway_projection_input_from_nats_with_stale_after(
         routes,
         serving,
         observed_machines,
-        now_unix_nanos(),
-        stale_after,
     ))
 }
 
@@ -168,8 +142,6 @@ fn gateway_projection_input_from_state(
     routes: Vec<RouteBindingState>,
     serving: Vec<ServingTargetEntry>,
     observed_machines: Vec<MachineContainerObservationRecord>,
-    now_unix_nanos: i128,
-    stale_after: Duration,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
@@ -183,10 +155,7 @@ fn gateway_projection_input_from_state(
             .collect(),
         observed_machines: observed_machines
             .into_iter()
-            .map(|record| GatewayMachineObservation {
-                freshness: observation_freshness(&record, now_unix_nanos, stale_after),
-                snapshot: record.snapshot,
-            })
+            .map(|record| record.snapshot)
             .collect(),
     }
 }
@@ -233,28 +202,4 @@ impl From<CoreStateStoreError> for GatewaySourceError {
             },
         }
     }
-}
-
-fn observation_freshness(
-    record: &MachineContainerObservationRecord,
-    now_unix_nanos: i128,
-    stale_after: Duration,
-) -> GatewayObservationFreshness {
-    if record.observed_at_unix_nanos >= now_unix_nanos {
-        return GatewayObservationFreshness::Fresh;
-    }
-
-    let age_nanos = (now_unix_nanos - record.observed_at_unix_nanos) as u128;
-    if age_nanos <= stale_after.as_nanos() {
-        GatewayObservationFreshness::Fresh
-    } else {
-        GatewayObservationFreshness::Stale
-    }
-}
-
-fn now_unix_nanos() -> i128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos() as i128)
-        .unwrap_or(0)
 }

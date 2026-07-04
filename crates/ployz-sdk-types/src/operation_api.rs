@@ -3,14 +3,16 @@
 use crate::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
-    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineListError,
-    MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
-    MachineUpdateRequest, OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
-    ServiceListError, ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineLifecycleError, MachineLifecycleRequest, MachineListError, MachineListRequest,
+    MachineListResult,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
+    OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
+    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -33,6 +35,8 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
             $crate::operation_api::MachineUpdateApi,
+            $crate::operation_api::MachineDrainApi,
+            $crate::operation_api::MachineResumeApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
             $crate::operation_api::MachineJoinRedeemApi,
@@ -94,6 +98,30 @@ impl OperationApiContract for MachineUpdateApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineUpdate;
     const RESPONSE_ALIAS: &'static str = "MachineUpdateResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineDrainApi;
+
+impl OperationApiContract for MachineDrainApi {
+    type Request = MachineLifecycleRequest;
+    type Success = AcceptedOperation;
+    type Error = MachineLifecycleError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineDrain;
+    const RESPONSE_ALIAS: &'static str = "MachineDrainResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineResumeApi;
+
+impl OperationApiContract for MachineResumeApi {
+    type Request = MachineLifecycleRequest;
+    type Success = AcceptedOperation;
+    type Error = MachineLifecycleError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineResume;
+    const RESPONSE_ALIAS: &'static str = "MachineResumeResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

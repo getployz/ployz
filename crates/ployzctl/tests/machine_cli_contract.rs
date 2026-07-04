@@ -8,6 +8,7 @@ use ployz_core::install::{
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
 };
@@ -190,7 +191,9 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
 fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> MachineSnapshot {
     let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
+        last_observed_at_unix_seconds: None,
         active: ActiveMachineState {
+            lifecycle: MachineLifecycle::Active,
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),

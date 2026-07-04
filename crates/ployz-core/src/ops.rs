@@ -78,6 +78,7 @@ pub enum OperationKind {
     Cert,
     MachineAdd,
     MachineUpdate,
+    MachineLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +152,81 @@ impl MachineUpdateOperationState {
     }
 }
 
+/// One machine's placement rejection, carried on NoUsableMachines evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct UnusableMachine {
+    pub machine_id: MachineId,
+    pub reason: crate::state::MachineUsabilityReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineLifecycleOperationState {
+    Accepted,
+    Completed,
+    Failed { failure: MachineLifecycleFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl MachineLifecycleOperationState {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        match self {
+            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Accepted => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineLifecycleFailure {
+    NoSuchMachine { machine_id: MachineId },
+    EvidenceWriteFailed { message: FailureMessage },
+    StateCommitFailed { message: FailureMessage },
+}
+
+/// Worker-recorded terminal outcomes. Cancellation is not one: it arrives
+/// through the generic [`OperationEvent::Cancelled`] path, never from the
+/// lifecycle worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineLifecycleTransition {
+    Completed,
+    Failed { failure: MachineLifecycleFailure },
+}
+
+impl MachineLifecycleTransition {
+    #[must_use]
+    pub fn state(&self) -> MachineLifecycleOperationState {
+        match self {
+            Self::Completed => MachineLifecycleOperationState::Completed,
+            Self::Failed { failure } => MachineLifecycleOperationState::Failed {
+                failure: failure.clone(),
+            },
+        }
+    }
+
+    /// Renders this transition as the operation event it records.
+    #[must_use]
+    pub fn event(&self, operation_id: &OperationId, machine_id: &MachineId) -> OperationEvent {
+        match self {
+            Self::Completed => OperationEvent::MachineLifecycleCompleted {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+            },
+            Self::Failed { failure } => OperationEvent::MachineLifecycleFailed {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                failure: failure.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -181,6 +257,10 @@ pub enum ControlPlaneCommitScope {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployOperationFailure {
+    NoUsableMachines {
+        /// Why each known machine was rejected for placement.
+        reasons: Vec<UnusableMachine>,
+    },
     PlanningFailed {
         service_id: ServiceId,
         namespace_revision_id: NamespaceRevisionId,
@@ -373,6 +453,13 @@ pub enum OperationStatus {
         state: MachineUpdateOperationState,
         last_event_sequence: EventSequence,
     },
+    MachineLifecycle {
+        id: OperationId,
+        machine_id: MachineId,
+        target: crate::state::MachineLifecycle,
+        state: MachineLifecycleOperationState,
+        last_event_sequence: EventSequence,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,12 +537,29 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn machine_lifecycle_accepted(
+        id: OperationId,
+        machine_id: MachineId,
+        target: crate::state::MachineLifecycle,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::MachineLifecycle {
+            id,
+            machine_id,
+            target,
+            state: MachineLifecycleOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
             Self::MachineUpdate { state, .. } => state.is_terminal(),
+            Self::MachineLifecycle { state, .. } => state.is_terminal(),
         }
     }
 }

@@ -57,16 +57,18 @@ pub use ployz_core::machine_runtime::{
     ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation,
 };
+pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
-    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineSubstrateVersions,
-    MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey, OperationKind,
-    OperationStatus, OperationStatusSnapshot, OperationSubject, OperatorHint,
-    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
+    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineLifecycleFailure,
+    MachineLifecycleOperationState, MachineSubstrateVersions, MachineUpdateFailure,
+    MachineUpdateOperationState, NonEmptyTextError, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationKind, OperationStatus,
+    OperationStatusSnapshot, OperationSubject, OperatorHint, ReplayedOperationEvent,
+    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort,
+    RoutePortError, RouteTarget, UnusableMachine,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,
@@ -75,8 +77,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
-    RouteBindingState, ServingTargetEntry,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineLifecycle,
+    MachinePublicIpObservation, RouteBindingState, ServingTargetEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -180,6 +182,43 @@ pub struct MachineUpdateRequest {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
     pub target_version: InstallArtifactVersion,
+}
+
+/// One request shape for both lifecycle endpoints: the endpoint carries the
+/// verb (drain or resume), the body only names the operation and machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineLifecycleRequest {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+}
+
+pub type MachineDrainResponse = OperationApiResponse<AcceptedOperation, MachineLifecycleError>;
+pub type MachineResumeResponse = OperationApiResponse<AcceptedOperation, MachineLifecycleError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
+pub enum MachineLifecycleError {
+    #[error("no such machine {} for operation {}", .machine_id.as_str(), .operation_id.as_str())]
+    NoSuchMachine {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    #[error("machine lifecycle {} unavailable: {message}", .operation_id.as_str())]
+    Unavailable {
+        operation_id: OperationId,
+        message: String,
+    },
+    #[error(
+        "operation {} already recorded a different event at sequence {}",
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -362,6 +401,11 @@ pub struct MachineSnapshot {
     pub public_ip: Option<MachinePublicIpObservation>,
     pub gateway: Option<GatewayStatusObservation>,
     pub observed_container_count: usize,
+    /// When this machine last self-reported, as display evidence for the
+    /// operator. Never an input to behavior: liveness surfaces at the point
+    /// of use (ADR 0027).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at_unix_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -134,7 +134,7 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, };
 
@@ -168,9 +168,19 @@ export type CertOperationState = { "state": "accepted" } | { "state": "running",
 
 export type CertRunningStage = "challenge_published" | "validation_started";
 
-export type OperationKind = "deploy" | "cert" | "machine_add" | "machine_update";
+export type OperationKind = "deploy" | "cert" | "machine_add" | "machine_update" | "machine_lifecycle";
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
+export type MachineLifecycle = "active" | "draining";
+
+export type MachineLifecycleOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: MachineLifecycleFailure, } | { "state": "cancelled", reason: CancellationReason, };
+
+export type MachineLifecycleFailure = { "kind": "no_such_machine", machine_id: MachineId, } | { "kind": "evidence_write_failed", message: FailureMessage, } | { "kind": "state_commit_failed", message: FailureMessage, };
+
+export type MachineUsabilityReason = { "reason": "draining" };
+
+export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
+
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "machine_lifecycle_submitted", operation_id: OperationId, machine_id: MachineId, target: MachineLifecycle, } | { "event": "machine_lifecycle_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_lifecycle_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineLifecycleFailure, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -216,7 +226,11 @@ export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machi
 
 export type ControlPlaneCommitScope = { "scope": "service_entry", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, } | { "scope": "namespace", namespace_revision_id: NamespaceRevisionId, };
 
-export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", scope: ControlPlaneCommitScope, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+export type DeployOperationFailure = { "kind": "no_usable_machines",
+/**
+ * Why each known machine was rejected for placement.
+ */
+reasons: Array<UnusableMachine>, } | { "kind": "planning_failed", service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", scope: ControlPlaneCommitScope, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
@@ -238,7 +252,13 @@ export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChalleng
 
 export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
 
-export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, substrate_versions?: MachineSubstrateVersions | null, };
+export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, substrate_versions?: MachineSubstrateVersions | null,
+/**
+ * Durable operator intent for this machine (Machine Lifecycle in the
+ * glossary). Absent in records written before lifecycle existed, so the
+ * default is active.
+ */
+lifecycle: MachineLifecycle, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 
@@ -250,7 +270,13 @@ export type GatewayServingStatus = "current" | "last_known_good" | "unavailable"
 
 export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
-export type MachineSnapshot = { active: ActiveMachineState, public_ip: MachinePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
+export type MachineSnapshot = { active: ActiveMachineState, public_ip: MachinePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number,
+/**
+ * When this machine last self-reported, as display evidence for the
+ * operator. Never an input to behavior: liveness surfaces at the point
+ * of use (ADR 0027).
+ */
+last_observed_at_unix_seconds?: number | null, };
 
 export type InitFirstMachineActivateRequest = { machine_id: MachineId, roles: InstallRolePolicy, };
 
@@ -394,6 +420,10 @@ export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: 
 
 export type MachineUpdateRequest = { operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, };
 
+export type MachineLifecycleRequest = { operation_id: OperationId, machine_id: MachineId, };
+
+export type MachineLifecycleError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
 export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
@@ -407,6 +437,10 @@ export type InitFirstMachineActivateResponse = OperationApiResponse<InitFirstMac
 export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
 export type MachineUpdateResponse = OperationApiResponse<AcceptedOperation, MachineUpdateError>;
+
+export type MachineDrainResponse = OperationApiResponse<AcceptedOperation, MachineLifecycleError>;
+
+export type MachineResumeResponse = OperationApiResponse<AcceptedOperation, MachineLifecycleError>;
 
 export type MachineListResponse = OperationApiResponse<MachineListResult, MachineListError>;
 
@@ -437,6 +471,8 @@ export const OPERATION_API_CONTRACTS = [
   { name: "init.first_machine.activate", subject: "plz.v1.svc.api.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "machine.update", subject: "plz.v1.svc.api.machine.update", execution: "accepts_operation", request: "MachineUpdateRequest", success: "AcceptedOperation", error: "MachineUpdateError", response: "MachineUpdateResponse" },
+  { name: "machine.drain", subject: "plz.v1.svc.api.machine.drain", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineDrainResponse" },
+  { name: "machine.resume", subject: "plz.v1.svc.api.machine.resume", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
   { name: "machine.list", subject: "plz.v1.svc.api.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
   { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
   { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
@@ -457,6 +493,8 @@ export type OperationApiRequestByEndpoint = {
   "init.first_machine.activate": InitFirstMachineActivateRequest;
   "machine.add": MachineAddRequest;
   "machine.update": MachineUpdateRequest;
+  "machine.drain": MachineLifecycleRequest;
+  "machine.resume": MachineLifecycleRequest;
   "machine.list": MachineListRequest;
   "machine.inspect": MachineInspectRequest;
   "machine.join.redeem": MachineJoinRedeemRequest;
@@ -475,6 +513,8 @@ export type OperationApiResponseByEndpoint = {
   "init.first_machine.activate": InitFirstMachineActivateResponse;
   "machine.add": MachineAddResponse;
   "machine.update": MachineUpdateResponse;
+  "machine.drain": MachineDrainResponse;
+  "machine.resume": MachineResumeResponse;
   "machine.list": MachineListResponse;
   "machine.inspect": MachineInspectResponse;
   "machine.join.redeem": MachineJoinRedeemResponse;

@@ -8,9 +8,9 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::gateway::{
-    GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
-    GatewayProjection, GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
-    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry, GatewayUpstream,
+    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError,
+    GatewayProjectionInput, GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute,
+    GatewayServingEntry, GatewayUpstream,
 };
 use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
 
@@ -210,14 +210,13 @@ fn source_input(
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         }],
-        observed_machines: vec![GatewayMachineObservation {
-            freshness: GatewayObservationFreshness::Fresh,
-            snapshot: MachineContainerObservationSnapshot::try_new(
+        observed_machines: vec![
+            MachineContainerObservationSnapshot::try_new(
                 machine_id(machine_id_value),
                 [managed_container(machine_id_value, container_id_value)],
             )
             .expect("matching machine snapshot"),
-        }],
+        ],
     }
 }
 

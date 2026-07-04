@@ -16,6 +16,7 @@ pub struct DeployExecutionFacts {
     pub namespace_route_bindings: Vec<RouteBindingState>,
     pub namespace_serving_entries: Vec<ServingTargetEntry>,
     pub eligible_machines: Vec<MachineId>,
+    pub unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub dataplane_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -50,11 +51,20 @@ pub fn prepare_deploy_execution_command(
         &declared_services,
         &facts.namespace_serving_entries,
     );
+    let draining_machines = facts
+        .unusable_machines
+        .iter()
+        .filter(|unusable| match unusable.reason {
+            ployz_core::state::MachineUsabilityReason::Draining => true,
+        })
+        .map(|unusable| unusable.machine_id.clone())
+        .collect::<Vec<_>>();
     let mut services = Vec::new();
     for service_request in service_requests {
         let prepared = prepare_deploy(DeployPreparationInput {
             request: service_request,
             eligible_machines: facts.eligible_machines.clone(),
+            draining_machines: draining_machines.clone(),
             observed_machines: facts.observed_machines.clone(),
         });
         services.push(DeployServiceExecutionCommand {
@@ -83,6 +93,7 @@ pub fn prepare_deploy_execution_command(
         serving_target_removals,
         namespace_cleanup_candidates,
         dataplane_machines: facts.dataplane_machines,
+        unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,
     }
 }

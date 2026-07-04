@@ -711,6 +711,9 @@ class RecordingTransport implements PloyzOperationTransport {
       case "machine.add":
         this.machineAddRequests.push(request as MachineAddRequest);
         return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as OperationApiResponseByEndpoint[E];
+      case "machine.drain":
+      case "machine.resume":
+        return { status: "ok", value: this.accepted } as OperationApiResponseByEndpoint[E];
       case "machine.update":
         this.machineUpdateRequests.push(request as MachineUpdateRequest);
         return (this.machineUpdateResponse ?? { status: "ok", value: this.accepted }) as OperationApiResponseByEndpoint[E];
@@ -823,6 +826,7 @@ function defaultFixture(): OperationFixture {
     machine_snapshots: [
       {
         active: {
+          lifecycle: "active" as const,
           machine_id: machineId("machine_2"),
           name: machineName("edge_2"),
           activated_by: operationId("op_machine"),
@@ -859,6 +863,7 @@ function defaultFixture(): OperationFixture {
       machines: [
         {
           active: {
+            lifecycle: "active" as const,
             machine_id: machineId("machine_2"),
             name: machineName("edge_2"),
             activated_by: operationId("op_machine"),

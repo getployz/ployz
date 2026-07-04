@@ -6,6 +6,7 @@ use ployz_core::ops::{
     EventSequence, OperationEvent, OperationIdempotencyKey, OperationKind, OperationStatus,
 };
 use ployz_core::roles::InstallRolePolicy;
+use ployz_core::state::MachineLifecycle;
 
 use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
@@ -145,6 +146,44 @@ impl SubmitKind for MachineUpdateOperationSubmission {
     }
 }
 
+impl SubmitKind for MachineLifecycleOperationSubmission {
+    type Payload = MachineLifecyclePayload;
+    const KIND: OperationKind = OperationKind::MachineLifecycle;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEventAppend {
+        OperationEventAppend::from_event(OperationEvent::MachineLifecycleSubmitted {
+            operation_id,
+            machine_id: payload.machine_id,
+            target: payload.target,
+        })
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::MachineLifecycleSubmitted {
+            operation_id,
+            machine_id,
+            target,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, MachineLifecyclePayload { machine_id, target }))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::machine_lifecycle_accepted(
+            operation_id,
+            payload.machine_id.clone(),
+            payload.target,
+            sequence,
+        )
+    }
+}
+
 impl AsyncNatsOperationRepository {
     pub async fn claim_deploy(
         &self,
@@ -207,6 +246,29 @@ impl AsyncNatsOperationRepository {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
             cert_id: submitted.payload,
+        })
+    }
+
+    pub async fn submit_machine_lifecycle(
+        &self,
+        submission: MachineLifecycleOperationSubmission,
+    ) -> Result<AcceptedMachineLifecycleSubmission, SubmitOperationError> {
+        let MachineLifecycleOperationSubmission {
+            operation_id,
+            machine_id,
+            target,
+        } = submission;
+        let payload = MachineLifecyclePayload { machine_id, target };
+        let submitted = self
+            .submit_operation::<MachineLifecycleOperationSubmission>(operation_id, payload)
+            .await?;
+
+        Ok(AcceptedMachineLifecycleSubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            machine_id: submitted.payload.machine_id,
+            target: submitted.payload.target,
+            should_start_execution: submitted.should_start_execution,
         })
     }
 
@@ -585,6 +647,19 @@ struct MachineUpdatePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineLifecycleOperationSubmission {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub target: MachineLifecycle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MachineLifecyclePayload {
+    machine_id: MachineId,
+    target: MachineLifecycle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -617,6 +692,15 @@ pub struct AcceptedMachineUpdateSubmission {
     pub start_sequence: EventSequence,
     pub machine_id: MachineId,
     pub target_version: InstallArtifactVersion,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedMachineLifecycleSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub machine_id: MachineId,
+    pub target: MachineLifecycle,
     pub should_start_execution: bool,
 }
 

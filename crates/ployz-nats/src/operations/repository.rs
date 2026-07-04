@@ -8,17 +8,17 @@ pub use machine_join::{
 };
 pub use submission::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    AcceptedMachineUpdateSubmission, CertOperationSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission, MachineUpdateOperationSubmission, SubmitMachineAddError,
-    SubmitOperationError,
+    AcceptedMachineLifecycleSubmission, AcceptedMachineUpdateSubmission, CertOperationSubmission,
+    DeployOperationSubmission, MachineAddOperationSubmission, MachineLifecycleOperationSubmission,
+    MachineUpdateOperationSubmission, SubmitMachineAddError, SubmitOperationError,
 };
 
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{
-    DeployEvidence, DeployTransition, EventSequence, MachineUpdateTransition, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationProjection, OperationStatusSnapshot, StatusProjectionError, project_operation_event,
-    validate_fresh_deploy_evidence,
+    DeployEvidence, DeployTransition, EventSequence, MachineLifecycleTransition,
+    MachineUpdateTransition, OperationEvent, OperationEventReplayCursor, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationProjection, OperationStatusSnapshot,
+    StatusProjectionError, project_operation_event, validate_fresh_deploy_evidence,
 };
 
 use super::events::{
@@ -146,6 +146,20 @@ impl AsyncNatsOperationRepository {
                 operation_id: operation_id.clone(),
                 machine_id: machine_id.clone(),
             }),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_machine_lifecycle_transition(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        transition: MachineLifecycleTransition,
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::from_event(transition.event(operation_id, machine_id)),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -612,6 +626,9 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::MachineUpdateRunning { .. }
         | OperationEvent::MachineUpdateCompleted { .. }
         | OperationEvent::MachineUpdateFailed { .. }
+        | OperationEvent::MachineLifecycleSubmitted { .. }
+        | OperationEvent::MachineLifecycleCompleted { .. }
+        | OperationEvent::MachineLifecycleFailed { .. }
         | OperationEvent::Cancelled { .. } => None,
     }
 }
