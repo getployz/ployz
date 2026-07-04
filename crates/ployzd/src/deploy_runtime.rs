@@ -4,9 +4,9 @@ use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
     DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionMachineScope,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, MachineContainerRuntime, RouteBindingCommitError, RouteBindingCommitter,
-    ServingTargetCommitError, ServingTargetCommitter, execute_deploy_operation,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployHealthChecker, MachineContainerRuntime, NamespaceStateCommitter, RouteBindingCommitError,
+    ServingTargetCommitError, execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
 use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use crate::tasks::TaskRegistry;
@@ -82,39 +82,19 @@ where
     let command =
         prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
-    if let Some(lock_lost) = namespace_lock_lost {
-        let mut route_state = LockCheckedCoreState::new(core_state.clone(), Arc::clone(&lock_lost));
-        let mut active_state = LockCheckedCoreState::new(core_state, lock_lost);
-        execute_deploy_operation(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                dataplane,
-                machine_runtime,
-                health_checker,
-                route_state: &mut route_state,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .map_err(DeployOperationRunError::Execute)
-    } else {
-        let mut route_state = core_state.clone();
-        let mut active_state = core_state;
-        execute_deploy_operation(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                dataplane,
-                machine_runtime,
-                health_checker,
-                route_state: &mut route_state,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .map_err(DeployOperationRunError::Execute)
-    }
+    let mut namespace_state = LockCheckedCoreState::new(core_state, namespace_lock_lost);
+    execute_deploy_operation(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane,
+            machine_runtime,
+            health_checker,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .map_err(DeployOperationRunError::Execute)
 }
 
 async fn record_operation_failure(
@@ -146,7 +126,7 @@ pub struct DeployOperationStores {
     pub core_state: AsyncNatsCoreStateStore,
     pub observations: AsyncNatsObservationStore,
     pub controllers: OperationControllers,
-    pub namespace_lock_lost: Option<Arc<AtomicBool>>,
+    pub namespace_lock_lost: Arc<AtomicBool>,
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
@@ -173,7 +153,7 @@ impl LockCheckedCoreState {
     }
 }
 
-impl RouteBindingCommitter for LockCheckedCoreState {
+impl NamespaceStateCommitter for LockCheckedCoreState {
     async fn replace_route_binding(
         &mut self,
         state: ployz_core::state::RouteBindingState,
@@ -200,9 +180,7 @@ impl RouteBindingCommitter for LockCheckedCoreState {
             .await
             .map_err(|error| RouteBindingCommitError::Store { target, error })
     }
-}
 
-impl ServingTargetCommitter for LockCheckedCoreState {
     async fn replace_serving_target_entry(
         &mut self,
         state: ployz_core::state::ServingTargetEntry,
@@ -341,7 +319,7 @@ impl DeployOperationRuntime {
                 core_state: run_core_state,
                 observations: self.observations,
                 controllers: self.controllers,
-                namespace_lock_lost: Some(lock_lost),
+                namespace_lock_lost: lock_lost,
             },
             DeployOperationPorts {
                 dataplane: &mut dataplane,

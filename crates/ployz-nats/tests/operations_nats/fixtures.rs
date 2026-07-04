@@ -1,7 +1,3 @@
-use ployz_core::cert::{
-    AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
-    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
-};
 use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ReplicaSlot,
 };
@@ -168,29 +164,4 @@ pub(super) fn planning_failure(message: &str) -> DeployOperationFailure {
 
 pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ServingTargetCommit
-}
-
-pub(super) fn cert_challenge(hostname: &str) -> AcmeHttp01Challenge {
-    AcmeHttp01Challenge::try_new(
-        ployz_test_support::ids::route_hostname(hostname),
-        AcmeChallengeToken::try_new("token_123").expect("valid challenge token"),
-        AcmeChallengeValue::try_new("token_123.thumbprint_456").expect("valid challenge value"),
-        AcmeChallengeTtlSeconds::try_new(60).expect("valid challenge ttl"),
-    )
-    .expect("valid challenge")
-}
-
-pub(super) fn active_cert(cert_id: &str, hostname: &str) -> ActiveCertState {
-    ActiveCertState {
-        cert_id: self::cert_id(cert_id),
-        hostname: ployz_test_support::ids::route_hostname(hostname),
-        bundle_ref: CertBundleRef::try_new(format!("obj://PLZ_CERTS/{cert_id}/rev_1"))
-            .expect("valid bundle ref"),
-        validity: CertValidityWindow::try_new(valid_at(1_700_000_000), valid_at(1_707_776_000))
-            .expect("valid validity"),
-    }
-}
-
-fn valid_at(value: u64) -> CertValidAt {
-    CertValidAt::try_new(value).expect("valid cert timestamp")
 }

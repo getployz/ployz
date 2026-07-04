@@ -207,11 +207,11 @@ async fn operation_repository_rejects_duplicate_failed_transition_payload_mismat
         .await
         .expect("submit accepted");
     event_log
-        .append(OperationEventAppend::deploy_transition(
-            &operation_id("op_123"),
-            &DeployTransition::Failed {
+        .append(OperationEventAppend::from_event(
+            DeployTransition::Failed {
                 failure: planning_failure("first failure"),
-            },
+            }
+            .event(&operation_id("op_123")),
         ))
         .await
         .expect("failed event stores without status projection");
@@ -269,11 +269,11 @@ async fn operation_repository_rejects_duplicate_cancelled_transition_payload_mis
         .await
         .expect("submit accepted");
     event_log
-        .append(OperationEventAppend::deploy_transition(
-            &operation_id("op_123"),
-            &DeployTransition::Cancelled {
+        .append(OperationEventAppend::from_event(
+            DeployTransition::Cancelled {
                 reason: cancellation_reason("first cancel"),
-            },
+            }
+            .event(&operation_id("op_123")),
         ))
         .await
         .expect("cancelled event stores without status projection");

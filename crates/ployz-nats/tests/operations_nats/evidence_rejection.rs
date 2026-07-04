@@ -1,7 +1,7 @@
 use super::fixtures::*;
 use ployz_core::ops::{
-    DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition, OperationStatus,
-    StatusProjectionError,
+    DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition, OperationEvent,
+    OperationStatus, StatusProjectionError,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, OperationEventAppend,
@@ -498,10 +498,12 @@ async fn assert_durable_terminal_evidence_rejected(
     assert!(terminal_status.is_terminal());
 
     event_log
-        .append(OperationEventAppend::deploy_container_started(
-            &operation_id(operation),
-            &machine_id("machine_terminal"),
-            &container_id("ctr_terminal"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeployContainerStarted {
+                operation_id: operation_id(operation),
+                machine_id: machine_id("machine_terminal"),
+                container_id: container_id("ctr_terminal"),
+            },
         ))
         .await
         .expect("late evidence is durable before retry");

@@ -13,8 +13,7 @@ use ployzd::deploy_worker::{
     DataplanePreparer, DeployCleanupResult, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
-    MachineContainerRuntimeError, RouteBindingCommitter, ServingTargetCommitter,
-    execute_deploy_operation,
+    MachineContainerRuntimeError, NamespaceStateCommitter, execute_deploy_operation,
 };
 use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use std::time::Duration;
@@ -43,17 +42,16 @@ fn assert_deploy_event_order(
     );
 }
 
-async fn execute_deploy<R, D, N, H, C, A>(
+async fn execute_deploy<R, D, N, H, S>(
     command: DeployExecutionCommand,
-    ports: DeployExecutionPorts<'_, R, D, N, H, C, A>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
-    C: RouteBindingCommitter,
-    A: ServingTargetCommitter,
+    S: NamespaceStateCommitter,
 {
     execute_deploy_operation(command, ports).await
 }
@@ -64,8 +62,7 @@ async fn deploy_worker_runs_containers_then_completes() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(2);
 
     let outcome = execute_deploy(
@@ -75,8 +72,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -153,7 +149,7 @@ async fn deploy_worker_runs_containers_then_completes() {
         ]
     );
     assert_eq!(
-        active_state.requests,
+        namespace_state.serving_requests,
         vec![ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
@@ -187,8 +183,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_with_existing_container(2, "machine_b", "ctr_existing");
 
     let outcome = execute_deploy(
@@ -198,8 +193,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -259,8 +253,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
@@ -270,8 +263,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -298,7 +290,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
         DeployRunningStage::ServingTargetCommit,
         DeployRunningStage::RemovingSupersededContainers,
     );
-    assert!(active_state.removals.is_empty());
+    assert!(namespace_state.serving_removals.is_empty());
     assert_eq!(
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::completed()))
@@ -319,8 +311,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_remove_failure();
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
@@ -330,14 +321,13 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
     .expect("deploy succeeds even when old-container cleanup fails");
 
-    assert_eq!(active_state.requests.len(), 1);
+    assert_eq!(namespace_state.serving_requests.len(), 1);
     let cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
     assert_eq!(
         outcome.cleanup,
@@ -377,8 +367,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers([]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = empty_deploy_command_with_running_container("machine_b", "ctr_old");
 
     let outcome = execute_deploy(
@@ -388,8 +377,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -409,9 +397,12 @@ async fn empty_deploy_removes_running_namespace_containers() {
     );
     // Manifest omission unpublishes the service and detaches its routes:
     // an empty deploy must not leave the old service serveable in KV.
-    assert_eq!(active_state.removals, vec![service_id("svc_api")]);
     assert_eq!(
-        route_state.removals,
+        namespace_state.serving_removals,
+        vec![service_id("svc_api")]
+    );
+    assert_eq!(
+        namespace_state.route_removals,
         vec![RouteTarget::new(
             RouteHostname::try_new("api.example.com").expect("valid route hostname"),
             route_port(443),
@@ -439,8 +430,7 @@ async fn deploy_worker_does_not_record_warning_completion_without_cleanup_failur
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_remove_failure();
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
@@ -450,14 +440,13 @@ async fn deploy_worker_does_not_record_warning_completion_without_cleanup_failur
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
     .expect("deploy succeeds even when cleanup evidence cannot be recorded");
 
-    assert_eq!(active_state.requests.len(), 1);
+    assert_eq!(namespace_state.serving_requests.len(), 1);
     assert_eq!(
         outcome.completion_outcome(),
         DeployCompletionOutcome::CompletedWithWarnings
@@ -478,8 +467,7 @@ async fn deploy_worker_counts_warning_completion_write_failure() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_remove_failure();
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
@@ -489,8 +477,7 @@ async fn deploy_worker_counts_warning_completion_write_failure() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -510,8 +497,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers([]);
     let mut health = RecordingHealth::unhealthy("machine_b", "ctr_existing");
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_with_existing_container(1, "machine_b", "ctr_existing");
 
     let error = execute_deploy(
@@ -521,8 +507,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -547,7 +532,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
     ));
     assert!(runtime.requests.is_empty());
     assert!(runtime.stops.is_empty());
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
 }
 
 #[tokio::test]
@@ -556,8 +541,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::reusing_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(1);
 
     let outcome = execute_deploy(
@@ -567,8 +551,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -603,8 +586,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::failing_after_first_container();
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(2);
 
     let error = execute_deploy(
@@ -614,8 +596,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -629,7 +610,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
         } if matches!(*source, DeployExecutionError::RunContainer(MachineContainerRuntimeError::Unavailable { .. }))
     ));
     assert_eq!(runtime.requests.len(), 2);
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
     assert_eq!(
         recorder.records,
         vec![
@@ -666,8 +647,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::failing_start("ctr_created");
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(1);
 
     let error = execute_deploy(
@@ -677,8 +657,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -700,7 +679,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             && message == failure_message("container start failed: exec format error")
             && retained_artifacts == vec![retained_created_container("machine_a", "ctr_created")]
     ));
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
     assert_eq!(
         runtime.stops,
         runtime
@@ -727,8 +706,7 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_stop_failure();
     let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(1);
 
     let error = execute_deploy(
@@ -738,8 +716,7 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -768,8 +745,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_without_eligible_machines(1);
 
     let error = execute_deploy(
@@ -779,8 +755,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -809,7 +784,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     );
     assert!(runtime.requests.is_empty());
     assert!(health.checked.is_empty());
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
 }
 
 #[tokio::test]
@@ -819,8 +794,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
     let mut runtime =
         RecordingRuntime::with_containers(["ctr_1", "ctr_2"]).with_endpoint_network_failure();
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(2);
 
     let error = execute_deploy(
@@ -830,8 +804,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -848,7 +821,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
     assert!(wireguard_ebpf.requests.is_empty());
     assert!(runtime.requests.is_empty());
     assert!(health.checked.is_empty());
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
     assert_eq!(
         recorder.records,
         vec![
@@ -876,8 +849,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
     let mut wireguard_ebpf = RecordingWireGuardEbpf::wireguard_failed("machine_b");
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(2);
 
     let error = execute_deploy(
@@ -887,8 +859,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -903,7 +874,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
     ));
     assert!(runtime.requests.is_empty());
     assert!(health.checked.is_empty());
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
     assert_eq!(
         recorder.records,
         vec![
@@ -933,8 +904,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::unhealthy("machine_b", "ctr_2");
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(2);
 
     let error = execute_deploy(
@@ -944,8 +914,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -1000,7 +969,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
             }),
         ]
     );
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
 }
 
 #[tokio::test]
@@ -1009,8 +978,7 @@ async fn routed_deploy_commits_route_before_completion() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = routed_deploy_command(1);
 
     execute_deploy(
@@ -1020,15 +988,14 @@ async fn routed_deploy_commits_route_before_completion() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
     .expect("routed deploy succeeds");
 
     assert_eq!(
-        route_state.requests,
+        namespace_state.route_requests,
         vec![RouteBindingState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
@@ -1036,7 +1003,7 @@ async fn routed_deploy_commits_route_before_completion() {
             service_id: service_id("svc_api"),
         }]
     );
-    assert_eq!(active_state.requests.len(), 1);
+    assert_eq!(namespace_state.serving_requests.len(), 1);
     let [(_, runtime_request)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
     };
@@ -1065,8 +1032,7 @@ async fn deploy_worker_times_out_hanging_steps() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = HangingHealth;
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
     let error = execute_deploy(
@@ -1076,8 +1042,7 @@ async fn deploy_worker_times_out_hanging_steps() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -1099,7 +1064,7 @@ async fn deploy_worker_times_out_hanging_steps() {
             }
         }))
     );
-    assert!(active_state.requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
 }
 
 #[tokio::test]
@@ -1108,8 +1073,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = RecordingActiveState::stored();
+    let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command(1);
 
     let outcome = execute_deploy(
@@ -1119,8 +1083,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -1156,7 +1119,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             }),
         ]
     );
-    assert_eq!(active_state.requests.len(), 1);
+    assert_eq!(namespace_state.serving_requests.len(), 1);
     assert_eq!(recorder.completed_transition_attempts, 1);
 }
 
@@ -1166,8 +1129,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = HangingActiveState;
+    let mut namespace_state = HangingServingCommits;
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
     let error = execute_deploy(
@@ -1177,8 +1139,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await
@@ -1241,8 +1202,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut route_state = RecordingRouteState::stored();
-    let mut active_state = LostLockActiveState;
+    let mut namespace_state = LostLockServingCommits;
 
     let error = execute_deploy(
         deploy_command(1),
@@ -1251,8 +1211,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
-            route_state: &mut route_state,
-            active_state: &mut active_state,
+            namespace_state: &mut namespace_state,
         },
     )
     .await

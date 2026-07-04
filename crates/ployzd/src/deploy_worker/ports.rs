@@ -73,7 +73,20 @@ pub trait DeployHealthChecker {
     ) -> impl Future<Output = Result<(), DeployHealthCheckError>> + Send;
 }
 
-pub trait ServingTargetCommitter {
+/// The one deploy commit port: every namespace-state write (route bindings
+/// and serving-target entries) goes through this seam, fenced by the
+/// Namespace Lock in the production adapter.
+pub trait NamespaceStateCommitter {
+    fn replace_route_binding(
+        &mut self,
+        state: RouteBindingState,
+    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
+
+    fn remove_route_binding(
+        &mut self,
+        target: RouteTarget,
+    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
+
     fn replace_serving_target_entry(
         &mut self,
         state: ServingTargetEntry,
@@ -90,18 +103,6 @@ fn commit_scope(entry: &ServingTargetEntry) -> ControlPlaneCommitScope {
         service_id: entry.service_id.clone(),
         namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
     }
-}
-
-pub trait RouteBindingCommitter {
-    fn replace_route_binding(
-        &mut self,
-        state: RouteBindingState,
-    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
-
-    fn remove_route_binding(
-        &mut self,
-        target: RouteTarget,
-    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
 }
 
 impl DeployOperationRecorder for crate::controllers::OperationControllers {
@@ -130,7 +131,7 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
     }
 }
 
-impl RouteBindingCommitter for AsyncNatsCoreStateStore {
+impl NamespaceStateCommitter for AsyncNatsCoreStateStore {
     async fn replace_route_binding(
         &mut self,
         state: RouteBindingState,
@@ -149,20 +150,7 @@ impl RouteBindingCommitter for AsyncNatsCoreStateStore {
             .await
             .map_err(|error| RouteBindingCommitError::Store { target, error })
     }
-}
 
-#[derive(Debug)]
-pub enum RouteBindingCommitError {
-    Store {
-        target: RouteTarget,
-        error: RouteBindingStoreError,
-    },
-    NamespaceLockLost {
-        target: RouteTarget,
-    },
-}
-
-impl ServingTargetCommitter for AsyncNatsCoreStateStore {
     async fn replace_serving_target_entry(
         &mut self,
         state: ServingTargetEntry,
@@ -186,4 +174,15 @@ impl ServingTargetCommitter for AsyncNatsCoreStateStore {
         .await
         .map_err(|error| ServingTargetCommitError::Store { scope, error })
     }
+}
+
+#[derive(Debug)]
+pub enum RouteBindingCommitError {
+    Store {
+        target: RouteTarget,
+        error: RouteBindingStoreError,
+    },
+    NamespaceLockLost {
+        target: RouteTarget,
+    },
 }

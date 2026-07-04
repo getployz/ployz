@@ -1,6 +1,6 @@
 //! NATS subject construction helpers.
 
-use crate::ids::{CertId, ContainerId, MachineId, OperationId};
+use crate::ids::{CertId, MachineId, OperationId};
 use crate::ops::DeployRunningStage;
 
 pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
@@ -115,178 +115,17 @@ impl OperationApiEndpoint {
     }
 }
 
+/// One operation's event subject for a suffix rendered by
+/// [`crate::ops::OperationEvent::subject`]. The prefix here and the
+/// [`op_watch`] pattern must agree.
+#[must_use]
+pub fn op_event_subject(operation_id: &OperationId, suffix: &str) -> String {
+    format!("plz.v1.op.{}.{suffix}", operation_id.as_str())
+}
+
 #[must_use]
 pub fn op_watch(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.>", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_deploy_submitted(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.deploy.submitted", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_deploy_planning_started(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.deploy.planning.started",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_deploy_plan_created(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.deploy.plan.created", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_deploy_running(operation_id: &OperationId, stage: DeployRunningStage) -> String {
-    format!(
-        "plz.v1.op.{}.deploy.running.{}",
-        operation_id.as_str(),
-        stage.as_subject(),
-    )
-}
-
-#[must_use]
-pub fn op_deploy_dataplane_prepared(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.deploy.dataplane.prepared",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_deploy_container_started(
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-    container_id: &ContainerId,
-) -> String {
-    format!(
-        "plz.v1.op.{}.deploy.container.started.{}.{}",
-        operation_id.as_str(),
-        machine_id.as_str(),
-        container_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_deploy_health_check_started(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.deploy.health_check.started",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_deploy_cleanup_finished(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.deploy.cleanup.finished",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_deploy_completed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.deploy.completed", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_deploy_failed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.deploy.failed", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_cancelled(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.cancelled", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_cert_submitted(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.cert.submitted", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_cert_challenge_published(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.cert.challenge.published",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_cert_validation_started(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.cert.validation.started",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_cert_completed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.cert.completed", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_cert_failed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.cert.failed", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_machine_add_submitted(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.machine.add.submitted", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_machine_add_joined(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.machine.add.joined", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_machine_add_credential_provisioned(
-    operation_id: &OperationId,
-    step: crate::machine::MachineCredentialProvisioningStep,
-) -> String {
-    format!(
-        "plz.v1.op.{}.machine.add.credential.{}",
-        operation_id.as_str(),
-        step.as_subject_token()
-    )
-}
-
-#[must_use]
-pub fn op_machine_add_completed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.machine.add.completed", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_machine_add_failed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.machine.add.failed", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_machine_update_submitted(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.machine.update.submitted",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_machine_update_running(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.machine.update.running", operation_id.as_str())
-}
-
-#[must_use]
-pub fn op_machine_update_completed(operation_id: &OperationId) -> String {
-    format!(
-        "plz.v1.op.{}.machine.update.completed",
-        operation_id.as_str()
-    )
-}
-
-#[must_use]
-pub fn op_machine_update_failed(operation_id: &OperationId) -> String {
-    format!("plz.v1.op.{}.machine.update.failed", operation_id.as_str())
+    op_event_subject(operation_id, ">")
 }
 
 #[must_use]
