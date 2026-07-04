@@ -74,10 +74,9 @@
     "session_secret": "pcbsess_secret_123"
   },
   "deploy_submit_request": {
-    "operation_id": "op_123",
+    "idempotency_key": "idem_deploy_123",
     "target": {
       "namespace_id": "default",
-      "namespace_revision_id": "rev_2",
       "services": [
         {
           "image": "ghcr.io/acme/api:rev-2",
@@ -235,7 +234,6 @@
           "operation_id": "op_123",
           "target": {
             "namespace_id": "default",
-            "namespace_revision_id": "rev_2",
             "services": [
               {
                 "image": "ghcr.io/acme/api:rev-2",
@@ -300,7 +298,6 @@
             "operation_id": "op_123",
             "target": {
               "namespace_id": "default",
-              "namespace_revision_id": "rev_2",
               "services": [
                 {
                   "image": "ghcr.io/acme/api:rev-2",

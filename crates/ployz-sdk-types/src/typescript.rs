@@ -454,7 +454,6 @@ const fn operation_api_execution_name(execution: OperationApiEndpointExecution) 
 pub fn operation_contract_fixture() -> Value {
     let deploy_target = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
@@ -488,7 +487,8 @@ pub fn operation_contract_fixture() -> Value {
 
     json!({
         "deploy_submit_request": value(DeploySubmitRequest {
-            operation_id: operation_id("op_123"),
+            idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
+                .expect("valid idempotency key"),
             target: deploy_target,
         }),
         "ops_watch_request": value(OperationEventReplayRequest {
@@ -632,10 +632,6 @@ fn operation_id(value: &str) -> OperationId {
 
 fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
-}
-
-fn namespace_revision_id(value: &str) -> NamespaceRevisionId {
-    NamespaceRevisionId::try_new(value).expect("valid namespace revision id")
 }
 
 fn machine_id(value: &str) -> MachineId {

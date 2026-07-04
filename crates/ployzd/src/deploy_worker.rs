@@ -130,7 +130,7 @@ where
         .map_err(|source| run.fail(source))?;
     let plan = plan_namespace_deploy(
         command.request.namespace_id.clone(),
-        command.request.namespace_revision_id.clone(),
+        command.request.namespace_revision_id(),
         command
             .services()
             .iter()

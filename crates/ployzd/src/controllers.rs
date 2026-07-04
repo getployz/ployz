@@ -28,6 +28,7 @@ const MACHINE_JOIN_TOKEN_TTL_SECONDS: u64 = 600;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
+    pub idempotency_key: IdempotencyKey,
     pub target: DeployRequest,
 }
 
@@ -133,7 +134,18 @@ impl OperationControllers {
         command: DeploySubmitCommand,
     ) -> Result<AcceptedDeploySubmission, SubmitCommandError> {
         let operation_id = command.operation_id;
+        let idempotency_key = command.idempotency_key;
         let target = command.target;
+        let claimed = self
+            .repository
+            .claim_deploy(DeployOperationSubmission {
+                operation_id,
+                idempotency_key,
+                target,
+            })
+            .await?;
+        let operation_id = claimed.operation_id.clone();
+        let target = claimed.target.clone();
         let namespace_id = target.namespace_id.clone();
         match self
             .core_state
@@ -149,13 +161,7 @@ impl OperationControllers {
             }
         }
 
-        let submitted = self
-            .repository
-            .submit_deploy(DeployOperationSubmission {
-                operation_id: operation_id.clone(),
-                target,
-            })
-            .await;
+        let submitted = self.repository.submit_deploy(claimed).await;
 
         match submitted {
             Ok(accepted) => Ok(accepted),

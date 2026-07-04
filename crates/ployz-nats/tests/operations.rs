@@ -9,8 +9,7 @@ use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    cert_id, container_id, machine_id, namespace_id, namespace_revision_id, operation_id,
-    service_id,
+    cert_id, container_id, machine_id, namespace_id, operation_id, service_id,
 };
 
 #[test]
@@ -227,7 +226,6 @@ fn replicas(value: u16) -> ReplicaCount {
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),

@@ -638,7 +638,6 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
-            namespace_revision_id: target_namespace_revision_id(),
             services: vec![DeployServiceSpec {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
@@ -716,7 +715,6 @@ fn prepared_deploy_command(
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
-            namespace_revision_id: target_namespace_revision_id(),
             services: vec![DeployServiceSpec {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
@@ -755,7 +753,6 @@ pub(super) fn empty_deploy_command_with_running_container(
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
-            namespace_revision_id: namespace_revision_id("rev_3"),
             services: Vec::new(),
         },
         DeployExecutionFacts {
