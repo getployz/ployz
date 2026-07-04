@@ -19,15 +19,15 @@ use ployz_sdk_types::{
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
     MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse, NamespaceId,
-    NamespaceRevisionId, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError,
-    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceSnapshot, SubjectTokenError,
+    NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
         DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
@@ -47,8 +47,6 @@ fn sdk_exports_core_wire_types() {
     let running = DeployRunningStage::ServingTargetCommit;
     let _deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        namespace_revision_id: NamespaceRevisionId::try_new("rev_1")
-            .expect("valid namespace revision id"),
         services: vec![DeployServiceSpec {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -138,11 +136,10 @@ fn sdk_exports_cert_wire_types() {
 fn sdk_exports_operation_api_wire_types() {
     let operation_id = ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id");
     let request = DeploySubmitRequest {
-        operation_id: operation_id.clone(),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
+            .expect("valid idempotency key"),
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-            namespace_revision_id: NamespaceRevisionId::try_new("rev_1")
-                .expect("valid namespace revision id"),
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -161,7 +158,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"operation_id":"op_123","target":{"namespace_id":"default","namespace_revision_id":"rev_1","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1}]}}"#
+        r#"{"idempotency_key":"idem_deploy_123","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1}]}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),

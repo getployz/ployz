@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{NamespaceId, NamespaceRevisionId, ServiceId};
+use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
@@ -61,8 +61,6 @@ fn cli_accepts_deploy_submit_request() {
         "deploy",
         "--service",
         "svc_api",
-        "--revision",
-        "rev_2",
         "--image",
         "ghcr.io/acme/api:rev-2",
         "--replicas",
@@ -115,16 +113,11 @@ fn cli_deploy_shorthand_derives_full_request() {
     );
     assert!(
         command
-            .namespace_revision_id
+            .idempotency_key
             .as_str()
-            .starts_with("rev_latest_"),
-        "derived revision id carries the image tag: {}",
-        command.namespace_revision_id.as_str()
-    );
-    assert!(
-        command.operation_id.as_str().starts_with("op_deploy_web_"),
-        "derived operation id carries the command intent: {}",
-        command.operation_id.as_str()
+            .starts_with("idem_deploy_web_"),
+        "derived idempotency key carries the command intent: {}",
+        command.idempotency_key.as_str()
     );
 }
 
@@ -134,34 +127,20 @@ fn cli_deploy_shorthand_generates_collision_resistant_ids() {
     let first = shorthand_deploy_command(quick_start_deploy_args());
     let second = shorthand_deploy_command(quick_start_deploy_args());
 
-    assert_ne!(first.operation_id, second.operation_id);
-    assert_ne!(first.namespace_revision_id, second.namespace_revision_id);
+    assert_ne!(first.idempotency_key, second.idempotency_key);
 }
 
-/// R12: explicit expert flags override every derived value.
+/// R12: explicit expert flags override derived service settings.
 #[test]
 fn cli_explicit_flags_override_shorthand_derivations() {
-    let args = quick_start_deploy_args().chain(
-        [
-            "--service",
-            "svc_custom",
-            "--revision",
-            "rev_pinned",
-            "--replicas",
-            "3",
-        ]
-        .map(str::to_owned),
-    );
+    let args = quick_start_deploy_args()
+        .chain(["--service", "svc_custom", "--replicas", "3"].map(str::to_owned));
 
     let command = shorthand_deploy_command(args);
 
     assert_eq!(
         first_service(&command).service_id,
         ServiceId::try_new("svc_custom").expect("valid service id")
-    );
-    assert_eq!(
-        command.namespace_revision_id,
-        NamespaceRevisionId::try_new("rev_pinned").expect("valid revision id")
     );
     assert_eq!(
         first_service(&command).replicas,
@@ -293,37 +272,6 @@ fn cli_deploy_shorthand_derives_service_from_image_shapes() {
     }
 }
 
-/// Untagged images still derive a generated revision id.
-#[test]
-fn cli_deploy_shorthand_derives_revision_for_untagged_image() {
-    let command =
-        shorthand_deploy_command(["deploy", "--image", "ghcr.io/acme/web"].map(str::to_owned));
-
-    assert!(
-        command.namespace_revision_id.as_str().starts_with("rev_"),
-        "derived revision id is rev-prefixed: {}",
-        command.namespace_revision_id.as_str()
-    );
-}
-
-/// Image tags with dots (semver) are sanitized into the generated revision
-/// id rather than failing the deploy.
-#[test]
-fn cli_deploy_shorthand_sanitizes_dotted_tag_into_revision() {
-    let command = shorthand_deploy_command(
-        ["deploy", "--image", "ghcr.io/acme/web:1.2.3"].map(str::to_owned),
-    );
-
-    assert!(
-        command
-            .namespace_revision_id
-            .as_str()
-            .starts_with("rev_1-2-3_"),
-        "dotted tag is sanitized: {}",
-        command.namespace_revision_id.as_str()
-    );
-}
-
 /// A repository leaf that is not a valid service id fails with the
 /// `--service` escape hatch instead of installing a rewritten name.
 #[test]
@@ -433,17 +381,13 @@ fn deploy_prints_operation_id_without_runtime_details() {
 fn assert_deploy_fixture(command: &DeployCommand) {
     assert!(
         command
-            .operation_id
+            .idempotency_key
             .as_str()
-            .starts_with("op_deploy_svc_api_")
+            .starts_with("idem_deploy_svc_api_")
     );
     assert_eq!(
         command.namespace_id,
         NamespaceId::try_new("default").expect("valid namespace id")
-    );
-    assert_eq!(
-        command.namespace_revision_id,
-        NamespaceRevisionId::try_new("rev_2").expect("valid revision id")
     );
     assert_eq!(
         command.services,
@@ -483,8 +427,6 @@ fn deploy_arg_refs() -> impl Iterator<Item = &'static str> {
         "deploy",
         "--service",
         "svc_api",
-        "--revision",
-        "rev_2",
         "--image",
         "ghcr.io/acme/api:rev-2",
         "--replicas",

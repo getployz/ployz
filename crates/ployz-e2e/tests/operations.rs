@@ -43,8 +43,9 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    event_replay_limit, event_sequence, machine_id, namespace_id, namespace_revision_entry_id,
-    namespace_revision_id, operation_id, route_hostname, route_port, service_id,
+    event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id,
+    namespace_revision_entry_id, namespace_revision_id, operation_id, route_hostname, route_port,
+    service_id,
 };
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
@@ -72,6 +73,7 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
     let accepted = repository
         .submit_deploy(DeployOperationSubmission {
             operation_id: operation_id("op_123"),
+            idempotency_key: idempotency_key("idem_deploy_123"),
             target: deploy_target("svc_api"),
         })
         .await
@@ -134,21 +136,24 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
     let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_api_123"),
+        idempotency_key: idempotency_key("idem_api_123"),
         target: deploy_target("svc_api"),
     };
 
     let accepted = api.deploy_submit(&request).await?;
 
-    assert_eq!(accepted.operation_id, operation_id("op_api_123"));
-    assert_eq!(accepted.watch_subject, "plz.v1.op.op_api_123.>".to_owned());
+    assert!(accepted.operation_id.as_str().starts_with("op_deploy_"));
+    assert_eq!(
+        accepted.watch_subject,
+        format!("plz.v1.op.{}.>", accepted.operation_id.as_str())
+    );
     assert_eq!(accepted.start_sequence, event_sequence(1));
     // The control runtime starts executing the accepted deploy immediately,
     // so status may have advanced past Accepted by the time we read it. The
     // acceptance contract is: status is reachable for the id and the first
     // durable event is the submission.
     let status_request = OpsStatusRequest {
-        operation_id: operation_id("op_api_123"),
+        operation_id: accepted.operation_id.clone(),
     };
     let status = api.ops_status(&status_request).await?;
     let OperationStatus::Deploy {
@@ -159,11 +164,11 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     else {
         panic!("submitted deploy should report a deploy status");
     };
-    assert_eq!(id, operation_id("op_api_123"));
+    assert_eq!(id, accepted.operation_id);
     assert_eq!(status_service_id, service_id("svc_api"));
 
     let watch_request = OperationEventReplayRequest {
-        operation_id: operation_id("op_api_123"),
+        operation_id: accepted.operation_id.clone(),
         start_sequence: event_sequence(1),
         limit: event_replay_limit(10),
     };
@@ -174,7 +179,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     assert_eq!(
         first.event,
         OperationEvent::DeploySubmitted {
-            operation_id: operation_id("op_api_123"),
+            operation_id: accepted.operation_id,
             target: deploy_target("svc_api"),
         }
     );
@@ -211,15 +216,14 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
     .await?;
     let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_e2e_run"),
+        idempotency_key: idempotency_key("idem_e2e_run"),
         target: deploy_target("svc_api"),
     };
 
     let accepted = api.deploy_submit(&request).await?;
+    let deploy_operation = accepted.operation_id.clone();
 
-    assert_eq!(accepted.operation_id, operation_id("op_e2e_run"));
-    let status =
-        wait_for_terminal_status(&api, &operation_id("op_e2e_run"), Duration::from_secs(4)).await;
+    let status = wait_for_terminal_status(&api, &deploy_operation, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -245,17 +249,17 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         namespace_revision_entry_id("rev_2")
     );
     assert_eq!(
-        operation_events(&api, operation_id("op_e2e_run"), accepted.start_sequence).await?,
+        operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
         vec![
             OperationEvent::DeploySubmitted {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 target: deploy_target("svc_api"),
             },
             OperationEvent::DeployPlanningStarted {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
             },
             OperationEvent::DeployPlanCreated {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 plan: plan_namespace_deploy(
                     namespace_id("default"),
                     namespace_revision_id("rev_2"),
@@ -270,11 +274,11 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 .expect("single-machine deploy plan is valid"),
             },
             OperationEvent::DeployRunning {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 stage: DeployRunningStage::PreparingDataplane,
             },
             OperationEvent::DeployDataplanePrepared {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 report: PloyzNativeMeshPrepareReport {
                     machines: vec![PloyzNativeMeshMachineReady {
                         machine_id: machine_id("machine_a"),
@@ -300,28 +304,28 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 },
             },
             OperationEvent::DeployRunning {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 stage: DeployRunningStage::StartingContainers,
             },
             OperationEvent::DeployContainerStarted {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 machine_id: machine_id("machine_a"),
                 container_id: ployz_core::ids::ContainerId::try_new("ctr_1")
                     .expect("valid container id"),
             },
             OperationEvent::DeployRunning {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 stage: DeployRunningStage::WaitingForHealth,
             },
             OperationEvent::DeployHealthCheckStarted {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
             },
             OperationEvent::DeployRunning {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation.clone(),
                 stage: DeployRunningStage::ServingTargetCommit,
             },
             OperationEvent::DeployCompleted {
-                operation_id: operation_id("op_e2e_run"),
+                operation_id: deploy_operation,
                 outcome: DeployCompletionOutcome::Completed,
             },
         ]
@@ -389,7 +393,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let upstream = TestUpstream::start().await;
     let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_e2e_route"),
+        idempotency_key: idempotency_key("idem_e2e_route"),
         target: deploy_target_with_route(
             "svc_api",
             "api.example.com",
@@ -401,7 +405,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let accepted = api.deploy_submit(&request).await?;
 
     let status =
-        wait_for_terminal_status(&api, &operation_id("op_e2e_route"), Duration::from_secs(4)).await;
+        wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -479,7 +483,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let route_host = format!("machine-down.local:{}", route_port.get());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_e2e_machine_runtime_down_route"),
+        idempotency_key: idempotency_key("idem_e2e_machine_runtime_down_route"),
         target: deploy_target_with_route(
             "svc_api",
             "machine-down.local",
@@ -488,14 +492,10 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         ),
     };
 
-    api.deploy_submit(&request).await?;
+    let accepted = api.deploy_submit(&request).await?;
 
-    let status = wait_for_terminal_status(
-        &api,
-        &operation_id("op_e2e_machine_runtime_down_route"),
-        Duration::from_secs(4),
-    )
-    .await;
+    let status =
+        wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -583,7 +583,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
     let route_hostname = route_hostname("control-down.local");
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_e2e_control_down_route"),
+        idempotency_key: idempotency_key("idem_e2e_control_down_route"),
         target: deploy_target_with_route(
             "svc_api",
             route_hostname.as_str(),
@@ -592,14 +592,10 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         ),
     };
 
-    api.deploy_submit(&request).await?;
+    let accepted = api.deploy_submit(&request).await?;
 
-    let status = wait_for_terminal_status(
-        &api,
-        &operation_id("op_e2e_control_down_route"),
-        Duration::from_secs(4),
-    )
-    .await;
+    let status =
+        wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -753,18 +749,14 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let upstream = TestUpstream::start_with_expected_requests(2).await;
     let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_e2e_two_machine_route"),
+        idempotency_key: idempotency_key("idem_e2e_two_machine_route"),
         target: deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
     };
 
     let accepted = api.deploy_submit(&request).await?;
+    let deploy_operation = accepted.operation_id.clone();
 
-    let status = wait_for_terminal_status(
-        &api,
-        &operation_id("op_e2e_two_machine_route"),
-        Duration::from_secs(4),
-    )
-    .await;
+    let status = wait_for_terminal_status(&api, &deploy_operation, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -778,26 +770,22 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         "expected two-machine routed deploy to complete, got {status:?}"
     );
     assert_eq!(
-        operation_events(
-            &api,
-            operation_id("op_e2e_two_machine_route"),
-            accepted.start_sequence,
-        )
-        .await?
-        .into_iter()
-        .filter_map(|event| {
-            let OperationEvent::DeployDataplanePrepared { report, .. } = event else {
-                return None;
-            };
-            Some(
-                report
-                    .machines
-                    .into_iter()
-                    .map(|machine| machine.machine_id.clone())
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<Vec<_>>(),
+        operation_events(&api, deploy_operation, accepted.start_sequence,)
+            .await?
+            .into_iter()
+            .filter_map(|event| {
+                let OperationEvent::DeployDataplanePrepared { report, .. } = event else {
+                    return None;
+                };
+                Some(
+                    report
+                        .machines
+                        .into_iter()
+                        .map(|machine| machine.machine_id.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
         vec![vec![machine_id("core_1"), machine_id("edge_2")]]
     );
     wait_for_gateway_route(&core_gateway_runtime).await;
@@ -902,7 +890,6 @@ fn replicas(value: u16) -> ReplicaCount {
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),

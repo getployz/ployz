@@ -8,9 +8,7 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
-};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
@@ -985,7 +983,6 @@ fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> Serv
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        namespace_revision_id: NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServiceSpec {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),

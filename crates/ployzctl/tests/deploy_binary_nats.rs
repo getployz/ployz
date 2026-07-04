@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{ImageReference, ReplicaCount};
-use ployz_core::ids::{NamespaceRevisionId, ServiceId};
+use ployz_core::ids::ServiceId;
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -33,9 +33,9 @@ async fn binary_deploy_calls_nats_service() {
                 serde_json::from_slice(&request.payload).expect("deploy request decodes");
             assert!(
                 request
-                    .operation_id
+                    .idempotency_key
                     .as_str()
-                    .starts_with("op_deploy_svc_api_")
+                    .starts_with("idem_deploy_svc_api_")
             );
             let [service] = request.target.services.as_slice() else {
                 panic!("deploy request has one service");
@@ -43,10 +43,6 @@ async fn binary_deploy_calls_nats_service() {
             assert_eq!(
                 service.service_id,
                 ServiceId::try_new("svc_api").expect("valid service id")
-            );
-            assert_eq!(
-                request.target.namespace_revision_id,
-                NamespaceRevisionId::try_new("rev_2").expect("valid revision id")
             );
             assert_eq!(
                 service.image,
@@ -58,7 +54,7 @@ async fn binary_deploy_calls_nats_service() {
             );
 
             let response: DeploySubmitResponse = OperationApiResponse::Ok {
-                value: accepted_operation(request.operation_id.as_str()),
+                value: accepted_operation("op_deploy_minted"),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
@@ -83,8 +79,8 @@ async fn binary_deploy_calls_nats_service() {
         stdout(&output),
         stderr(&output)
     );
-    assert!(stdout(&output).starts_with("operation op_deploy_svc_api_"));
-    assert!(stdout(&output).contains("watch ployzctl ops watch op_deploy_svc_api_"));
+    assert!(stdout(&output).starts_with("operation op_deploy_minted"));
+    assert!(stdout(&output).contains("watch ployzctl ops watch op_deploy_minted"));
     assert_eq!(stderr(&output), "");
 }
 
@@ -140,13 +136,11 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     }
 }
 
-fn deploy_args() -> [&'static str; 10] {
+fn deploy_args() -> [&'static str; 8] {
     [
         "deploy",
         "--service",
         "svc_api",
-        "--revision",
-        "rev_2",
         "--image",
         "ghcr.io/acme/api:rev-2",
         "--replicas",

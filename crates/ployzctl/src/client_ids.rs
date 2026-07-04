@@ -10,6 +10,11 @@ pub(crate) struct ClientGeneratedOperationId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientGeneratedDeployId {
+    pub idempotency_key: OperationIdempotencyKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClientGeneratedMachineAddIds {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
@@ -18,8 +23,16 @@ pub(crate) struct ClientGeneratedMachineAddIds {
 /// Collision-resistant, readable IDs tied to the command intent.
 pub(crate) fn generate_client_deploy_id(
     service_id: &ServiceId,
-) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
-    generate_client_operation_id("deploy", service_id.as_str())
+) -> Result<ClientGeneratedDeployId, ClientGeneratedIdsError> {
+    let suffix = generated_id_suffix();
+    Ok(ClientGeneratedDeployId {
+        idempotency_key: OperationIdempotencyKey::try_new(format!(
+            "idem_deploy_{}_{}",
+            service_id.as_str(),
+            suffix
+        ))
+        .map_err(|source| ClientGeneratedIdsError::IdempotencyKey { source })?,
+    })
 }
 
 pub(crate) fn generate_client_machine_add_ids(

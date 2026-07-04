@@ -23,7 +23,7 @@ fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
 }
 
 fn failure_namespace_revision_id(command: &DeployExecutionCommand) -> NamespaceRevisionId {
-    command.request.namespace_revision_id.clone()
+    command.request.namespace_revision_id()
 }
 
 /// Scope for a control-plane commit failure. Empty-manifest deploys commit
@@ -32,7 +32,7 @@ fn failure_namespace_revision_id(command: &DeployExecutionCommand) -> NamespaceR
 fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitScope {
     let Some(service) = command.services().first() else {
         return ControlPlaneCommitScope::Namespace {
-            namespace_revision_id: command.request.namespace_revision_id.clone(),
+            namespace_revision_id: command.request.namespace_revision_id(),
         };
     };
     ControlPlaneCommitScope::ServiceEntry {

@@ -16,11 +16,15 @@ use crate::state::{RouteBindingState, ServingTargetEntry};
 #[serde(deny_unknown_fields)]
 pub struct DeployRequest {
     pub namespace_id: NamespaceId,
-    pub namespace_revision_id: NamespaceRevisionId,
     pub services: Vec<DeployServiceSpec>,
 }
 
 impl DeployRequest {
+    #[must_use]
+    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
+        namespace_revision_id_for(&self.namespace_id, &self.services)
+    }
+
     #[must_use]
     pub fn primary_service(&self) -> Option<&DeployServiceSpec> {
         self.services.first()
@@ -41,12 +45,13 @@ impl DeployRequest {
 
     #[must_use]
     pub fn service_requests(&self) -> Vec<DeployServiceRequest> {
+        let namespace_revision_id = self.namespace_revision_id();
         self.services
             .iter()
             .map(|service| DeployServiceRequest {
                 namespace_id: self.namespace_id.clone(),
                 service_id: service.service_id.clone(),
-                namespace_revision_id: self.namespace_revision_id.clone(),
+                namespace_revision_id: namespace_revision_id.clone(),
                 namespace_revision_entry_id: service
                     .namespace_revision_entry_id(&self.namespace_id),
                 image: service.image.clone(),
@@ -71,6 +76,7 @@ pub struct DeployServiceSpec {
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision_entry.v2";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v1";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -79,6 +85,47 @@ impl DeployServiceSpec {
     ) -> NamespaceRevisionEntryId {
         namespace_revision_entry_id_for(namespace_id, &self.service_id, &self.image)
     }
+}
+
+#[must_use]
+pub fn namespace_revision_id_for(
+    namespace_id: &NamespaceId,
+    services: &[DeployServiceSpec],
+) -> NamespaceRevisionId {
+    let mut services = services.iter().collect::<Vec<_>>();
+    services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+
+    let mut hasher = Sha256::new();
+    hasher.update(DeployServiceSpec::NAMESPACE_REVISION_ENCODING_VERSION);
+    hasher.update(b"\nnamespace_id=");
+    hasher.update(namespace_id.as_str());
+    for service in services {
+        hasher.update(b"\nservice_id=");
+        hasher.update(service.service_id.as_str());
+        hasher.update(b"\nimage=");
+        hasher.update(service.image.0.as_str());
+        hasher.update(b"\nreplicas=");
+        hasher.update(service.replicas.get().to_string());
+
+        let mut routes = service.routes.iter().collect::<Vec<_>>();
+        routes.sort_by(|left, right| {
+            left.target
+                .cmp(&right.target)
+                .then_with(|| left.endpoint_port.cmp(&right.endpoint_port))
+        });
+        for route in routes {
+            hasher.update(b"\nroute=");
+            hasher.update(route.target.hostname.as_str());
+            hasher.update(b":");
+            hasher.update(route.target.port.get().to_string());
+            hasher.update(b"->");
+            hasher.update(route.endpoint_port.get().to_string());
+        }
+    }
+    hasher.update(b"\n");
+    let digest = hasher.finalize();
+    NamespaceRevisionId::try_new(format!("{digest:x}"))
+        .expect("sha256 hex digest is a subject token")
 }
 
 #[must_use]
