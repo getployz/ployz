@@ -429,8 +429,14 @@ test("sdk maps current-state query inputs to wire requests", () => {
   assert.deepEqual(machineInspectRequest({ machineId: "machine_2" }), { machine_id: "machine_2" });
   assert.deepEqual(machineInspectRequest("machine_2"), { machine_id: "machine_2" });
   assert.deepEqual(serviceListRequest(), {});
-  assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
-  assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
+  assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), {
+    namespace_id: "default",
+    service_id: "svc_api",
+  });
+  assert.deepEqual(serviceInspectRequest("svc_api"), {
+    namespace_id: "default",
+    service_id: "svc_api",
+  });
   assert.deepEqual(runtimeSnapshotRequest(), {});
   assert.deepEqual(opsListRequest(), { active_only: false });
   assert.deepEqual(opsListRequest({ activeOnly: true }), { active_only: true });
