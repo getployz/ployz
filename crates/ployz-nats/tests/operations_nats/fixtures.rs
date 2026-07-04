@@ -41,8 +41,17 @@ pub(super) async fn operation_repository(
 }
 
 pub(super) fn deploy_submission(operation_id: &str, service_id: &str) -> DeployOperationSubmission {
+    deploy_submission_with_idempotency(operation_id, &format!("idem_{operation_id}"), service_id)
+}
+
+pub(super) fn deploy_submission_with_idempotency(
+    operation_id: &str,
+    idempotency: &str,
+    service_id: &str,
+) -> DeployOperationSubmission {
     DeployOperationSubmission {
         operation_id: self::operation_id(operation_id),
+        idempotency_key: idempotency_key(idempotency),
         target: deploy_target(service_id),
     }
 }
@@ -50,9 +59,9 @@ pub(super) fn deploy_submission(operation_id: &str, service_id: &str) -> DeployO
 pub(super) fn empty_deploy_submission(operation_id: &str) -> DeployOperationSubmission {
     DeployOperationSubmission {
         operation_id: self::operation_id(operation_id),
+        idempotency_key: idempotency_key(&format!("idem_{operation_id}")),
         target: DeployRequest {
             namespace_id: namespace_id("production"),
-            namespace_revision_id: namespace_revision_id("rev_empty"),
             services: Vec::new(),
         },
     }

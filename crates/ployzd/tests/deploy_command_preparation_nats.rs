@@ -15,8 +15,8 @@ use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
-    operation_id, route_port, service_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, route_port,
+    service_id,
 };
 use ployzd::deploy_worker::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
@@ -398,7 +398,6 @@ async fn test_nats() -> TestNats {
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")

@@ -75,7 +75,7 @@ pub use ployz_core::state::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DeploySubmitRequest {
-    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
     pub target: DeployRequest,
 }
 

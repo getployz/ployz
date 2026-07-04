@@ -14,6 +14,7 @@ use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
+use ployz_test_support::ids::idempotency_key;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use ployzd::controllers::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
@@ -393,6 +394,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
     controllers
         .submit_deploy(DeploySubmitCommand {
             operation_id: operation_id("op_first"),
+            idempotency_key: idempotency_key("idem_first"),
             target: deploy_request(1),
         })
         .await
@@ -401,6 +403,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
     let error = controllers
         .submit_deploy(DeploySubmitCommand {
             operation_id: operation_id("op_second"),
+            idempotency_key: idempotency_key("idem_second"),
             target: deploy_request(1),
         })
         .await
@@ -423,6 +426,33 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             .expect("operation status reads")
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation() {
+    let nats = test_nats().await;
+    let controllers = operation_controllers(&nats.jetstream).await;
+    let first = controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_first"),
+            idempotency_key: idempotency_key("idem_deploy"),
+            target: deploy_request(1),
+        })
+        .await
+        .expect("first deploy operation accepted");
+
+    let retry = controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_retry_candidate"),
+            idempotency_key: idempotency_key("idem_deploy"),
+            target: deploy_request(1),
+        })
+        .await
+        .expect("retry deploy operation accepted");
+
+    assert_eq!(first.operation_id, operation_id("op_first"));
+    assert_eq!(retry.operation_id, operation_id("op_first"));
+    assert_eq!(retry.start_sequence, first.start_sequence);
 }
 
 struct TestNats {
@@ -521,6 +551,7 @@ async fn operation_controllers(jetstream: &jetstream::Context) -> OperationContr
 fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
     DeploySubmitCommand {
         operation_id: operation_id("op_123"),
+        idempotency_key: idempotency_key("idem_deploy_123"),
         target,
     }
 }
@@ -528,7 +559,6 @@ fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
 fn deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: target_namespace_revision_id(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),

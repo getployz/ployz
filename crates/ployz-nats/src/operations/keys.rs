@@ -8,8 +8,14 @@ pub fn operation_status_key(operation_id: &OperationId) -> String {
 }
 
 pub const OPERATION_STATUS_KEY_PREFIX: &str = "ops.";
+const DEPLOY_CLAIM_KEY_PREFIX: &str = "deploy_claims.";
 pub const MACHINE_ADD_SUBMISSION_KEY_PREFIX: &str = "machine_add_submissions.";
 const MACHINE_ADD_CLAIM_KEY_PREFIX: &str = "machine_add_claims.";
+
+#[must_use]
+pub fn deploy_claim_key(idempotency_key: &OperationIdempotencyKey) -> String {
+    format!("{DEPLOY_CLAIM_KEY_PREFIX}{}", idempotency_key.as_str())
+}
 
 #[must_use]
 pub fn machine_add_submission_key(idempotency_key: &OperationIdempotencyKey) -> String {

@@ -47,7 +47,7 @@ mod support;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     event_sequence, idempotency_key, machine_id, namespace_id, namespace_revision_entry_id,
-    namespace_revision_id, operation_id, route_hostname, route_port, service_id,
+    operation_id, route_hostname, route_port, service_id,
 };
 use support::control::{TestNats, machine_join_template, redeem_when_ready};
 
@@ -60,13 +60,13 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
-            operation_id: operation_id("op_control_runtime"),
+            idempotency_key: idempotency_key("idem_control_runtime"),
             target: deploy_target("svc_api"),
         })
         .await
         .expect("operation API accepts deploy");
 
-    assert_eq!(accepted.operation_id, operation_id("op_control_runtime"));
+    assert!(accepted.operation_id.as_str().starts_with("op_deploy_"));
     assert_eq!(accepted.start_sequence, event_sequence(1));
     nats.connected
         .jetstream
@@ -442,7 +442,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     .expect("machine runtime starts");
     let api = nats.api();
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_run"),
+        idempotency_key: idempotency_key("idem_run"),
         target: deploy_target("svc_api"),
     };
 
@@ -451,9 +451,8 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("operation API accepts deploy");
 
-    assert_eq!(accepted.operation_id, operation_id("op_run"));
     let status =
-        wait_for_terminal_status(&api, &operation_id("op_run"), Duration::from_secs(4)).await;
+        wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -482,7 +481,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .deploy_submit(&request)
         .await
         .expect("duplicate operation API submit returns original operation");
-    assert_eq!(duplicate.operation_id, operation_id("op_run"));
+    assert_eq!(duplicate.operation_id, accepted.operation_id);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         observations
@@ -588,7 +587,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
-            operation_id: operation_id("op_routed"),
+            idempotency_key: idempotency_key("idem_routed"),
             target: deploy_target_with_route(
                 "svc_api",
                 gateway.listen_addr().port(),
@@ -598,9 +597,8 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("operation API accepts routed deploy");
 
-    assert_eq!(accepted.operation_id, operation_id("op_routed"));
     let status =
-        wait_for_terminal_status(&api, &operation_id("op_routed"), Duration::from_secs(4)).await;
+        wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -719,7 +717,6 @@ fn active_machine(value: &str) -> ActiveMachineState {
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: namespace_revision_id("rev_2"),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),

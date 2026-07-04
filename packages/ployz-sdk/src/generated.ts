@@ -94,7 +94,7 @@ export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
 export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
 
-export type DeployRequest = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServiceSpec>, };
+export type DeployRequest = { namespace_id: NamespaceId, services: Array<DeployServiceSpec>, };
 
 export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, routes?: Array<DeployRoute>, };
 
@@ -256,7 +256,7 @@ export type InitFirstMachineActivated = { operation_id: OperationId, machine_id:
 
 export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "machine_seed_write", message: FailureMessage, };
 
-export type DeploySubmitRequest = { operation_id: OperationId, target: DeployRequest, };
+export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
 
 export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, };
 

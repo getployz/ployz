@@ -337,10 +337,9 @@ test("sdk does not expose machine service calls", () => {
 
 test("sdk maps raw deploy input to the wire request", () => {
   assert.deepEqual(deploySubmitRequest(deployInput()), {
-    operation_id: "op_123",
+    idempotency_key: "idem_deploy_123",
     target: {
       namespace_id: "default",
-      namespace_revision_id: "rev_2",
       services: [
         {
           service_id: "svc_api",
@@ -357,10 +356,9 @@ test("sdk maps raw deploy input to the wire request", () => {
       routes: [{ hostname: "api.example.com", port: 443, endpointPort: 8080 }],
     }),
     {
-      operation_id: "op_123",
+      idempotency_key: "idem_deploy_123",
       target: {
         namespace_id: "default",
-        namespace_revision_id: "rev_2",
         services: [
           {
             service_id: "svc_api",
@@ -429,8 +427,14 @@ test("sdk maps current-state query inputs to wire requests", () => {
   assert.deepEqual(machineInspectRequest({ machineId: "machine_2" }), { machine_id: "machine_2" });
   assert.deepEqual(machineInspectRequest("machine_2"), { machine_id: "machine_2" });
   assert.deepEqual(serviceListRequest(), {});
-  assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
-  assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
+  assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), {
+    namespace_id: "default",
+    service_id: "svc_api",
+  });
+  assert.deepEqual(serviceInspectRequest("svc_api"), {
+    namespace_id: "default",
+    service_id: "svc_api",
+  });
   assert.deepEqual(runtimeSnapshotRequest(), {});
   assert.deepEqual(opsListRequest(), { active_only: false });
   assert.deepEqual(opsListRequest({ activeOnly: true }), { active_only: true });
@@ -918,9 +922,8 @@ function defaultFixture(): OperationFixture {
 
 function deployInput() {
   return {
-    operationId: "op_123",
+    idempotencyKey: "idem_deploy_123",
     serviceId: "svc_api",
-    namespaceRevisionId: "rev_2",
     image: "ghcr.io/acme/api:rev-2",
     replicas: 1,
   };

@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use async_nats::jetstream;
+use ployz_core::deploy::DeployRequest;
+use ployz_core::ids::OperationId;
 use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
 use ployz_core::nats_config::{NatsUserPublicKey, NatsUserSeed};
@@ -11,9 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use super::KV_OPS_BUCKET;
 use super::keys::{
-    MACHINE_ADD_SUBMISSION_KEY_PREFIX, OPERATION_STATUS_KEY_PREFIX, machine_add_claim_key,
-    machine_add_join_token_key, machine_add_mint_claim_key, machine_add_secret_delivery_key,
-    machine_add_submission_key, operation_status_key,
+    MACHINE_ADD_SUBMISSION_KEY_PREFIX, OPERATION_STATUS_KEY_PREFIX, deploy_claim_key,
+    machine_add_claim_key, machine_add_join_token_key, machine_add_mint_claim_key,
+    machine_add_secret_delivery_key, machine_add_submission_key, operation_status_key,
 };
 use crate::kv::{NatsIoTimeout, bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
 
@@ -26,8 +28,14 @@ pub struct AsyncNatsOperationStatusStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredDeployClaim {
+    pub operation_id: OperationId,
+    pub target: DeployRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddSubmission {
-    pub operation_id: ployz_core::ids::OperationId,
+    pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
     pub start_sequence: EventSequence,
     pub machine_id: ployz_core::ids::MachineId,
@@ -40,7 +48,7 @@ pub struct StoredMachineAddSubmission {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddClaim {
-    pub operation_id: ployz_core::ids::OperationId,
+    pub operation_id: OperationId,
     pub machine_id: ployz_core::ids::MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
@@ -51,7 +59,7 @@ pub struct StoredMachineAddClaim {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddSecretDelivery {
-    pub operation_id: ployz_core::ids::OperationId,
+    pub operation_id: OperationId,
     pub secret_delivery: MachineJoinSecretDelivery,
 }
 
@@ -61,14 +69,14 @@ pub struct StoredMachineAddSecretDelivery {
 /// adopt the claimed material and converge on the same secret delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddMintClaim {
-    pub operation_id: ployz_core::ids::OperationId,
+    pub operation_id: OperationId,
     pub nkey_public: NatsUserPublicKey,
     pub nkey_seed: NatsUserSeed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddJoinToken {
-    pub operation_id: ployz_core::ids::OperationId,
+    pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
 }
 
@@ -244,6 +252,21 @@ impl AsyncNatsOperationStatusStore {
             "machine add submission get",
             machine_add_submission_key(idempotency_key),
             OperationStatusStoreError::DecodeSubmission,
+        )
+        .await
+    }
+
+    pub async fn put_deploy_claim_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        claim: &StoredDeployClaim,
+    ) -> Result<StoredDeployClaim, OperationStatusStoreError> {
+        self.create_or_adopt(
+            "deploy claim get",
+            "deploy claim create",
+            deploy_claim_key(idempotency_key),
+            claim,
+            AdoptPolicy::FirstWriterWins,
         )
         .await
     }

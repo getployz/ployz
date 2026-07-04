@@ -29,6 +29,33 @@ async fn operation_repository_duplicate_operation_id_recovers_submit() {
 }
 
 #[tokio::test]
+async fn operation_repository_idempotency_key_adopts_original_operation_id() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+
+    let first = repository
+        .submit_deploy(deploy_submission_with_idempotency(
+            "op_first",
+            "idem_deploy",
+            "svc_api",
+        ))
+        .await
+        .expect("first submit accepted");
+    let retry = repository
+        .submit_deploy(deploy_submission_with_idempotency(
+            "op_retry_candidate",
+            "idem_deploy",
+            "svc_api",
+        ))
+        .await
+        .expect("retry adopts first claim");
+
+    assert_eq!(first.operation_id, operation_id("op_first"));
+    assert_eq!(retry.operation_id, operation_id("op_first"));
+    assert_eq!(retry.start_sequence, first.start_sequence);
+}
+
+#[tokio::test]
 async fn operation_repository_concurrent_duplicate_operation_ids_converge() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
