@@ -37,10 +37,16 @@ pub fn owned_operation(
 impl From<DeploySubmitRequest> for DeploySubmitCommand {
     fn from(value: DeploySubmitRequest) -> Self {
         Self {
-            operation_id: value.operation_id,
+            operation_id: mint_deploy_operation_id(),
+            idempotency_key: value.idempotency_key,
             target: value.target,
         }
     }
+}
+
+fn mint_deploy_operation_id() -> OperationId {
+    OperationId::try_new(format!("op_deploy_{}", nuid::next()))
+        .expect("generated deploy operation id uses subject-token characters")
 }
 
 impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {

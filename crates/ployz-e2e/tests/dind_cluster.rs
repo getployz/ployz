@@ -43,8 +43,8 @@ use ployz_sdk_types::{
     MachineSnapshot,
 };
 use ployz_test_support::ids::{
-    machine_id, namespace_id, namespace_revision_id, operation_id, route_hostname, route_port,
-    service_id,
+    idempotency_key, machine_id, namespace_id, namespace_revision_id, operation_id, route_hostname,
+    route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
@@ -413,16 +413,15 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
 /// committed deploy event vocabulary, Docker reality, and HTTP service.
 async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     let cluster = &core.cluster;
-    let deploy_operation = operation_id("op_dind_deploy");
     let accepted = core
         .api
         .deploy_submit(&DeploySubmitRequest {
-            operation_id: deploy_operation.clone(),
+            idempotency_key: idempotency_key("idem_dind_deploy"),
             target: smoke_deploy_target(),
         })
         .await
         .expect("deploy submits");
-    assert_eq!(accepted.operation_id, deploy_operation);
+    let deploy_operation = accepted.operation_id;
 
     let status =
         wait_for_terminal_deploy_status(core, &deploy_operation, DEPLOY_TERMINAL_BUDGET).await;
@@ -477,7 +476,6 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
 fn smoke_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("smoke"),
-        namespace_revision_id: namespace_revision_id("rev_local"),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),

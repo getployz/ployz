@@ -54,8 +54,6 @@ import {
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
-  namespaceRevisionEntryId,
-  namespaceRevisionId,
   replicaCount,
   routeHostname,
   routePort,
@@ -131,10 +129,9 @@ export class PloyzApiError<E> extends Error {
 }
 
 export interface PloyzDeployInput {
-  operationId: string;
+  idempotencyKey: string;
   namespaceId?: string;
   serviceId: string;
-  namespaceRevisionId: string;
   image: string;
   replicas: number;
   routes?: Array<{
@@ -320,10 +317,9 @@ export async function connectPloyzNats(
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
   return {
-    operation_id: operationId(input.operationId),
+    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     target: {
       namespace_id: namespaceId(input.namespaceId ?? "default"),
-      namespace_revision_id: namespaceRevisionId(input.namespaceRevisionId),
       services: [
         {
           service_id: serviceId(input.serviceId),

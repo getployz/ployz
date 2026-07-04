@@ -5,8 +5,8 @@ use clap::Args;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::{NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
 use crate::client_ids::generate_client_deploy_id;
@@ -20,9 +20,8 @@ const DEFAULT_REPLICA_COUNT: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommand {
-    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
     pub namespace_id: NamespaceId,
-    pub namespace_revision_id: NamespaceRevisionId,
     pub services: Vec<DeployServiceSpec>,
     pub detach: bool,
 }
@@ -31,10 +30,9 @@ impl DeployCommand {
     #[must_use]
     pub fn into_request(self) -> DeploySubmitRequest {
         DeploySubmitRequest {
-            operation_id: self.operation_id,
+            idempotency_key: self.idempotency_key,
             target: DeployRequest {
                 namespace_id: self.namespace_id,
-                namespace_revision_id: self.namespace_revision_id,
                 services: self.services,
             },
         }
@@ -76,7 +74,6 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         file,
         namespace,
         service,
-        revision,
         image,
         replicas,
         route,
@@ -114,22 +111,9 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         let generated_ids = generate_client_deploy_id(&service_id).map_err(|error| {
             cli_error(format!("could not generate client operation ids: {error}"))
         })?;
-        let operation_id = generated_ids.operation_id;
-        let namespace_revision_id = match revision {
-            Some(value) => NamespaceRevisionId::try_new(value)
-                .map_err(|error| invalid_value("--revision", error))?,
-            None => NamespaceRevisionId::try_new(format!(
-                "rev_{}_{}",
-                sanitize_id_fragment(parsed.namespace_id.as_str()),
-                generated_ids.suffix
-            ))
-            .expect("generated revision id uses subject-token characters"),
-        };
-
         return Ok(DeployCommand {
-            operation_id,
+            idempotency_key: generated_ids.idempotency_key,
             namespace_id: parsed.namespace_id,
-            namespace_revision_id,
             services: parsed.services,
             detach,
         });
@@ -150,12 +134,6 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
     };
     let generated_ids = generate_client_deploy_id(&service_id)
         .map_err(|error| cli_error(format!("could not generate client operation ids: {error}")))?;
-    let namespace_revision_id = match revision {
-        Some(value) => NamespaceRevisionId::try_new(value)
-            .map_err(|error| invalid_value("--revision", error))?,
-        None => derive_revision_id(&image, &generated_ids.suffix),
-    };
-    let operation_id = generated_ids.operation_id;
     let replicas = match replicas {
         Some(value) => parse_replicas(value)?,
         None => ReplicaCount::try_new(DEFAULT_REPLICA_COUNT)
@@ -184,9 +162,8 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
     };
 
     Ok(DeployCommand {
-        operation_id,
+        idempotency_key: generated_ids.idempotency_key,
         namespace_id,
-        namespace_revision_id,
         services: vec![DeployServiceSpec {
             service_id,
             image,
@@ -205,8 +182,6 @@ pub(crate) struct DeployCli {
     namespace: Option<String>,
     #[arg(long, hide = true)]
     service: Option<String>,
-    #[arg(long, hide = true)]
-    revision: Option<String>,
     #[arg(long)]
     image: Option<String>,
     #[arg(long)]
@@ -262,37 +237,6 @@ fn derive_service_id(image: &ImageReference) -> Result<ServiceId, PloyzctlCliErr
             image.as_str()
         ))
     })
-}
-
-/// Derives a fresh revision id from the image tag plus the generated
-/// suffix, so redeploying a moving tag like `latest` still mints a new
-/// revision (R11, KTD9).
-fn derive_revision_id(image: &ImageReference, suffix: &str) -> NamespaceRevisionId {
-    let (_leaf, tag) = image_leaf_and_tag(image);
-    let sanitized_tag = tag
-        .map(sanitize_id_fragment)
-        .filter(|fragment| !fragment.is_empty());
-    let value = match sanitized_tag {
-        Some(tag) => format!("rev_{tag}_{suffix}"),
-        None => format!("rev_{suffix}"),
-    };
-    NamespaceRevisionId::try_new(value)
-        .expect("generated revision id uses subject-token characters")
-}
-
-/// Maps characters outside the subject-token alphabet to `-` so image tags
-/// like `1.2.3` fit generated ids.
-fn sanitize_id_fragment(fragment: &str) -> String {
-    fragment
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 /// Parses the `--route HOST:PORT` shorthand (KTD8): HOST becomes the public

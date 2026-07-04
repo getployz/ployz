@@ -10,8 +10,8 @@ use ployz_core::roles::InstallRolePolicy;
 use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
-    OperationStatusStoreError, StatusStoreWrite, StoredMachineAddClaim, StoredMachineAddJoinToken,
-    StoredMachineAddSubmission,
+    OperationStatusStoreError, StatusStoreWrite, StoredDeployClaim, StoredMachineAddClaim,
+    StoredMachineAddJoinToken, StoredMachineAddSubmission,
 };
 
 /// Per-kind adapter for the shared submit flow: how to build the submitted
@@ -140,16 +140,41 @@ impl SubmitKind for MachineUpdateOperationSubmission {
 }
 
 impl AsyncNatsOperationRepository {
+    pub async fn claim_deploy(
+        &self,
+        submission: DeployOperationSubmission,
+    ) -> Result<DeployOperationSubmission, SubmitOperationError> {
+        let DeployOperationSubmission {
+            operation_id,
+            idempotency_key,
+            target,
+        } = submission;
+        let claim = self
+            .status_store
+            .put_deploy_claim_if_absent(
+                &idempotency_key,
+                &StoredDeployClaim {
+                    operation_id,
+                    target,
+                },
+            )
+            .await
+            .map_err(SubmitOperationError::StoreStatus)?;
+
+        Ok(DeployOperationSubmission {
+            operation_id: claim.operation_id,
+            idempotency_key,
+            target: claim.target,
+        })
+    }
+
     pub async fn submit_deploy(
         &self,
         submission: DeployOperationSubmission,
     ) -> Result<AcceptedDeploySubmission, SubmitOperationError> {
-        let DeployOperationSubmission {
-            operation_id,
-            target,
-        } = submission;
+        let claim = self.claim_deploy(submission).await?;
         let submitted = self
-            .submit_operation::<DeployOperationSubmission>(operation_id, target)
+            .submit_operation::<DeployOperationSubmission>(claim.operation_id, claim.target)
             .await?;
 
         Ok(AcceptedDeploySubmission {
@@ -516,6 +541,7 @@ fn validate_machine_add_join_material(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployOperationSubmission {
     pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
     pub target: ployz_core::deploy::DeployRequest,
 }
 

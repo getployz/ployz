@@ -1,5 +1,5 @@
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{NamespaceRevisionEntryId, NamespaceRevisionId};
+use ployz_core::ids::NamespaceRevisionEntryId;
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
@@ -550,7 +550,8 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
 
 fn deploy_submit_request() -> DeploySubmitRequest {
     DeploySubmitRequest {
-        operation_id: operation_id("op_123"),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
+            .expect("valid idempotency key"),
         target: deploy_target("svc_api"),
     }
 }
@@ -668,7 +669,6 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: ployz_core::ids::NamespaceId::try_new("default").expect("valid namespace id"),
-        namespace_revision_id: NamespaceRevisionId::try_new("rev_2").expect("valid revision id"),
         services: vec![DeployServiceSpec {
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),

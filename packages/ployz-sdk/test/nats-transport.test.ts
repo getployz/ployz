@@ -7,11 +7,11 @@ import {
   machineJoinToken,
   namespaceId,
   operationId,
+  operationIdempotencyKey,
   machineId,
   PloyzNatsTransport,
   PloyzNatsTransportError,
   replicaCount,
-  namespaceRevisionId,
   serviceId,
 } from "../src/index.ts";
 import type {
@@ -35,10 +35,9 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   const payload = nats.requests[0].payload;
   assert.ok(payload instanceof Uint8Array);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(payload)), {
-    operation_id: "op_123",
+    idempotency_key: "idem_deploy_123",
     target: {
       namespace_id: "default",
-      namespace_revision_id: "rev_2",
       services: [
         {
           service_id: "svc_api",
@@ -192,10 +191,9 @@ function jsonResponse(value: unknown): PloyzNatsResponseMessage {
 
 function deploySubmitRequest(): DeploySubmitRequest {
   return {
-    operation_id: operationId("op_123"),
+    idempotency_key: operationIdempotencyKey("idem_deploy_123"),
     target: {
       namespace_id: namespaceId("default"),
-      namespace_revision_id: namespaceRevisionId("rev_2"),
       services: [
         {
           service_id: serviceId("svc_api"),

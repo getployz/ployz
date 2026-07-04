@@ -135,7 +135,7 @@ fn fact_load_failure(
 ) -> DeployOperationFailure {
     DeployOperationFailure::PlanningFailed {
         service_id: request.status_service_id(),
-        namespace_revision_id: request.namespace_revision_id.clone(),
+        namespace_revision_id: request.namespace_revision_id(),
         message: FailureMessage::try_new(source.to_string())
             .expect("rendered fact load failure message is non-empty"),
     }
