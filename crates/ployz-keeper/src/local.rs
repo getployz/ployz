@@ -187,7 +187,6 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         write_durable_file(
             target.config_dir(),
             target.config_file_name(),
-            "ployz-nats",
             FileMode::Plain,
             target.render_config().as_bytes(),
         )
@@ -217,7 +216,6 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         write_durable_file(
             &directory,
             file_name,
-            "ployz-role-env",
             FileMode::Plain,
             step.render().as_bytes(),
         )
@@ -245,7 +243,6 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         write_durable_file(
             &directory,
             file_name,
-            "ployz-machine-join-template",
             FileMode::Plain,
             target.render().as_bytes(),
         )
@@ -259,21 +256,18 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         write_durable_file(
             target.state_dir(),
             &nats_file_name(&target.material().ca_file()),
-            "ployz-nats-ca",
             FileMode::Plain,
             target.ca_pem().as_str().as_bytes(),
         )?;
         write_durable_file(
             target.state_dir(),
             &nats_file_name(&target.material().server_cert_file()),
-            "ployz-nats-cert",
             FileMode::Plain,
             target.server_cert_pem().as_str().as_bytes(),
         )?;
         write_durable_file(
             target.state_dir(),
             &nats_file_name(&target.material().server_key_file()),
-            "ployz-nats-key",
             FileMode::Secret0600,
             target.server_key_pem().secret().as_bytes(),
         )
@@ -292,7 +286,6 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         write_durable_file(
             target.config_dir(),
             target.file_name(),
-            "ployz-nats-users",
             FileMode::Plain,
             target.render().as_bytes(),
         )
@@ -306,21 +299,18 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         write_durable_file(
             target.state_dir(),
             &nats_file_name(&target.material().controller_seed_file()),
-            "ployz-nats-seed",
             FileMode::Secret0600,
             target.controller_seed().secret().as_bytes(),
         )?;
         write_durable_file(
             target.state_dir(),
             &nats_file_name(&target.material().operator_seed_file()),
-            "ployz-nats-seed",
             FileMode::Secret0600,
             target.operator_seed().secret().as_bytes(),
         )?;
         write_durable_file(
             target.state_dir(),
             &nats_file_name(&target.material().join_seed_file()),
-            "ployz-nats-seed",
             FileMode::Secret0600,
             target.join_seed().secret().as_bytes(),
         )
@@ -430,21 +420,18 @@ fn commit_join_material_files(
     join_material_write(
         directory,
         JOIN_MATERIAL_FILE,
-        "ployz-join",
         FileMode::Plain,
         &render_redacted_join_material(&material.redacted()),
     )?;
     join_material_write(
         directory,
         JOIN_TRUSTED_CA_FILE,
-        "ployz-join-ca",
         FileMode::Plain,
         material.trusted_ca_pem().as_str().as_bytes(),
     )?;
     join_material_write(
         directory,
         JOIN_NATS_CREDENTIALS_FILE,
-        "ployz-join-secret",
         FileMode::Secret0600,
         material.nats_credentials().secret().as_bytes(),
     )
@@ -453,11 +440,10 @@ fn commit_join_material_files(
 fn join_material_write(
     directory: &Path,
     file_name: &str,
-    staged_tag: &str,
     mode: FileMode,
     contents: &[u8],
 ) -> Result<(), KeeperStepEffectError> {
-    write_durable_file(directory, file_name, staged_tag, mode, contents).map_err(|message| {
+    write_durable_file(directory, file_name, mode, contents).map_err(|message| {
         KeeperStepEffectError::new(KeeperStepFailureReason::JoinMaterialStoreFailed, message)
     })
 }
@@ -566,13 +552,7 @@ fn write_unit_file(
             systemd_dir.display()
         ))
     })?;
-    write_durable_file(
-        systemd_dir,
-        unit_name,
-        "ployz-unit",
-        FileMode::Plain,
-        contents,
-    )
+    write_durable_file(systemd_dir, unit_name, FileMode::Plain, contents)
 }
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {

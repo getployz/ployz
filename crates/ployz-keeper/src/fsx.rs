@@ -138,7 +138,6 @@ impl Drop for StagedFile {
 pub fn write_durable_file(
     directory: &Path,
     file_name: &str,
-    _staged_tag: &str,
     mode: FileMode,
     contents: &[u8],
 ) -> Result<(), FailureMessage> {
@@ -323,14 +322,8 @@ mod tests {
     fn secret_durable_file_is_written_0600() {
         let directory = tempfile::tempdir().expect("temp dir");
 
-        write_durable_file(
-            directory.path(),
-            "seed",
-            "test",
-            FileMode::Secret0600,
-            b"secret",
-        )
-        .expect("secret writes");
+        write_durable_file(directory.path(), "seed", FileMode::Secret0600, b"secret")
+            .expect("secret writes");
 
         let mode = std::fs::metadata(directory.path().join("seed"))
             .expect("secret metadata")

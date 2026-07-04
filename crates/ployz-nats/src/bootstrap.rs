@@ -17,12 +17,6 @@ pub const MIN_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion {
     patch: 0,
 };
 
-pub const RECOMMENDED_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion {
-    major: 2,
-    minor: 14,
-    patch: 2,
-};
-
 pub const SINGLE_CORE_REPLICAS: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

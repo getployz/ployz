@@ -235,17 +235,12 @@ fn write_cloud_attempt_state(
         serde_json::to_vec_pretty(state).map_err(|error| CloudAttemptStateError::Serialize {
             message: error.to_string(),
         })?;
-    write_durable_file(
-        state_dir,
-        CLOUD_ATTEMPT_FILE,
-        "cloud-attempt",
-        FileMode::Secret0600,
-        &bytes,
-    )
-    .map_err(|message| CloudAttemptStateError::Write {
-        path,
-        message: message.as_str().to_owned(),
-    })?;
+    write_durable_file(state_dir, CLOUD_ATTEMPT_FILE, FileMode::Secret0600, &bytes).map_err(
+        |message| CloudAttemptStateError::Write {
+            path,
+            message: message.as_str().to_owned(),
+        },
+    )?;
     Ok(())
 }
 

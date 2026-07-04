@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 atomic-write-file.workspace = true
-async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
 clap.workspace = true
 gethostname = "1"
 ployz-core.workspace = true
