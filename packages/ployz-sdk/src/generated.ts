@@ -420,9 +420,7 @@ export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: 
 
 export type MachineUpdateRequest = { operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, };
 
-export type MachineDrainRequest = { operation_id: OperationId, machine_id: MachineId, };
-
-export type MachineResumeRequest = { operation_id: OperationId, machine_id: MachineId, };
+export type MachineLifecycleRequest = { operation_id: OperationId, machine_id: MachineId, };
 
 export type MachineLifecycleError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
@@ -473,8 +471,8 @@ export const OPERATION_API_CONTRACTS = [
   { name: "init.first_machine.activate", subject: "plz.v1.svc.api.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "machine.update", subject: "plz.v1.svc.api.machine.update", execution: "accepts_operation", request: "MachineUpdateRequest", success: "AcceptedOperation", error: "MachineUpdateError", response: "MachineUpdateResponse" },
-  { name: "machine.drain", subject: "plz.v1.svc.api.machine.drain", execution: "accepts_operation", request: "MachineDrainRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineDrainResponse" },
-  { name: "machine.resume", subject: "plz.v1.svc.api.machine.resume", execution: "accepts_operation", request: "MachineResumeRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
+  { name: "machine.drain", subject: "plz.v1.svc.api.machine.drain", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineDrainResponse" },
+  { name: "machine.resume", subject: "plz.v1.svc.api.machine.resume", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
   { name: "machine.list", subject: "plz.v1.svc.api.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
   { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
   { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
@@ -495,8 +493,8 @@ export type OperationApiRequestByEndpoint = {
   "init.first_machine.activate": InitFirstMachineActivateRequest;
   "machine.add": MachineAddRequest;
   "machine.update": MachineUpdateRequest;
-  "machine.drain": MachineDrainRequest;
-  "machine.resume": MachineResumeRequest;
+  "machine.drain": MachineLifecycleRequest;
+  "machine.resume": MachineLifecycleRequest;
   "machine.list": MachineListRequest;
   "machine.inspect": MachineInspectRequest;
   "machine.join.redeem": MachineJoinRedeemRequest;

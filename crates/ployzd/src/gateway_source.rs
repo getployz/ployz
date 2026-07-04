@@ -1,8 +1,8 @@
 //! Gateway projection source adapters.
 
 use crate::gateway::{
-    GatewayMachineObservation, GatewayProjectionError, GatewayProjectionInput,
-    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
+    GatewayServingEntry,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::{
@@ -155,9 +155,7 @@ fn gateway_projection_input_from_state(
             .collect(),
         observed_machines: observed_machines
             .into_iter()
-            .map(|record| GatewayMachineObservation {
-                snapshot: record.snapshot,
-            })
+            .map(|record| record.snapshot)
             .collect(),
     }
 }

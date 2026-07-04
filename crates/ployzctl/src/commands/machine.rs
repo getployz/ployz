@@ -8,7 +8,7 @@ use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoin
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::GatewayServingStatus;
+use ployz_core::state::{GatewayServingStatus, MachineLifecycle};
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineInspectRequest,
     MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateRequest,
@@ -336,11 +336,11 @@ impl MachineAddOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineUpdateOutput {
+pub struct AcceptedOperationOutput {
     pub accepted: AcceptedOperation,
 }
 
-impl MachineUpdateOutput {
+impl AcceptedOperationOutput {
     #[must_use]
     pub const fn from_accepted(accepted: AcceptedOperation) -> Self {
         Self { accepted }
@@ -692,66 +692,34 @@ impl MachineUpdateCommand {
     }
 }
 
+/// One command for both lifecycle verbs: `target` selects drain or resume,
+/// everything else — request shape, watch flow, rendering — is identical.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineDrainCommand {
+pub struct MachineLifecycleCommand {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
+    pub target: MachineLifecycle,
     pub detach: bool,
 }
 
-impl MachineDrainCommand {
+impl MachineLifecycleCommand {
     #[must_use]
-    pub fn into_request(self) -> ployz_sdk_types::MachineDrainRequest {
-        ployz_sdk_types::MachineDrainRequest {
+    pub fn into_request(self) -> ployz_sdk_types::MachineLifecycleRequest {
+        ployz_sdk_types::MachineLifecycleRequest {
             operation_id: self.operation_id,
             machine_id: self.machine_id,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineResumeCommand {
-    pub operation_id: OperationId,
-    pub machine_id: MachineId,
-    pub detach: bool,
-}
-
-impl MachineResumeCommand {
-    #[must_use]
-    pub fn into_request(self) -> ployz_sdk_types::MachineResumeRequest {
-        ployz_sdk_types::MachineResumeRequest {
-            operation_id: self.operation_id,
-            machine_id: self.machine_id,
-        }
-    }
-}
-
-pub(crate) fn machine_drain_command(
+pub(crate) fn machine_lifecycle_command(
+    target: MachineLifecycle,
     parsed: MachineLifecycleCli,
-) -> Result<MachineDrainCommand, PloyzctlCliError> {
-    let (operation_id, machine_id, detach) = machine_lifecycle_parts("drain", parsed)?;
-    Ok(MachineDrainCommand {
-        operation_id,
-        machine_id,
-        detach,
-    })
-}
-
-pub(crate) fn machine_resume_command(
-    parsed: MachineLifecycleCli,
-) -> Result<MachineResumeCommand, PloyzctlCliError> {
-    let (operation_id, machine_id, detach) = machine_lifecycle_parts("resume", parsed)?;
-    Ok(MachineResumeCommand {
-        operation_id,
-        machine_id,
-        detach,
-    })
-}
-
-fn machine_lifecycle_parts(
-    action: &'static str,
-    parsed: MachineLifecycleCli,
-) -> Result<(OperationId, MachineId, bool), PloyzctlCliError> {
+) -> Result<MachineLifecycleCommand, PloyzctlCliError> {
+    let action = match target {
+        MachineLifecycle::Draining => "drain",
+        MachineLifecycle::Active => "resume",
+    };
     let machine_id = MachineId::try_new(parsed.machine_id)
         .map_err(|error| invalid_value("<machine_id>", error))?;
     let operation_id = crate::client_ids::generate_client_machine_lifecycle_id(action, &machine_id)
@@ -760,7 +728,12 @@ fn machine_lifecycle_parts(
             message: error.to_string(),
         })?
         .operation_id;
-    Ok((operation_id, machine_id, parsed.detach))
+    Ok(MachineLifecycleCommand {
+        operation_id,
+        machine_id,
+        target,
+        detach: parsed.detach,
+    })
 }
 
 impl MachineInspectCommand {

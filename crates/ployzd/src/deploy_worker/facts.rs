@@ -4,7 +4,7 @@ use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::machine_usability::placement_rejection;
+use ployz_core::state::placement_rejection;
 use ployz_core::ops::UnusableMachine;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;

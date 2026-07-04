@@ -85,8 +85,12 @@ impl MachineLifecycleOperationRuntime {
                 return;
             }
             Err(error) => {
-                self.record_state_commit_failed(&operation_id, &machine_id, &error.to_string())
-                    .await;
+                self.record_state_commit_failed(
+                    &operation_id,
+                    &machine_id,
+                    &format!("failed to read machine record for lifecycle commit: {error}"),
+                )
+                .await;
                 return;
             }
         };
@@ -123,8 +127,12 @@ impl MachineLifecycleOperationRuntime {
                     );
                 }
             }
-            self.record_state_commit_failed(&operation_id, &machine_id, &error.to_string())
-                .await;
+            self.record_state_commit_failed(
+                &operation_id,
+                &machine_id,
+                &format!("failed to commit machine lifecycle: {error}"),
+            )
+            .await;
             return;
         }
 
@@ -147,10 +155,8 @@ impl MachineLifecycleOperationRuntime {
             machine_id,
             MachineLifecycleTransition::Failed {
                 failure: MachineLifecycleFailure::StateCommitFailed {
-                    message: FailureMessage::try_new(format!(
-                        "failed to commit machine lifecycle: {message}"
-                    ))
-                    .expect("state commit failure message is non-empty"),
+                    message: FailureMessage::try_new(message.to_owned())
+                        .expect("state commit failure message is non-empty"),
                 },
             },
         )

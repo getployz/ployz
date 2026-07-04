@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 
 const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
-    ployz_core::machine_usability::OBSERVATION_PUBLISH_INTERVAL;
+    ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RunningMachineProcessRuntime {

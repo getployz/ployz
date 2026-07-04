@@ -55,7 +55,7 @@ pub fn prepare_deploy_execution_command(
         .unusable_machines
         .iter()
         .filter(|unusable| match unusable.reason {
-            ployz_core::machine_usability::MachineUsabilityReason::Draining => true,
+            ployz_core::state::MachineUsabilityReason::Draining => true,
         })
         .map(|unusable| unusable.machine_id.clone())
         .collect::<Vec<_>>();
