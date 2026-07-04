@@ -8,7 +8,9 @@ use crate::ids::{MachineId, OperationId};
 use crate::state::MachineLifecycle;
 
 use super::events::{OperationEvent, OperationSubjectRef};
-use super::projection::{OperationProjection, ProjectionOperationState, StatusProjectionError};
+use super::projection::{
+    OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
+};
 use super::text::{CancellationReason, FailureMessage};
 use super::{EventSequence, OperationStatus};
 
@@ -79,87 +81,104 @@ impl MachineLifecycleTransition {
 }
 
 /// Machine-lifecycle events after classification from the flat
-/// [`OperationEvent`] stream shape.
+/// [`OperationEvent`] stream shape. Subject-bearing variants carry the
+/// machine id the event claims, verified against the status record; a
+/// cancel names no subject.
 pub(super) enum MachineLifecycleEvent {
-    Submitted,
-    Transition(MachineLifecycleTransition),
-}
-
-/// The destructured fields of [`OperationStatus::MachineLifecycle`].
-#[derive(Clone, Copy)]
-pub(super) struct MachineLifecycleFields<'status> {
-    pub(super) id: &'status OperationId,
-    pub(super) machine_id: &'status MachineId,
-    pub(super) target: MachineLifecycle,
-    pub(super) state: &'status MachineLifecycleOperationState,
-}
-
-impl MachineLifecycleFields<'_> {
-    fn status_with(
-        &self,
-        state: MachineLifecycleOperationState,
-        event_sequence: EventSequence,
-    ) -> OperationStatus {
-        OperationStatus::MachineLifecycle {
-            id: self.id.clone(),
-            machine_id: self.machine_id.clone(),
-            target: self.target,
-            state,
-            last_event_sequence: event_sequence,
-        }
-    }
+    Submitted {
+        machine_id: MachineId,
+    },
+    Transition {
+        machine_id: MachineId,
+        transition: MachineLifecycleTransition,
+    },
+    Cancelled(CancellationReason),
 }
 
 pub(super) fn project_event(
-    fields: MachineLifecycleFields<'_>,
-    subject: OperationSubjectRef,
+    id: &OperationId,
+    machine_id: &MachineId,
+    target: MachineLifecycle,
+    state: &MachineLifecycleOperationState,
     event: MachineLifecycleEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if subject != OperationSubjectRef::MachineLifecycle(fields.machine_id.clone()) {
-        return Err(StatusProjectionError::OperationSubjectMismatch {
-            operation_id: fields.id.clone(),
-            expected: OperationSubjectRef::MachineLifecycle(fields.machine_id.clone()),
-            actual: subject,
-        });
-    }
     match event {
-        MachineLifecycleEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
-        MachineLifecycleEvent::Transition(transition) => {
-            project_state(fields, transition.state(), event_sequence)
+        MachineLifecycleEvent::Submitted {
+            machine_id: event_machine_id,
+        } => {
+            verify_subject(
+                id,
+                machine_id,
+                &event_machine_id,
+                OperationSubjectRef::MachineLifecycle,
+            )?;
+            Ok(OperationProjection::AlreadySatisfied)
         }
+        MachineLifecycleEvent::Transition {
+            machine_id: event_machine_id,
+            transition,
+        } => {
+            verify_subject(
+                id,
+                machine_id,
+                &event_machine_id,
+                OperationSubjectRef::MachineLifecycle,
+            )?;
+            project_state(
+                id,
+                machine_id,
+                target,
+                state,
+                transition.state(),
+                event_sequence,
+            )
+        }
+        MachineLifecycleEvent::Cancelled(reason) => project_state(
+            id,
+            machine_id,
+            target,
+            state,
+            MachineLifecycleOperationState::Cancelled { reason },
+            event_sequence,
+        ),
     }
 }
 
 pub(super) fn project_state(
-    fields: MachineLifecycleFields<'_>,
+    id: &OperationId,
+    machine_id: &MachineId,
+    target: MachineLifecycle,
+    state: &MachineLifecycleOperationState,
     attempted: MachineLifecycleOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if fields.state == &attempted {
+    if state == &attempted {
         return Ok(OperationProjection::AlreadySatisfied);
     }
-    if fields.state.is_terminal() {
+    if state.is_terminal() {
         return Err(StatusProjectionError::TerminalState {
-            operation_id: fields.id.clone(),
-            current: Box::new(ProjectionOperationState::MachineLifecycle(
-                fields.state.clone(),
-            )),
+            operation_id: id.clone(),
+            current: Box::new(ProjectionOperationState::MachineLifecycle(state.clone())),
             attempted: Box::new(ProjectionOperationState::MachineLifecycle(attempted)),
         });
     }
-    if !transition_allowed(fields.state, &attempted) {
+    if !transition_allowed(state, &attempted) {
         return Err(StatusProjectionError::InvalidTransition {
-            operation_id: fields.id.clone(),
-            current: Box::new(ProjectionOperationState::MachineLifecycle(
-                fields.state.clone(),
-            )),
+            operation_id: id.clone(),
+            current: Box::new(ProjectionOperationState::MachineLifecycle(state.clone())),
             attempted: Box::new(ProjectionOperationState::MachineLifecycle(attempted)),
         });
     }
 
     Ok(OperationProjection::StatusChanged {
-        status: Box::new(fields.status_with(attempted, event_sequence)),
+        status: Box::new(OperationStatus::MachineLifecycle {
+            id: id.clone(),
+            machine_id: machine_id.clone(),
+            target,
+            state: attempted,
+            last_event_sequence: event_sequence,
+        }),
     })
 }
 

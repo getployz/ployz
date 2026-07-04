@@ -378,7 +378,7 @@ pub fn validate_fresh_deploy_evidence(
         operation_id: id.clone(),
         current: Box::new(ProjectionOperationState::Deploy(state.clone())),
         attempted: Box::new(ProjectionOperationState::Deploy(
-            deploy_evidence_required_state(evidence),
+            evidence_required_state(evidence),
         )),
     })
 }
@@ -391,7 +391,7 @@ fn evidence_is_current_or_past_running_stage(
         return false;
     };
 
-    deploy_stage_rank(*stage) >= deploy_stage_rank(evidence_stage)
+    stage_rank(*stage) >= stage_rank(evidence_stage)
 }
 
 fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
@@ -404,7 +404,7 @@ fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
     )
 }
 
-fn deploy_evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
+fn evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence_requirement(evidence) {
         EvidenceRequirement::Planning => DeployOperationState::Planning,
         EvidenceRequirement::RunningStage(stage) => DeployOperationState::Running { stage },
@@ -429,7 +429,7 @@ pub fn project_deploy_transition(
         return Err(kind_mismatch(current, OperationKind::Deploy));
     };
 
-    project_deploy_state(
+    project_state(
         id,
         service_id,
         current_state,
@@ -438,18 +438,18 @@ pub fn project_deploy_transition(
     )
 }
 
-pub(super) fn project_deploy_state(
+pub(super) fn project_state(
     id: &OperationId,
     service_id: &ServiceId,
     current_state: &DeployOperationState,
     attempted: DeployOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if deploy_transition_satisfied(current_state, &attempted) {
+    if transition_satisfied(current_state, &attempted) {
         return Ok(OperationProjection::AlreadySatisfied);
     }
 
-    validate_deploy_transition(id, current_state, &attempted)?;
+    validate_transition(id, current_state, &attempted)?;
 
     Ok(OperationProjection::StatusChanged {
         status: Box::new(OperationStatus::Deploy {
@@ -461,7 +461,7 @@ pub(super) fn project_deploy_state(
     })
 }
 
-pub(super) fn project_deploy_event(
+pub(super) fn project_event(
     id: &OperationId,
     service_id: &ServiceId,
     state: &DeployOperationState,
@@ -470,34 +470,23 @@ pub(super) fn project_deploy_event(
 ) -> Result<OperationProjection, StatusProjectionError> {
     match event {
         DeployEvent::Evidence(evidence) => {
-            let requirement = evidence_requirement(&evidence);
-            let fresh = match requirement {
-                EvidenceRequirement::Planning => {
-                    matches!(state, DeployOperationState::Planning)
-                }
-                EvidenceRequirement::RunningStage(required) => matches!(
-                    state,
-                    DeployOperationState::Running { stage } if *stage == required
-                ),
-                EvidenceRequirement::Cleanup => cleanup_evidence_is_valid(state),
-            };
-            if fresh {
-                return Ok(OperationProjection::StatusChanged {
-                    status: Box::new(evidence_status(id, service_id, state, event_sequence)),
-                });
-            }
-
-            let satisfied = match requirement {
+            // Evidence records (advancing the status cursor without changing
+            // state) once the operation has reached the phase that produces
+            // it — including late arrivals after later stages or completion.
+            // Evidence from a phase not yet reached is a stale duplicate and
+            // is already satisfied.
+            let records = match evidence_requirement(&evidence) {
                 EvidenceRequirement::Planning => !matches!(state, DeployOperationState::Accepted),
                 EvidenceRequirement::RunningStage(required) => {
-                    evidence_is_satisfied_after_stage(state, required)
+                    evidence_is_current_or_past_running_stage(state, required)
+                        || matches!(state, DeployOperationState::Completed { .. })
                 }
-                EvidenceRequirement::Cleanup => evidence_is_satisfied_after_stage(
-                    state,
-                    DeployRunningStage::RemovingSupersededContainers,
-                ),
+                EvidenceRequirement::Cleanup => {
+                    cleanup_evidence_is_valid(state)
+                        || matches!(state, DeployOperationState::Completed { .. })
+                }
             };
-            if !satisfied {
+            if !records {
                 return Ok(OperationProjection::AlreadySatisfied);
             }
 
@@ -506,25 +495,9 @@ pub(super) fn project_deploy_event(
             })
         }
         DeployEvent::Transition(transition) => {
-            project_deploy_state(id, service_id, state, transition.state(), event_sequence)
+            project_state(id, service_id, state, transition.state(), event_sequence)
         }
         DeployEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
-    }
-}
-
-fn evidence_is_satisfied_after_stage(
-    state: &DeployOperationState,
-    evidence_stage: DeployRunningStage,
-) -> bool {
-    match state {
-        DeployOperationState::Running { stage } => {
-            deploy_stage_rank(*stage) > deploy_stage_rank(evidence_stage)
-        }
-        DeployOperationState::Completed { .. } => true,
-        DeployOperationState::Accepted
-        | DeployOperationState::Planning
-        | DeployOperationState::Failed { .. }
-        | DeployOperationState::Cancelled { .. } => false,
     }
 }
 
@@ -542,7 +515,7 @@ fn evidence_status(
     }
 }
 
-fn deploy_transition_satisfied(
+fn transition_satisfied(
     current: &DeployOperationState,
     attempted: &DeployOperationState,
 ) -> bool {
@@ -551,8 +524,8 @@ fn deploy_transition_satisfied(
         DeployOperationState::Planning => !matches!(current, DeployOperationState::Accepted),
         DeployOperationState::Running { stage: attempted } => match current {
             DeployOperationState::Running { stage: current } => {
-                let current_rank = deploy_stage_rank(*current);
-                let attempted_rank = deploy_stage_rank(*attempted);
+                let current_rank = stage_rank(*current);
+                let attempted_rank = stage_rank(*attempted);
                 current_rank > attempted_rank
                     || current_rank == attempted_rank && current == attempted
             }
@@ -574,7 +547,7 @@ fn deploy_transition_satisfied(
     }
 }
 
-pub fn validate_deploy_transition(
+fn validate_transition(
     operation_id: &OperationId,
     current: &DeployOperationState,
     attempted: &DeployOperationState,
@@ -587,7 +560,7 @@ pub fn validate_deploy_transition(
         });
     }
 
-    if deploy_transition_allowed(current, attempted) {
+    if transition_allowed(current, attempted) {
         return Ok(());
     }
 
@@ -598,7 +571,7 @@ pub fn validate_deploy_transition(
     })
 }
 
-fn deploy_transition_allowed(
+fn transition_allowed(
     current: &DeployOperationState,
     attempted: &DeployOperationState,
 ) -> bool {
@@ -631,7 +604,7 @@ fn deploy_transition_allowed(
         (
             DeployOperationState::Running { stage: current },
             DeployOperationState::Running { stage: attempted },
-        ) => deploy_stage_is_next(*current, *attempted),
+        ) => stage_is_next(*current, *attempted),
         (DeployOperationState::Accepted, _)
         | (DeployOperationState::Completed { .. }, _)
         | (DeployOperationState::Failed { .. }, _)
@@ -641,7 +614,7 @@ fn deploy_transition_allowed(
     }
 }
 
-fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
+fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::PreparingDataplane => 0,
         DeployRunningStage::StartingContainers => 1,
@@ -652,7 +625,7 @@ fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
     }
 }
 
-fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> bool {
+fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> bool {
     matches!(
         (current, attempted),
         (

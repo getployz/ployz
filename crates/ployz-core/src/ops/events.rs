@@ -363,27 +363,19 @@ pub(super) enum ClassifiedOperationEvent {
     },
     Cert {
         operation_id: OperationId,
-        subject: OperationSubjectRef,
         event: CertEvent,
     },
     MachineAdd {
         operation_id: OperationId,
-        subject: OperationSubjectRef,
         event: MachineAddEvent,
     },
     MachineUpdate {
         operation_id: OperationId,
-        subject: OperationSubjectRef,
         event: MachineUpdateEvent,
     },
     MachineLifecycle {
         operation_id: OperationId,
-        subject: OperationSubjectRef,
         event: MachineLifecycleEvent,
-    },
-    Cancelled {
-        operation_id: OperationId,
-        reason: CancellationReason,
     },
 }
 
@@ -394,8 +386,7 @@ impl ClassifiedOperationEvent {
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
-            | Self::MachineLifecycle { operation_id, .. }
-            | Self::Cancelled { operation_id, .. } => operation_id,
+            | Self::MachineLifecycle { operation_id, .. } => operation_id,
         }
     }
 }
@@ -480,8 +471,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::Cert {
                 operation_id,
-                subject: OperationSubjectRef::Cert(cert_id),
-                event: CertEvent::Submitted,
+                event: CertEvent::Submitted { cert_id },
             },
             OperationEvent::CertChallengePublished {
                 operation_id,
@@ -489,10 +479,12 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::Cert {
                 operation_id,
-                subject: OperationSubjectRef::Cert(cert_id),
-                event: CertEvent::Transition(CertTransition::Running {
-                    stage: CertRunningStage::ChallengePublished,
-                }),
+                event: CertEvent::Transition {
+                    cert_id,
+                    transition: CertTransition::Running {
+                        stage: CertRunningStage::ChallengePublished,
+                    },
+                },
             },
             OperationEvent::CertValidationStarted {
                 operation_id,
@@ -500,10 +492,12 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::Cert {
                 operation_id,
-                subject: OperationSubjectRef::Cert(cert_id),
-                event: CertEvent::Transition(CertTransition::Running {
-                    stage: CertRunningStage::ValidationStarted,
-                }),
+                event: CertEvent::Transition {
+                    cert_id,
+                    transition: CertTransition::Running {
+                        stage: CertRunningStage::ValidationStarted,
+                    },
+                },
             },
             OperationEvent::CertCompleted {
                 operation_id,
@@ -511,8 +505,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::Cert {
                 operation_id,
-                subject: OperationSubjectRef::Cert(active_cert.cert_id.clone()),
-                event: CertEvent::Transition(CertTransition::Completed),
+                event: CertEvent::Transition {
+                    cert_id: active_cert.cert_id.clone(),
+                    transition: CertTransition::Completed,
+                },
             },
             OperationEvent::CertFailed {
                 operation_id,
@@ -520,8 +516,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::Cert {
                 operation_id,
-                subject: OperationSubjectRef::Cert(failure.cert_id().clone()),
-                event: CertEvent::Transition(CertTransition::Failed { failure }),
+                event: CertEvent::Transition {
+                    cert_id: failure.cert_id().clone(),
+                    transition: CertTransition::Failed { failure },
+                },
             },
             OperationEvent::MachineAddSubmitted {
                 operation_id,
@@ -529,8 +527,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(machine_id),
-                event: MachineAddEvent::Submitted,
+                event: MachineAddEvent::Submitted { machine_id },
             },
             OperationEvent::MachineAddJoined {
                 operation_id,
@@ -539,8 +536,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(machine_id),
-                event: MachineAddEvent::Transition(MachineAddOperationState::Joining { joined_at }),
+                event: MachineAddEvent::Transition {
+                    machine_id,
+                    state: MachineAddOperationState::Joining { joined_at },
+                },
             },
             OperationEvent::MachineAddCredentialProvisioned {
                 operation_id,
@@ -548,8 +547,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(machine_id),
-                event: MachineAddEvent::CredentialProvisioned,
+                event: MachineAddEvent::CredentialProvisioned { machine_id },
             },
             OperationEvent::MachineAddCompleted {
                 operation_id,
@@ -557,8 +555,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(machine_id),
-                event: MachineAddEvent::Transition(MachineAddOperationState::Completed),
+                event: MachineAddEvent::Transition {
+                    machine_id,
+                    state: MachineAddOperationState::Completed,
+                },
             },
             OperationEvent::MachineAddFailed {
                 operation_id,
@@ -567,8 +567,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(machine_id),
-                event: MachineAddEvent::Transition(MachineAddOperationState::Failed { failure }),
+                event: MachineAddEvent::Transition {
+                    machine_id,
+                    state: MachineAddOperationState::Failed { failure },
+                },
             },
             OperationEvent::MachineUpdateSubmitted {
                 operation_id,
@@ -576,16 +578,17 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineUpdate {
                 operation_id,
-                subject: OperationSubjectRef::MachineUpdate(machine_id),
-                event: MachineUpdateEvent::Submitted,
+                event: MachineUpdateEvent::Submitted { machine_id },
             },
             OperationEvent::MachineUpdateRunning {
                 operation_id,
                 machine_id,
             } => Self::MachineUpdate {
                 operation_id,
-                subject: OperationSubjectRef::MachineUpdate(machine_id),
-                event: MachineUpdateEvent::Transition(MachineUpdateTransition::Running),
+                event: MachineUpdateEvent::Transition {
+                    machine_id,
+                    transition: MachineUpdateTransition::Running,
+                },
             },
             OperationEvent::MachineUpdateCompleted {
                 operation_id,
@@ -593,10 +596,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 reported,
             } => Self::MachineUpdate {
                 operation_id,
-                subject: OperationSubjectRef::MachineUpdate(machine_id),
-                event: MachineUpdateEvent::Transition(MachineUpdateTransition::Completed {
-                    reported,
-                }),
+                event: MachineUpdateEvent::Transition {
+                    machine_id,
+                    transition: MachineUpdateTransition::Completed { reported },
+                },
             },
             OperationEvent::MachineUpdateFailed {
                 operation_id,
@@ -604,8 +607,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 failure,
             } => Self::MachineUpdate {
                 operation_id,
-                subject: OperationSubjectRef::MachineUpdate(machine_id),
-                event: MachineUpdateEvent::Transition(MachineUpdateTransition::Failed { failure }),
+                event: MachineUpdateEvent::Transition {
+                    machine_id,
+                    transition: MachineUpdateTransition::Failed { failure },
+                },
             },
             OperationEvent::MachineLifecycleSubmitted {
                 operation_id,
@@ -613,16 +618,17 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 ..
             } => Self::MachineLifecycle {
                 operation_id,
-                subject: OperationSubjectRef::MachineLifecycle(machine_id),
-                event: MachineLifecycleEvent::Submitted,
+                event: MachineLifecycleEvent::Submitted { machine_id },
             },
             OperationEvent::MachineLifecycleCompleted {
                 operation_id,
                 machine_id,
             } => Self::MachineLifecycle {
                 operation_id,
-                subject: OperationSubjectRef::MachineLifecycle(machine_id),
-                event: MachineLifecycleEvent::Transition(MachineLifecycleTransition::Completed),
+                event: MachineLifecycleEvent::Transition {
+                    machine_id,
+                    transition: MachineLifecycleTransition::Completed,
+                },
             },
             OperationEvent::MachineLifecycleFailed {
                 operation_id,
@@ -630,18 +636,39 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 failure,
             } => Self::MachineLifecycle {
                 operation_id,
-                subject: OperationSubjectRef::MachineLifecycle(machine_id),
-                event: MachineLifecycleEvent::Transition(MachineLifecycleTransition::Failed {
-                    failure,
-                }),
+                event: MachineLifecycleEvent::Transition {
+                    machine_id,
+                    transition: MachineLifecycleTransition::Failed { failure },
+                },
             },
+            // A cancel classifies by the kind it claims, so a cancel whose
+            // kind disagrees with the status record surfaces as a kind
+            // mismatch in projection instead of silently cancelling.
             OperationEvent::Cancelled {
                 operation_id,
+                kind,
                 reason,
-                ..
-            } => Self::Cancelled {
-                operation_id,
-                reason,
+            } => match kind {
+                OperationKind::Deploy => Self::Deploy {
+                    operation_id,
+                    event: DeployEvent::Transition(DeployTransition::Cancelled { reason }),
+                },
+                OperationKind::Cert => Self::Cert {
+                    operation_id,
+                    event: CertEvent::Cancelled(reason),
+                },
+                OperationKind::MachineAdd => Self::MachineAdd {
+                    operation_id,
+                    event: MachineAddEvent::Cancelled(reason),
+                },
+                OperationKind::MachineUpdate => Self::MachineUpdate {
+                    operation_id,
+                    event: MachineUpdateEvent::Cancelled(reason),
+                },
+                OperationKind::MachineLifecycle => Self::MachineLifecycle {
+                    operation_id,
+                    event: MachineLifecycleEvent::Cancelled(reason),
+                },
             },
         }
     }
