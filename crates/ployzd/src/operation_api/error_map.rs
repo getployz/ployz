@@ -1,37 +1,37 @@
-//! Mapping from repository/controller failures to the client-visible
-//! operation API error types. Pure functions; no I/O.
+//! Mapping from repository/controller failures to client-visible operation API
+//! errors. Actionable states stay typed; storage and transport plumbing renders
+//! as evidence text.
 
-use crate::controllers::{
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommandError, SubmitCommandError,
-};
+use crate::controllers::{MachineAddSubmitCommandError, SubmitCommandError};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
-use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{
-    OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
-    OperationStatusStoreError, RecordMachineAddEventError, RecordMachineJoinReportError,
+    RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
 };
 use ployz_sdk_types::{
-    BootstrapMaterialFailure, DeploySubmitError, EventReplayFailure, MachineAddError,
-    MachineAddUnavailableSource, MachineJoinRedeemError, MachineJoinRedeemUnavailableSource,
-    MachineJoinReportError, MachineJoinReportUnavailableSource, OperationSubmitClockFailure,
-    OperationSubmitEventFailure, OperationSubmitStatusFailure, OperationSubmitUnavailableSource,
-    OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
+    DeploySubmitError, MachineAddError, MachineJoinRedeemError, MachineJoinReportError,
+    OpsWatchError,
 };
 
-/// The endpoint-independent core of a submit command failure: either an
-/// unavailable source or the duplicate-sequence collision.
+/// The one definition of the corrupt-record evidence prefix, so the
+/// sentinel stays greppable and consistent across the operation API.
+pub(super) fn corrupt(detail: impl std::fmt::Display) -> String {
+    format!("operation record corrupt: {detail}")
+}
+
 pub(super) enum SubmitFailure {
     InvalidDeployTarget,
     ResourceBusy {
         namespace_id: ployz_core::ids::NamespaceId,
         owner: OperationId,
     },
-    Unavailable(OperationSubmitUnavailableSource),
+    Unavailable {
+        message: String,
+    },
     DuplicateSequenceMismatch {
         sequence: EventSequence,
     },
@@ -39,11 +39,9 @@ pub(super) enum SubmitFailure {
 
 pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     match error {
-        SubmitCommandError::Clock { .. } => {
-            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
-                failure: OperationSubmitStatusFailure::Timeout,
-            })
-        }
+        SubmitCommandError::Clock { message } => SubmitFailure::Unavailable {
+            message: format!("clock: {message}"),
+        },
         SubmitCommandError::NamespaceBusy {
             namespace_id,
             owner,
@@ -51,23 +49,21 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
             namespace_id,
             owner,
         },
-        SubmitCommandError::NamespaceLock(source) => {
-            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
-                failure: operation_submit_core_state_failure(&source),
-            })
-        }
+        SubmitCommandError::NamespaceLock(source) => SubmitFailure::Unavailable {
+            message: source.to_string(),
+        },
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget
         }
         SubmitCommandError::Submit(SubmitOperationError::AppendEvent(source)) => {
-            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::EventLog {
-                failure: operation_submit_event_failure(&source),
-            })
+            SubmitFailure::Unavailable {
+                message: source.to_string(),
+            }
         }
         SubmitCommandError::Submit(SubmitOperationError::StoreStatus(source)) => {
-            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
-                failure: operation_submit_status_failure(&source),
-            })
+            SubmitFailure::Unavailable {
+                message: source.to_string(),
+            }
         }
         SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             sequence,
@@ -93,9 +89,9 @@ pub(super) fn deploy_submit_error_from_submit_error(
             namespace_id,
             owner_operation_id: owner,
         },
-        SubmitFailure::Unavailable(source) => DeploySubmitError::Unavailable {
+        SubmitFailure::Unavailable { message } => DeploySubmitError::Unavailable {
             operation_id,
-            source,
+            message,
         },
         SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             DeploySubmitError::DuplicateSequenceMismatch {
@@ -114,9 +110,7 @@ pub(super) fn machine_add_error_from_submit_error(
         MachineAddSubmitCommandError::JoinTokenMismatch => {
             return MachineAddError::Unavailable {
                 operation_id,
-                source: MachineAddUnavailableSource::BootstrapMaterial {
-                    failure: BootstrapMaterialFailure::IssueJoinToken,
-                },
+                message: "machine-add join token mismatch".to_owned(),
             };
         }
         MachineAddSubmitCommandError::DuplicateIdempotencyKey => {
@@ -131,9 +125,9 @@ pub(super) fn machine_add_error_from_submit_error(
         SubmitFailure::ResourceBusy { .. } => {
             unreachable!("machine add submit has no namespace lock")
         }
-        SubmitFailure::Unavailable(source) => MachineAddError::Unavailable {
+        SubmitFailure::Unavailable { message } => MachineAddError::Unavailable {
             operation_id,
-            source: source.into(),
+            message,
         },
         SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             MachineAddError::DuplicateSequenceMismatch {
@@ -144,23 +138,6 @@ pub(super) fn machine_add_error_from_submit_error(
     }
 }
 
-pub(super) fn bootstrap_material_failure(
-    error: MachineAddBootstrapMaterialError,
-) -> BootstrapMaterialFailure {
-    match error {
-        MachineAddBootstrapMaterialError::Clock { .. }
-        | MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial => {
-            BootstrapMaterialFailure::IssueJoinToken
-        }
-        MachineAddBootstrapMaterialError::MissingJoinTemplate => {
-            BootstrapMaterialFailure::MissingJoinTemplate
-        }
-    }
-}
-
-/// The (operation id, machine-add state) pair when recording a join
-/// report failed because the operation already sits in a conflicting
-/// machine-add state (invalid transition or terminal).
 fn machine_add_state_conflict(
     error: &RecordMachineJoinReportError,
 ) -> Option<(
@@ -202,26 +179,31 @@ pub(super) fn completed_machine_add_operation_id(
 pub(super) fn machine_join_report_error(
     error: RecordMachineJoinReportError,
 ) -> MachineJoinReportError {
-    match &error {
-        RecordMachineJoinReportError::InvalidJoinToken => {
-            return MachineJoinReportError::InvalidJoinToken;
-        }
-        RecordMachineJoinReportError::UnknownJoinToken => {
-            return MachineJoinReportError::UnknownJoinToken;
-        }
-        RecordMachineJoinReportError::RecordMachineAddEvent(_)
-        | RecordMachineJoinReportError::StoreStatus(_)
-        | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {}
-    }
     if let Some((operation_id, current)) = machine_add_state_conflict(&error) {
         return MachineJoinReportError::OperationNotJoining {
             operation_id,
             current,
         };
     }
-
-    MachineJoinReportError::Unavailable {
-        source: record_machine_join_report_unavailable_source(&error),
+    match error {
+        RecordMachineJoinReportError::InvalidJoinToken => MachineJoinReportError::InvalidJoinToken,
+        RecordMachineJoinReportError::UnknownJoinToken => MachineJoinReportError::UnknownJoinToken,
+        RecordMachineJoinReportError::StoreStatus(source) => MachineJoinReportError::Unavailable {
+            message: source.to_string(),
+        },
+        RecordMachineJoinReportError::RecordMachineAddEvent(source) => {
+            MachineJoinReportError::Unavailable {
+                message: source.to_string(),
+            }
+        }
+        RecordMachineJoinReportError::JoinTokenMismatch { operation_id } => {
+            MachineJoinReportError::Unavailable {
+                message: corrupt(format_args!(
+                    "join token mismatch for {}",
+                    operation_id.as_str()
+                )),
+            }
+        }
     }
 }
 
@@ -229,49 +211,14 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
     error: RedeemMachineJoinTokenRepositoryError,
 ) -> MachineJoinRedeemError {
     match error {
-        RedeemMachineJoinTokenRepositoryError::Clock { .. } => {
-            MachineJoinRedeemError::Unavailable {
-                source: MachineJoinRedeemUnavailableSource::Clock {
-                    failure: OperationSubmitClockFailure::BeforeUnixEpoch,
-                },
-            }
-        }
         RedeemMachineJoinTokenRepositoryError::InvalidJoinToken => {
             MachineJoinRedeemError::InvalidJoinToken
         }
         RedeemMachineJoinTokenRepositoryError::UnknownJoinToken => {
             MachineJoinRedeemError::UnknownJoinToken
         }
-        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => {
-            MachineJoinRedeemError::Unavailable {
-                source: MachineJoinRedeemUnavailableSource::StatusRead {
-                    failure: status_read_failure(&source),
-                },
-            }
-        }
-        RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => {
-            MachineJoinRedeemError::Unavailable {
-                source: MachineJoinRedeemUnavailableSource::StatusWrite {
-                    failure: operation_submit_status_failure(&source),
-                },
-            }
-        }
-        RedeemMachineJoinTokenRepositoryError::RecordMachineAddEvent(source) => {
-            MachineJoinRedeemError::Unavailable {
-                source: record_machine_add_event_unavailable_source(&source),
-            }
-        }
-        // The mint worker has not stored the per-machine material yet:
-        // typed not-ready, the keeper retries boundedly.
         RedeemMachineJoinTokenRepositoryError::MissingSecretDelivery { operation_id } => {
             MachineJoinRedeemError::MaterialNotReady { operation_id }
-        }
-        RedeemMachineJoinTokenRepositoryError::MissingOperation { .. }
-        | RedeemMachineJoinTokenRepositoryError::WrongOperationKind { .. }
-        | RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { .. } => {
-            MachineJoinRedeemError::Unavailable {
-                source: MachineJoinRedeemUnavailableSource::OperationCorrupt,
-            }
         }
         RedeemMachineJoinTokenRepositoryError::OperationNotPending {
             operation_id,
@@ -287,146 +234,47 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
             operation_id,
             failure,
         },
-    }
-}
-
-fn operation_submit_status_failure(
-    error: &OperationStatusStoreError,
-) -> OperationSubmitStatusFailure {
-    match error {
-        OperationStatusStoreError::OpenBucket { .. } => OperationSubmitStatusFailure::OpenBucket,
-        OperationStatusStoreError::EncodeStatus(_) => OperationSubmitStatusFailure::EncodeStatus,
-        OperationStatusStoreError::DecodeStatus(_) => OperationSubmitStatusFailure::DecodeStatus,
-        OperationStatusStoreError::EncodeSubmission(_) => {
-            OperationSubmitStatusFailure::EncodeSubmission
-        }
-        OperationStatusStoreError::DecodeSubmission(_) => {
-            OperationSubmitStatusFailure::DecodeSubmission
-        }
-        OperationStatusStoreError::CasConflict { .. } => OperationSubmitStatusFailure::CasConflict,
-        OperationStatusStoreError::RecordExists { .. } => OperationSubmitStatusFailure::CasConflict,
-        OperationStatusStoreError::GetStatus { .. } => OperationSubmitStatusFailure::GetStatus,
-        OperationStatusStoreError::Timeout { .. } => OperationSubmitStatusFailure::Timeout,
-    }
-}
-
-fn operation_submit_core_state_failure(
-    error: &CoreStateStoreError,
-) -> OperationSubmitStatusFailure {
-    match error {
-        CoreStateStoreError::OpenBucket { .. } => OperationSubmitStatusFailure::OpenBucket,
-        CoreStateStoreError::Encode(_) => OperationSubmitStatusFailure::EncodeStatus,
-        CoreStateStoreError::Decode(_) | CoreStateStoreError::CorruptNamespaceLock { .. } => {
-            OperationSubmitStatusFailure::DecodeStatus
-        }
-        CoreStateStoreError::Put { .. }
-        | CoreStateStoreError::Get { .. }
-        | CoreStateStoreError::Delete { .. }
-        | CoreStateStoreError::ListKeys { .. }
-        | CoreStateStoreError::CorruptServingTargetEntry { .. }
-        | CoreStateStoreError::CorruptKey { .. } => OperationSubmitStatusFailure::GetStatus,
-        CoreStateStoreError::CasConflict { .. } => OperationSubmitStatusFailure::CasConflict,
-        CoreStateStoreError::Timeout { .. } => OperationSubmitStatusFailure::Timeout,
-    }
-}
-
-fn operation_submit_event_failure(error: &OperationEventLogError) -> OperationSubmitEventFailure {
-    match error {
-        OperationEventLogError::EncodeEvent(_) => OperationSubmitEventFailure::EncodeEvent,
-        OperationEventLogError::DecodeEvent(_) => OperationSubmitEventFailure::DecodeEvent,
-        OperationEventLogError::PublishRequest { .. } => {
-            OperationSubmitEventFailure::PublishRequest
-        }
-        OperationEventLogError::PublishAck { .. } => OperationSubmitEventFailure::PublishAck,
-        OperationEventLogError::ReadEvent { .. } => OperationSubmitEventFailure::ReadEvent,
-        OperationEventLogError::Timeout { .. } => OperationSubmitEventFailure::Timeout,
-        OperationEventLogError::InvalidAckSequence { .. } => {
-            OperationSubmitEventFailure::InvalidAckSequence
-        }
-    }
-}
-
-fn record_machine_add_event_unavailable_source(
-    error: &RecordMachineAddEventError,
-) -> MachineJoinRedeemUnavailableSource {
-    match error {
-        RecordMachineAddEventError::LoadStatus(error) => {
-            MachineJoinRedeemUnavailableSource::StatusRead {
-                failure: status_read_failure(error),
+        RedeemMachineJoinTokenRepositoryError::Clock { message } => {
+            MachineJoinRedeemError::Unavailable {
+                message: format!("clock: {message}"),
             }
         }
-        RecordMachineAddEventError::StoreStatus(error) => {
-            MachineJoinRedeemUnavailableSource::StatusWrite {
-                failure: operation_submit_status_failure(error),
+        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => {
+            MachineJoinRedeemError::Unavailable {
+                message: source.to_string(),
             }
         }
-        RecordMachineAddEventError::AppendEvent(error) => {
-            MachineJoinRedeemUnavailableSource::EventLog {
-                failure: operation_submit_event_failure(error),
+        RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => {
+            MachineJoinRedeemError::Unavailable {
+                message: source.to_string(),
             }
         }
-        RecordMachineAddEventError::MissingOperation { .. }
-        | RecordMachineAddEventError::ProjectStatus(_)
-        | RecordMachineAddEventError::StoredEventMismatch { .. }
-        | RecordMachineAddEventError::StatusProjectionContended => {
-            MachineJoinRedeemUnavailableSource::OperationCorrupt
-        }
-    }
-}
-
-fn record_machine_join_report_unavailable_source(
-    error: &RecordMachineJoinReportError,
-) -> MachineJoinReportUnavailableSource {
-    match error {
-        RecordMachineJoinReportError::StoreStatus(error) => {
-            MachineJoinReportUnavailableSource::StatusWrite {
-                failure: operation_submit_status_failure(error),
+        RedeemMachineJoinTokenRepositoryError::RecordMachineAddEvent(source) => {
+            MachineJoinRedeemError::Unavailable {
+                message: source.to_string(),
             }
         }
-        RecordMachineJoinReportError::RecordMachineAddEvent(error) => {
-            record_machine_add_report_unavailable_source(error)
-        }
-        RecordMachineJoinReportError::InvalidJoinToken
-        | RecordMachineJoinReportError::UnknownJoinToken
-        | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {
-            MachineJoinReportUnavailableSource::OperationCorrupt
-        }
-    }
-}
-
-fn record_machine_add_report_unavailable_source(
-    error: &RecordMachineAddEventError,
-) -> MachineJoinReportUnavailableSource {
-    match error {
-        RecordMachineAddEventError::LoadStatus(error) => {
-            MachineJoinReportUnavailableSource::StatusRead {
-                failure: status_read_failure(error),
+        RedeemMachineJoinTokenRepositoryError::MissingOperation { operation_id } => {
+            MachineJoinRedeemError::Unavailable {
+                message: corrupt(format_args!("missing operation {}", operation_id.as_str())),
             }
         }
-        RecordMachineAddEventError::StoreStatus(error) => {
-            MachineJoinReportUnavailableSource::StatusWrite {
-                failure: operation_submit_status_failure(error),
+        RedeemMachineJoinTokenRepositoryError::WrongOperationKind { operation_id } => {
+            MachineJoinRedeemError::Unavailable {
+                message: corrupt(format_args!(
+                    "{} is not a machine-add operation",
+                    operation_id.as_str()
+                )),
             }
         }
-        RecordMachineAddEventError::AppendEvent(error) => {
-            MachineJoinReportUnavailableSource::EventLog {
-                failure: operation_submit_event_failure(error),
+        RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { operation_id } => {
+            MachineJoinRedeemError::Unavailable {
+                message: corrupt(format_args!(
+                    "join token mismatch for {}",
+                    operation_id.as_str()
+                )),
             }
         }
-        RecordMachineAddEventError::MissingOperation { .. }
-        | RecordMachineAddEventError::ProjectStatus(_)
-        | RecordMachineAddEventError::StoredEventMismatch { .. }
-        | RecordMachineAddEventError::StatusProjectionContended => {
-            MachineJoinReportUnavailableSource::OperationCorrupt
-        }
-    }
-}
-
-pub(super) fn status_read_failure(error: &OperationStatusReadError) -> StatusReadFailure {
-    match error {
-        OperationStatusReadError::DecodeStatus(_) => StatusReadFailure::DecodeStatus,
-        OperationStatusReadError::GetStatus { .. } => StatusReadFailure::GetStatus,
-        OperationStatusReadError::Timeout { .. } => StatusReadFailure::Timeout,
     }
 }
 
@@ -440,39 +288,18 @@ pub(super) fn ops_watch_error_from_replay_error(
         }
         ReplayOperationEventsError::LoadStatus(source) => OpsWatchError::Unavailable {
             operation_id,
-            source: OpsWatchUnavailableSource::StatusStore {
-                failure: status_read_failure(&source),
-            },
+            message: source.to_string(),
         },
         ReplayOperationEventsError::ReadEvents(source) => OpsWatchError::Unavailable {
             operation_id,
-            source: OpsWatchUnavailableSource::EventLog {
-                failure: event_replay_failure(&source),
-            },
+            message: source.to_string(),
         },
-    }
-}
-
-fn event_replay_failure(error: &OperationEventReplayReadError) -> EventReplayFailure {
-    match error {
-        OperationEventReplayReadError::DecodeEvent(_) => EventReplayFailure::DecodeEvent,
-        OperationEventReplayReadError::ReadEvent { .. } => EventReplayFailure::ReadEvent,
-        OperationEventReplayReadError::Timeout { .. } => EventReplayFailure::Timeout,
-        OperationEventReplayReadError::InvalidEventSequence { .. } => {
-            EventReplayFailure::InvalidEventSequence
-        }
-        OperationEventReplayReadError::InvalidNextReplaySequence { .. } => {
-            EventReplayFailure::InvalidNextReplaySequence
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error,
-        status_read_failure,
-    };
+    use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
     use crate::controllers::SubmitCommandError;
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
@@ -480,14 +307,10 @@ mod tests {
         OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
         OperationStatusStoreError, ReplayOperationEventsError, SubmitOperationError,
     };
-    use ployz_sdk_types::{
-        DeploySubmitError, EventReplayFailure, OperationSubmitEventFailure,
-        OperationSubmitStatusFailure, OperationSubmitUnavailableSource, OpsWatchError,
-        OpsWatchUnavailableSource, StatusReadFailure,
-    };
+    use ployz_sdk_types::{DeploySubmitError, OpsWatchError};
 
     #[test]
-    fn deploy_submit_maps_status_store_failure_to_api_error() {
+    fn deploy_submit_renders_status_store_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
@@ -501,15 +324,13 @@ mod tests {
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                source: OperationSubmitUnavailableSource::StatusStore {
-                    failure: OperationSubmitStatusFailure::CasConflict,
-                },
+                message: "operation status CAS conflict: contended".to_owned(),
             }
         );
     }
 
     #[test]
-    fn deploy_submit_maps_event_log_failure_to_api_error() {
+    fn deploy_submit_renders_event_log_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
@@ -523,9 +344,7 @@ mod tests {
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                source: OperationSubmitUnavailableSource::EventLog {
-                    failure: OperationSubmitEventFailure::PublishRequest,
-                },
+                message: "publish operation event: publish unavailable".to_owned(),
             }
         );
     }
@@ -586,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn ops_watch_preserves_status_store_failure_context() {
+    fn ops_watch_renders_status_store_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
@@ -598,15 +417,13 @@ mod tests {
             ),
             OpsWatchError::Unavailable {
                 operation_id,
-                source: OpsWatchUnavailableSource::StatusStore {
-                    failure: StatusReadFailure::GetStatus,
-                },
+                message: "get operation status: kv unavailable".to_owned(),
             }
         );
     }
 
     #[test]
-    fn ops_watch_preserves_event_log_failure_context() {
+    fn ops_watch_renders_event_log_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
@@ -618,18 +435,8 @@ mod tests {
             ),
             OpsWatchError::Unavailable {
                 operation_id,
-                source: OpsWatchUnavailableSource::EventLog {
-                    failure: EventReplayFailure::ReadEvent,
-                },
+                message: "read operation event: stream unavailable".to_owned(),
             }
-        );
-    }
-
-    #[test]
-    fn ops_status_preserves_status_store_failure_context() {
-        assert_eq!(
-            status_read_failure(&OperationStatusReadError::Timeout { operation: "test" }),
-            StatusReadFailure::Timeout
         );
     }
 

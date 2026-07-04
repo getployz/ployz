@@ -21,8 +21,7 @@ use ployz_core::ops::{
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 pub(crate) use ployz_test_support::containers;
 pub(crate) use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
-    operation_id, service_id,
+    container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
 use ployzd::deploy_worker::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
@@ -706,6 +705,18 @@ pub(super) fn deploy_command_replacing_old_container(
     )
 }
 
+pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
+    DeployRequest {
+        namespace_id: namespace_id("default"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: image("registry.example/api:rev_2"),
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            routes: Vec::new(),
+        }],
+    }
+}
+
 fn prepared_deploy_command(
     replicas: u16,
     eligible_machines: Vec<MachineId>,
@@ -713,15 +724,7 @@ fn prepared_deploy_command(
 ) -> DeployExecutionCommand {
     prepare_deploy_execution_command(
         operation_id("op_123"),
-        DeployRequest {
-            namespace_id: namespace_id("default"),
-            services: vec![DeployServiceSpec {
-                service_id: service_id("svc_api"),
-                image: image("registry.example/api:rev_2"),
-                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-                routes: Vec::new(),
-            }],
-        },
+        target_deploy_request(replicas),
         DeployExecutionFacts {
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -821,8 +824,8 @@ pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ServingTargetCommit
 }
 
-pub(super) fn target_namespace_revision_id() -> NamespaceRevisionId {
-    namespace_revision_id("rev_2")
+pub(super) fn target_namespace_revision_id(replicas: u16) -> NamespaceRevisionId {
+    target_deploy_request(replicas).namespace_revision_id()
 }
 
 pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {

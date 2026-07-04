@@ -68,7 +68,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     .expect("accepted deploy runs");
     assert_eq!(
         outcome.namespace_revision_id,
-        target_namespace_revision_id()
+        target_namespace_revision_id(1)
     );
     assert_eq!(runtime.requests.len(), 1);
     let [(run_machine_id, run_request)] = runtime.requests.as_slice() else {
@@ -383,7 +383,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
                 },
             ..
         }) if failed_service_id == service_id("svc_api")
-            && failed_namespace_revision_id == target_namespace_revision_id()
+            && failed_namespace_revision_id == target_namespace_revision_id(1)
     ));
 }
 

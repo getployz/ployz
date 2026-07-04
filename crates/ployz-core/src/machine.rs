@@ -167,6 +167,19 @@ pub enum MachineAddOperationStateName {
     Cancelled,
 }
 
+impl MachineAddOperationStateName {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Joining => "joining",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 impl MachineAddOperationState {
     #[must_use]
     pub const fn name(&self) -> MachineAddOperationStateName {
@@ -191,32 +204,27 @@ impl MachineAddOperationState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineAddFailure {
+    #[error("join token is invalid")]
     InvalidJoinToken,
-    JoinTokenExpired {
-        expired_at: JoinTokenExpiresAt,
-    },
-    BootstrapFailed {
-        message: FailureMessage,
-    },
-    ReadinessFailed {
-        evidence: MachineReadinessEvidence,
-    },
-    AuthorizationRenderFailed {
-        message: FailureMessage,
-    },
-    NatsReloadFailed {
-        message: FailureMessage,
-    },
-    MintedCredentialUnusable {
-        message: FailureMessage,
-    },
+    #[error("join token expired at unix second {}", .expired_at.unix_seconds())]
+    JoinTokenExpired { expired_at: JoinTokenExpiresAt },
+    #[error("machine bootstrap failed: {message}")]
+    BootstrapFailed { message: FailureMessage },
+    #[error("machine readiness failed: {evidence}")]
+    ReadinessFailed { evidence: MachineReadinessEvidence },
+    #[error("authorization render failed: {message}")]
+    AuthorizationRenderFailed { message: FailureMessage },
+    #[error("NATS reload failed: {message}")]
+    NatsReloadFailed { message: FailureMessage },
+    #[error("minted credential is unusable: {message}")]
+    MintedCredentialUnusable { message: FailureMessage },
     /// Credential provisioning progressed but its operation evidence could
     /// not be recorded; the mint fails terminally instead of stranding the
     /// operation non-terminal.
-    CredentialEvidenceWriteFailed {
-        message: FailureMessage,
-    },
+    #[error("credential evidence write failed: {message}")]
+    CredentialEvidenceWriteFailed { message: FailureMessage },
 }
 
 /// One step of the per-machine credential minting work that runs after a
@@ -300,6 +308,20 @@ pub struct MachineReadinessEvidence {
     pub machine_inspect: MachineReadinessCheck,
 }
 
+impl fmt::Display for MachineReadinessEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            nats_connection,
+            heartbeat,
+            machine_inspect,
+        } = self;
+        write!(
+            formatter,
+            "nats connection {nats_connection}; heartbeat {heartbeat}; machine inspect {machine_inspect}"
+        )
+    }
+}
+
 impl MachineReadinessEvidence {
     #[must_use]
     pub fn confirmed() -> Self {
@@ -324,4 +346,13 @@ impl MachineReadinessEvidence {
 pub enum MachineReadinessCheck {
     Confirmed,
     Missing { reason: FailureMessage },
+}
+
+impl fmt::Display for MachineReadinessCheck {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Confirmed => formatter.write_str("confirmed"),
+            Self::Missing { reason } => write!(formatter, "missing ({reason})"),
+        }
+    }
 }

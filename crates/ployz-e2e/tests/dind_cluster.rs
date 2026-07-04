@@ -43,8 +43,7 @@ use ployz_sdk_types::{
     MachineSnapshot,
 };
 use ployz_test_support::ids::{
-    idempotency_key, machine_id, namespace_id, namespace_revision_id, operation_id, route_hostname,
-    route_port, service_id,
+    idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
