@@ -83,7 +83,7 @@ async fn deploy_worker_runs_containers_then_completes() {
     .expect("deploy succeeds");
     assert_eq!(
         outcome.namespace_revision_id,
-        target_namespace_revision_id()
+        target_namespace_revision_id(2)
     );
     assert_eq!(outcome.terminal_event, DeployTerminalEvent::Recorded);
     assert_eq!(
@@ -800,7 +800,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::PlanningFailed {
                     service_id: service_id("svc_api"),
-                    namespace_revision_id: target_namespace_revision_id(),
+                    namespace_revision_id: target_namespace_revision_id(1),
                     message: ployz_core::ops::FailureMessage::try_new("deploy planning failed")
                         .expect("valid failure message"),
                 }
@@ -1127,7 +1127,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
     .expect("active commit succeeds even when the completed event is rejected");
     assert_eq!(
         outcome.namespace_revision_id,
-        target_namespace_revision_id()
+        target_namespace_revision_id(1)
     );
     assert_eq!(outcome.terminal_event, DeployTerminalEvent::Missing);
 
