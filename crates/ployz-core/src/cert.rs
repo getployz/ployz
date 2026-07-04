@@ -11,6 +11,10 @@ pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 
+/// Persisted `KV_CORE.certs.*` value.
+///
+/// Changing this shape intentionally breaks existing clusters unless paired
+/// with a KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -25,6 +29,10 @@ id_prefixed_state_key! { pub struct CertStateKey; prefix: CERT_STATE_PREFIX; fn 
 id_prefixed_state_key! { pub struct AcmeLockKey; prefix: ACME_LOCK_PREFIX; fn from_cert_id(&CertId); }
 id_prefixed_state_key! { pub struct AcmeChallengeStateKey; prefix: ACME_CHALLENGE_PREFIX; fn from_cert_id(&CertId); }
 
+/// Persisted `KV_CORE.acme.challenges.*` value.
+///
+/// Changing this shape intentionally breaks existing ACME challenge recovery
+/// unless paired with a KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(try_from = "AcmeHttp01ChallengeWire", into = "AcmeHttp01ChallengeWire")]

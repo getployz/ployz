@@ -29,6 +29,10 @@ pub enum OperationSubject {
     MachineUpdate { machine_id: MachineId },
 }
 
+/// Persisted `PLZ_OPS` stream payload.
+///
+/// Changing this shape intentionally breaks operation replay/history unless
+/// paired with stream cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
