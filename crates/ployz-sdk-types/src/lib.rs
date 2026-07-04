@@ -4,6 +4,13 @@
 //!
 //! This crate should expose generated or generation-ready wire types. It should
 //! not contain orchestration logic.
+//!
+//! Error evidence carries two shapes on purpose: `Unavailable { message }`
+//! variants hold a plain rendered `String` — transient plumbing evidence for a
+//! reader, never dispatched on — while [`FailureMessage`] fields belong to
+//! durable failure records on operations, the typed audience of the Operation
+//! Rules. A new error field takes `String` unless it lands on an operation
+//! record.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

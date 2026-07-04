@@ -10,10 +10,9 @@ use ployz_core::ops::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_nats::operations::{
-    OperationEventReplayReadError, RecordMachineAddEventError, RecordMachineJoinReportError,
-    RecordOperationEventError,
+    RecordMachineAddEventError, RecordMachineJoinReportError, RecordOperationEventError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
-    ReplayOperationEventsError, SubmitOperationError,
+    ReplayOperationEventsError, StoredEventMismatchKind, SubmitOperationError,
 };
 use ployz_sdk_types::{
     DeploySubmitError, MachineAddError, MachineJoinRedeemError, MachineJoinReportError,
@@ -188,26 +187,31 @@ pub(super) fn completed_machine_add_operation_id(
 pub(super) fn machine_join_report_error(
     error: RecordMachineJoinReportError,
 ) -> MachineJoinReportError {
-    match &error {
-        RecordMachineJoinReportError::InvalidJoinToken => {
-            return MachineJoinReportError::InvalidJoinToken;
-        }
-        RecordMachineJoinReportError::UnknownJoinToken => {
-            return MachineJoinReportError::UnknownJoinToken;
-        }
-        RecordMachineJoinReportError::RecordMachineAddEvent(_)
-        | RecordMachineJoinReportError::StoreStatus(_)
-        | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {}
-    }
     if let Some((operation_id, current)) = machine_add_state_conflict(&error) {
         return MachineJoinReportError::OperationNotJoining {
             operation_id,
             current,
         };
     }
-
-    MachineJoinReportError::Unavailable {
-        message: record_machine_join_report_message(&error),
+    match error {
+        RecordMachineJoinReportError::InvalidJoinToken => MachineJoinReportError::InvalidJoinToken,
+        RecordMachineJoinReportError::UnknownJoinToken => MachineJoinReportError::UnknownJoinToken,
+        RecordMachineJoinReportError::StoreStatus(source) => MachineJoinReportError::Unavailable {
+            message: source.to_string(),
+        },
+        RecordMachineJoinReportError::RecordMachineAddEvent(source) => {
+            MachineJoinReportError::Unavailable {
+                message: record_operation_event_message(&source),
+            }
+        }
+        RecordMachineJoinReportError::JoinTokenMismatch { operation_id } => {
+            MachineJoinReportError::Unavailable {
+                message: format!(
+                    "operation record corrupt: join token mismatch for {}",
+                    operation_id.as_str()
+                ),
+            }
+        }
     }
 }
 
@@ -238,9 +242,50 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
             operation_id,
             failure,
         },
-        error => MachineJoinRedeemError::Unavailable {
-            message: machine_join_redeem_message(&error),
-        },
+        RedeemMachineJoinTokenRepositoryError::Clock { message } => {
+            MachineJoinRedeemError::Unavailable {
+                message: format!("clock: {message}"),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => {
+            MachineJoinRedeemError::Unavailable {
+                message: source.to_string(),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => {
+            MachineJoinRedeemError::Unavailable {
+                message: source.to_string(),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::RecordMachineAddEvent(source) => {
+            MachineJoinRedeemError::Unavailable {
+                message: record_operation_event_message(&source),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::MissingOperation { operation_id } => {
+            MachineJoinRedeemError::Unavailable {
+                message: format!(
+                    "operation record corrupt: missing operation {}",
+                    operation_id.as_str()
+                ),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::WrongOperationKind { operation_id } => {
+            MachineJoinRedeemError::Unavailable {
+                message: format!(
+                    "operation record corrupt: {} is not a machine-add operation",
+                    operation_id.as_str()
+                ),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { operation_id } => {
+            MachineJoinRedeemError::Unavailable {
+                message: format!(
+                    "operation record corrupt: join token mismatch for {}",
+                    operation_id.as_str()
+                ),
+            }
+        }
     }
 }
 
@@ -252,75 +297,14 @@ pub(super) fn ops_watch_error_from_replay_error(
         ReplayOperationEventsError::MissingOperation { operation_id } => {
             OpsWatchError::NoSuchOperation { operation_id }
         }
-        error => OpsWatchError::Unavailable {
+        ReplayOperationEventsError::LoadStatus(source) => OpsWatchError::Unavailable {
             operation_id,
-            message: replay_operation_events_message(&error),
+            message: source.to_string(),
         },
-    }
-}
-
-fn machine_join_redeem_message(error: &RedeemMachineJoinTokenRepositoryError) -> String {
-    match error {
-        RedeemMachineJoinTokenRepositoryError::Clock { message } => format!("clock: {message}"),
-        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => source.to_string(),
-        RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => source.to_string(),
-        RedeemMachineJoinTokenRepositoryError::RecordMachineAddEvent(source) => {
-            record_operation_event_message(source)
-        }
-        RedeemMachineJoinTokenRepositoryError::MissingOperation { operation_id } => {
-            format!(
-                "operation record corrupt: missing operation {}",
-                operation_id.as_str()
-            )
-        }
-        RedeemMachineJoinTokenRepositoryError::WrongOperationKind { operation_id } => {
-            format!(
-                "operation record corrupt: {} is not a machine-add operation",
-                operation_id.as_str()
-            )
-        }
-        RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { operation_id } => {
-            format!(
-                "operation record corrupt: join token mismatch for {}",
-                operation_id.as_str()
-            )
-        }
-        RedeemMachineJoinTokenRepositoryError::InvalidJoinToken
-        | RedeemMachineJoinTokenRepositoryError::UnknownJoinToken
-        | RedeemMachineJoinTokenRepositoryError::MissingSecretDelivery { .. }
-        | RedeemMachineJoinTokenRepositoryError::OperationNotPending { .. }
-        | RedeemMachineJoinTokenRepositoryError::JoinRejected { .. } => {
-            "unreachable typed machine-join redeem error".to_owned()
-        }
-    }
-}
-
-fn record_machine_join_report_message(error: &RecordMachineJoinReportError) -> String {
-    match error {
-        RecordMachineJoinReportError::StoreStatus(source) => source.to_string(),
-        RecordMachineJoinReportError::RecordMachineAddEvent(source) => {
-            record_operation_event_message(source)
-        }
-        RecordMachineJoinReportError::JoinTokenMismatch { operation_id } => {
-            format!(
-                "operation record corrupt: join token mismatch for {}",
-                operation_id.as_str()
-            )
-        }
-        RecordMachineJoinReportError::InvalidJoinToken
-        | RecordMachineJoinReportError::UnknownJoinToken => {
-            "unreachable typed machine-join report error".to_owned()
-        }
-    }
-}
-
-fn replay_operation_events_message(error: &ReplayOperationEventsError) -> String {
-    match error {
-        ReplayOperationEventsError::LoadStatus(source) => source.to_string(),
-        ReplayOperationEventsError::ReadEvents(source) => operation_event_replay_message(source),
-        ReplayOperationEventsError::MissingOperation { operation_id } => {
-            format!("missing operation {}", operation_id.as_str())
-        }
+        ReplayOperationEventsError::ReadEvents(source) => OpsWatchError::Unavailable {
+            operation_id,
+            message: source.to_string(),
+        },
     }
 }
 
@@ -335,7 +319,7 @@ fn record_operation_event_message(error: &RecordOperationEventError) -> String {
             )
         }
         RecordOperationEventError::ProjectStatus(source) => {
-            format!("operation status projection failed: {source:?}")
+            format!("operation status projection failed: {source}")
         }
         RecordOperationEventError::AppendEvent(source) => source.to_string(),
         RecordOperationEventError::StoredEventMismatch {
@@ -343,7 +327,11 @@ fn record_operation_event_message(error: &RecordOperationEventError) -> String {
             sequence,
             kind,
         } => format!(
-            "operation event mismatch for {} at sequence {}: {kind:?}",
+            "stored {} mismatch for {} at sequence {}",
+            match kind {
+                StoredEventMismatchKind::Generic => "operation event",
+                StoredEventMismatchKind::DeployPlan => "deploy plan",
+            },
             operation_id.as_str(),
             sequence.get()
         ),
@@ -353,10 +341,6 @@ fn record_operation_event_message(error: &RecordOperationEventError) -> String {
     }
 }
 
-fn operation_event_replay_message(error: &OperationEventReplayReadError) -> String {
-    error.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
@@ -364,8 +348,8 @@ mod tests {
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
     use ployz_nats::operations::{
-        OperationEventLogError, OperationEventReplayReadError, OperationStatusStoreError,
-        ReplayOperationEventsError, SubmitOperationError,
+        OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
+        OperationStatusStoreError, ReplayOperationEventsError, SubmitOperationError,
     };
     use ployz_sdk_types::{DeploySubmitError, OpsWatchError};
 
@@ -461,6 +445,24 @@ mod tests {
                 },
             ),
             OpsWatchError::NoSuchOperation { operation_id }
+        );
+    }
+
+    #[test]
+    fn ops_watch_renders_status_store_failure_to_message() {
+        let operation_id = operation_id("op_123");
+
+        assert_eq!(
+            ops_watch_error_from_replay_error(
+                operation_id.clone(),
+                ReplayOperationEventsError::LoadStatus(OperationStatusReadError::GetStatus {
+                    message: "kv unavailable".to_owned(),
+                }),
+            ),
+            OpsWatchError::Unavailable {
+                operation_id,
+                message: "get operation status: kv unavailable".to_owned(),
+            }
         );
     }
 
