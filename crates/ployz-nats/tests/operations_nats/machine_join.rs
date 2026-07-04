@@ -210,10 +210,12 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
     event_log
-        .append(OperationEventAppend::machine_add_joined(
-            &accepted.operation_id,
-            &accepted.machine_id,
-            joined_at(50),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::MachineAddJoined {
+                operation_id: accepted.operation_id.clone(),
+                machine_id: accepted.machine_id.clone(),
+                joined_at: joined_at(50),
+            },
         ))
         .await
         .expect("joined event append succeeds");

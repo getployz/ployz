@@ -4,9 +4,9 @@ use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
     DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionMachineScope,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, MachineContainerRuntime, RouteBindingCommitError, RouteBindingCommitter,
-    ServingTargetCommitError, ServingTargetCommitter, execute_deploy_operation,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployHealthChecker, MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
+    execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
 use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use crate::tasks::TaskRegistry;
@@ -82,39 +82,19 @@ where
     let command =
         prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
-    if let Some(lock_lost) = namespace_lock_lost {
-        let mut route_state = LockCheckedCoreState::new(core_state.clone(), Arc::clone(&lock_lost));
-        let mut active_state = LockCheckedCoreState::new(core_state, lock_lost);
-        execute_deploy_operation(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                dataplane,
-                machine_runtime,
-                health_checker,
-                route_state: &mut route_state,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .map_err(DeployOperationRunError::Execute)
-    } else {
-        let mut route_state = core_state.clone();
-        let mut active_state = core_state;
-        execute_deploy_operation(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                dataplane,
-                machine_runtime,
-                health_checker,
-                route_state: &mut route_state,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .map_err(DeployOperationRunError::Execute)
-    }
+    let mut namespace_state = LockCheckedCoreState::new(core_state, namespace_lock_lost);
+    execute_deploy_operation(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane,
+            machine_runtime,
+            health_checker,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .map_err(DeployOperationRunError::Execute)
 }
 
 async fn record_operation_failure(
@@ -146,7 +126,7 @@ pub struct DeployOperationStores {
     pub core_state: AsyncNatsCoreStateStore,
     pub observations: AsyncNatsObservationStore,
     pub controllers: OperationControllers,
-    pub namespace_lock_lost: Option<Arc<AtomicBool>>,
+    pub namespace_lock_lost: Arc<AtomicBool>,
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
@@ -168,69 +148,75 @@ impl LockCheckedCoreState {
         }
     }
 
-    fn lock_is_lost(&self) -> bool {
-        self.namespace_lock_lost.load(Ordering::Relaxed)
+    /// The one statement of the fencing contract: no namespace-state commit
+    /// proceeds after the Namespace Lock is lost.
+    fn ensure_lock_held(
+        &self,
+        lost: impl FnOnce() -> NamespaceCommitError,
+    ) -> Result<(), NamespaceCommitError> {
+        if self.namespace_lock_lost.load(Ordering::Relaxed) {
+            return Err(lost());
+        }
+        Ok(())
     }
 }
 
-impl RouteBindingCommitter for LockCheckedCoreState {
+impl NamespaceStateCommitter for LockCheckedCoreState {
     async fn replace_route_binding(
         &mut self,
         state: ployz_core::state::RouteBindingState,
-    ) -> Result<(), RouteBindingCommitError> {
+    ) -> Result<(), NamespaceCommitError> {
         let target = state.target.clone();
-        if self.lock_is_lost() {
-            return Err(RouteBindingCommitError::NamespaceLockLost { target });
-        }
+        self.ensure_lock_held(|| NamespaceCommitError::RouteLockLost {
+            target: target.clone(),
+        })?;
 
         AsyncNatsCoreStateStore::replace_route_binding(&self.core_state, &state)
             .await
-            .map_err(|error| RouteBindingCommitError::Store { target, error })
+            .map_err(|error| NamespaceCommitError::RouteStore { target, error })
     }
 
     async fn remove_route_binding(
         &mut self,
         target: ployz_core::ops::RouteTarget,
-    ) -> Result<(), RouteBindingCommitError> {
-        if self.lock_is_lost() {
-            return Err(RouteBindingCommitError::NamespaceLockLost { target });
-        }
+    ) -> Result<(), NamespaceCommitError> {
+        self.ensure_lock_held(|| NamespaceCommitError::RouteLockLost {
+            target: target.clone(),
+        })?;
 
         AsyncNatsCoreStateStore::remove_route_binding(&self.core_state, &target)
             .await
-            .map_err(|error| RouteBindingCommitError::Store { target, error })
+            .map_err(|error| NamespaceCommitError::RouteStore { target, error })
     }
-}
 
-impl ServingTargetCommitter for LockCheckedCoreState {
     async fn replace_serving_target_entry(
         &mut self,
         state: ployz_core::state::ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
+    ) -> Result<(), NamespaceCommitError> {
         let scope = ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
             service_id: state.service_id.clone(),
             namespace_revision_entry_id: state.namespace_revision_entry_id.clone(),
         };
-        if self.lock_is_lost() {
-            return Err(ServingTargetCommitError::NamespaceLockLost { scope });
-        }
+        self.ensure_lock_held(|| NamespaceCommitError::ServingTargetLockLost {
+            scope: scope.clone(),
+        })?;
 
         AsyncNatsCoreStateStore::replace_serving_target_entry(&self.core_state, &state)
             .await
-            .map_err(|error| ServingTargetCommitError::Store { scope, error })
+            .map_err(|error| NamespaceCommitError::ServingTargetStore { scope, error })
     }
 
     async fn remove_serving_target_entry(
         &mut self,
         entry: ployz_core::state::ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
+    ) -> Result<(), NamespaceCommitError> {
         let scope = ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
             service_id: entry.service_id.clone(),
             namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
         };
-        if self.lock_is_lost() {
-            return Err(ServingTargetCommitError::NamespaceLockLost { scope });
-        }
+        self.ensure_lock_held(|| NamespaceCommitError::ServingTargetLockLost {
+            scope: scope.clone(),
+        })?;
 
         AsyncNatsCoreStateStore::remove_serving_target_entry(
             &self.core_state,
@@ -238,7 +224,7 @@ impl ServingTargetCommitter for LockCheckedCoreState {
             &entry.service_id,
         )
         .await
-        .map_err(|error| ServingTargetCommitError::Store { scope, error })
+        .map_err(|error| NamespaceCommitError::ServingTargetStore { scope, error })
     }
 }
 
@@ -341,7 +327,7 @@ impl DeployOperationRuntime {
                 core_state: run_core_state,
                 observations: self.observations,
                 controllers: self.controllers,
-                namespace_lock_lost: Some(lock_lost),
+                namespace_lock_lost: lock_lost,
             },
             DeployOperationPorts {
                 dataplane: &mut dataplane,

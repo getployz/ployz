@@ -22,12 +22,11 @@ pub use facts::{
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
     DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    ServingTargetCommitError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
-    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitter,
+    NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
     DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
@@ -43,17 +42,16 @@ pub use types::{
     DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
 };
 
-pub async fn execute_deploy_operation<R, D, N, H, C, A>(
+pub async fn execute_deploy_operation<R, D, N, H, S>(
     command: DeployExecutionCommand,
-    ports: DeployExecutionPorts<'_, R, D, N, H, C, A>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
-    C: RouteBindingCommitter,
-    A: ServingTargetCommitter,
+    S: NamespaceStateCommitter,
 {
     let mut ports = ports;
     match execute_deploy(&command, &mut ports).await {
@@ -111,17 +109,16 @@ impl<'a> DeployRun<'a> {
     }
 }
 
-async fn execute_deploy<R, D, N, H, C, A>(
+async fn execute_deploy<R, D, N, H, S>(
     command: &DeployExecutionCommand,
-    ports: &mut DeployExecutionPorts<'_, R, D, N, H, C, A>,
+    ports: &mut DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
-    C: RouteBindingCommitter,
-    A: ServingTargetCommitter,
+    S: NamespaceStateCommitter,
 {
     let mut containers = Vec::new();
     let mut run = DeployRun::new(command);
@@ -285,11 +282,11 @@ where
         .map_err(|source| run.fail(source))?;
 
         for service in command.services() {
-            cutover_route(command, service, &mut *ports.route_state)
+            cutover_route(command, service, &mut *ports.namespace_state)
                 .await
                 .map_err(|source| run.fail(source))?;
         }
-        remove_undeclared_route_bindings(command, &mut *ports.route_state)
+        remove_undeclared_route_bindings(command, &mut *ports.namespace_state)
             .await
             .map_err(|source| run.fail(source))?;
     }
@@ -302,11 +299,11 @@ where
     .map_err(|source| run.fail(source))?;
 
     for service in command.services() {
-        commit_serving_target_entry(command, service, &mut *ports.active_state)
+        commit_serving_target_entry(command, service, &mut *ports.namespace_state)
             .await
             .map_err(|source| run.fail(source))?;
     }
-    unpublish_omitted_serving_target_entries(command, &mut *ports.active_state)
+    unpublish_omitted_serving_target_entries(command, &mut *ports.namespace_state)
         .await
         .map_err(|source| run.fail(source))?;
     if !plan.cleanup_containers.is_empty() {
@@ -545,29 +542,29 @@ where
     }
 }
 
-async fn commit_serving_target_entry<A>(
+async fn commit_serving_target_entry<S>(
     command: &DeployExecutionCommand,
     service: &DeployServiceExecutionCommand,
-    active_state: &mut A,
+    namespace_state: &mut S,
 ) -> Result<(), DeployExecutionError>
 where
-    A: ServingTargetCommitter,
+    S: NamespaceStateCommitter,
 {
     with_step_timeout(
         command,
         DeployExecutionStep::CommitServingTarget,
-        active_state.replace_serving_target_entry(service.serving_target_entry_state()),
+        namespace_state.replace_serving_target_entry(service.serving_target_entry_state()),
     )
     .await
 }
 
-pub(super) async fn cutover_route<C>(
+pub(super) async fn cutover_route<S>(
     command: &DeployExecutionCommand,
     service: &DeployServiceExecutionCommand,
-    route_state: &mut C,
+    namespace_state: &mut S,
 ) -> Result<(), DeployExecutionError>
 where
-    C: RouteBindingCommitter,
+    S: NamespaceStateCommitter,
 {
     for state in service.route_binding_states() {
         with_step_timeout(
@@ -575,7 +572,7 @@ where
             DeployExecutionStep::CommitRoute {
                 route: state.target.clone(),
             },
-            route_state.replace_route_binding(state.clone()),
+            namespace_state.replace_route_binding(state.clone()),
         )
         .await?;
     }
@@ -585,12 +582,12 @@ where
 
 /// Detach every stored binding whose target no service in the manifest
 /// declares, including bindings owned by omitted services.
-async fn remove_undeclared_route_bindings<C>(
+async fn remove_undeclared_route_bindings<S>(
     command: &DeployExecutionCommand,
-    route_state: &mut C,
+    namespace_state: &mut S,
 ) -> Result<(), DeployExecutionError>
 where
-    C: RouteBindingCommitter,
+    S: NamespaceStateCommitter,
 {
     for target in command.route_binding_removals() {
         with_step_timeout(
@@ -598,7 +595,7 @@ where
             DeployExecutionStep::RemoveRoute {
                 route: target.clone(),
             },
-            route_state.remove_route_binding(target.clone()),
+            namespace_state.remove_route_binding(target.clone()),
         )
         .await?;
     }
@@ -608,12 +605,12 @@ where
 
 /// Unpublish serving target entries for services the manifest omits, so an
 /// omitted service cannot stay serveable in stored state.
-async fn unpublish_omitted_serving_target_entries<C>(
+async fn unpublish_omitted_serving_target_entries<S>(
     command: &DeployExecutionCommand,
-    active_state: &mut C,
+    namespace_state: &mut S,
 ) -> Result<(), DeployExecutionError>
 where
-    C: ServingTargetCommitter,
+    S: NamespaceStateCommitter,
 {
     for entry in command.serving_target_removals() {
         with_step_timeout(
@@ -624,7 +621,7 @@ where
                     namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
                 },
             },
-            active_state.remove_serving_target_entry(entry.clone()),
+            namespace_state.remove_serving_target_entry(entry.clone()),
         )
         .await?;
     }

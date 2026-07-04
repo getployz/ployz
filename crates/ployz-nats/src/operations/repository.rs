@@ -1,4 +1,3 @@
-use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
 use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure};
 mod machine_join;
 mod submission;
@@ -14,12 +13,11 @@ pub use submission::{
     SubmitOperationError,
 };
 
-use ployz_core::ids::{CertId, MachineId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{
-    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
-    MachineSubstrateVersions, MachineUpdateFailure, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationProjection,
-    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
+    DeployEvidence, DeployTransition, EventSequence, MachineUpdateTransition, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationProjection, OperationStatusSnapshot, StatusProjectionError, project_operation_event,
     validate_fresh_deploy_evidence,
 };
 
@@ -62,7 +60,7 @@ impl AsyncNatsOperationRepository {
         operation_id: &OperationId,
         transition: DeployTransition,
     ) -> Result<OperationStatusWrite, RecordDeployTransitionError> {
-        let attempted_append = OperationEventAppend::deploy_transition(operation_id, &transition);
+        let attempted_append = OperationEventAppend::from_event(transition.event(operation_id));
         self.record_deploy_event(operation_id, attempted_append)
             .await
             .map(RecordOperationEventOutcome::into_status_write)
@@ -75,63 +73,10 @@ impl AsyncNatsOperationRepository {
     ) -> Result<StoredOperationEvent, RecordDeployEvidenceError> {
         self.record_deploy_event(
             operation_id,
-            OperationEventAppend::deploy_evidence(operation_id, &evidence),
+            OperationEventAppend::from_event(evidence.event(operation_id)),
         )
         .await
         .map(RecordOperationEventOutcome::stored_event)
-    }
-
-    pub async fn record_cert_challenge_published(
-        &self,
-        operation_id: &OperationId,
-        cert_id: &CertId,
-        challenge: AcmeHttp01Challenge,
-    ) -> Result<OperationStatusWrite, RecordCertEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::cert_challenge_published(operation_id, cert_id, challenge),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
-    }
-
-    pub async fn record_cert_validation_started(
-        &self,
-        operation_id: &OperationId,
-        cert_id: &CertId,
-    ) -> Result<OperationStatusWrite, RecordCertEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::cert_validation_started(operation_id, cert_id),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
-    }
-
-    pub async fn record_cert_completed(
-        &self,
-        operation_id: &OperationId,
-        active_cert: ActiveCertState,
-    ) -> Result<OperationStatusWrite, RecordCertEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::cert_completed(operation_id, active_cert),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
-    }
-
-    pub async fn record_cert_failed(
-        &self,
-        operation_id: &OperationId,
-        failure: CertOperationFailure,
-    ) -> Result<OperationStatusWrite, RecordCertEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::cert_failed(operation_id, failure),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
     }
 
     pub async fn record_machine_add_joined(
@@ -142,7 +87,11 @@ impl AsyncNatsOperationRepository {
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event_with_validator(
             operation_id,
-            OperationEventAppend::machine_add_joined(operation_id, machine_id, joined_at),
+            OperationEventAppend::from_event(OperationEvent::MachineAddJoined {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                joined_at,
+            }),
             PreCheck::None,
             validate_stored_machine_add_joined_event,
         )
@@ -158,11 +107,11 @@ impl AsyncNatsOperationRepository {
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_add_credential_provisioned(
-                operation_id,
-                machine_id,
+            OperationEventAppend::from_event(OperationEvent::MachineAddCredentialProvisioned {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
                 step,
-            ),
+            }),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -176,7 +125,11 @@ impl AsyncNatsOperationRepository {
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_add_failed(operation_id, machine_id, failure),
+            OperationEventAppend::from_event(OperationEvent::MachineAddFailed {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                failure,
+            }),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -189,48 +142,24 @@ impl AsyncNatsOperationRepository {
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_add_completed(operation_id, machine_id),
+            OperationEventAppend::from_event(OperationEvent::MachineAddCompleted {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+            }),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
     }
 
-    pub async fn record_machine_update_running(
+    pub async fn record_machine_update_transition(
         &self,
         operation_id: &OperationId,
         machine_id: &MachineId,
+        transition: MachineUpdateTransition,
     ) -> Result<OperationStatusWrite, RecordOperationEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_update_running(operation_id, machine_id),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
-    }
-
-    pub async fn record_machine_update_completed(
-        &self,
-        operation_id: &OperationId,
-        machine_id: &MachineId,
-        reported: MachineSubstrateVersions,
-    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::machine_update_completed(operation_id, machine_id, reported),
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
-    }
-
-    pub async fn record_machine_update_failed(
-        &self,
-        operation_id: &OperationId,
-        machine_id: &MachineId,
-        failure: MachineUpdateFailure,
-    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEventAppend::machine_update_failed(operation_id, machine_id, failure),
+            OperationEventAppend::from_event(transition.event(operation_id, machine_id)),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -560,7 +489,6 @@ impl StoredEventMismatchKind {
 pub type RecordDeployTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
-pub type RecordCertEventError = RecordLifecycleEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
 fn validate_stored_operation_event(
     operation_id: &OperationId,
