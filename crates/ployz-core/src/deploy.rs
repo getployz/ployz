@@ -197,6 +197,11 @@ pub struct DeployCleanupContainer {
 pub struct DeployPreparationInput {
     pub request: DeployServiceRequest,
     pub eligible_machines: Vec<MachineId>,
+    /// Machines under drain intent: their running replicas do not count as
+    /// existing capacity, so the plan replaces them elsewhere and the
+    /// unselected containers fall through to cleanup. This is how drain
+    /// evacuates on the next deploy (ADR 0026).
+    pub draining_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }
 
@@ -310,7 +315,11 @@ pub enum DeployPlanError {
 #[must_use]
 pub fn prepare_deploy(input: DeployPreparationInput) -> PreparedDeploy {
     let route_commits = route_binding_commits(&input.request);
-    let existing_replicas = existing_replicas(&input.request, &input.observed_machines);
+    let existing_replicas = existing_replicas(
+        &input.request,
+        &input.observed_machines,
+        &input.draining_machines,
+    );
     let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_machines);
 
     PreparedDeploy {
@@ -359,15 +368,20 @@ pub fn namespace_serving_target_removals(
         .collect()
 }
 
+/// Replicas on draining machines are excluded from reuse: they keep serving
+/// until convergence, but not counting them here means the plan places their
+/// replacement on an eligible machine and cleanup removes the original.
 fn existing_replicas(
     request: &DeployServiceRequest,
     observed_machines: &[MachineContainerObservationSnapshot],
+    draining_machines: &[MachineId],
 ) -> Vec<ExistingServiceReplica> {
     observed_machines
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.state.is_running()
+            !draining_machines.contains(&container.machine_id)
+                && container.state.is_running()
                 && container.identity.is_service_entry(
                     &request.namespace_id,
                     &request.service_id,

@@ -203,6 +203,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(2),
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        draining_machines: Vec::new(),
         observed_machines: vec![observed_machine(
             "machine_b",
             [
@@ -261,6 +262,60 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 }
 
 #[test]
+fn deploy_preparation_evacuates_draining_machine_replicas() {
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request: deploy_request(1),
+        eligible_machines: vec![machine_id("machine_a")],
+        draining_machines: vec![machine_id("machine_b")],
+        observed_machines: vec![observed_machine(
+            "machine_b",
+            [observed_container(
+                "machine_b",
+                "ctr_target",
+                "svc_api",
+                "entry_1",
+                ManagedContainerKind::Service,
+                ContainerRuntimeState::running_unroutable(),
+            )],
+        )],
+    });
+
+    assert_eq!(prepared.existing_replicas, Vec::new());
+    assert_eq!(
+        prepared.cleanup_candidates,
+        vec![cleanup_container_with_entry(
+            "machine_b",
+            "ctr_target",
+            "entry_1"
+        )]
+    );
+
+    let plan = plan_namespace_deploy(
+        namespace_id("default"),
+        namespace_revision_id("rev_1"),
+        vec![DeployPlanningInput {
+            request: prepared.request,
+            eligible_machines: prepared.eligible_machines,
+            existing_replicas: prepared.existing_replicas,
+            cleanup_candidates: prepared.cleanup_candidates,
+        }],
+        Vec::new(),
+    )
+    .expect("plan succeeds");
+    assert_eq!(
+        plan,
+        deploy_plan(
+            vec![run_step("machine_a", 1)],
+            vec![cleanup_container_with_entry(
+                "machine_b",
+                "ctr_target",
+                "entry_1"
+            )],
+        )
+    );
+}
+
+#[test]
 fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_port() {
     let mut request = deploy_request(2);
     request.routes = vec![deploy_route("api.example.com", 443, 8080)];
@@ -268,6 +323,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        draining_machines: Vec::new(),
         observed_machines: vec![observed_machine(
             "machine_b",
             [
@@ -311,6 +367,7 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         eligible_machines: vec![machine_id("machine_a")],
+        draining_machines: Vec::new(),
         observed_machines: Vec::new(),
     });
 
@@ -405,6 +462,7 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         eligible_machines: Vec::new(),
+        draining_machines: Vec::new(),
         observed_machines: Vec::new(),
     });
 
@@ -466,6 +524,7 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(1),
         eligible_machines: vec![machine_id("machine_a")],
+        draining_machines: Vec::new(),
         observed_machines: vec![observed_machine("machine_a", [foreign])],
     });
 
