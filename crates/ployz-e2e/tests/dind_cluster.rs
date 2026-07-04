@@ -21,7 +21,8 @@ use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::machine::{MachineAddOperationState, MachineCredentialProvisioningStep};
+use ployz_core::machine::MachineCredentialProvisioningStep;
+use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus, RouteTarget,
 };
