@@ -8,8 +8,8 @@ use ployz_core::ops::{
     DeployOperationFailure, DeployOperationState, DeployRunningStage, EventSequence,
     HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationStatus, OperatorHint, ReplayedOperationEvent,
-    RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+    OperationEventReplayRequest, OperationKind, OperationStatus, OperatorHint,
+    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -472,17 +472,19 @@ fn root_operation_event_rejects_unknown_fields() {
 fn cancellation_reasons_are_non_empty() {
     let event = OperationEvent::Cancelled {
         operation_id: operation_id("op_123"),
+        kind: OperationKind::Deploy,
         reason: cancellation_reason("operator cancelled"),
     };
 
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"cancelled","operation_id":"op_123","reason":"operator cancelled"}"#
+        r#"{"event":"cancelled","operation_id":"op_123","kind":"deploy","reason":"operator cancelled"}"#
     );
 
     let empty_reason = r#"{
         "event": "cancelled",
         "operation_id": "op_123",
+        "kind": "deploy",
         "reason": ""
     }"#;
 

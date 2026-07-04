@@ -7,7 +7,7 @@ use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::ops::MachineSubstrateVersions;
-use ployz_core::ops::{FailureMessage, MachineUpdateFailure};
+use ployz_core::ops::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operations::AcceptedMachineUpdateSubmission;
 use ployz_nats::operations::RecordOperationEventError;
@@ -59,7 +59,11 @@ impl MachineUpdateOperationRuntime {
         if let Err(error) = self
             .controllers
             .repository()
-            .record_machine_update_running(&operation_id, &machine_id)
+            .record_machine_update_transition(
+                &operation_id,
+                &machine_id,
+                MachineUpdateTransition::Running,
+            )
             .await
         {
             eprintln!("failed to record machine-update running event: {error}");
@@ -125,7 +129,13 @@ impl MachineUpdateOperationRuntime {
                 if let Err(error) = self
                     .controllers
                     .repository()
-                    .record_machine_update_completed(&operation_id, &machine_id, reported.clone())
+                    .record_machine_update_transition(
+                        &operation_id,
+                        &machine_id,
+                        MachineUpdateTransition::Completed {
+                            reported: reported.clone(),
+                        },
+                    )
                     .await
                 {
                     self.record_failed(
@@ -161,7 +171,11 @@ impl MachineUpdateOperationRuntime {
         if let Err(error) = self
             .controllers
             .repository()
-            .record_machine_update_failed(operation_id, machine_id, failure)
+            .record_machine_update_transition(
+                operation_id,
+                machine_id,
+                MachineUpdateTransition::Failed { failure },
+            )
             .await
         {
             eprintln!("failed to record machine-update failed event: {error}");

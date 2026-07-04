@@ -44,7 +44,10 @@ impl SubmitKind for DeployOperationSubmission {
     const KIND: OperationKind = OperationKind::Deploy;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEventAppend {
-        OperationEventAppend::deploy_submitted(operation_id, payload)
+        OperationEventAppend::from_event(OperationEvent::DeploySubmitted {
+            operation_id,
+            target: payload,
+        })
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
@@ -72,7 +75,10 @@ impl SubmitKind for CertOperationSubmission {
     const KIND: OperationKind = OperationKind::Cert;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEventAppend {
-        OperationEventAppend::cert_submitted(operation_id, payload)
+        OperationEventAppend::from_event(OperationEvent::CertRenewalSubmitted {
+            operation_id,
+            cert_id: payload,
+        })
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
@@ -100,11 +106,11 @@ impl SubmitKind for MachineUpdateOperationSubmission {
     const KIND: OperationKind = OperationKind::MachineUpdate;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEventAppend {
-        OperationEventAppend::machine_update_submitted(
+        OperationEventAppend::from_event(OperationEvent::MachineUpdateSubmitted {
             operation_id,
-            payload.machine_id,
-            payload.target_version,
-        )
+            machine_id: payload.machine_id,
+            target_version: payload.target_version,
+        })
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
@@ -369,12 +375,14 @@ impl AsyncNatsOperationRepository {
             .map_err(submit_machine_add_store_status)?;
         let stored = self
             .event_log
-            .append(OperationEventAppend::machine_add_submitted(
-                operation_id.clone(),
-                machine_id.clone(),
-                name.clone(),
-                roles,
-                join_token.clone(),
+            .append(OperationEventAppend::from_event(
+                OperationEvent::MachineAddSubmitted {
+                    operation_id: operation_id.clone(),
+                    machine_id: machine_id.clone(),
+                    name: name.clone(),
+                    roles,
+                    join_token: join_token.clone(),
+                },
             ))
             .await
             .map_err(submit_machine_add_append_event)?;

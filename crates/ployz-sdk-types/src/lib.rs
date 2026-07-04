@@ -63,7 +63,7 @@ pub use ployz_core::ops::{
     FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineSubstrateVersions,
     MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey, OperationKind,
     OperationStatus, OperationStatusSnapshot, OperationSubject, OperatorHint,
     ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteHostname,
     RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
