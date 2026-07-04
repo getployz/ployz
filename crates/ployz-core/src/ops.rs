@@ -6,12 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{
-    CertId, MachineId, OperationId, ServiceId, SubjectToken, SubjectTokenError,
-};
+use crate::ids::{CertId, MachineId, OperationId, ServiceId, SubjectToken, SubjectTokenError};
 use crate::install::InstallArtifactVersion;
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::roles::InstallRolePolicy;
+use crate::state::MachineLifecycle;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 mod accessors;
@@ -26,16 +25,13 @@ mod replay;
 mod routes;
 mod text;
 
-pub use cert::{
-    CertOperationFailure, CertOperationState, CertRunningStage, CertTransition,
-    project_cert_transition, validate_cert_transition,
-};
+pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
     DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployOperationState,
     DeployRunningStage, DeployTransition, HealthCheckFailure, RetainedArtifact,
     RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
-    validate_deploy_transition, validate_fresh_deploy_evidence,
+    validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
@@ -108,7 +104,7 @@ pub enum OperationStatus {
     MachineLifecycle {
         id: OperationId,
         machine_id: MachineId,
-        target: crate::state::MachineLifecycle,
+        target: MachineLifecycle,
         state: MachineLifecycleOperationState,
         last_event_sequence: EventSequence,
     },
@@ -192,7 +188,7 @@ impl OperationStatus {
     pub fn machine_lifecycle_accepted(
         id: OperationId,
         machine_id: MachineId,
-        target: crate::state::MachineLifecycle,
+        target: MachineLifecycle,
         event_sequence: EventSequence,
     ) -> Self {
         Self::MachineLifecycle {

@@ -10,7 +10,9 @@ use crate::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, Ma
 use crate::roles::InstallRolePolicy;
 
 use super::events::OperationSubjectRef;
-use super::projection::{OperationProjection, ProjectionOperationState, StatusProjectionError};
+use super::projection::{
+    OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
+};
 use super::text::CancellationReason;
 use super::{EventSequence, OperationStatus};
 
@@ -79,11 +81,21 @@ impl MachineAddOperationState {
 }
 
 /// Machine-add events after classification from the flat
-/// [`super::OperationEvent`] stream shape.
+/// [`super::OperationEvent`] stream shape. Subject-bearing variants carry
+/// the machine id the event claims, verified against the status record; a
+/// cancel names no subject.
 pub(super) enum MachineAddEvent {
-    Submitted,
-    CredentialProvisioned,
-    Transition(MachineAddOperationState),
+    Submitted {
+        machine_id: MachineId,
+    },
+    CredentialProvisioned {
+        machine_id: MachineId,
+    },
+    Transition {
+        machine_id: MachineId,
+        state: MachineAddOperationState,
+    },
+    Cancelled(CancellationReason),
 }
 
 /// The destructured fields of [`OperationStatus::MachineAdd`].
@@ -113,35 +125,58 @@ impl MachineAddFields<'_> {
     }
 }
 
-pub(super) fn project_machine_add_event(
+pub(super) fn project_event(
     fields: MachineAddFields<'_>,
-    event_subject: OperationSubjectRef,
     event: MachineAddEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if event_subject != OperationSubjectRef::MachineAdd(fields.machine_id.clone()) {
-        return Err(StatusProjectionError::OperationSubjectMismatch {
-            operation_id: fields.id.clone(),
-            expected: OperationSubjectRef::MachineAdd(fields.machine_id.clone()),
-            actual: event_subject,
-        });
-    }
-
     match event {
-        MachineAddEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
-        MachineAddEvent::CredentialProvisioned => {
-            project_machine_add_credential_evidence(fields, event_sequence)
+        MachineAddEvent::Submitted {
+            machine_id: event_machine_id,
+        } => {
+            verify_subject(
+                fields.id,
+                fields.machine_id,
+                &event_machine_id,
+                OperationSubjectRef::MachineAdd,
+            )?;
+            Ok(OperationProjection::AlreadySatisfied)
         }
-        MachineAddEvent::Transition(attempted) => {
-            project_machine_add_state(fields, attempted, event_sequence)
+        MachineAddEvent::CredentialProvisioned {
+            machine_id: event_machine_id,
+        } => {
+            verify_subject(
+                fields.id,
+                fields.machine_id,
+                &event_machine_id,
+                OperationSubjectRef::MachineAdd,
+            )?;
+            project_credential_evidence(fields, event_sequence)
         }
+        MachineAddEvent::Transition {
+            machine_id: event_machine_id,
+            state: attempted,
+        } => {
+            verify_subject(
+                fields.id,
+                fields.machine_id,
+                &event_machine_id,
+                OperationSubjectRef::MachineAdd,
+            )?;
+            project_state(fields, attempted, event_sequence)
+        }
+        MachineAddEvent::Cancelled(reason) => project_state(
+            fields,
+            MachineAddOperationState::Cancelled { reason },
+            event_sequence,
+        ),
     }
 }
 
 /// Credential-provisioning steps are evidence: they advance the status
 /// cursor without changing the machine-add state. They are only recorded
 /// while the operation is live; once terminal, the evidence is satisfied.
-fn project_machine_add_credential_evidence(
+fn project_credential_evidence(
     fields: MachineAddFields<'_>,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
@@ -154,7 +189,7 @@ fn project_machine_add_credential_evidence(
     })
 }
 
-pub(super) fn project_machine_add_state(
+pub(super) fn project_state(
     fields: MachineAddFields<'_>,
     attempted: MachineAddOperationState,
     event_sequence: EventSequence,
@@ -169,7 +204,7 @@ pub(super) fn project_machine_add_state(
             attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
         });
     }
-    if !machine_add_transition_allowed(fields.state, &attempted) {
+    if !transition_allowed(fields.state, &attempted) {
         return Err(StatusProjectionError::InvalidTransition {
             operation_id: fields.id.clone(),
             current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
@@ -182,7 +217,7 @@ pub(super) fn project_machine_add_state(
     })
 }
 
-fn machine_add_transition_allowed(
+fn transition_allowed(
     current: &MachineAddOperationState,
     attempted: &MachineAddOperationState,
 ) -> bool {
@@ -198,7 +233,7 @@ fn machine_add_transition_allowed(
         (
             MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
             MachineAddOperationState::Failed { failure },
-        ) => machine_add_failure_allowed(current, failure),
+        ) => failure_allowed(current, failure),
         (
             MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
             MachineAddOperationState::Pending { .. },
@@ -214,7 +249,7 @@ fn machine_add_transition_allowed(
     }
 }
 
-fn machine_add_failure_allowed(
+fn failure_allowed(
     current: &MachineAddOperationState,
     failure: &MachineAddFailure,
 ) -> bool {

@@ -8,7 +8,9 @@ use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::ids::{CertId, OperationId};
 
 use super::events::OperationSubjectRef;
-use super::projection::{OperationProjection, ProjectionOperationState, StatusProjectionError};
+use super::projection::{
+    OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
+};
 use super::text::{CancellationReason, FailureMessage};
 use super::{EventSequence, OperationStatus};
 
@@ -99,75 +101,62 @@ impl CertTransition {
 }
 
 /// Cert events after classification from the flat [`super::OperationEvent`]
-/// stream shape.
+/// stream shape. Subject-bearing variants carry the cert id the event
+/// claims, verified against the status record; a cancel names no subject.
 pub(super) enum CertEvent {
-    Submitted,
-    Transition(CertTransition),
+    Submitted {
+        cert_id: CertId,
+    },
+    Transition {
+        cert_id: CertId,
+        transition: CertTransition,
+    },
+    Cancelled(CancellationReason),
 }
 
-pub fn project_cert_transition(
-    current: &OperationStatus,
-    transition: CertTransition,
-    event_sequence: EventSequence,
-) -> Result<OperationProjection, StatusProjectionError> {
-    let OperationStatus::Cert {
-        id,
-        cert_id,
-        state: current_state,
-        ..
-    } = current
-    else {
-        return Err(super::projection::kind_mismatch(
-            current,
-            super::OperationKind::Cert,
-        ));
-    };
-
-    project_cert_state(
-        id,
-        cert_id,
-        current_state,
-        transition.state(),
-        event_sequence,
-    )
-}
-
-pub(super) fn project_cert_event(
+pub(super) fn project_event(
     id: &OperationId,
     cert_id: &CertId,
     state: &CertOperationState,
-    event_subject: OperationSubjectRef,
     event: CertEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if event_subject != OperationSubjectRef::Cert(cert_id.clone()) {
-        return Err(StatusProjectionError::OperationSubjectMismatch {
-            operation_id: id.clone(),
-            expected: OperationSubjectRef::Cert(cert_id.clone()),
-            actual: event_subject,
-        });
-    }
-
     match event {
-        CertEvent::Transition(transition) => {
-            project_cert_state(id, cert_id, state, transition.state(), event_sequence)
+        CertEvent::Submitted {
+            cert_id: event_cert_id,
+        } => {
+            verify_subject(id, cert_id, &event_cert_id, OperationSubjectRef::Cert)?;
+            Ok(OperationProjection::AlreadySatisfied)
         }
-        CertEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
+        CertEvent::Transition {
+            cert_id: event_cert_id,
+            transition,
+        } => {
+            verify_subject(id, cert_id, &event_cert_id, OperationSubjectRef::Cert)?;
+            project_state(id, cert_id, state, transition.state(), event_sequence)
+        }
+        CertEvent::Cancelled(reason) => project_state(
+            id,
+            cert_id,
+            state,
+            CertOperationState::Cancelled { reason },
+            event_sequence,
+        ),
     }
 }
 
-pub(super) fn project_cert_state(
+pub(super) fn project_state(
     id: &OperationId,
     cert_id: &CertId,
     current_state: &CertOperationState,
     attempted: CertOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if cert_transition_satisfied(current_state, &attempted) {
+    if transition_satisfied(current_state, &attempted) {
         return Ok(OperationProjection::AlreadySatisfied);
     }
 
-    validate_cert_transition(id, current_state, &attempted)?;
+    validate_transition(id, current_state, &attempted)?;
 
     Ok(OperationProjection::StatusChanged {
         status: Box::new(OperationStatus::Cert {
@@ -179,7 +168,7 @@ pub(super) fn project_cert_state(
     })
 }
 
-pub fn validate_cert_transition(
+fn validate_transition(
     operation_id: &OperationId,
     current: &CertOperationState,
     attempted: &CertOperationState,
@@ -192,7 +181,7 @@ pub fn validate_cert_transition(
         });
     }
 
-    if cert_transition_allowed(current, attempted) {
+    if transition_allowed(current, attempted) {
         return Ok(());
     }
 
@@ -203,7 +192,7 @@ pub fn validate_cert_transition(
     })
 }
 
-fn cert_transition_allowed(current: &CertOperationState, attempted: &CertOperationState) -> bool {
+fn transition_allowed(current: &CertOperationState, attempted: &CertOperationState) -> bool {
     match (current, attempted) {
         (
             CertOperationState::Accepted,
@@ -224,7 +213,7 @@ fn cert_transition_allowed(current: &CertOperationState, attempted: &CertOperati
         (
             CertOperationState::Running { stage: current },
             CertOperationState::Running { stage: attempted },
-        ) => cert_stage_is_next(*current, *attempted),
+        ) => stage_is_next(*current, *attempted),
         (CertOperationState::Accepted, _)
         | (CertOperationState::Completed, _)
         | (CertOperationState::Failed { .. }, _)
@@ -233,13 +222,13 @@ fn cert_transition_allowed(current: &CertOperationState, attempted: &CertOperati
     }
 }
 
-fn cert_transition_satisfied(current: &CertOperationState, attempted: &CertOperationState) -> bool {
+fn transition_satisfied(current: &CertOperationState, attempted: &CertOperationState) -> bool {
     match attempted {
         CertOperationState::Accepted => matches!(current, CertOperationState::Accepted),
         CertOperationState::Running { stage: attempted } => match current {
             CertOperationState::Running { stage: current } => {
-                let current_rank = cert_stage_rank(*current);
-                let attempted_rank = cert_stage_rank(*attempted);
+                let current_rank = stage_rank(*current);
+                let attempted_rank = stage_rank(*attempted);
                 current_rank > attempted_rank
                     || current_rank == attempted_rank && current == attempted
             }
@@ -258,14 +247,14 @@ fn cert_transition_satisfied(current: &CertOperationState, attempted: &CertOpera
     }
 }
 
-fn cert_stage_rank(stage: CertRunningStage) -> u8 {
+fn stage_rank(stage: CertRunningStage) -> u8 {
     match stage {
         CertRunningStage::ChallengePublished => 0,
         CertRunningStage::ValidationStarted => 1,
     }
 }
 
-fn cert_stage_is_next(current: CertRunningStage, attempted: CertRunningStage) -> bool {
+fn stage_is_next(current: CertRunningStage, attempted: CertRunningStage) -> bool {
     matches!(
         (current, attempted),
         (

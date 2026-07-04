@@ -75,7 +75,7 @@ fn machine_add_cancel_records_terminal_status() {
         project_operation_event(
             &accepted,
             OperationEvent::Cancelled {
-                kind: OperationKind::Deploy,
+                kind: OperationKind::MachineAdd,
                 operation_id: operation_id("op_machine"),
                 reason: reason.clone(),
             },
@@ -90,6 +90,30 @@ fn machine_add_cancel_records_terminal_status() {
                 state: MachineAddOperationState::Cancelled { reason },
                 last_event_sequence: event_sequence(8),
             }),
+        })
+    );
+}
+
+#[test]
+fn cancel_with_mismatched_kind_is_typed_evidence_not_a_cancel() {
+    let accepted = machine_add_pending_status();
+    let reason = ployz_core::ops::CancellationReason::try_new("operator_cancelled")
+        .expect("valid cancellation reason");
+
+    assert_eq!(
+        project_operation_event(
+            &accepted,
+            OperationEvent::Cancelled {
+                kind: OperationKind::Deploy,
+                operation_id: operation_id("op_machine"),
+                reason,
+            },
+            event_sequence(8),
+        ),
+        Err(StatusProjectionError::OperationKindMismatch {
+            operation_id: operation_id("op_machine"),
+            expected: OperationKind::MachineAdd,
+            actual: OperationKind::Deploy,
         })
     );
 }
@@ -155,14 +179,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
 fn machine_add_join_token_failure_after_join_is_rejected() {
     let joined_at =
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
-    let joined = OperationStatus::MachineAdd {
-        id: operation_id("op_machine"),
-        machine_id: machine_id("machine_2"),
-        name: machine_name("edge_2"),
-        roles: InstallRolePolicy::install_all().without_gateway(),
-        state: MachineAddOperationState::Joining { joined_at },
-        last_event_sequence: event_sequence(8),
-    };
+    let joined = machine_add_joining_status(joined_at);
 
     assert_eq!(
         project_operation_event(
@@ -196,14 +213,7 @@ fn machine_add_join_token_failure_after_join_is_rejected() {
 fn machine_add_readiness_failure_after_join_is_allowed() {
     let joined_at =
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
-    let joined = OperationStatus::MachineAdd {
-        id: operation_id("op_machine"),
-        machine_id: machine_id("machine_2"),
-        name: machine_name("edge_2"),
-        roles: InstallRolePolicy::install_all().without_gateway(),
-        state: MachineAddOperationState::Joining { joined_at },
-        last_event_sequence: event_sequence(8),
-    };
+    let joined = machine_add_joining_status(joined_at);
     let failure = MachineAddFailure::ReadinessFailed {
         evidence: missing_heartbeat_readiness(),
     };
@@ -235,14 +245,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
 fn machine_add_bootstrap_failure_after_join_is_allowed() {
     let joined_at =
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
-    let joined = OperationStatus::MachineAdd {
-        id: operation_id("op_machine"),
-        machine_id: machine_id("machine_2"),
-        name: machine_name("edge_2"),
-        roles: InstallRolePolicy::install_all().without_gateway(),
-        state: MachineAddOperationState::Joining { joined_at },
-        last_event_sequence: event_sequence(8),
-    };
+    let joined = machine_add_joining_status(joined_at);
     let failure = MachineAddFailure::BootstrapFailed {
         message: FailureMessage::try_new("artifact install failed").expect("valid failure message"),
     };
@@ -312,6 +315,19 @@ fn issued_join_token() -> IssuedJoinToken {
         JoinTokenFingerprint::try_new("join_hash").expect("valid join token fingerprint"),
         JoinTokenExpiresAt::try_new(700).expect("valid join token expiry"),
     )
+}
+
+fn machine_add_joining_status(
+    joined_at: ployz_core::machine::JoinTokenRedeemedAt,
+) -> OperationStatus {
+    OperationStatus::MachineAdd {
+        id: operation_id("op_machine"),
+        machine_id: machine_id("machine_2"),
+        name: machine_name("edge_2"),
+        roles: InstallRolePolicy::install_all().without_gateway(),
+        state: MachineAddOperationState::Joining { joined_at },
+        last_event_sequence: event_sequence(8),
+    }
 }
 
 fn machine_add_pending_status() -> OperationStatus {

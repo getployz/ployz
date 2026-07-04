@@ -4,13 +4,11 @@
 //! that kind's module.
 
 use super::cert::{self, CertOperationState};
-use super::deploy::{self, DeployEvent, DeployOperationState, DeployTransition};
+use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
-use super::machine_lifecycle::{
-    self, MachineLifecycleFields, MachineLifecycleOperationState,
-};
-use super::machine_update::{self, MachineUpdateFields, MachineUpdateOperationState};
+use super::machine_lifecycle::{self, MachineLifecycleOperationState};
+use super::machine_update::{self, MachineUpdateOperationState};
 use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +134,26 @@ pub(super) fn kind_mismatch(
     }
 }
 
+/// Checks the subject an event claims against the status record's subject,
+/// so a misrouted event surfaces as typed evidence instead of silently
+/// mutating the wrong operation.
+pub(super) fn verify_subject<Subject: Clone + PartialEq>(
+    operation_id: &OperationId,
+    expected: &Subject,
+    actual: &Subject,
+    subject_ref: fn(Subject) -> OperationSubjectRef,
+) -> Result<(), StatusProjectionError> {
+    if expected == actual {
+        return Ok(());
+    }
+
+    Err(StatusProjectionError::OperationSubjectMismatch {
+        operation_id: operation_id.clone(),
+        expected: subject_ref(expected.clone()),
+        actual: subject_ref(actual.clone()),
+    })
+}
+
 pub fn project_operation_event(
     current: &OperationStatus,
     event: OperationEvent,
@@ -167,18 +185,18 @@ pub fn project_operation_event(
             else {
                 return Err(kind_mismatch(current, OperationKind::Deploy));
             };
-            deploy::project_deploy_event(id, service_id, state, event, event_sequence)
+            deploy::project_event(id, service_id, state, event, event_sequence)
         }
-        ClassifiedOperationEvent::Cert { subject, event, .. } => {
+        ClassifiedOperationEvent::Cert { event, .. } => {
             let OperationStatus::Cert {
                 id, cert_id, state, ..
             } = current
             else {
                 return Err(kind_mismatch(current, OperationKind::Cert));
             };
-            cert::project_cert_event(id, cert_id, state, subject, event, event_sequence)
+            cert::project_event(id, cert_id, state, event, event_sequence)
         }
-        ClassifiedOperationEvent::MachineAdd { subject, event, .. } => {
+        ClassifiedOperationEvent::MachineAdd { event, .. } => {
             let OperationStatus::MachineAdd {
                 id,
                 machine_id,
@@ -197,9 +215,9 @@ pub fn project_operation_event(
                 roles: *roles,
                 state,
             };
-            machine_add::project_machine_add_event(fields, subject, event, event_sequence)
+            machine_add::project_event(fields, event, event_sequence)
         }
-        ClassifiedOperationEvent::MachineUpdate { subject, event, .. } => {
+        ClassifiedOperationEvent::MachineUpdate { event, .. } => {
             let OperationStatus::MachineUpdate {
                 id,
                 machine_id,
@@ -210,15 +228,16 @@ pub fn project_operation_event(
             else {
                 return Err(kind_mismatch(current, OperationKind::MachineUpdate));
             };
-            let fields = MachineUpdateFields {
+            machine_update::project_event(
                 id,
                 machine_id,
                 target_version,
                 state,
-            };
-            machine_update::project_event(fields, subject, event, event_sequence)
+                event,
+                event_sequence,
+            )
         }
-        ClassifiedOperationEvent::MachineLifecycle { subject, event, .. } => {
+        ClassifiedOperationEvent::MachineLifecycle { event, .. } => {
             let OperationStatus::MachineLifecycle {
                 id,
                 machine_id,
@@ -229,89 +248,14 @@ pub fn project_operation_event(
             else {
                 return Err(kind_mismatch(current, OperationKind::MachineLifecycle));
             };
-            let fields = MachineLifecycleFields {
+            machine_lifecycle::project_event(
                 id,
                 machine_id,
-                target: *target,
+                *target,
                 state,
-            };
-            machine_lifecycle::project_event(fields, subject, event, event_sequence)
+                event,
+                event_sequence,
+            )
         }
-        ClassifiedOperationEvent::Cancelled {
-            operation_id: _,
-            reason,
-        } => match current {
-            OperationStatus::Deploy {
-                id,
-                service_id,
-                state,
-                ..
-            } => deploy::project_deploy_event(
-                id,
-                service_id,
-                state,
-                DeployEvent::Transition(DeployTransition::Cancelled { reason }),
-                event_sequence,
-            ),
-            OperationStatus::Cert {
-                id, cert_id, state, ..
-            } => cert::project_cert_state(
-                id,
-                cert_id,
-                state,
-                CertOperationState::Cancelled { reason },
-                event_sequence,
-            ),
-            OperationStatus::MachineAdd {
-                id,
-                machine_id,
-                name,
-                roles,
-                state,
-                ..
-            } => machine_add::project_machine_add_state(
-                MachineAddFields {
-                    id,
-                    machine_id,
-                    name,
-                    roles: *roles,
-                    state,
-                },
-                MachineAddOperationState::Cancelled { reason },
-                event_sequence,
-            ),
-            OperationStatus::MachineUpdate {
-                id,
-                machine_id,
-                target_version,
-                state,
-                ..
-            } => machine_update::project_state(
-                MachineUpdateFields {
-                    id,
-                    machine_id,
-                    target_version,
-                    state,
-                },
-                MachineUpdateOperationState::Cancelled { reason },
-                event_sequence,
-            ),
-            OperationStatus::MachineLifecycle {
-                id,
-                machine_id,
-                target,
-                state,
-                ..
-            } => machine_lifecycle::project_state(
-                MachineLifecycleFields {
-                    id,
-                    machine_id,
-                    target: *target,
-                    state,
-                },
-                MachineLifecycleOperationState::Cancelled { reason },
-                event_sequence,
-            ),
-        },
     }
 }
