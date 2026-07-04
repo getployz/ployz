@@ -1,3 +1,4 @@
+use std::fmt;
 use std::time::Duration;
 
 use async_nats::jetstream;
@@ -620,6 +621,35 @@ pub enum OperationStatusStoreError {
     },
 }
 
+impl fmt::Display for OperationStatusStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenBucket { bucket, message } => {
+                write!(
+                    formatter,
+                    "open operation status bucket {bucket}: {message}"
+                )
+            }
+            Self::EncodeStatus(error) => write!(formatter, "encode operation status: {error}"),
+            Self::DecodeStatus(error) => write!(formatter, "decode operation status: {error}"),
+            Self::EncodeSubmission(error) => {
+                write!(formatter, "encode operation submission: {error}")
+            }
+            Self::DecodeSubmission(error) => {
+                write!(formatter, "decode operation submission: {error}")
+            }
+            Self::CasConflict { message } => {
+                write!(formatter, "operation status CAS conflict: {message}")
+            }
+            Self::RecordExists { message } => {
+                write!(formatter, "operation record exists: {message}")
+            }
+            Self::GetStatus { message } => write!(formatter, "get operation status: {message}"),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+        }
+    }
+}
+
 impl OperationStatusStoreError {
     #[must_use]
     pub fn from_status_read(error: OperationStatusReadError) -> Self {
@@ -636,6 +666,16 @@ pub enum OperationStatusReadError {
     DecodeStatus(serde_json::Error),
     GetStatus { message: String },
     Timeout { operation: &'static str },
+}
+
+impl fmt::Display for OperationStatusReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DecodeStatus(error) => write!(formatter, "decode operation status: {error}"),
+            Self::GetStatus { message } => write!(formatter, "get operation status: {message}"),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+        }
+    }
 }
 
 impl From<NatsIoTimeout> for OperationStatusStoreError {

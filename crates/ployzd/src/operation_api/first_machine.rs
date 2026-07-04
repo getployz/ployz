@@ -10,7 +10,6 @@ use ployz_sdk_types::{
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
     MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReported, MachineJoinToken,
-    MachineQueryUnavailableSource,
 };
 
 use super::OperationApiHandlers;
@@ -133,7 +132,7 @@ async fn first_machine_active_machine(
         .core_state
         .active_machine(machine_id)
         .await
-        .map_err(|_| InitFirstMachineActivateError::Unavailable {
-            source: MachineQueryUnavailableSource::CoreState,
+        .map_err(|error| InitFirstMachineActivateError::Unavailable {
+            message: error.to_string(),
         })
 }
