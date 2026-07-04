@@ -4,7 +4,9 @@
 //! about a machine (which may be unreachable), so it is control-side
 //! durable authority like the authorized-user set — written to disk first,
 //! projected into the KV machine record after, and adopted back into KV on
-//! control start so the intent survives JetStream loss.
+//! control start so the intent survives JetStream loss. A failed KV
+//! projection rolls the evidence back, so an operation that reported
+//! `Failed` cannot take effect at a later adoption.
 
 use crate::controllers::OperationControllers;
 use crate::tasks::TaskRegistry;
@@ -17,18 +19,24 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
+/// All clones share one evidence-file lock: concurrent lifecycle operations
+/// each read-modify-write the whole file, so the process must have exactly
+/// one runtime instance per evidence file.
 #[derive(Debug, Clone)]
 pub struct MachineLifecycleOperationRuntime {
     controllers: OperationControllers,
     core_state: AsyncNatsCoreStateStore,
     evidence_file: PathBuf,
+    evidence_lock: Arc<Mutex<()>>,
     task_registry: TaskRegistry,
 }
 
 impl MachineLifecycleOperationRuntime {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         controllers: OperationControllers,
         core_state: AsyncNatsCoreStateStore,
         evidence_file: PathBuf,
@@ -38,6 +46,7 @@ impl MachineLifecycleOperationRuntime {
             controllers,
             core_state,
             evidence_file,
+            evidence_lock: Arc::new(Mutex::new(())),
             task_registry,
         }
     }
@@ -58,17 +67,7 @@ impl MachineLifecycleOperationRuntime {
         let machine_id = accepted.machine_id;
         let target = accepted.target;
 
-        if let Err(message) = record_lifecycle_evidence(&self.evidence_file, &machine_id, target) {
-            self.record_terminal(
-                &operation_id,
-                &machine_id,
-                MachineLifecycleTransition::Failed {
-                    failure: MachineLifecycleFailure::EvidenceWriteFailed { message },
-                },
-            )
-            .await;
-            return;
-        }
+        let _evidence_guard = self.evidence_lock.lock().await;
 
         let active = match self.core_state.active_machine(&machine_id).await {
             Ok(Some(active)) => active,
@@ -91,9 +90,39 @@ impl MachineLifecycleOperationRuntime {
                 return;
             }
         };
+
+        let evidence_changed =
+            match record_lifecycle_evidence(&self.evidence_file, &machine_id, target) {
+                Ok(changed) => changed,
+                Err(message) => {
+                    self.record_terminal(
+                        &operation_id,
+                        &machine_id,
+                        MachineLifecycleTransition::Failed {
+                            failure: MachineLifecycleFailure::EvidenceWriteFailed { message },
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            };
+
         let mut active = active;
         active.lifecycle = target;
         if let Err(error) = self.core_state.replace_active_machine(&active).await {
+            if evidence_changed {
+                let revert = match target {
+                    MachineLifecycle::Draining => MachineLifecycle::Active,
+                    MachineLifecycle::Active => MachineLifecycle::Draining,
+                };
+                if let Err(rollback) =
+                    record_lifecycle_evidence(&self.evidence_file, &machine_id, revert)
+                {
+                    eprintln!(
+                        "failed to roll back lifecycle evidence after state commit failure: {rollback}"
+                    );
+                }
+            }
             self.record_state_commit_failed(&operation_id, &machine_id, &error.to_string())
                 .await;
             return;
@@ -152,18 +181,22 @@ struct MachineLifecycleEvidence {
     draining: BTreeSet<String>,
 }
 
+/// Returns whether the file changed: an idempotent re-drain or re-resume
+/// leaves it untouched, so a failed KV commit after an unchanged write needs
+/// no evidence rollback. Callers serialize through the runtime's evidence
+/// lock — this read-modify-write is not safe concurrently.
 fn record_lifecycle_evidence(
     path: &Path,
     machine_id: &MachineId,
     target: MachineLifecycle,
-) -> Result<(), FailureMessage> {
+) -> Result<bool, FailureMessage> {
     let mut evidence = read_lifecycle_evidence(path)?;
     let changed = match target {
         MachineLifecycle::Draining => evidence.draining.insert(machine_id.as_str().to_owned()),
         MachineLifecycle::Active => evidence.draining.remove(machine_id.as_str()),
     };
     if !changed {
-        return Ok(());
+        return Ok(false);
     }
 
     let payload = serde_json::to_vec_pretty(&evidence)
@@ -175,7 +208,8 @@ fn record_lifecycle_evidence(
         .and_then(|()| file.sync_all())
         .map_err(|error| failure(format!("write lifecycle evidence: {error}")))?;
     std::fs::rename(&temp_path, path)
-        .map_err(|error| failure(format!("commit lifecycle evidence: {error}")))
+        .map_err(|error| failure(format!("commit lifecycle evidence: {error}")))?;
+    Ok(true)
 }
 
 fn read_lifecycle_evidence(path: &Path) -> Result<MachineLifecycleEvidence, FailureMessage> {

@@ -17,6 +17,7 @@ control side may adopt the same store shape — but intent about
 possibly-dead machines remains control-side regardless.
 
 Lifecycle affects placement only. A draining machine keeps serving its
-running workloads (capacity leaves when the next deploy converges placement)
-and stays reachable for cleanup; serving eligibility remains
-observation-freshness-driven per ADR 0009.
+running workloads until the next deploy converges placement: its replicas do
+not count as existing capacity, so the plan places replacements elsewhere
+and cleanup removes the originals. It stays reachable for cleanup; serving
+liveness surfaces at the point of use per ADR 0027.
