@@ -188,18 +188,10 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     }
 }
 
-fn fresh_usability() -> ployz_sdk_types::MachineUsability {
-    ployz_sdk_types::MachineUsability {
-        placement: ployz_sdk_types::MachineUsabilityVerdict::Usable,
-        serving: ployz_sdk_types::MachineUsabilityVerdict::Usable,
-        cleanup: ployz_sdk_types::MachineUsabilityVerdict::Usable,
-    }
-}
-
 fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> MachineSnapshot {
     let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
-        usability: fresh_usability(),
+        last_observed_at_unix_seconds: None,
         active: ActiveMachineState {
             lifecycle: MachineLifecycle::Active,
             machine_id: machine_id.clone(),

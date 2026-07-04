@@ -176,11 +176,7 @@ export type MachineLifecycleOperationState = { "state": "accepted" } | { "state"
 
 export type MachineLifecycleFailure = { "kind": "no_such_machine", machine_id: MachineId, } | { "kind": "evidence_write_failed", message: FailureMessage, } | { "kind": "state_commit_failed", message: FailureMessage, };
 
-export type MachineUsabilityReason = { "reason": "draining" } | { "reason": "stale_observation" } | { "reason": "no_runtime_observation" };
-
-export type MachineUsabilityVerdict = { "verdict": "usable" } | { "verdict": "unusable", reason: MachineUsabilityReason, };
-
-export type MachineUsability = { placement: MachineUsabilityVerdict, serving: MachineUsabilityVerdict, cleanup: MachineUsabilityVerdict, };
+export type MachineUsabilityReason = { "reason": "draining" };
 
 export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
 
@@ -274,7 +270,13 @@ export type GatewayServingStatus = "current" | "last_known_good" | "unavailable"
 
 export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
-export type MachineSnapshot = { active: ActiveMachineState, public_ip: MachinePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, usability: MachineUsability, };
+export type MachineSnapshot = { active: ActiveMachineState, public_ip: MachinePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number,
+/**
+ * When this machine last self-reported, as display evidence for the
+ * operator. Never an input to behavior: liveness surfaces at the point
+ * of use (ADR 0027).
+ */
+last_observed_at_unix_seconds?: number | null, };
 
 export type InitFirstMachineActivateRequest = { machine_id: MachineId, roles: InstallRolePolicy, };
 

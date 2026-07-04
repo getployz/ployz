@@ -31,16 +31,14 @@ pub struct GatewayProjectionInput {
     pub observed_machines: Vec<GatewayMachineObservation>,
 }
 
+/// One machine's self-reported container snapshot. Gateways serve every
+/// observed container an operation promoted: an offline machine's upstreams
+/// fail at dial time, which is the live and exact liveness answer — the
+/// projection never infers liveness from observation age (ADR 0027,
+/// superseding ADR 0009's staleness filter).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayMachineObservation {
-    pub freshness: GatewayObservationFreshness,
     pub snapshot: MachineContainerObservationSnapshot,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GatewayObservationFreshness {
-    Fresh,
-    Stale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,7 +248,6 @@ fn index_fresh_running_containers(
 
     for container in observed_machines
         .iter()
-        .filter(|machine| machine.freshness == GatewayObservationFreshness::Fresh)
         .flat_map(|machine| machine.snapshot.containers())
     {
         if !container.is_running_service() {
