@@ -244,7 +244,7 @@ pub enum OperationApiClientError<E> {
 
 impl<E> fmt::Display for OperationApiClientError<E>
 where
-    E: fmt::Debug,
+    E: fmt::Display,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -286,10 +286,10 @@ where
                 )
             }
             Self::Domain { endpoint, error } => {
-                write!(formatter, "{} failed: {error:?}", endpoint.subject())
+                write!(formatter, "{} failed: {error}", endpoint.subject())
             }
         }
     }
 }
 
-impl<E> Error for OperationApiClientError<E> where E: fmt::Debug {}
+impl<E> Error for OperationApiClientError<E> where E: fmt::Debug + fmt::Display {}

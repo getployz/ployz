@@ -47,9 +47,11 @@ Every endpoint envelope's `Unavailable` variant becomes
 
 Stays typed, untouched: `NoSuch*`, `ResourceBusy`/`NamespaceBusy`,
 `InvalidTarget`, `DuplicateSequenceMismatch`, `MaterialNotReady`, the
-domain payloads (`MachineJoinReportFailure`, `BootstrapMaterialFailure`,
-`CloudBootstrap*`, deploy operation failures), and the envelope enums
-themselves (serde-tagged decode needs them).
+domain payloads (`MachineJoinReportFailure`, `CloudBootstrap*`, deploy
+operation failures), and the envelope enums themselves (serde-tagged
+decode needs them). `BootstrapMaterialFailure` also dies: nothing
+matched on it, it only rode inside the deleted
+`MachineAddUnavailableSource`.
 
 ### 2. Evidence-preserving `Display` in the owning crates
 

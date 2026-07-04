@@ -366,51 +366,70 @@ pub struct MachineSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineListError {
+    #[error("machine list unavailable: {message}")]
     Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineInspectError {
+    #[error("no such machine {}", .machine_id.as_str())]
     NoSuchMachine { machine_id: MachineId },
+    #[error("machine inspect unavailable: {message}")]
     Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum ServiceListError {
+    #[error("service list unavailable: {message}")]
     Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum ServiceInspectError {
+    #[error("no such service {}", .service_id.as_str())]
     NoSuchService { service_id: ServiceId },
+    #[error("service inspect unavailable: {message}")]
     Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum RuntimeSnapshotError {
+    #[error("runtime snapshot unavailable: {message}")]
     Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum LogsTailError {
-    NoSuchContainer {
-        container_id: ContainerId,
-    },
+    #[error("no such container {}", .container_id.as_str())]
+    NoSuchContainer { container_id: ContainerId },
+    #[error("container {} exists on {} machines", .container_id.as_str(), .machine_ids.len())]
     AmbiguousContainer {
         container_id: ContainerId,
         machine_ids: Vec<MachineId>,
     },
+    #[error(
+        "log read failed on {} for {}: {message}",
+        .machine_id.as_str(),
+        .container_id.as_str()
+    )]
     ReadFailed {
         machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
     },
+    #[error("logs tail unavailable: {message}")]
     Unavailable {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,96 +495,126 @@ pub enum MachineJoinRedeemResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineJoinRedeemError {
+    #[error("join token is invalid")]
     InvalidJoinToken,
+    #[error("join token is unknown")]
     UnknownJoinToken,
     /// The operation is accepted but its per-machine credential has not
     /// reached `material-ready` yet. The keeper retries redeem boundedly
     /// until the material lands or the join token TTL expires.
-    MaterialNotReady {
-        operation_id: OperationId,
-    },
+    #[error("material for operation {} is not ready yet", .operation_id.as_str())]
+    MaterialNotReady { operation_id: OperationId },
+    #[error("machine add {} rejected: {failure}", .operation_id.as_str())]
     Rejected {
         operation_id: OperationId,
         failure: MachineAddFailure,
     },
+    #[error(
+        "operation {} is not pending (currently {})",
+        .operation_id.as_str(),
+        .current.as_str()
+    )]
     OperationNotPending {
         operation_id: OperationId,
         current: MachineAddOperationStateName,
     },
-    Unavailable {
-        message: String,
-    },
+    #[error("machine join redeem unavailable: {message}")]
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum InitFirstMachineActivateError {
+    #[error("first machine activation plan is invalid")]
     InvalidPlan,
-    Unavailable {
-        message: String,
-    },
-    MachineAdd {
-        failure: MachineAddError,
-    },
-    JoinRedeem {
-        failure: MachineJoinRedeemError,
-    },
-    JoinReport {
-        failure: MachineJoinReportError,
-    },
+    #[error("first machine activation unavailable: {message}")]
+    Unavailable { message: String },
+    #[error("machine add failed: {failure}")]
+    MachineAdd { failure: MachineAddError },
+    #[error("join redeem failed: {failure}")]
+    JoinRedeem { failure: MachineJoinRedeemError },
+    #[error("join report failed: {failure}")]
+    JoinReport { failure: MachineJoinReportError },
     /// Control could not write the first machine's `machine.seed` after the
     /// minted material was redeemed.
-    MachineSeedWrite {
-        message: FailureMessage,
-    },
+    #[error("machine seed write failed: {message}")]
+    MachineSeedWrite { message: FailureMessage },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineJoinReportError {
+    #[error("join token is invalid")]
     InvalidJoinToken,
+    #[error("join token is unknown")]
     UnknownJoinToken,
+    #[error(
+        "operation {} is not joining (currently {})",
+        .operation_id.as_str(),
+        .current.as_str()
+    )]
     OperationNotJoining {
         operation_id: OperationId,
         current: MachineAddOperationStateName,
     },
-    Unavailable {
-        message: String,
-    },
+    #[error("machine join report unavailable: {message}")]
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineAddError {
+    #[error("machine add {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
         message: String,
     },
+    #[error(
+        "operation {} already recorded a different event at sequence {}",
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
     },
-    DuplicateIdempotencyKey {
-        operation_id: OperationId,
-    },
+    #[error("operation {} already exists for this idempotency key", .operation_id.as_str())]
+    DuplicateIdempotencyKey { operation_id: OperationId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum MachineUpdateError {
+    #[error("no such machine {} for operation {}", .machine_id.as_str(), .operation_id.as_str())]
     NoSuchMachine {
         operation_id: OperationId,
         machine_id: MachineId,
     },
+    #[error(
+        "operation {}: updating the current machine {} is unsupported",
+        .operation_id.as_str(),
+        .machine_id.as_str()
+    )]
     CurrentMachineUnsupported {
         operation_id: OperationId,
         machine_id: MachineId,
     },
+    #[error("machine update {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
         message: String,
     },
+    #[error(
+        "operation {} already recorded a different event at sequence {}",
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
@@ -930,20 +979,33 @@ pub struct AcceptedOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum DeploySubmitError {
+    #[error("deploy target invalid for operation {}: {message}", .operation_id.as_str())]
     InvalidTarget {
         operation_id: OperationId,
         message: FailureMessage,
     },
+    #[error(
+        "namespace {} is busy with operation {}",
+        .namespace_id.as_str(),
+        .owner_operation_id.as_str()
+    )]
     ResourceBusy {
         operation_id: OperationId,
         namespace_id: NamespaceId,
         owner_operation_id: OperationId,
     },
+    #[error("deploy submit {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
         message: String,
     },
+    #[error(
+        "operation {} already recorded a different event at sequence {}",
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
@@ -952,10 +1014,11 @@ pub enum DeploySubmitError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum OpsStatusError {
-    NoSuchOperation {
-        operation_id: OperationId,
-    },
+    #[error("no such operation {}", .operation_id.as_str())]
+    NoSuchOperation { operation_id: OperationId },
+    #[error("operation status for {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
         message: String,
@@ -964,16 +1027,19 @@ pub enum OpsStatusError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum OpsListError {
+    #[error("operation list unavailable: {message}")]
     Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
 pub enum OpsWatchError {
-    NoSuchOperation {
-        operation_id: OperationId,
-    },
+    #[error("no such operation {}", .operation_id.as_str())]
+    NoSuchOperation { operation_id: OperationId },
+    #[error("operation watch for {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
         message: String,

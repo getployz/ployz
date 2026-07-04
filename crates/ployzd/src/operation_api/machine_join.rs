@@ -17,7 +17,7 @@ use ployz_sdk_types::{
 
 use super::OperationApiHandlers;
 use super::error_map::{
-    completed_machine_add_operation_id, machine_join_redeem_error_from_repository_error,
+    completed_machine_add_operation_id, corrupt, machine_join_redeem_error_from_repository_error,
     machine_join_report_error,
 };
 
@@ -81,8 +81,7 @@ pub async fn machine_join_report(
             message: error.to_string(),
         })?
         .ok_or(MachineJoinReportError::Unavailable {
-            message: "operation record corrupt: missing machine-add operation after join report"
-                .to_owned(),
+            message: corrupt("missing machine-add operation after join report"),
         })?;
 
     let OperationStatus::MachineAdd {
@@ -93,7 +92,7 @@ pub async fn machine_join_report(
     } = status
     else {
         return Err(MachineJoinReportError::Unavailable {
-            message: "operation record corrupt: joined operation is not machine-add".to_owned(),
+            message: corrupt("joined operation is not machine-add"),
         });
     };
     if let MachineJoinReportOutcome::Completed = outcome {
@@ -126,7 +125,7 @@ async fn repair_completed_machine_join_report(
         })?
     else {
         return Err(MachineJoinReportError::Unavailable {
-            message: "operation record corrupt: missing completed machine-add operation".to_owned(),
+            message: corrupt("missing completed machine-add operation"),
         });
     };
     let OperationStatus::MachineAdd {
@@ -166,8 +165,7 @@ async fn activate_reported_machine(
         ployz_core::machine::MachineAddOperationState::Completed,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
-        message: "operation record corrupt: completed machine-add did not produce active machine"
-            .to_owned(),
+        message: corrupt("completed machine-add did not produce active machine"),
     })?;
     active_machine.substrate_versions = Some(MachineSubstrateVersions {
         ployzd: Some(

@@ -62,7 +62,7 @@ impl MachineUpdateOperationRuntime {
             .record_machine_update_running(&operation_id, &machine_id)
             .await
         {
-            eprintln!("failed to record machine-update running event: {error:?}");
+            eprintln!("failed to record machine-update running event: {error}");
             return;
         }
         let result = self
@@ -98,7 +98,7 @@ impl MachineUpdateOperationRuntime {
                             MachineUpdateFailure::StateCommitFailed {
                                 machine_id: machine_id.clone(),
                                 message: FailureMessage::try_new(format!(
-                                    "failed to read active machine before substrate version commit: {error:?}"
+                                    "failed to read active machine before substrate version commit: {error}"
                                 ))
                                 .expect("state commit failure message is non-empty"),
                             },
@@ -142,7 +142,7 @@ impl MachineUpdateOperationRuntime {
 
                 active.substrate_versions = Some(reported);
                 if let Err(error) = self.core_state.replace_active_machine(&active).await {
-                    eprintln!("failed to commit active machine substrate versions: {error:?}");
+                    eprintln!("failed to commit active machine substrate versions: {error}");
                 }
             }
             Err(error) => {
@@ -164,7 +164,7 @@ impl MachineUpdateOperationRuntime {
             .record_machine_update_failed(operation_id, machine_id, failure)
             .await
         {
-            eprintln!("failed to record machine-update failed event: {error:?}");
+            eprintln!("failed to record machine-update failed event: {error}");
         }
     }
 
@@ -205,7 +205,7 @@ impl MachineUpdateOperationRuntime {
 
 fn machine_update_event_failure(error: RecordOperationEventError) -> FailureMessage {
     FailureMessage::try_new(format!(
-        "failed to record machine-update completed event: {error:?}"
+        "failed to record machine-update completed event: {error}"
     ))
     .expect("event failure message is non-empty")
 }

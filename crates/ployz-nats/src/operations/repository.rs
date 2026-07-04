@@ -514,20 +514,30 @@ impl RecordOperationEventOutcome {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RecordOperationEventError {
+    #[error("{0}")]
     LoadStatus(OperationStatusReadError),
+    #[error("{0}")]
     StoreStatus(OperationStatusStoreError),
-    MissingOperation {
-        operation_id: OperationId,
-    },
+    #[error("operation record corrupt: missing operation {}", .operation_id.as_str())]
+    MissingOperation { operation_id: OperationId },
+    #[error("operation status projection failed: {0}")]
     ProjectStatus(StatusProjectionError),
+    #[error("{0}")]
     AppendEvent(OperationEventLogError),
+    #[error(
+        "stored {} mismatch for {} at sequence {}",
+        .kind.noun(),
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
     StoredEventMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
         kind: StoredEventMismatchKind,
     },
+    #[error("operation status projection contended")]
     StatusProjectionContended,
 }
 
@@ -535,6 +545,16 @@ pub enum RecordOperationEventError {
 pub enum StoredEventMismatchKind {
     Generic,
     DeployPlan,
+}
+
+impl StoredEventMismatchKind {
+    #[must_use]
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::Generic => "operation event",
+            Self::DeployPlan => "deploy plan",
+        }
+    }
 }
 
 pub type RecordDeployTransitionError = RecordOperationEventError;

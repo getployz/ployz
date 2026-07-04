@@ -16,8 +16,7 @@ use ployz_sdk_types::{
 
 use super::OperationApiHandlers;
 use super::error_map::{
-    bootstrap_material_message, deploy_submit_error_from_submit_error,
-    machine_add_error_from_submit_error,
+    deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
 };
 
 #[must_use]
@@ -89,7 +88,7 @@ pub async fn machine_add(
         .await
         .map_err(|error| MachineAddError::Unavailable {
             operation_id: operation_id.clone(),
-            message: bootstrap_material_message(error),
+            message: error.to_string(),
         })?;
     let command = MachineAddSubmitCommand {
         operation_id: request.operation_id,
