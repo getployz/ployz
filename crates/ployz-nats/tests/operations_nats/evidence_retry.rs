@@ -1,6 +1,7 @@
 use super::fixtures::*;
 use ployz_core::ops::{
-    DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition, OperationStatus,
+    DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition, OperationEvent,
+    OperationStatus,
 };
 use ployz_nats::operations::{AsyncNatsOperationEventLog, OperationEventAppend};
 
@@ -125,10 +126,12 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
         .await
         .expect("starting transition records");
     let stored = event_log
-        .append(OperationEventAppend::deploy_container_started(
-            &operation_id("op_123"),
-            &machine_id("machine_a"),
-            &container_id("ctr_1"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeployContainerStarted {
+                operation_id: operation_id("op_123"),
+                machine_id: machine_id("machine_a"),
+                container_id: container_id("ctr_1"),
+            },
         ))
         .await
         .expect("container started event appends before status projection");
@@ -213,10 +216,12 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
         .await
         .expect("committing transition records");
     let stored = event_log
-        .append(OperationEventAppend::deploy_container_started(
-            &operation_id("op_123"),
-            &machine_id("machine_a"),
-            &container_id("ctr_1"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeployContainerStarted {
+                operation_id: operation_id("op_123"),
+                machine_id: machine_id("machine_a"),
+                container_id: container_id("ctr_1"),
+            },
         ))
         .await
         .expect("container evidence is durable before retry");

@@ -1,5 +1,7 @@
 use super::fixtures::*;
-use ployz_core::ops::{DeployTransition, OperationEvent, OperationEventReplayCursor};
+use ployz_core::ops::{
+    DeployEvidence, DeployTransition, OperationEvent, OperationEventReplayCursor,
+};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, OperationEventAppend};
 
 #[tokio::test]
@@ -8,16 +10,20 @@ async fn operation_event_log_deduplicates_submits_by_operation_id() {
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
 
     let first = event_log
-        .append(OperationEventAppend::deploy_submitted(
-            operation_id("op_123"),
-            deploy_target("svc_api"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id("op_123"),
+                target: deploy_target("svc_api"),
+            },
         ))
         .await
         .expect("first submit event stores");
     let second = event_log
-        .append(OperationEventAppend::deploy_submitted(
-            operation_id("op_123"),
-            deploy_target("svc_api"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id("op_123"),
+                target: deploy_target("svc_api"),
+            },
         ))
         .await
         .expect("duplicate submit event is acknowledged");
@@ -43,16 +49,20 @@ async fn operation_event_log_deduplicates_submits_across_operation_kinds() {
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
 
     let first = event_log
-        .append(OperationEventAppend::deploy_submitted(
-            operation_id("op_123"),
-            deploy_target("svc_api"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id("op_123"),
+                target: deploy_target("svc_api"),
+            },
         ))
         .await
         .expect("first submit event stores");
     let second = event_log
-        .append(OperationEventAppend::cert_submitted(
-            operation_id("op_123"),
-            cert_id("cert_api"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::CertRenewalSubmitted {
+                operation_id: operation_id("op_123"),
+                cert_id: cert_id("cert_api"),
+            },
         ))
         .await
         .expect("cross-kind duplicate submit is acknowledged");
@@ -80,23 +90,26 @@ async fn operation_event_log_replays_only_the_requested_operation() {
     let other = operation_id("op_456");
 
     let submitted = event_log
-        .append(OperationEventAppend::deploy_submitted(
-            requested.clone(),
-            deploy_target("svc_api"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeploySubmitted {
+                operation_id: requested.clone(),
+                target: deploy_target("svc_api"),
+            },
         ))
         .await
         .expect("requested submit event stores");
     event_log
-        .append(OperationEventAppend::deploy_submitted(
-            other.clone(),
-            deploy_target("svc_other"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeploySubmitted {
+                operation_id: other.clone(),
+                target: deploy_target("svc_other"),
+            },
         ))
         .await
         .expect("other submit event stores");
     let planning = event_log
-        .append(OperationEventAppend::deploy_transition(
-            &requested,
-            &DeployTransition::Planning,
+        .append(OperationEventAppend::from_event(
+            (&DeployTransition::Planning).event(&requested),
         ))
         .await
         .expect("requested planning event stores");
@@ -136,23 +149,26 @@ async fn operation_event_log_replay_respects_start_sequence_and_limit() {
     let operation_id = operation_id("op_123");
 
     event_log
-        .append(OperationEventAppend::deploy_submitted(
-            operation_id.clone(),
-            deploy_target("svc_api"),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: deploy_target("svc_api"),
+            },
         ))
         .await
         .expect("submit event stores");
     let planning = event_log
-        .append(OperationEventAppend::deploy_transition(
-            &operation_id,
-            &DeployTransition::Planning,
+        .append(OperationEventAppend::from_event(
+            (&DeployTransition::Planning).event(&operation_id),
         ))
         .await
         .expect("planning event stores");
     event_log
-        .append(OperationEventAppend::deploy_plan_created(
-            &operation_id,
-            &deploy_plan(),
+        .append(OperationEventAppend::from_event(
+            DeployEvidence::PlanCreated {
+                plan: deploy_plan(),
+            }
+            .event(&operation_id),
         ))
         .await
         .expect("plan event stores");

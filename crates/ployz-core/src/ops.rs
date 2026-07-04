@@ -492,6 +492,30 @@ impl MachineUpdateTransition {
             },
         }
     }
+    /// Renders this transition as the operation event it records.
+    #[must_use]
+    pub fn event(&self, operation_id: &OperationId, machine_id: &MachineId) -> OperationEvent {
+        match self {
+            Self::Running => OperationEvent::MachineUpdateRunning {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+            },
+            Self::Completed { reported } => OperationEvent::MachineUpdateCompleted {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                reported: reported.clone(),
+            },
+            Self::Failed { failure } => OperationEvent::MachineUpdateFailed {
+                operation_id: operation_id.clone(),
+                machine_id: machine_id.clone(),
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => OperationEvent::Cancelled {
+                operation_id: operation_id.clone(),
+                reason: reason.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,6 +615,32 @@ impl DeployTransition {
     pub const fn completed() -> Self {
         Self::Completed {
             outcome: DeployCompletionOutcome::Completed,
+        }
+    }
+
+    /// Renders this transition as the operation event it records.
+    #[must_use]
+    pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
+        match self {
+            Self::Planning => OperationEvent::DeployPlanningStarted {
+                operation_id: operation_id.clone(),
+            },
+            Self::Running { stage } => OperationEvent::DeployRunning {
+                operation_id: operation_id.clone(),
+                stage: *stage,
+            },
+            Self::Completed { outcome } => OperationEvent::DeployCompleted {
+                operation_id: operation_id.clone(),
+                outcome: *outcome,
+            },
+            Self::Failed { failure } => OperationEvent::DeployFailed {
+                operation_id: operation_id.clone(),
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => OperationEvent::Cancelled {
+                operation_id: operation_id.clone(),
+                reason: reason.clone(),
+            },
         }
     }
 

@@ -27,8 +27,8 @@ use ployzd::deploy_worker::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    RouteBindingCommitError, RouteBindingCommitter, ServingTargetCommitError,
-    ServingTargetCommitter, prepare_deploy_execution_command,
+    NamespaceStateCommitter, RouteBindingCommitError, ServingTargetCommitError,
+    prepare_deploy_execution_command,
 };
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
@@ -234,31 +234,30 @@ fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
     }
 }
 
-pub(super) struct RecordingActiveState {
-    pub(super) requests: Vec<ServingTargetEntry>,
-    pub(super) removals: Vec<ServiceId>,
+pub(super) struct RecordingNamespaceState {
+    pub(super) route_requests: Vec<RouteBindingState>,
+    pub(super) route_removals: Vec<RouteTarget>,
+    pub(super) serving_requests: Vec<ServingTargetEntry>,
+    pub(super) serving_removals: Vec<ServiceId>,
 }
 
-pub(super) struct RecordingRouteState {
-    pub(super) requests: Vec<RouteBindingState>,
-    pub(super) removals: Vec<RouteTarget>,
-}
-
-impl RecordingRouteState {
+impl RecordingNamespaceState {
     pub(super) fn stored() -> Self {
         Self {
-            requests: Vec::new(),
-            removals: Vec::new(),
+            route_requests: Vec::new(),
+            route_removals: Vec::new(),
+            serving_requests: Vec::new(),
+            serving_removals: Vec::new(),
         }
     }
 }
 
-impl RouteBindingCommitter for RecordingRouteState {
+impl NamespaceStateCommitter for RecordingNamespaceState {
     async fn replace_route_binding(
         &mut self,
         state: RouteBindingState,
     ) -> Result<(), RouteBindingCommitError> {
-        self.requests.push(state);
+        self.route_requests.push(state);
         Ok(())
     }
 
@@ -266,26 +265,15 @@ impl RouteBindingCommitter for RecordingRouteState {
         &mut self,
         target: RouteTarget,
     ) -> Result<(), RouteBindingCommitError> {
-        self.removals.push(target);
+        self.route_removals.push(target);
         Ok(())
     }
-}
 
-impl RecordingActiveState {
-    pub(super) fn stored() -> Self {
-        Self {
-            requests: Vec::new(),
-            removals: Vec::new(),
-        }
-    }
-}
-
-impl ServingTargetCommitter for RecordingActiveState {
     async fn replace_serving_target_entry(
         &mut self,
         state: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
-        self.requests.push(state);
+        self.serving_requests.push(state);
         Ok(())
     }
 
@@ -293,14 +281,30 @@ impl ServingTargetCommitter for RecordingActiveState {
         &mut self,
         entry: ServingTargetEntry,
     ) -> Result<(), ServingTargetCommitError> {
-        self.removals.push(entry.service_id);
+        self.serving_removals.push(entry.service_id);
         Ok(())
     }
 }
 
-pub(super) struct HangingActiveState;
+/// Routes commit normally; serving-target commits hang, for step-timeout
+/// coverage.
+pub(super) struct HangingServingCommits;
 
-impl ServingTargetCommitter for HangingActiveState {
+impl NamespaceStateCommitter for HangingServingCommits {
+    async fn replace_route_binding(
+        &mut self,
+        _state: RouteBindingState,
+    ) -> Result<(), RouteBindingCommitError> {
+        Ok(())
+    }
+
+    async fn remove_route_binding(
+        &mut self,
+        _target: RouteTarget,
+    ) -> Result<(), RouteBindingCommitError> {
+        Ok(())
+    }
+
     async fn replace_serving_target_entry(
         &mut self,
         _state: ServingTargetEntry,
@@ -318,9 +322,26 @@ impl ServingTargetCommitter for HangingActiveState {
     }
 }
 
-pub(super) struct LostLockActiveState;
+/// Routes commit normally; serving-target commits fail with a lost
+/// namespace lock, for fencing coverage.
+pub(super) struct LostLockServingCommits;
 
-impl ServingTargetCommitter for LostLockActiveState {
+impl NamespaceStateCommitter for LostLockServingCommits {
+    async fn replace_route_binding(
+        &mut self,
+        state: RouteBindingState,
+    ) -> Result<(), RouteBindingCommitError> {
+        let _ = state;
+        Ok(())
+    }
+
+    async fn remove_route_binding(
+        &mut self,
+        _target: RouteTarget,
+    ) -> Result<(), RouteBindingCommitError> {
+        Ok(())
+    }
+
     async fn replace_serving_target_entry(
         &mut self,
         state: ServingTargetEntry,

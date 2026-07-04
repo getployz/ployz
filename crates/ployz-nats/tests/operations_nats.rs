@@ -1,8 +1,6 @@
 #[path = "operations_nats/fixtures.rs"]
 mod fixtures;
 
-#[path = "operations_nats/cert.rs"]
-mod cert;
 #[path = "operations_nats/event_log.rs"]
 mod event_log;
 #[path = "operations_nats/evidence.rs"]

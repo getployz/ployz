@@ -212,12 +212,14 @@ async fn machine_add_retry_recovers_after_submit_event_without_submission() {
         .await
         .expect("write claim");
     let stored = event_log
-        .append(OperationEventAppend::machine_add_submitted(
-            claim.operation_id.clone(),
-            claim.machine_id.clone(),
-            claim.name.clone(),
-            claim.roles,
-            claim.join_token.clone(),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::MachineAddSubmitted {
+                operation_id: claim.operation_id.clone(),
+                machine_id: claim.machine_id.clone(),
+                name: claim.name.clone(),
+                roles: claim.roles,
+                join_token: claim.join_token.clone(),
+            },
         ))
         .await
         .expect("write submitted event");
@@ -253,12 +255,14 @@ async fn machine_add_retry_recovers_after_submission_without_status() {
         .await
         .expect("write claim");
     let stored = event_log
-        .append(OperationEventAppend::machine_add_submitted(
-            claim.operation_id.clone(),
-            claim.machine_id.clone(),
-            claim.name.clone(),
-            claim.roles,
-            claim.join_token.clone(),
+        .append(OperationEventAppend::from_event(
+            OperationEvent::MachineAddSubmitted {
+                operation_id: claim.operation_id.clone(),
+                machine_id: claim.machine_id.clone(),
+                name: claim.name.clone(),
+                roles: claim.roles,
+                join_token: claim.join_token.clone(),
+            },
         ))
         .await
         .expect("write submitted event");
