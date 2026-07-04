@@ -6,6 +6,7 @@ use ployz_core::ops::{
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
 };
 use ployz_core::roles::InstallRolePolicy;
+use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
     ServingTargetEntry,
@@ -637,7 +638,9 @@ fn machine_join_bundle() -> MachineJoinBundle {
 fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
     let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
+        last_observed_at_unix_seconds: None,
         active: ActiveMachineState {
+            lifecycle: MachineLifecycle::Active,
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             activated_by: operation_id("op_machine"),

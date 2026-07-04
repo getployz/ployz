@@ -14,7 +14,7 @@ use ployz_core::ops::{
     OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
     ReplayedOperationEvent,
 };
-use ployz_core::state::ServingTargetEntry;
+use ployz_core::state::{MachineLifecycle, ServingTargetEntry};
 use ployz_sdk_types::{LogsTailLines, ServiceSnapshot};
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::commands::init::{
@@ -301,6 +301,29 @@ fn cli_dispatches_machine_list_request() {
         command.into_request(),
         ployz_sdk_types::MachineListRequest {}
     );
+}
+
+#[test]
+fn cli_dispatches_machine_drain_and_resume_requests() {
+    let command = parse_command(["machine", "drain", "machine_2"].map(str::to_owned))
+        .expect("machine drain command parses");
+    let PloyzctlCommand::MachineLifecycle(command) = command else {
+        panic!("expected machine lifecycle command");
+    };
+    assert_eq!(command.target, MachineLifecycle::Draining);
+    let request = command.into_request();
+    assert_eq!(request.machine_id.as_str(), "machine_2");
+    assert!(request.operation_id.as_str().starts_with("op_drain_"));
+
+    let command = parse_command(["machine", "resume", "machine_2"].map(str::to_owned))
+        .expect("machine resume command parses");
+    let PloyzctlCommand::MachineLifecycle(command) = command else {
+        panic!("expected machine lifecycle command");
+    };
+    assert_eq!(command.target, MachineLifecycle::Active);
+    let request = command.into_request();
+    assert_eq!(request.machine_id.as_str(), "machine_2");
+    assert!(request.operation_id.as_str().starts_with("op_resume_"));
 }
 
 #[test]

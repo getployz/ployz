@@ -20,6 +20,8 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineUpdate,
+    OperationApiEndpoint::MachineDrain,
+    OperationApiEndpoint::MachineResume,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
     OperationApiEndpoint::MachineJoinRedeem,

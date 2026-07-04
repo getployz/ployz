@@ -7,7 +7,8 @@ impl OperationStatus {
             Self::Deploy { id, .. }
             | Self::Cert { id, .. }
             | Self::MachineAdd { id, .. }
-            | Self::MachineUpdate { id, .. } => id,
+            | Self::MachineUpdate { id, .. }
+            | Self::MachineLifecycle { id, .. } => id,
         }
     }
 
@@ -18,6 +19,7 @@ impl OperationStatus {
             Self::Cert { .. } => OperationKind::Cert,
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
             Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
+            Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
         }
     }
 
@@ -33,6 +35,10 @@ impl OperationStatus {
                 ..
             }
             | Self::MachineAdd {
+                last_event_sequence,
+                ..
+            }
+            | Self::MachineLifecycle {
                 last_event_sequence,
                 ..
             }

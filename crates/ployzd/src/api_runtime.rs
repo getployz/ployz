@@ -1,8 +1,9 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::operation_api::{
-    OperationApiHandlers, deploy_submit, init_first_machine_activate, machine_add,
-    machine_join_redeem, machine_join_report, machine_update, ops_list, ops_status, ops_watch,
+    OperationApiHandlers, deploy_submit, init_first_machine_activate, machine_add, machine_drain,
+    machine_join_redeem, machine_join_report, machine_resume, machine_update, ops_list, ops_status,
+    ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -13,10 +14,10 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        MachineResumeApi, MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -70,6 +71,22 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { machine_update(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::MachineDrain => {
+            bind_operation_contract::<MachineDrainApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { machine_drain(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::MachineResume => {
+            bind_operation_contract::<MachineResumeApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { machine_resume(&handlers, request).await },
             )
             .await
         }
