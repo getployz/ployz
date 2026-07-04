@@ -360,55 +360,33 @@ pub struct MachineSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineListError {
-    Unavailable {
-        source: MachineQueryUnavailableSource,
-    },
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineInspectError {
-    NoSuchMachine {
-        machine_id: MachineId,
-    },
-    Unavailable {
-        source: MachineQueryUnavailableSource,
-    },
+    NoSuchMachine { machine_id: MachineId },
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServiceListError {
-    Unavailable {
-        source: ServiceQueryUnavailableSource,
-    },
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServiceInspectError {
-    NoSuchService {
-        service_id: ServiceId,
-    },
-    Unavailable {
-        source: ServiceQueryUnavailableSource,
-    },
+    NoSuchService { service_id: ServiceId },
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RuntimeSnapshotError {
-    Unavailable {
-        source: RuntimeSnapshotUnavailableSource,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RuntimeSnapshotUnavailableSource {
-    CoreState,
-    Observations,
-    RuntimeProjection,
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -427,30 +405,10 @@ pub enum LogsTailError {
         message: FailureMessage,
     },
     Unavailable {
-        source: LogsTailUnavailableSource,
+        message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine_id: Option<MachineId>,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum LogsTailUnavailableSource {
-    Observations,
-    MachineRpc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ServiceQueryUnavailableSource {
-    CoreState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineQueryUnavailableSource {
-    CoreState,
-    Observations,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -529,7 +487,7 @@ pub enum MachineJoinRedeemError {
         current: MachineAddOperationStateName,
     },
     Unavailable {
-        source: MachineJoinRedeemUnavailableSource,
+        message: String,
     },
 }
 
@@ -538,7 +496,7 @@ pub enum MachineJoinRedeemError {
 pub enum InitFirstMachineActivateError {
     InvalidPlan,
     Unavailable {
-        source: MachineQueryUnavailableSource,
+        message: String,
     },
     MachineAdd {
         failure: MachineAddError,
@@ -566,42 +524,8 @@ pub enum MachineJoinReportError {
         current: MachineAddOperationStateName,
     },
     Unavailable {
-        source: MachineJoinReportUnavailableSource,
+        message: String,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineJoinReportUnavailableSource {
-    CoreState,
-    StatusRead {
-        failure: StatusReadFailure,
-    },
-    StatusWrite {
-        failure: OperationSubmitStatusFailure,
-    },
-    EventLog {
-        failure: OperationSubmitEventFailure,
-    },
-    OperationCorrupt,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineJoinRedeemUnavailableSource {
-    StatusRead {
-        failure: StatusReadFailure,
-    },
-    StatusWrite {
-        failure: OperationSubmitStatusFailure,
-    },
-    EventLog {
-        failure: OperationSubmitEventFailure,
-    },
-    Clock {
-        failure: OperationSubmitClockFailure,
-    },
-    OperationCorrupt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -609,7 +533,7 @@ pub enum MachineJoinRedeemUnavailableSource {
 pub enum MachineAddError {
     Unavailable {
         operation_id: OperationId,
-        source: MachineAddUnavailableSource,
+        message: String,
     },
     DuplicateSequenceMismatch {
         operation_id: OperationId,
@@ -633,54 +557,12 @@ pub enum MachineUpdateError {
     },
     Unavailable {
         operation_id: OperationId,
-        source: MachineUpdateUnavailableSource,
+        message: String,
     },
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineUpdateUnavailableSource {
-    OperationSubmit {
-        failure: OperationSubmitUnavailableSource,
-    },
-    CoreState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineAddUnavailableSource {
-    StatusStore {
-        failure: OperationSubmitStatusFailure,
-    },
-    EventLog {
-        failure: OperationSubmitEventFailure,
-    },
-    BootstrapMaterial {
-        failure: BootstrapMaterialFailure,
-    },
-}
-
-impl From<OperationSubmitUnavailableSource> for MachineAddUnavailableSource {
-    fn from(value: OperationSubmitUnavailableSource) -> Self {
-        match value {
-            OperationSubmitUnavailableSource::StatusStore { failure } => {
-                Self::StatusStore { failure }
-            }
-            OperationSubmitUnavailableSource::EventLog { failure } => Self::EventLog { failure },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum BootstrapMaterialFailure {
-    EncodeJoinBundle,
-    IssueJoinToken,
-    MissingJoinTemplate,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1053,56 +935,12 @@ pub enum DeploySubmitError {
     },
     Unavailable {
         operation_id: OperationId,
-        source: OperationSubmitUnavailableSource,
+        message: String,
     },
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
     },
-}
-
-/// The shared unavailable source for operation submits (deploy and the
-/// submit core of machine-add).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationSubmitUnavailableSource {
-    StatusStore {
-        failure: OperationSubmitStatusFailure,
-    },
-    EventLog {
-        failure: OperationSubmitEventFailure,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationSubmitStatusFailure {
-    OpenBucket,
-    EncodeStatus,
-    DecodeStatus,
-    EncodeSubmission,
-    DecodeSubmission,
-    CasConflict,
-    GetStatus,
-    Timeout,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationSubmitEventFailure {
-    EncodeEvent,
-    DecodeEvent,
-    PublishRequest,
-    PublishAck,
-    ReadEvent,
-    Timeout,
-    InvalidAckSequence,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationSubmitClockFailure {
-    BeforeUnixEpoch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1113,28 +951,14 @@ pub enum OpsStatusError {
     },
     Unavailable {
         operation_id: OperationId,
-        source: OpsStatusUnavailableSource,
+        message: String,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OpsStatusUnavailableSource {
-    StatusStore { failure: StatusReadFailure },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpsListError {
-    Unavailable { source: OpsStatusUnavailableSource },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusReadFailure {
-    DecodeStatus,
-    GetStatus,
-    Timeout,
+    Unavailable { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1145,23 +969,6 @@ pub enum OpsWatchError {
     },
     Unavailable {
         operation_id: OperationId,
-        source: OpsWatchUnavailableSource,
+        message: String,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OpsWatchUnavailableSource {
-    StatusStore { failure: StatusReadFailure },
-    EventLog { failure: EventReplayFailure },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum EventReplayFailure {
-    DecodeEvent,
-    ReadEvent,
-    Timeout,
-    InvalidEventSequence,
-    InvalidNextReplaySequence,
 }

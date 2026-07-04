@@ -254,7 +254,7 @@ export type InitFirstMachineActivateRequest = { machine_id: MachineId, roles: In
 
 export type InitFirstMachineActivated = { operation_id: OperationId, machine_id: MachineId, };
 
-export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "machine_seed_write", message: FailureMessage, };
+export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "error": "unavailable", message: string, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "machine_seed_write", message: FailureMessage, };
 
 export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
 
@@ -266,13 +266,11 @@ export type MachineListRequest = Record<symbol, never>;
 
 export type MachineListResult = { machines: Array<MachineSnapshot>, };
 
-export type MachineListError = { "error": "unavailable", source: MachineQueryUnavailableSource, };
+export type MachineListError = { "error": "unavailable", message: string, };
 
 export type MachineInspectRequest = { machine_id: MachineId, };
 
-export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", source: MachineQueryUnavailableSource, };
-
-export type MachineQueryUnavailableSource = { "source": "core_state" } | { "source": "observations" };
+export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
 
 export type ServiceListRequest = Record<symbol, never>;
 
@@ -280,13 +278,11 @@ export type ServiceListResult = { services: Array<ServiceSnapshot>, };
 
 export type ServiceSnapshot = { active: ServingTargetEntry, };
 
-export type ServiceListError = { "error": "unavailable", source: ServiceQueryUnavailableSource, };
+export type ServiceListError = { "error": "unavailable", message: string, };
 
 export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
 
-export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", source: ServiceQueryUnavailableSource, };
-
-export type ServiceQueryUnavailableSource = { "source": "core_state" };
+export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", message: string, };
 
 export type RuntimeSnapshotRequest = Record<symbol, never>;
 
@@ -308,9 +304,7 @@ export type RuntimeDerivedCollectionSource = { status: RuntimeDerivedCollectionS
 
 export type RuntimeDerivedCollectionStatus = "complete" | "partial";
 
-export type RuntimeSnapshotError = { "error": "unavailable", source: RuntimeSnapshotUnavailableSource, };
-
-export type RuntimeSnapshotUnavailableSource = { "source": "core_state" } | { "source": "observations" } | { "source": "runtime_projection" };
+export type RuntimeSnapshotError = { "error": "unavailable", message: string, };
 
 export type LogsTailLines = SafeInteger<"LogsTailLines">;
 
@@ -318,9 +312,7 @@ export type LogsTailRequest = { container_id: ContainerId, machine_id?: MachineI
 
 export type LogsTailResult = { machine_id: MachineId, container_id: ContainerId, text: string, truncated: boolean, };
 
-export type LogsTailError = { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", source: LogsTailUnavailableSource, machine_id?: MachineId | null, };
-
-export type LogsTailUnavailableSource = { "source": "observations" } | { "source": "machine_rpc" };
+export type LogsTailError = { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", message: string, machine_id?: MachineId | null, };
 
 export type MachineJoinClusterName = string;
 
@@ -364,9 +356,7 @@ export type MachineJoinRedeemed = { operation_id: OperationId, machine_id: Machi
 
 export type MachineJoinRedeemResult = "joined" | "already_joined";
 
-export type MachineJoinRedeemError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "material_not_ready", operation_id: OperationId, } | { "error": "rejected", operation_id: OperationId, failure: MachineAddFailure, } | { "error": "operation_not_pending", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", source: MachineJoinRedeemUnavailableSource, };
-
-export type MachineJoinRedeemUnavailableSource = { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "operation_corrupt" };
+export type MachineJoinRedeemError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "material_not_ready", operation_id: OperationId, } | { "error": "rejected", operation_id: OperationId, failure: MachineAddFailure, } | { "error": "operation_not_pending", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", message: string, };
 
 export type MachineJoinReportRequest = { join_token: MachineJoinToken, outcome: MachineJoinReportOutcome, };
 
@@ -376,15 +366,13 @@ export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: Fa
 
 export type MachineJoinReported = { operation_id: OperationId, machine_id: MachineId, last_event_sequence: EventSequence, outcome: MachineJoinReportOutcome, };
 
-export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", source: MachineJoinReportUnavailableSource, };
-
-export type MachineJoinReportUnavailableSource = { "source": "core_state" } | { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "operation_corrupt" };
+export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", message: string, };
 
 export type OpsListRequest = { active_only: boolean, };
 
 export type OpsListResult = { operations: Array<OperationStatusSnapshot>, };
 
-export type OpsListError = { "error": "unavailable", source: OpsStatusUnavailableSource, };
+export type OpsListError = { "error": "unavailable", message: string, };
 
 export type OpsStatusRequest = { operation_id: OperationId, };
 
@@ -392,19 +380,9 @@ export type AcceptedOperation = { operation_id: OperationId, watch_subject: stri
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
-export type DeploySubmitError = { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type DeploySubmitError = { "error": "invalid_target", operation_id: OperationId, message: FailureMessage, } | { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type OperationSubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, };
-
-export type OperationSubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "cas_conflict" | "get_status" | "timeout";
-
-export type OperationSubmitEventFailure = "encode_event" | "decode_event" | "publish_request" | "publish_ack" | "read_event" | "timeout" | "invalid_ack_sequence";
-
-export type OperationSubmitClockFailure = "before_unix_epoch";
-
-export type MachineAddError = { "error": "unavailable", operation_id: OperationId, source: MachineAddUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, } | { "error": "duplicate_idempotency_key", operation_id: OperationId, };
-
-export type MachineAddUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "bootstrap_material", failure: BootstrapMaterialFailure, };
+export type MachineAddError = { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, } | { "error": "duplicate_idempotency_key", operation_id: OperationId, };
 
 export type MachineUpdateOperationState = { "state": "accepted" } | { "state": "running" } | { "state": "completed", reported: MachineSubstrateVersions, } | { "state": "failed", failure: MachineUpdateFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -414,23 +392,11 @@ export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: 
 
 export type MachineUpdateRequest = { operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, };
 
-export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, source: MachineUpdateUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type MachineUpdateUnavailableSource = { "source": "operation_submit", failure: OperationSubmitUnavailableSource, } | { "source": "core_state" };
+export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
-export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token" | "missing_join_template";
-
-export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OpsStatusUnavailableSource, };
-
-export type OpsStatusUnavailableSource = { "source": "status_store", failure: StatusReadFailure, };
-
-export type StatusReadFailure = "decode_status" | "get_status" | "timeout";
-
-export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OpsWatchUnavailableSource, };
-
-export type OpsWatchUnavailableSource = { "source": "status_store", failure: StatusReadFailure, } | { "source": "event_log", failure: EventReplayFailure, };
-
-export type EventReplayFailure = "decode_event" | "read_event" | "timeout" | "invalid_event_sequence" | "invalid_next_replay_sequence";
+export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 

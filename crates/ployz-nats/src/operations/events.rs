@@ -27,6 +27,7 @@ use crate::kv::{NatsIoTimeout, with_io_timeout};
 use crate::streams::MessageId;
 
 use super::PLZ_OPS_STREAM;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationEventAppend {
@@ -517,6 +518,29 @@ pub enum OperationEventLogError {
     },
 }
 
+impl fmt::Display for OperationEventLogError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EncodeEvent(error) => write!(formatter, "encode operation event: {error}"),
+            Self::DecodeEvent(error) => write!(formatter, "decode operation event: {error}"),
+            Self::PublishRequest { message } => {
+                write!(formatter, "publish operation event: {message}")
+            }
+            Self::PublishAck { message } => {
+                write!(formatter, "ack operation event publish: {message}")
+            }
+            Self::ReadEvent { message } => write!(formatter, "read operation event: {message}"),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+            Self::InvalidAckSequence { sequence, error } => {
+                write!(
+                    formatter,
+                    "operation event ack sequence {sequence} is invalid: {error}"
+                )
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum OperationEventReplayReadError {
     DecodeEvent(serde_json::Error),
@@ -533,6 +557,28 @@ pub enum OperationEventReplayReadError {
     InvalidNextReplaySequence {
         sequence: u64,
     },
+}
+
+impl fmt::Display for OperationEventReplayReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DecodeEvent(error) => write!(formatter, "decode operation event: {error}"),
+            Self::ReadEvent { message } => write!(formatter, "read operation event: {message}"),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+            Self::InvalidEventSequence { sequence, error } => {
+                write!(
+                    formatter,
+                    "operation event sequence {sequence} is invalid: {error}"
+                )
+            }
+            Self::InvalidNextReplaySequence { sequence } => {
+                write!(
+                    formatter,
+                    "operation replay next sequence {sequence} is invalid"
+                )
+            }
+        }
+    }
 }
 
 impl From<NatsIoTimeout> for OperationEventLogError {

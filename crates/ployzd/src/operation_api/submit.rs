@@ -10,14 +10,13 @@ use ployz_core::ids::OperationId;
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;
 use ployz_sdk_types::{
-    AcceptedOperation, BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
-    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddUnavailableSource,
-    MachineJoinToken, MachineUpdateError, MachineUpdateRequest, MachineUpdateUnavailableSource,
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineJoinToken, MachineUpdateError, MachineUpdateRequest,
 };
 
 use super::OperationApiHandlers;
 use super::error_map::{
-    bootstrap_material_failure, deploy_submit_error_from_submit_error,
+    bootstrap_material_message, deploy_submit_error_from_submit_error,
     machine_add_error_from_submit_error,
 };
 
@@ -90,9 +89,7 @@ pub async fn machine_add(
         .await
         .map_err(|error| MachineAddError::Unavailable {
             operation_id: operation_id.clone(),
-            source: MachineAddUnavailableSource::BootstrapMaterial {
-                failure: bootstrap_material_failure(error),
-            },
+            message: bootstrap_material_message(error),
         })?;
     let command = MachineAddSubmitCommand {
         operation_id: request.operation_id,
@@ -112,9 +109,7 @@ pub async fn machine_add(
     let raw_token = MachineJoinToken::try_new(accepted.raw_join_token.as_str()).map_err(|_| {
         MachineAddError::Unavailable {
             operation_id: operation_id.clone(),
-            source: MachineAddUnavailableSource::BootstrapMaterial {
-                failure: BootstrapMaterialFailure::IssueJoinToken,
-            },
+            message: "machine-add accepted raw join token is invalid".to_owned(),
         }
     })?;
     handlers.machine_mint.start(MintRequest {
@@ -149,9 +144,9 @@ pub async fn machine_update(
         .core_state
         .active_machine(&request.machine_id)
         .await
-        .map_err(|_| MachineUpdateError::Unavailable {
+        .map_err(|error| MachineUpdateError::Unavailable {
             operation_id: operation_id.clone(),
-            source: MachineUpdateUnavailableSource::CoreState,
+            message: error.to_string(),
         })?;
     if target_machine.is_none() {
         return Err(MachineUpdateError::NoSuchMachine {
@@ -171,10 +166,10 @@ pub async fn machine_update(
             super::error_map::SubmitFailure::ResourceBusy { .. } => {
                 unreachable!("machine update submit has no namespace lock")
             }
-            super::error_map::SubmitFailure::Unavailable(source) => {
+            super::error_map::SubmitFailure::Unavailable { message } => {
                 MachineUpdateError::Unavailable {
                     operation_id: operation_id.clone(),
-                    source: MachineUpdateUnavailableSource::OperationSubmit { failure: source },
+                    message,
                 }
             }
             super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
