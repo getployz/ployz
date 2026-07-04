@@ -25,6 +25,10 @@ pub const MACHINE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
 pub const MACHINE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "machines";
 pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 
+/// Persisted `KV_CORE.services.*` value.
+///
+/// Changing this shape intentionally breaks existing clusters unless paired
+/// with a KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -34,6 +38,10 @@ pub struct ServingTargetEntry {
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
 
+/// Persisted `KV_CORE.routes.*` value.
+///
+/// Changing this shape intentionally breaks existing clusters unless paired
+/// with a KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -44,6 +52,10 @@ pub struct RouteBindingState {
     pub service_id: ServiceId,
 }
 
+/// Persisted `KV_CORE.machines.*` value.
+///
+/// Changing this shape intentionally breaks existing clusters unless paired
+/// with a KV cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -55,6 +67,7 @@ pub struct ActiveMachineState {
     pub substrate_versions: Option<MachineSubstrateVersions>,
 }
 
+/// Persisted `KV_CORE.namespace_locks.*` value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -64,6 +77,7 @@ pub struct NamespaceLockState {
     pub expires_at_unix_ms: u64,
 }
 
+/// Persisted `KV_OBS.machines.*.public_ip` value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -72,6 +86,7 @@ pub struct MachinePublicIpObservation {
     pub public_ip: IpAddr,
 }
 
+/// Persisted `KV_OBS.gateways.*.status` value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
