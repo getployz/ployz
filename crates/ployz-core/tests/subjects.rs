@@ -138,6 +138,10 @@ fn terminal_events_share_one_message_id_per_operation_kind() {
         machine_update_completed(&op_id).message_id(),
         "machine.update.terminal.op_123"
     );
+    assert_eq!(
+        cancelled_with_kind(&op_id, ployz_core::ops::OperationKind::MachineUpdate).message_id(),
+        machine_update_completed(&op_id).message_id()
+    );
 }
 
 #[test]
@@ -238,8 +242,16 @@ fn deploy_completed(operation_id: &OperationId) -> OperationEvent {
 }
 
 fn cancelled(operation_id: &OperationId) -> OperationEvent {
+    cancelled_with_kind(operation_id, ployz_core::ops::OperationKind::Deploy)
+}
+
+fn cancelled_with_kind(
+    operation_id: &OperationId,
+    kind: ployz_core::ops::OperationKind,
+) -> OperationEvent {
     OperationEvent::Cancelled {
         operation_id: operation_id.clone(),
+        kind,
         reason: CancellationReason::try_new("operator cancelled").expect("valid reason"),
     }
 }

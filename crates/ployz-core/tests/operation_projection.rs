@@ -5,8 +5,9 @@ use ployz_core::machine::{
 };
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
-    FailureMessage, OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
-    StatusProjectionError, project_deploy_transition, project_operation_event,
+    FailureMessage, OperationEvent, OperationKind, OperationProjection, OperationStatus,
+    ProjectionOperationState, StatusProjectionError, project_deploy_transition,
+    project_operation_event,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{
@@ -564,6 +565,7 @@ fn machine_add_cancel_records_terminal_status() {
         project_operation_event(
             &accepted,
             OperationEvent::Cancelled {
+                kind: OperationKind::Deploy,
                 operation_id: operation_id("op_machine"),
                 reason: reason.clone(),
             },

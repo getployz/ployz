@@ -5,7 +5,7 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, RouteBindingStoreError};
+use ployz_nats::core_state::{CoreStateStoreError, RouteBindingStoreError};
 use std::future::Future;
 
 use crate::machine_runtime::protocol::{
@@ -16,7 +16,7 @@ use crate::machine_runtime::protocol::{
 
 use super::{
     DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    MachineContainerRuntimeError, ServingTargetCommitError,
+    MachineContainerRuntimeError,
 };
 
 pub trait DeployOperationRecorder {
@@ -80,29 +80,42 @@ pub trait NamespaceStateCommitter {
     fn replace_route_binding(
         &mut self,
         state: RouteBindingState,
-    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 
     fn remove_route_binding(
         &mut self,
         target: RouteTarget,
-    ) -> impl Future<Output = Result<(), RouteBindingCommitError>> + Send;
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 
     fn replace_serving_target_entry(
         &mut self,
         state: ServingTargetEntry,
-    ) -> impl Future<Output = Result<(), ServingTargetCommitError>> + Send;
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 
     fn remove_serving_target_entry(
         &mut self,
         entry: ServingTargetEntry,
-    ) -> impl Future<Output = Result<(), ServingTargetCommitError>> + Send;
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 }
 
-fn commit_scope(entry: &ServingTargetEntry) -> ControlPlaneCommitScope {
-    ControlPlaneCommitScope::ServiceEntry {
-        service_id: entry.service_id.clone(),
-        namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
-    }
+/// One error for every namespace-state commit; variants carry the subject
+/// each concern is keyed by (route targets vs commit scopes).
+#[derive(Debug)]
+pub enum NamespaceCommitError {
+    RouteStore {
+        target: RouteTarget,
+        error: RouteBindingStoreError,
+    },
+    RouteLockLost {
+        target: RouteTarget,
+    },
+    ServingTargetStore {
+        scope: ControlPlaneCommitScope,
+        error: CoreStateStoreError,
+    },
+    ServingTargetLockLost {
+        scope: ControlPlaneCommitScope,
+    },
 }
 
 impl DeployOperationRecorder for crate::controllers::OperationControllers {
@@ -129,60 +142,4 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
             .map(|_| ())
             .map_err(DeployOperationRecordError::RecordEvidence)
     }
-}
-
-impl NamespaceStateCommitter for AsyncNatsCoreStateStore {
-    async fn replace_route_binding(
-        &mut self,
-        state: RouteBindingState,
-    ) -> Result<(), RouteBindingCommitError> {
-        let target = state.target.clone();
-        AsyncNatsCoreStateStore::replace_route_binding(self, &state)
-            .await
-            .map_err(|error| RouteBindingCommitError::Store { target, error })
-    }
-
-    async fn remove_route_binding(
-        &mut self,
-        target: RouteTarget,
-    ) -> Result<(), RouteBindingCommitError> {
-        AsyncNatsCoreStateStore::remove_route_binding(self, &target)
-            .await
-            .map_err(|error| RouteBindingCommitError::Store { target, error })
-    }
-
-    async fn replace_serving_target_entry(
-        &mut self,
-        state: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        let scope = commit_scope(&state);
-        AsyncNatsCoreStateStore::replace_serving_target_entry(self, &state)
-            .await
-            .map_err(|error| ServingTargetCommitError::Store { scope, error })
-    }
-
-    async fn remove_serving_target_entry(
-        &mut self,
-        entry: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        let scope = commit_scope(&entry);
-        AsyncNatsCoreStateStore::remove_serving_target_entry(
-            self,
-            &entry.namespace_id,
-            &entry.service_id,
-        )
-        .await
-        .map_err(|error| ServingTargetCommitError::Store { scope, error })
-    }
-}
-
-#[derive(Debug)]
-pub enum RouteBindingCommitError {
-    Store {
-        target: RouteTarget,
-        error: RouteBindingStoreError,
-    },
-    NamespaceLockLost {
-        target: RouteTarget,
-    },
 }

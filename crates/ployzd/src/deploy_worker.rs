@@ -22,12 +22,11 @@ pub use facts::{
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
     DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    ServingTargetCommitError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
-    NamespaceStateCommitter, RouteBindingCommitError,
+    NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
     DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,

@@ -19,9 +19,10 @@ and operation recording:
 Grilled decisions:
 
 - Dead write surface is deleted, not ported: the four cert `record_*`
-  methods, `record_machine_add_joined`, `record_machine_add_completed`,
-  and their `OperationEventAppend` constructors have zero production
-  callers (the cert controller is already parked in git history). The
+  methods and the `OperationEventAppend` constructors have zero
+  production callers (the cert controller is already parked in git
+  history); `record_machine_add_joined` / `record_machine_add_completed`
+  turned out to have join-flow callers and stay. The
   cert **read model** (event variants, classification, projection,
   ployzctl rendering) stays — it is the schema of a staged feature and
   exhaustively matched. Recording returns with the PR that wires cert
@@ -30,7 +31,11 @@ Grilled decisions:
   contract: lock-checked commit becomes the only constructible
   production path, deleting the test-only unguarded mode.
 - Subjects and message ids are durable-stream contracts: the move must
-  be byte-identical, pinned by golden tests in core.
+  be byte-identical, pinned by golden tests in core. One deliberate
+  exception: `OperationEvent::Cancelled` (never produced by any writer)
+  gains a `kind` field so a cancel shares its operation kind's terminal
+  dedup id; kind-blind cancellation would let a cancel race another
+  terminal write past the stream-level finality guarantee.
 
 ## Changes
 
@@ -61,9 +66,8 @@ Grilled decisions:
   `Cancelled` gets a writer for free when cancellation lands.
 - Deleted (caller-less): `record_cert_challenge_published`,
   `record_cert_validation_started`, `record_cert_completed`,
-  `record_cert_failed`, `record_machine_add_joined`,
-  `record_machine_add_completed`, and their append constructors and
-  ployz-nats tests.
+  `record_cert_failed`, and their append constructors and ployz-nats
+  tests.
 - Stays: `record_deploy_transition` / `record_deploy_evidence` (already
   the deep shape), the mint worker's
   `record_machine_add_credential_provisioned` /
@@ -75,9 +79,10 @@ Grilled decisions:
 - `RouteBindingCommitter` + `ServingTargetCommitter` merge into one
   `NamespaceStateCommitter` trait: `replace_route_binding`,
   `remove_route_binding`, `replace_serving_target_entry`,
-  `remove_serving_target_entry`, one error enum
-  `NamespaceCommitError { scope: ControlPlaneCommitScope, kind }`
-  (scope type already exists and covers both).
+  `remove_serving_target_entry`, one error enum `NamespaceCommitError`
+  with variant-specific subjects (route targets vs commit scopes) —
+  `ControlPlaneCommitScope` is wire-exported and has no route variant,
+  so the merge stays internal rather than widening the wire type.
 - The namespace-lock guard is the port's contract:
   `LockCheckedCoreState` becomes the only production adapter and states
   the guard once; the `namespace_lock_lost: Option<…>` mode on
@@ -92,8 +97,9 @@ Grilled decisions:
 - Cert write path (returns with the cert-renewal PR).
 - The mint worker's `records()` piercing and the Machine Usability View
   (separate candidates).
-- Any wire or stream-format change: subjects, message ids, and event
-  JSON are byte-identical; `generated.ts` untouched.
+- Any wire or stream-format change beyond the never-produced
+  `Cancelled` variant gaining `kind`: subjects, message ids, and event
+  JSON are byte-identical everywhere else.
 
 ## Verification
 
@@ -110,4 +116,5 @@ Grilled decisions:
 4. NATS integration suites for operations, deploy runtime, and machine
    update pass — the dedup/idempotency behavior is exercised against a
    real JetStream stream.
-5. `git diff` on `packages/ployz-sdk/src/generated.ts` is empty.
+5. `packages/ployz-sdk/src/generated.ts` changes only for the
+   `Cancelled` variant (`kind` field and the `OperationKind` type).

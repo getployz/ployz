@@ -174,9 +174,7 @@ impl MachineUpdateOperationRuntime {
             .record_machine_update_transition(
                 operation_id,
                 machine_id,
-                MachineUpdateTransition::Failed {
-                    failure: failure.clone(),
-                },
+                MachineUpdateTransition::Failed { failure },
             )
             .await
         {

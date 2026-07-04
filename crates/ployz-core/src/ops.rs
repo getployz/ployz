@@ -60,17 +60,7 @@ pub enum DeployCompletionOutcome {
     PartiallyCompletedWithWarnings,
 }
 
-impl DeployCompletionOutcome {
-    #[must_use]
-    pub const fn as_subject(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::CompletedWithWarnings => "completed_with_warnings",
-            Self::PartiallyCompleted => "partially_completed",
-            Self::PartiallyCompletedWithWarnings => "partially_completed_with_warnings",
-        }
-    }
-}
+impl DeployCompletionOutcome {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -80,7 +70,9 @@ pub enum CertRunningStage {
     ValidationStarted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
 pub enum OperationKind {
     Deploy,
     Cert,
@@ -512,6 +504,7 @@ impl MachineUpdateTransition {
             },
             Self::Cancelled { reason } => OperationEvent::Cancelled {
                 operation_id: operation_id.clone(),
+                kind: OperationKind::MachineUpdate,
                 reason: reason.clone(),
             },
         }
@@ -639,6 +632,7 @@ impl DeployTransition {
             },
             Self::Cancelled { reason } => OperationEvent::Cancelled {
                 operation_id: operation_id.clone(),
+                kind: OperationKind::Deploy,
                 reason: reason.clone(),
             },
         }

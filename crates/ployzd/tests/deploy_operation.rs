@@ -1129,7 +1129,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut namespace_state = HangingServingCommits;
+    let mut namespace_state = RecordingNamespaceState::hanging_serving_commits();
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
     let error = execute_deploy(
@@ -1202,7 +1202,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut namespace_state = LostLockServingCommits;
+    let mut namespace_state = RecordingNamespaceState::lost_lock_serving_commits();
 
     let error = execute_deploy(
         deploy_command(1),
@@ -1225,8 +1225,8 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
             ..
         } if matches!(
             *source,
-            DeployExecutionError::CommitServingTarget(
-                ployzd::deploy_worker::ServingTargetCommitError::NamespaceLockLost { .. }
+            DeployExecutionError::CommitNamespaceState(
+                ployzd::deploy_worker::NamespaceCommitError::ServingTargetLockLost { .. }
             )
         )
     ));

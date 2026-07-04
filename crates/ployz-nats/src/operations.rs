@@ -18,12 +18,11 @@ pub use repository::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     AcceptedMachineUpdateSubmission, AsyncNatsOperationRepository, CertOperationSubmission,
     DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinRedemption,
-    MachineUpdateOperationSubmission, OperationStatusWrite, RecordCertEventError,
-    RecordDeployEvidenceError, RecordDeployTransitionError, RecordLifecycleEventError,
-    RecordMachineAddEventError, RecordMachineJoinReportError, RecordOperationEventError,
-    RecordedMachineJoinReport, RedeemMachineJoinTokenError, RedeemedMachineJoin,
-    ReplayOperationEventsError, StoredEventMismatchKind, SubmitMachineAddError,
-    SubmitOperationError,
+    MachineUpdateOperationSubmission, OperationStatusWrite, RecordDeployEvidenceError,
+    RecordDeployTransitionError, RecordLifecycleEventError, RecordMachineAddEventError,
+    RecordMachineJoinReportError, RecordOperationEventError, RecordedMachineJoinReport,
+    RedeemMachineJoinTokenError, RedeemedMachineJoin, ReplayOperationEventsError,
+    StoredEventMismatchKind, SubmitMachineAddError, SubmitOperationError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
