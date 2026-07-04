@@ -3,6 +3,7 @@
 use std::fmt;
 
 use clap::{Args, Parser, Subcommand};
+use ployz_core::state::MachineLifecycle;
 
 pub mod deploy;
 pub mod init;
@@ -28,8 +29,7 @@ pub enum PloyzctlCommand {
     MachineAdd(machine::MachineAddCommand),
     MachineAddRemote(machine::MachineAddRemoteCommand),
     MachineUpdate(machine::MachineUpdateCommand),
-    MachineDrain(machine::MachineDrainCommand),
-    MachineResume(machine::MachineResumeCommand),
+    MachineLifecycle(machine::MachineLifecycleCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
     ServiceList(service::ServiceListCommand),
@@ -172,10 +172,12 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 machine::machine_update_command(command).map(PloyzctlCommand::MachineUpdate)
             }
             MachineCli::Drain(command) => {
-                machine::machine_drain_command(command).map(PloyzctlCommand::MachineDrain)
+                machine::machine_lifecycle_command(MachineLifecycle::Draining, command)
+                    .map(PloyzctlCommand::MachineLifecycle)
             }
             MachineCli::Resume(command) => {
-                machine::machine_resume_command(command).map(PloyzctlCommand::MachineResume)
+                machine::machine_lifecycle_command(MachineLifecycle::Active, command)
+                    .map(PloyzctlCommand::MachineLifecycle)
             }
             MachineCli::List(command) => Ok(PloyzctlCommand::MachineList(
                 machine::machine_list_command(command),

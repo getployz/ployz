@@ -395,13 +395,13 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     >();
     assert_contract::<
         ployz_sdk_types::operation_api::MachineDrainApi,
-        ployz_sdk_types::MachineDrainRequest,
+        ployz_sdk_types::MachineLifecycleRequest,
         AcceptedOperation,
         ployz_sdk_types::MachineLifecycleError,
     >();
     assert_contract::<
         ployz_sdk_types::operation_api::MachineResumeApi,
-        ployz_sdk_types::MachineResumeRequest,
+        ployz_sdk_types::MachineLifecycleRequest,
         AcceptedOperation,
         ployz_sdk_types::MachineLifecycleError,
     >();
@@ -478,7 +478,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "machine.drain",
                 "plz.v1.svc.api.machine.drain",
                 OperationApiEndpointExecution::AcceptsOperation,
-                "MachineDrainRequest".to_owned(),
+                "MachineLifecycleRequest".to_owned(),
                 "AcceptedOperation".to_owned(),
                 "MachineLifecycleError".to_owned(),
                 "MachineDrainResponse",
@@ -487,7 +487,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "machine.resume",
                 "plz.v1.svc.api.machine.resume",
                 OperationApiEndpointExecution::AcceptsOperation,
-                "MachineResumeRequest".to_owned(),
+                "MachineLifecycleRequest".to_owned(),
                 "AcceptedOperation".to_owned(),
                 "MachineLifecycleError".to_owned(),
                 "MachineResumeResponse",

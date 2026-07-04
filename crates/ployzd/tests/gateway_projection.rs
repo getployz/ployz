@@ -9,7 +9,7 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::gateway::{
-    GatewayMachineObservation, GatewayProjectedRoute, GatewayProjection, GatewayProjectionError,
+    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError,
     GatewayProjectionInput, GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute,
     GatewayServingEntry, GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update,
     project_gateway,
@@ -377,14 +377,9 @@ fn single_route_projection() -> GatewayProjection {
 fn observed_machine(
     machine_id_value: &str,
     containers: Vec<ManagedContainerObservation>,
-) -> GatewayMachineObservation {
-    GatewayMachineObservation {
-        snapshot: MachineContainerObservationSnapshot::try_new(
-            machine_id(machine_id_value),
-            containers,
-        )
-        .expect("valid machine snapshot"),
-    }
+) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id(machine_id_value), containers)
+        .expect("valid machine snapshot")
 }
 
 fn gateway_route(hostname: &str, service_id_value: &str) -> GatewayRoute {

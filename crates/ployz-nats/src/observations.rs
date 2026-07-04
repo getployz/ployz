@@ -183,23 +183,10 @@ impl AsyncNatsObservationStore {
         &self,
         machine_id: &MachineId,
     ) -> Result<Option<MachineContainerObservationSnapshot>, ObservationStoreError> {
-        let key = MachineContainerObservationKey::from_machine_id(machine_id);
-        let Some(payload) = with_io_timeout(
-            "machine observation snapshot get",
-            self.bucket.get(key.as_str()),
-        )
-        .await?
-        .map_err(|error| ObservationStoreError::Get {
-            key: key.as_str().to_owned(),
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(ObservationStoreError::Decode)
+        Ok(self
+            .machine_snapshot_record(machine_id)
+            .await?
+            .map(|record| record.snapshot))
     }
 
     pub async fn machine_snapshot_record(

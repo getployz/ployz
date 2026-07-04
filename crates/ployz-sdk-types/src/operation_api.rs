@@ -3,11 +3,12 @@
 use crate::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineDrainRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest,
     MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineLifecycleError, MachineListError, MachineListRequest, MachineListResult,
-    MachineResumeRequest, MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
+    MachineLifecycleError, MachineLifecycleRequest, MachineListError, MachineListRequest,
+    MachineListResult,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
     OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
     OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
     RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
@@ -103,7 +104,7 @@ impl OperationApiContract for MachineUpdateApi {
 pub struct MachineDrainApi;
 
 impl OperationApiContract for MachineDrainApi {
-    type Request = MachineDrainRequest;
+    type Request = MachineLifecycleRequest;
     type Success = AcceptedOperation;
     type Error = MachineLifecycleError;
 
@@ -115,7 +116,7 @@ impl OperationApiContract for MachineDrainApi {
 pub struct MachineResumeApi;
 
 impl OperationApiContract for MachineResumeApi {
-    type Request = MachineResumeRequest;
+    type Request = MachineLifecycleRequest;
     type Success = AcceptedOperation;
     type Error = MachineLifecycleError;
 

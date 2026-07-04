@@ -2,10 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use std::time::Duration;
 
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
+
+/// How often each machine publishes its own reality (container snapshot,
+/// public ip, role status) into the observation KV. Observability cadence
+/// only — never an eligibility input (ADR 0027).
+pub const OBSERVATION_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

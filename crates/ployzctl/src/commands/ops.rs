@@ -4,7 +4,7 @@ use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
     CertOperationState, CertRunningStage, DeployOperationState, DeployRunningStage, EventSequence,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineUpdateOperationState, OperationEvent,
-    OperationEventReplayLimit, OperationEventReplayRequest, OperationStatus,
+    OperationEventReplayLimit, OperationEventReplayRequest, OperationKind, OperationStatus,
     OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::roles::{DnsRole, GatewayRole};
@@ -141,8 +141,8 @@ impl ListOutput {
             .map(|operation| {
                 format!(
                     "{} {} {} {}",
-                    operation_id(&operation.status).as_str(),
-                    operation_kind(&operation.status),
+                    operation.status.id().as_str(),
+                    operation_kind_name(operation.status.kind()),
                     operation_subject(&operation.status),
                     operation_state(&operation.status),
                 )
@@ -167,11 +167,11 @@ impl StatusOutput {
     pub fn render(&self) -> String {
         format!(
             "operation {}\nkind {}\n{}\nstate {}\nlast-event {}\n",
-            operation_id(&self.snapshot.status).as_str(),
-            operation_kind(&self.snapshot.status),
+            self.snapshot.status.id().as_str(),
+            operation_kind_name(self.snapshot.status.kind()),
             operation_subject(&self.snapshot.status),
             operation_state(&self.snapshot.status),
-            last_event_sequence(&self.snapshot.status).get(),
+            self.snapshot.status.last_event_sequence().get(),
         )
     }
 }
@@ -208,23 +208,15 @@ impl WatchOutput {
     }
 }
 
-fn operation_id(status: &OperationStatus) -> &OperationId {
-    match status {
-        OperationStatus::Deploy { id, .. }
-        | OperationStatus::Cert { id, .. }
-        | OperationStatus::MachineAdd { id, .. }
-        | OperationStatus::MachineUpdate { id, .. }
-        | OperationStatus::MachineLifecycle { id, .. } => id,
-    }
-}
-
-const fn operation_kind(status: &OperationStatus) -> &'static str {
-    match status {
-        OperationStatus::Deploy { .. } => "deploy",
-        OperationStatus::Cert { .. } => "cert",
-        OperationStatus::MachineAdd { .. } => "machine-add",
-        OperationStatus::MachineUpdate { .. } => "machine-update",
-        OperationStatus::MachineLifecycle { .. } => "machine-lifecycle",
+/// CLI display names for operation kinds; identity and sequence come from
+/// the core accessors on [`OperationStatus`].
+const fn operation_kind_name(kind: OperationKind) -> &'static str {
+    match kind {
+        OperationKind::Deploy => "deploy",
+        OperationKind::Cert => "cert",
+        OperationKind::MachineAdd => "machine-add",
+        OperationKind::MachineUpdate => "machine-update",
+        OperationKind::MachineLifecycle => "machine-lifecycle",
     }
 }
 
@@ -294,31 +286,6 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::MachineLifecycle { state, .. } => {
             machine_lifecycle_state(state).to_owned()
         }
-    }
-}
-
-const fn last_event_sequence(status: &OperationStatus) -> EventSequence {
-    match status {
-        OperationStatus::Deploy {
-            last_event_sequence,
-            ..
-        }
-        | OperationStatus::Cert {
-            last_event_sequence,
-            ..
-        }
-        | OperationStatus::MachineAdd {
-            last_event_sequence,
-            ..
-        }
-        | OperationStatus::MachineUpdate {
-            last_event_sequence,
-            ..
-        }
-        | OperationStatus::MachineLifecycle {
-            last_event_sequence,
-            ..
-        } => *last_event_sequence,
     }
 }
 

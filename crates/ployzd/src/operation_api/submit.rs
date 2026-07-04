@@ -12,8 +12,8 @@ use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineDrainRequest, MachineJoinToken, MachineLifecycleError,
-    MachineResumeRequest, MachineUpdateError, MachineUpdateRequest,
+    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
+    MachineUpdateError, MachineUpdateRequest,
 };
 
 use super::OperationApiHandlers;
@@ -188,7 +188,7 @@ pub async fn machine_update(
 
 pub async fn machine_drain(
     handlers: &OperationApiHandlers,
-    request: MachineDrainRequest,
+    request: MachineLifecycleRequest,
 ) -> Result<AcceptedOperation, MachineLifecycleError> {
     machine_lifecycle(
         handlers,
@@ -201,7 +201,7 @@ pub async fn machine_drain(
 
 pub async fn machine_resume(
     handlers: &OperationApiHandlers,
-    request: MachineResumeRequest,
+    request: MachineLifecycleRequest,
 ) -> Result<AcceptedOperation, MachineLifecycleError> {
     machine_lifecycle(
         handlers,

@@ -57,7 +57,7 @@ pub use ployz_core::machine_runtime::{
     ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation,
 };
-pub use ployz_core::machine_usability::MachineUsabilityReason;
+pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
@@ -184,16 +184,11 @@ pub struct MachineUpdateRequest {
     pub target_version: InstallArtifactVersion,
 }
 
+/// One request shape for both lifecycle endpoints: the endpoint carries the
+/// verb (drain or resume), the body only names the operation and machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct MachineDrainRequest {
-    pub operation_id: OperationId,
-    pub machine_id: MachineId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct MachineResumeRequest {
+pub struct MachineLifecycleRequest {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
 }

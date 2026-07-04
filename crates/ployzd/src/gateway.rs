@@ -28,17 +28,12 @@ pub struct GatewayServingEntry {
 pub struct GatewayProjectionInput {
     pub routes: Vec<GatewayRoute>,
     pub serving: Vec<GatewayServingEntry>,
-    pub observed_machines: Vec<GatewayMachineObservation>,
-}
-
-/// One machine's self-reported container snapshot. Gateways serve every
-/// observed container an operation promoted: an offline machine's upstreams
-/// fail at dial time, which is the live and exact liveness answer — the
-/// projection never infers liveness from observation age (ADR 0027,
-/// superseding ADR 0009's staleness filter).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayMachineObservation {
-    pub snapshot: MachineContainerObservationSnapshot,
+    /// Machines' self-reported container snapshots. Gateways serve every
+    /// observed container an operation promoted: an offline machine's
+    /// upstreams fail at dial time, which is the live and exact liveness
+    /// answer — the projection never infers liveness from observation age
+    /// (ADR 0027, superseding ADR 0009's staleness filter).
+    pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +176,7 @@ pub fn project_gateway(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let indexed_containers = index_fresh_running_containers(&input.observed_machines);
+    let indexed_containers = index_running_containers(&input.observed_machines);
     let mut routes = Vec::with_capacity(input_routes.len());
     for route in input_routes {
         // A binding whose service is absent from the serving target stays
@@ -238,8 +233,8 @@ struct IndexedGatewayContainers {
     unroutable_by_entry: BTreeMap<GatewayUpstreamKey, Vec<GatewayUnroutableContainer>>,
 }
 
-fn index_fresh_running_containers(
-    observed_machines: &[GatewayMachineObservation],
+fn index_running_containers(
+    observed_machines: &[MachineContainerObservationSnapshot],
 ) -> IndexedGatewayContainers {
     let mut addresses_by_entry: BTreeMap<GatewayUpstreamKey, Vec<GatewayContainerAddress>> =
         BTreeMap::new();
@@ -248,7 +243,7 @@ fn index_fresh_running_containers(
 
     for container in observed_machines
         .iter()
-        .flat_map(|machine| machine.snapshot.containers())
+        .flat_map(MachineContainerObservationSnapshot::containers)
     {
         if !container.is_running_service() {
             continue;

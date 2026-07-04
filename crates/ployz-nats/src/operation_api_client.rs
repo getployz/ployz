@@ -9,11 +9,12 @@ use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineDrainRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest,
     MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineLifecycleError, MachineListError, MachineListRequest, MachineListResult,
-    MachineResumeRequest, MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
+    MachineLifecycleError, MachineLifecycleRequest, MachineListError, MachineListRequest,
+    MachineListResult,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
     OperationApiResponse, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
     OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
     RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
@@ -99,14 +100,14 @@ impl OperationApiClient {
 
     pub async fn machine_drain(
         &self,
-        request: &MachineDrainRequest,
+        request: &MachineLifecycleRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineLifecycleError>> {
         self.request_api::<MachineDrainApi>(request).await
     }
 
     pub async fn machine_resume(
         &self,
-        request: &MachineResumeRequest,
+        request: &MachineLifecycleRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineLifecycleError>> {
         self.request_api::<MachineResumeApi>(request).await
     }

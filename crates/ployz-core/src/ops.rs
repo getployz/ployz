@@ -158,7 +158,7 @@ impl MachineUpdateOperationState {
 #[serde(deny_unknown_fields)]
 pub struct UnusableMachine {
     pub machine_id: MachineId,
-    pub reason: crate::machine_usability::MachineUsabilityReason,
+    pub reason: crate::state::MachineUsabilityReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,11 +190,13 @@ pub enum MachineLifecycleFailure {
     StateCommitFailed { message: FailureMessage },
 }
 
+/// Worker-recorded terminal outcomes. Cancellation is not one: it arrives
+/// through the generic [`OperationEvent::Cancelled`] path, never from the
+/// lifecycle worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineLifecycleTransition {
     Completed,
     Failed { failure: MachineLifecycleFailure },
-    Cancelled { reason: CancellationReason },
 }
 
 impl MachineLifecycleTransition {
@@ -204,9 +206,6 @@ impl MachineLifecycleTransition {
             Self::Completed => MachineLifecycleOperationState::Completed,
             Self::Failed { failure } => MachineLifecycleOperationState::Failed {
                 failure: failure.clone(),
-            },
-            Self::Cancelled { reason } => MachineLifecycleOperationState::Cancelled {
-                reason: reason.clone(),
             },
         }
     }
@@ -223,11 +222,6 @@ impl MachineLifecycleTransition {
                 operation_id: operation_id.clone(),
                 machine_id: machine_id.clone(),
                 failure: failure.clone(),
-            },
-            Self::Cancelled { reason } => OperationEvent::Cancelled {
-                operation_id: operation_id.clone(),
-                kind: OperationKind::MachineLifecycle,
-                reason: reason.clone(),
             },
         }
     }

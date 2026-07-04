@@ -198,7 +198,7 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
         command.unusable_machines(),
         [ployz_core::ops::UnusableMachine {
             machine_id: machine_id("edge_3"),
-            reason: ployz_core::machine_usability::MachineUsabilityReason::Draining,
+            reason: ployz_core::state::MachineUsabilityReason::Draining,
         }]
     );
 }
