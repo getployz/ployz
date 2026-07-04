@@ -27,8 +27,7 @@ use ployzd::deploy_worker::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    NamespaceStateCommitter, RouteBindingCommitError, ServingTargetCommitError,
-    prepare_deploy_execution_command,
+    NamespaceCommitError, NamespaceStateCommitter, prepare_deploy_execution_command,
 };
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
@@ -234,7 +233,15 @@ fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
     }
 }
 
+/// How the fake handles serving-target commits; routes always record.
+pub(super) enum ServingCommitBehavior {
+    Commit,
+    Hang,
+    LoseLock,
+}
+
 pub(super) struct RecordingNamespaceState {
+    pub(super) serving_behavior: ServingCommitBehavior,
     pub(super) route_requests: Vec<RouteBindingState>,
     pub(super) route_removals: Vec<RouteTarget>,
     pub(super) serving_requests: Vec<ServingTargetEntry>,
@@ -243,7 +250,20 @@ pub(super) struct RecordingNamespaceState {
 
 impl RecordingNamespaceState {
     pub(super) fn stored() -> Self {
+        Self::with_serving_behavior(ServingCommitBehavior::Commit)
+    }
+
+    pub(super) fn hanging_serving_commits() -> Self {
+        Self::with_serving_behavior(ServingCommitBehavior::Hang)
+    }
+
+    pub(super) fn lost_lock_serving_commits() -> Self {
+        Self::with_serving_behavior(ServingCommitBehavior::LoseLock)
+    }
+
+    fn with_serving_behavior(serving_behavior: ServingCommitBehavior) -> Self {
         Self {
+            serving_behavior,
             route_requests: Vec::new(),
             route_removals: Vec::new(),
             serving_requests: Vec::new(),
@@ -256,7 +276,7 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
     async fn replace_route_binding(
         &mut self,
         state: RouteBindingState,
-    ) -> Result<(), RouteBindingCommitError> {
+    ) -> Result<(), NamespaceCommitError> {
         self.route_requests.push(state);
         Ok(())
     }
@@ -264,7 +284,7 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
     async fn remove_route_binding(
         &mut self,
         target: RouteTarget,
-    ) -> Result<(), RouteBindingCommitError> {
+    ) -> Result<(), NamespaceCommitError> {
         self.route_removals.push(target);
         Ok(())
     }
@@ -272,98 +292,45 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
     async fn replace_serving_target_entry(
         &mut self,
         state: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        self.serving_requests.push(state);
-        Ok(())
+    ) -> Result<(), NamespaceCommitError> {
+        match self.serving_behavior {
+            ServingCommitBehavior::Commit => {
+                self.serving_requests.push(state);
+                Ok(())
+            }
+            ServingCommitBehavior::Hang => {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(())
+            }
+            ServingCommitBehavior::LoseLock => Err(NamespaceCommitError::ServingTargetLockLost {
+                scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                    service_id: state.service_id,
+                    namespace_revision_entry_id: state.namespace_revision_entry_id,
+                },
+            }),
+        }
     }
 
     async fn remove_serving_target_entry(
         &mut self,
         entry: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        self.serving_removals.push(entry.service_id);
-        Ok(())
-    }
-}
-
-/// Routes commit normally; serving-target commits hang, for step-timeout
-/// coverage.
-pub(super) struct HangingServingCommits;
-
-impl NamespaceStateCommitter for HangingServingCommits {
-    async fn replace_route_binding(
-        &mut self,
-        _state: RouteBindingState,
-    ) -> Result<(), RouteBindingCommitError> {
-        Ok(())
-    }
-
-    async fn remove_route_binding(
-        &mut self,
-        _target: RouteTarget,
-    ) -> Result<(), RouteBindingCommitError> {
-        Ok(())
-    }
-
-    async fn replace_serving_target_entry(
-        &mut self,
-        _state: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        Ok(())
-    }
-
-    async fn remove_serving_target_entry(
-        &mut self,
-        _entry: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        Ok(())
-    }
-}
-
-/// Routes commit normally; serving-target commits fail with a lost
-/// namespace lock, for fencing coverage.
-pub(super) struct LostLockServingCommits;
-
-impl NamespaceStateCommitter for LostLockServingCommits {
-    async fn replace_route_binding(
-        &mut self,
-        state: RouteBindingState,
-    ) -> Result<(), RouteBindingCommitError> {
-        let _ = state;
-        Ok(())
-    }
-
-    async fn remove_route_binding(
-        &mut self,
-        _target: RouteTarget,
-    ) -> Result<(), RouteBindingCommitError> {
-        Ok(())
-    }
-
-    async fn replace_serving_target_entry(
-        &mut self,
-        state: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        Err(ServingTargetCommitError::NamespaceLockLost {
-            scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-                service_id: state.service_id,
-                namespace_revision_entry_id: state.namespace_revision_entry_id,
-            },
-        })
-    }
-
-    async fn remove_serving_target_entry(
-        &mut self,
-        entry: ServingTargetEntry,
-    ) -> Result<(), ServingTargetCommitError> {
-        Err(ServingTargetCommitError::NamespaceLockLost {
-            scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-                service_id: entry.service_id,
-                namespace_revision_entry_id: entry.namespace_revision_entry_id,
-            },
-        })
+    ) -> Result<(), NamespaceCommitError> {
+        match self.serving_behavior {
+            ServingCommitBehavior::Commit => {
+                self.serving_removals.push(entry.service_id);
+                Ok(())
+            }
+            ServingCommitBehavior::Hang => {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(())
+            }
+            ServingCommitBehavior::LoseLock => Err(NamespaceCommitError::ServingTargetLockLost {
+                scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                    service_id: entry.service_id,
+                    namespace_revision_entry_id: entry.namespace_revision_entry_id,
+                },
+            }),
+        }
     }
 }
 

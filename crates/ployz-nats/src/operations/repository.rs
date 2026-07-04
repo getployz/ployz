@@ -489,7 +489,6 @@ impl StoredEventMismatchKind {
 pub type RecordDeployTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
-pub type RecordCertEventError = RecordLifecycleEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
 fn validate_stored_operation_event(
     operation_id: &OperationId,

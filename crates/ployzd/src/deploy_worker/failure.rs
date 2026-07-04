@@ -7,7 +7,6 @@ use ployz_core::ops::{
     ControlPlaneCommitScope, DeployOperationFailure, FailureMessage, HealthCheckFailure,
     OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
 };
-use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use std::future::Future;
 use std::time::Duration;
@@ -15,7 +14,7 @@ use std::time::Duration;
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 
 use super::{
-    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, RouteBindingCommitError,
+    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, NamespaceCommitError,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
@@ -162,8 +161,7 @@ pub enum DeployExecutionError {
     PrepareDataplane(DataplanePrepareError),
     RunContainer(MachineContainerRuntimeError),
     WaitHealthy(DeployHealthCheckError),
-    CommitRoute(RouteBindingCommitError),
-    CommitServingTarget(ServingTargetCommitError),
+    CommitNamespaceState(NamespaceCommitError),
     Failed {
         failure: DeployOperationFailure,
         source: Box<DeployExecutionError>,
@@ -315,8 +313,7 @@ impl DeployExecutionError {
             Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
-            Self::CommitRoute(error) => error.deploy_failure(retained_artifacts),
-            Self::CommitServingTarget(error) => error.deploy_failure(retained_artifacts),
+            Self::CommitNamespaceState(error) => error.deploy_failure(retained_artifacts),
             Self::Failed { failure, .. } => failure.clone(),
         }
     }
@@ -346,65 +343,47 @@ fn dataplane_deploy_failure(
     }
 }
 
-impl From<RouteBindingCommitError> for DeployExecutionError {
-    fn from(value: RouteBindingCommitError) -> Self {
-        Self::CommitRoute(value)
+impl From<NamespaceCommitError> for DeployExecutionError {
+    fn from(value: NamespaceCommitError) -> Self {
+        Self::CommitNamespaceState(value)
     }
 }
 
-impl RouteBindingCommitError {
+impl NamespaceCommitError {
     fn deploy_failure(&self, retained_artifacts: Vec<RetainedArtifact>) -> DeployOperationFailure {
         match self {
-            Self::Store { target, error } => DeployOperationFailure::RouteCutoverFailed {
+            Self::RouteStore { target, error } => DeployOperationFailure::RouteCutoverFailed {
                 route: target.clone(),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
                     message: failure_message(format!("route binding state write failed: {error}")),
                 },
                 retained_artifacts,
             },
-            Self::NamespaceLockLost { target } => DeployOperationFailure::RouteCutoverFailed {
+            Self::RouteLockLost { target } => DeployOperationFailure::RouteCutoverFailed {
                 route: target.clone(),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
                     message: failure_message("namespace lock was lost before route cutover"),
                 },
                 retained_artifacts,
             },
-        }
-    }
-}
-
-impl From<ServingTargetCommitError> for DeployExecutionError {
-    fn from(value: ServingTargetCommitError) -> Self {
-        Self::CommitServingTarget(value)
-    }
-}
-
-#[derive(Debug)]
-pub enum ServingTargetCommitError {
-    Store {
-        scope: ControlPlaneCommitScope,
-        error: CoreStateStoreError,
-    },
-    NamespaceLockLost {
-        scope: ControlPlaneCommitScope,
-    },
-}
-
-impl ServingTargetCommitError {
-    fn deploy_failure(&self, retained_artifacts: Vec<RetainedArtifact>) -> DeployOperationFailure {
-        match self {
-            Self::Store { scope, error } => DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: scope.clone(),
-                message: failure_message(format!(
-                    "serving target entry state could not be committed: {error}"
-                )),
-                retained_artifacts,
-            },
-            Self::NamespaceLockLost { scope } => DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: scope.clone(),
-                message: failure_message("namespace lock was lost before serving target commit"),
-                retained_artifacts,
-            },
+            Self::ServingTargetStore { scope, error } => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    scope: scope.clone(),
+                    message: failure_message(format!(
+                        "serving target entry state could not be committed: {error}"
+                    )),
+                    retained_artifacts,
+                }
+            }
+            Self::ServingTargetLockLost { scope } => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    scope: scope.clone(),
+                    message: failure_message(
+                        "namespace lock was lost before serving target commit",
+                    ),
+                    retained_artifacts,
+                }
+            }
         }
     }
 }

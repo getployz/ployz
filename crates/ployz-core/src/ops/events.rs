@@ -16,7 +16,7 @@ use crate::roles::InstallRolePolicy;
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage, MachineSubstrateVersions, MachineUpdateFailure,
+    DeployRunningStage, MachineSubstrateVersions, MachineUpdateFailure, OperationKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +145,7 @@ pub enum OperationEvent {
     },
     Cancelled {
         operation_id: OperationId,
+        kind: OperationKind,
         reason: CancellationReason,
     },
 }
@@ -265,12 +266,19 @@ impl OperationEvent {
             Self::DeployCleanupFinished { .. } => {
                 format!("deploy.cleanup.finished.{operation_id}")
             }
-            // Cancellation is recorded only by the deploy path; when another
-            // operation kind gains cancellation this event must learn its
-            // kind so terminal dedup stays per-kind-accurate.
-            Self::DeployCompleted { .. } | Self::DeployFailed { .. } | Self::Cancelled { .. } => {
+            Self::DeployCompleted { .. } | Self::DeployFailed { .. } => {
                 format!("deploy.terminal.{operation_id}")
             }
+            // A cancel shares the terminal id of its operation kind, so a
+            // cancel racing another terminal write dedups at the stream.
+            Self::Cancelled { kind, .. } => match kind {
+                OperationKind::Deploy => format!("deploy.terminal.{operation_id}"),
+                OperationKind::Cert => format!("cert.terminal.{operation_id}"),
+                OperationKind::MachineAdd => format!("machine.add.terminal.{operation_id}"),
+                OperationKind::MachineUpdate => {
+                    format!("machine.update.terminal.{operation_id}")
+                }
+            },
             Self::CertChallengePublished { .. } => {
                 format!("cert.challenge.published.{operation_id}")
             }
