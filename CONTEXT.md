@@ -421,8 +421,8 @@ A machine that has been explicitly excluded from new workload placement while ex
 _Avoid_: Temporary scheduler hint, daemon-local maintenance flag, serving disable
 
 **Drain Cancellation**:
-An explicit operation that returns a draining machine to normal placement eligibility. Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
-_Avoid_: Rollback, undelete, workload restore
+An explicit operation that returns a draining machine to normal placement eligibility; the canonical operation and command name is resume (`machine resume`). Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
+_Avoid_: Rollback, undelete, workload restore, activate (reserved for first-machine activation)
 
 **Machine Cleanup Reachability**:
 The ability to send machine-local cleanup commands to a machine for runtime material already on that machine. A draining machine may remain cleanup-reachable while it is fresh and authorized, even though it is not eligible for new workload placement.

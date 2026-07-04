@@ -12,11 +12,13 @@ use crate::machine::{
     MachineName,
 };
 use crate::roles::InstallRolePolicy;
+use crate::state::MachineLifecycle;
 
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage, MachineSubstrateVersions, MachineUpdateFailure, OperationKind,
+    DeployRunningStage, MachineLifecycleFailure, MachineSubstrateVersions, MachineUpdateFailure,
+    OperationKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,20 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: MachineUpdateFailure,
     },
+    MachineLifecycleSubmitted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        target: MachineLifecycle,
+    },
+    MachineLifecycleCompleted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    MachineLifecycleFailed {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: MachineLifecycleFailure,
+    },
     Cancelled {
         operation_id: OperationId,
         kind: OperationKind,
@@ -178,6 +194,9 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { operation_id, .. }
             | Self::MachineUpdateCompleted { operation_id, .. }
             | Self::MachineUpdateFailed { operation_id, .. }
+            | Self::MachineLifecycleSubmitted { operation_id, .. }
+            | Self::MachineLifecycleCompleted { operation_id, .. }
+            | Self::MachineLifecycleFailed { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -222,6 +241,12 @@ impl OperationEvent {
             Self::MachineUpdateRunning { .. } => "machine.update.running".to_owned(),
             Self::MachineUpdateCompleted { .. } => "machine.update.completed".to_owned(),
             Self::MachineUpdateFailed { .. } => "machine.update.failed".to_owned(),
+            Self::MachineLifecycleSubmitted { target, .. } => match target {
+                MachineLifecycle::Active => "machine.lifecycle.resume.submitted".to_owned(),
+                MachineLifecycle::Draining => "machine.lifecycle.drain.submitted".to_owned(),
+            },
+            Self::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed".to_owned(),
+            Self::MachineLifecycleFailed { .. } => "machine.lifecycle.failed".to_owned(),
             Self::Cancelled { .. } => "cancelled".to_owned(),
         };
         crate::subjects::op_event_subject(self.operation_id(), &suffix)
@@ -240,7 +265,10 @@ impl OperationEvent {
             Self::DeploySubmitted { .. }
             | Self::CertRenewalSubmitted { .. }
             | Self::MachineAddSubmitted { .. }
-            | Self::MachineUpdateSubmitted { .. } => format!("operation.submit.{operation_id}"),
+            | Self::MachineUpdateSubmitted { .. }
+            | Self::MachineLifecycleSubmitted { .. } => {
+                format!("operation.submit.{operation_id}")
+            }
             Self::DeployPlanningStarted { .. } => {
                 format!("deploy.event.{operation_id}.planning.started")
             }
@@ -278,6 +306,9 @@ impl OperationEvent {
                 OperationKind::MachineUpdate => {
                     format!("machine.update.terminal.{operation_id}")
                 }
+                OperationKind::MachineLifecycle => {
+                    format!("machine.lifecycle.terminal.{operation_id}")
+                }
             },
             Self::CertChallengePublished { .. } => {
                 format!("cert.challenge.published.{operation_id}")
@@ -299,6 +330,9 @@ impl OperationEvent {
             Self::MachineUpdateRunning { .. } => format!("machine.update.running.{operation_id}"),
             Self::MachineUpdateCompleted { .. } | Self::MachineUpdateFailed { .. } => {
                 format!("machine.update.terminal.{operation_id}")
+            }
+            Self::MachineLifecycleCompleted { .. } | Self::MachineLifecycleFailed { .. } => {
+                format!("machine.lifecycle.terminal.{operation_id}")
             }
         }
     }

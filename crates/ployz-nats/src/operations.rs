@@ -16,8 +16,9 @@ pub use ployz_core::ops::{
 };
 pub use repository::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    AcceptedMachineUpdateSubmission, AsyncNatsOperationRepository, CertOperationSubmission,
-    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinRedemption,
+    AcceptedMachineLifecycleSubmission, AcceptedMachineUpdateSubmission,
+    AsyncNatsOperationRepository, CertOperationSubmission, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineJoinRedemption, MachineLifecycleOperationSubmission,
     MachineUpdateOperationSubmission, OperationStatusWrite, RecordDeployEvidenceError,
     RecordDeployTransitionError, RecordLifecycleEventError, RecordMachineAddEventError,
     RecordMachineJoinReportError, RecordOperationEventError, RecordedMachineJoinReport,

@@ -65,6 +65,23 @@ pub struct ActiveMachineState {
     pub activated_by: OperationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substrate_versions: Option<MachineSubstrateVersions>,
+    /// Durable operator intent for this machine (Machine Lifecycle in the
+    /// glossary). Absent in records written before lifecycle existed, so the
+    /// default is active.
+    #[serde(default)]
+    pub lifecycle: MachineLifecycle,
+}
+
+/// The durable operator-intent state of a current machine identity. Controls
+/// placement policy; runtime readiness comes from observations, never from
+/// lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineLifecycle {
+    #[default]
+    Active,
+    Draining,
 }
 
 /// Persisted `KV_CORE.namespace_locks.*` value.

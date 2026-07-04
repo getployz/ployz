@@ -4,6 +4,7 @@ use ployz_core::ops::{
     CancellationReason, DeployCompletionOutcome, DeployRunningStage, MachineSubstrateVersions,
     OperationEvent,
 };
+use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{
     MachineObservationEvent, MachineServiceEndpoint, cert_renewal_job, cert_renewal_schedule,
     machine_observation, machine_service, op_watch,
@@ -60,6 +61,19 @@ fn operation_event_subjects_are_pinned() {
     assert_eq!(
         machine_update_completed(&op_id).subject(),
         "plz.v1.op.op_machine.machine.update.completed"
+    );
+
+    assert_eq!(
+        lifecycle_submitted(&op_id, MachineLifecycle::Draining).subject(),
+        "plz.v1.op.op_machine.machine.lifecycle.drain.submitted"
+    );
+    assert_eq!(
+        lifecycle_submitted(&op_id, MachineLifecycle::Active).subject(),
+        "plz.v1.op.op_machine.machine.lifecycle.resume.submitted"
+    );
+    assert_eq!(
+        lifecycle_completed(&op_id).subject(),
+        "plz.v1.op.op_machine.machine.lifecycle.completed"
     );
 
     let op_id = operation_id("op_cert");
@@ -141,6 +155,18 @@ fn terminal_events_share_one_message_id_per_operation_kind() {
     assert_eq!(
         cancelled_with_kind(&op_id, ployz_core::ops::OperationKind::MachineUpdate).message_id(),
         machine_update_completed(&op_id).message_id()
+    );
+    assert_eq!(
+        lifecycle_completed(&op_id).message_id(),
+        "machine.lifecycle.terminal.op_123"
+    );
+    assert_eq!(
+        cancelled_with_kind(&op_id, ployz_core::ops::OperationKind::MachineLifecycle).message_id(),
+        lifecycle_completed(&op_id).message_id()
+    );
+    assert_eq!(
+        lifecycle_submitted(&op_id, MachineLifecycle::Draining).message_id(),
+        "operation.submit.op_123"
     );
 }
 
@@ -295,6 +321,21 @@ fn machine_update_completed(operation_id: &OperationId) -> OperationEvent {
             ployzd: None,
             keeper: None,
         },
+    }
+}
+
+fn lifecycle_submitted(operation_id: &OperationId, target: MachineLifecycle) -> OperationEvent {
+    OperationEvent::MachineLifecycleSubmitted {
+        operation_id: operation_id.clone(),
+        machine_id: machine_id("machine_7"),
+        target,
+    }
+}
+
+fn lifecycle_completed(operation_id: &OperationId) -> OperationEvent {
+    OperationEvent::MachineLifecycleCompleted {
+        operation_id: operation_id.clone(),
+        machine_id: machine_id("machine_7"),
     }
 }
 

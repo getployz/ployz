@@ -5,6 +5,9 @@ use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionMachineScope;
+use crate::machine_lifecycle_runtime::{
+    MachineLifecycleOperationRuntime, adopt_machine_lifecycles_from_file,
+};
 use crate::machine_runtime::client::{NatsMachineLogsTailer, NatsMachineSubstrateUpdater};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::{
@@ -29,6 +32,7 @@ pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
     deploy_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
+    machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
     authorization: NatsAuthorizationRuntime,
 }
@@ -38,6 +42,7 @@ impl RunningControlRuntime {
         self.operation_api.shutdown().await?;
         self.deploy_tasks.abort_all();
         self.machine_update_tasks.abort_all();
+        self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
         self.authorization.shutdown();
         Ok(())
@@ -105,8 +110,17 @@ pub async fn start_control_runtime_with_client_and_reload(
         .render(None)
         .await
         .map_err(ControlRuntimeError::RenderNatsAuthorization)?;
+    // Lifecycle intent adoption mirrors the authorized-users adoption just
+    // above: the on-disk drained set is recovery evidence for KV.
+    adopt_machine_lifecycles_from_file(
+        &config.nats_authorization.machine_lifecycles_file,
+        &core_state,
+    )
+    .await
+    .map_err(ControlRuntimeError::AdoptMachineLifecycles)?;
     let deploy_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
+    let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
@@ -141,12 +155,19 @@ pub async fn start_control_runtime_with_client_and_reload(
         machine_updater,
         machine_update_tasks.clone(),
     );
+    let machine_lifecycle_runtime = MachineLifecycleOperationRuntime::new(
+        controllers.clone(),
+        core_state.clone(),
+        config.nats_authorization.machine_lifecycles_file.clone(),
+        machine_lifecycle_tasks.clone(),
+    );
     let operation_api = start_operation_api_service_with_handlers(
         client,
         OperationApiHandlers::execute_operations(
             controllers,
             deploy_runtime,
             machine_update_runtime,
+            machine_lifecycle_runtime,
             machine_mint,
             config
                 .deploy_machines
@@ -165,6 +186,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         operation_api,
         deploy_tasks,
         machine_update_tasks,
+        machine_lifecycle_tasks,
         mint_tasks,
         authorization,
     })
@@ -196,6 +218,7 @@ pub enum ControlRuntimeError {
     StartNatsAuthorization(NatsAuthorizationStartError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
+    AdoptMachineLifecycles(ployz_core::ops::FailureMessage),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
@@ -230,6 +253,12 @@ impl fmt::Display for ControlRuntimeError {
             }
             Self::RenderNatsAuthorization(error) => {
                 write!(formatter, "failed to render NATS authorization: {error}")
+            }
+            Self::AdoptMachineLifecycles(message) => {
+                write!(
+                    formatter,
+                    "failed to adopt machine lifecycle evidence: {message}"
+                )
             }
             Self::ResumeMachineAddMints(error) => {
                 write!(

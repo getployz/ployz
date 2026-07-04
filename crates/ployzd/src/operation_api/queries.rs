@@ -8,6 +8,7 @@ use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::machine_usability::{ObservationFreshness, machine_usability};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
@@ -24,7 +25,7 @@ use ployz_sdk_types::{
     ServiceSnapshot,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::error_map::ops_watch_error_from_replay_error;
 
@@ -446,6 +447,24 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
+fn current_unix_nanos() -> i128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128
+}
+
+/// Folds an observation age into the shared freshness rule; the timestamp is
+/// the KV entry's last write.
+fn observation_freshness(
+    observed_at_unix_nanos: Option<i128>,
+    now_unix_nanos: i128,
+) -> ObservationFreshness {
+    ObservationFreshness::from_age(observed_at_unix_nanos.map(|observed_at| {
+        Duration::from_nanos(now_unix_nanos.saturating_sub(observed_at).max(0) as u64)
+    }))
+}
+
 impl MachineQueryRuntime {
     #[must_use]
     pub(crate) fn new(
@@ -484,7 +503,7 @@ impl MachineQueryRuntime {
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
-        let container_counts = self
+        let container_observations = self
             .observations
             .machine_snapshot_records()
             .await
@@ -495,19 +514,28 @@ impl MachineQueryRuntime {
             .map(|record| {
                 (
                     record.snapshot.machine_id().clone(),
-                    record.snapshot.containers().len(),
+                    (
+                        record.snapshot.containers().len(),
+                        record.observed_at_unix_nanos,
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let now_unix_nanos = current_unix_nanos();
         let mut snapshots = Vec::with_capacity(machines.len());
         for machine in machines {
+            let observation = container_observations.get(&machine.machine_id).copied();
             snapshots.push(MachineSnapshot {
                 public_ip: public_ips.get(&machine.machine_id).cloned(),
                 gateway: gateway_statuses.get(&machine.machine_id).cloned(),
-                observed_container_count: container_counts
-                    .get(&machine.machine_id)
-                    .copied()
-                    .unwrap_or_default(),
+                observed_container_count: observation.map(|(count, _)| count).unwrap_or_default(),
+                usability: machine_usability(
+                    machine.lifecycle,
+                    observation_freshness(
+                        observation.map(|(_, observed_at)| observed_at),
+                        now_unix_nanos,
+                    ),
+                ),
                 active: machine,
             });
         }
@@ -549,19 +577,29 @@ impl MachineQueryRuntime {
             .gateway_status(&active.machine_id)
             .await
             .map_err(|error| error.to_string())?;
-        let observed_container_count = self
+        let observation = self
             .observations
-            .machine_snapshot(&active.machine_id)
+            .machine_snapshot_record(&active.machine_id)
             .await
-            .map_err(|error| error.to_string())?
-            .map(|snapshot| snapshot.containers().len())
-            .unwrap_or_default();
+            .map_err(|error| error.to_string())?;
+        let usability = machine_usability(
+            active.lifecycle,
+            observation_freshness(
+                observation
+                    .as_ref()
+                    .map(|record| record.observed_at_unix_nanos),
+                current_unix_nanos(),
+            ),
+        );
 
         Ok(MachineSnapshot {
             active,
             public_ip,
             gateway,
-            observed_container_count,
+            observed_container_count: observation
+                .map(|record| record.snapshot.containers().len())
+                .unwrap_or_default(),
+            usability,
         })
     }
 }

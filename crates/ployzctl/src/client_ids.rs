@@ -50,6 +50,13 @@ pub(crate) fn generate_client_machine_add_ids(
     })
 }
 
+pub(crate) fn generate_client_machine_lifecycle_id(
+    action: &'static str,
+    machine_id: &MachineId,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id(action, machine_id.as_str())
+}
+
 pub(crate) fn generate_client_machine_update_id(
     machine_id: &MachineId,
 ) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {

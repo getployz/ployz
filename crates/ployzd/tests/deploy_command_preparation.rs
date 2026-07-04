@@ -18,6 +18,7 @@ use std::time::Duration;
 async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
+        unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
@@ -55,6 +56,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
+        unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
@@ -112,6 +114,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     )
     .expect("valid machine observation snapshot");
     let facts = DeployExecutionFacts {
+        unusable_machines: Vec::new(),
         namespace_route_bindings: vec![RouteBindingState {
             namespace_id: namespace_id("default"),
             target: omitted_target.clone(),

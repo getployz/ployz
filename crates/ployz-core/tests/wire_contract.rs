@@ -469,6 +469,20 @@ fn root_operation_event_rejects_unknown_fields() {
 }
 
 #[test]
+fn machine_lifecycle_submitted_wire_shape_is_pinned() {
+    let event = OperationEvent::MachineLifecycleSubmitted {
+        operation_id: operation_id("op_123"),
+        machine_id: machine_id("machine_7"),
+        target: ployz_core::state::MachineLifecycle::Draining,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&event).expect("event serializes"),
+        r#"{"event":"machine_lifecycle_submitted","operation_id":"op_123","machine_id":"machine_7","target":"draining"}"#
+    );
+}
+
+#[test]
 fn cancellation_reasons_are_non_empty() {
     let event = OperationEvent::Cancelled {
         operation_id: operation_id("op_123"),

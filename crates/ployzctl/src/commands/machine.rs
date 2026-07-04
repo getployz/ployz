@@ -692,6 +692,77 @@ impl MachineUpdateCommand {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineDrainCommand {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub detach: bool,
+}
+
+impl MachineDrainCommand {
+    #[must_use]
+    pub fn into_request(self) -> ployz_sdk_types::MachineDrainRequest {
+        ployz_sdk_types::MachineDrainRequest {
+            operation_id: self.operation_id,
+            machine_id: self.machine_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineResumeCommand {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub detach: bool,
+}
+
+impl MachineResumeCommand {
+    #[must_use]
+    pub fn into_request(self) -> ployz_sdk_types::MachineResumeRequest {
+        ployz_sdk_types::MachineResumeRequest {
+            operation_id: self.operation_id,
+            machine_id: self.machine_id,
+        }
+    }
+}
+
+pub(crate) fn machine_drain_command(
+    parsed: MachineLifecycleCli,
+) -> Result<MachineDrainCommand, PloyzctlCliError> {
+    let (operation_id, machine_id, detach) = machine_lifecycle_parts("drain", parsed)?;
+    Ok(MachineDrainCommand {
+        operation_id,
+        machine_id,
+        detach,
+    })
+}
+
+pub(crate) fn machine_resume_command(
+    parsed: MachineLifecycleCli,
+) -> Result<MachineResumeCommand, PloyzctlCliError> {
+    let (operation_id, machine_id, detach) = machine_lifecycle_parts("resume", parsed)?;
+    Ok(MachineResumeCommand {
+        operation_id,
+        machine_id,
+        detach,
+    })
+}
+
+fn machine_lifecycle_parts(
+    action: &'static str,
+    parsed: MachineLifecycleCli,
+) -> Result<(OperationId, MachineId, bool), PloyzctlCliError> {
+    let machine_id = MachineId::try_new(parsed.machine_id)
+        .map_err(|error| invalid_value("<machine_id>", error))?;
+    let operation_id = crate::client_ids::generate_client_machine_lifecycle_id(action, &machine_id)
+        .map_err(|error| PloyzctlCliError::InvalidValue {
+            flag: "<machine_id>",
+            message: error.to_string(),
+        })?
+        .operation_id;
+    Ok((operation_id, machine_id, parsed.detach))
+}
+
 impl MachineInspectCommand {
     #[must_use]
     pub fn into_request(self) -> MachineInspectRequest {
@@ -742,6 +813,13 @@ pub(crate) struct MachineUpdateCli {
     machine_id: String,
     #[arg(long)]
     version: String,
+    #[arg(long)]
+    detach: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MachineLifecycleCli {
+    machine_id: String,
     #[arg(long)]
     detach: bool,
 }

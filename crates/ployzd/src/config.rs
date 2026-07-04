@@ -26,6 +26,8 @@ pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
+pub const PLOYZ_MACHINE_LIFECYCLES_FILE_ENV: &str = "PLOYZ_MACHINE_LIFECYCLES_FILE";
+pub const DEFAULT_MACHINE_LIFECYCLES_FILE: &str = "/var/lib/ployz/machine-lifecycles.json";
 pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
 pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
@@ -264,15 +266,22 @@ fn load_control_nats_authorization(
         machine_seed_file: env_value(env, PLOYZ_NATS_MACHINE_SEED_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.machine_seed_file),
+        machine_lifecycles_file: env_value(env, PLOYZ_MACHINE_LIFECYCLES_FILE_ENV)
+            .map(PathBuf::from)
+            .unwrap_or(defaults.machine_lifecycles_file),
     }
 }
 
-/// The two control-owned credential paths: the rendered authority file and
-/// the first machine's locally written `machine.seed`.
+/// Control-owned durable paths: the rendered authority file, the first
+/// machine's locally written `machine.seed`, and the machine lifecycle
+/// evidence file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
     pub machine_seed_file: PathBuf,
+    /// Recovery evidence for machine lifecycle intent (drained machines);
+    /// adopted into KV on control start.
+    pub machine_lifecycles_file: PathBuf,
 }
 
 impl ControlNatsAuthorizationConfig {
@@ -281,6 +290,7 @@ impl ControlNatsAuthorizationConfig {
         Self {
             authorized_users_file: PathBuf::from(DEFAULT_NATS_AUTHORIZED_USERS_FILE),
             machine_seed_file: NatsMachineMaterialPaths::in_default_state_dir().machine_seed_file(),
+            machine_lifecycles_file: PathBuf::from(DEFAULT_MACHINE_LIFECYCLES_FILE),
         }
     }
 }

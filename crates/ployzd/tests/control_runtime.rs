@@ -17,6 +17,7 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
+use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
     RouteBindingState, ServingTargetEntry,
@@ -431,6 +432,10 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
+    observations
+        .replace_machine_containers(&containers::snapshot("machine_a", []))
+        .await
+        .expect("machine reports before placement");
     let machine_runtime = start_machine_runtime_service(
         machine_client.clone(),
         machine_id("machine_a"),
@@ -564,6 +569,10 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         })
         .await
         .expect("machine public ip stores");
+    observations
+        .replace_machine_containers(&containers::snapshot("machine_a", []))
+        .await
+        .expect("machine reports before placement");
     let machine_runtime = start_machine_runtime_service(
         machine_client.clone(),
         machine_id("machine_a"),
@@ -707,6 +716,7 @@ fn replicas(value: u16) -> ReplicaCount {
 
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
+        lifecycle: MachineLifecycle::Active,
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),

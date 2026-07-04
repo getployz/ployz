@@ -562,6 +562,7 @@ fn serving_target_entry_state(service: &str, revision: &str) -> ServingTargetEnt
 
 fn active_machine_state(machine: &str, name: &str, operation: &str) -> ActiveMachineState {
     ActiveMachineState {
+        lifecycle: ployz_core::state::MachineLifecycle::Active,
         machine_id: machine_id(machine),
         name: machine_name(name),
         activated_by: operation_id(operation),

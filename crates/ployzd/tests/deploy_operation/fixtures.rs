@@ -636,6 +636,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             }],
         },
         DeployExecutionFacts {
+            unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
@@ -714,6 +715,7 @@ fn prepared_deploy_command(
         operation_id("op_123"),
         target_deploy_request(replicas),
         DeployExecutionFacts {
+            unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
             dataplane_machines: Vec::new(),
@@ -747,6 +749,7 @@ pub(super) fn empty_deploy_command_with_running_container(
             services: Vec::new(),
         },
         DeployExecutionFacts {
+            unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {
                 namespace_id: namespace_id("default"),
                 target: RouteTarget::new(

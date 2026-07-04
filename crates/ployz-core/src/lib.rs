@@ -14,6 +14,7 @@ pub mod ids;
 pub mod install;
 pub mod machine;
 pub mod machine_runtime;
+pub mod machine_usability;
 pub mod nats_config;
 pub mod ops;
 pub mod permissions;
