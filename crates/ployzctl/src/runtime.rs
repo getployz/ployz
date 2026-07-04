@@ -393,7 +393,7 @@ async fn render_api_call<T, E>(
     render: impl FnOnce(T) -> String,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError>
 where
-    E: fmt::Debug,
+    E: fmt::Display,
 {
     let api = operation_api_client(config).await?;
     let value = call(api).await.map_err(api_error)?;
@@ -404,7 +404,7 @@ where
 /// message instead of one error variant per endpoint.
 pub(crate) fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecutionError
 where
-    E: fmt::Debug,
+    E: fmt::Display,
 {
     PloyzctlExecutionError::OperationApi {
         message: source.to_string(),
@@ -718,6 +718,28 @@ impl std::error::Error for PloyzctlExecutionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_error_renders_domain_errors_as_clean_evidence() {
+        let error = api_error(OperationApiClientError::Domain {
+            endpoint: ployz_core::subjects::OperationApiEndpoint::DeploySubmit,
+            error: ployz_sdk_types::DeploySubmitError::Unavailable {
+                operation_id: ployz_core::ids::OperationId::try_new("op_123")
+                    .expect("valid operation id"),
+                message: "operation status CAS conflict: contended".to_owned(),
+            },
+        });
+        let PloyzctlExecutionError::OperationApi { message } = error else {
+            panic!("api_error maps to the operation API execution error");
+        };
+        assert!(
+            message.ends_with(
+                "failed: deploy submit op_123 unavailable: operation status CAS conflict: contended"
+            ),
+            "unexpected rendering: {message}"
+        );
+        assert!(!message.contains('{'), "Debug braces leaked: {message}");
+    }
 
     fn cluster_context() -> ClusterContext {
         ClusterContext {

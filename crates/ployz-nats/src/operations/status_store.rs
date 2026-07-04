@@ -1,4 +1,3 @@
-use std::fmt;
 use std::time::Duration;
 
 use async_nats::jetstream;
@@ -597,57 +596,29 @@ pub(crate) enum StatusStoreWrite {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum OperationStatusStoreError {
+    #[error("open operation status bucket {bucket}: {message}")]
     OpenBucket {
         bucket: &'static str,
         message: String,
     },
+    #[error("encode operation status: {0}")]
     EncodeStatus(serde_json::Error),
+    #[error("decode operation status: {0}")]
     DecodeStatus(serde_json::Error),
+    #[error("encode operation submission: {0}")]
     EncodeSubmission(serde_json::Error),
+    #[error("decode operation submission: {0}")]
     DecodeSubmission(serde_json::Error),
-    CasConflict {
-        message: String,
-    },
-    RecordExists {
-        message: String,
-    },
-    GetStatus {
-        message: String,
-    },
-    Timeout {
-        operation: &'static str,
-    },
-}
-
-impl fmt::Display for OperationStatusStoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OpenBucket { bucket, message } => {
-                write!(
-                    formatter,
-                    "open operation status bucket {bucket}: {message}"
-                )
-            }
-            Self::EncodeStatus(error) => write!(formatter, "encode operation status: {error}"),
-            Self::DecodeStatus(error) => write!(formatter, "decode operation status: {error}"),
-            Self::EncodeSubmission(error) => {
-                write!(formatter, "encode operation submission: {error}")
-            }
-            Self::DecodeSubmission(error) => {
-                write!(formatter, "decode operation submission: {error}")
-            }
-            Self::CasConflict { message } => {
-                write!(formatter, "operation status CAS conflict: {message}")
-            }
-            Self::RecordExists { message } => {
-                write!(formatter, "operation record exists: {message}")
-            }
-            Self::GetStatus { message } => write!(formatter, "get operation status: {message}"),
-            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
-        }
-    }
+    #[error("operation status CAS conflict: {message}")]
+    CasConflict { message: String },
+    #[error("operation record exists: {message}")]
+    RecordExists { message: String },
+    #[error("get operation status: {message}")]
+    GetStatus { message: String },
+    #[error("{operation} timed out")]
+    Timeout { operation: &'static str },
 }
 
 impl OperationStatusStoreError {
@@ -661,21 +632,14 @@ impl OperationStatusStoreError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum OperationStatusReadError {
+    #[error("decode operation status: {0}")]
     DecodeStatus(serde_json::Error),
+    #[error("get operation status: {message}")]
     GetStatus { message: String },
+    #[error("{operation} timed out")]
     Timeout { operation: &'static str },
-}
-
-impl fmt::Display for OperationStatusReadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DecodeStatus(error) => write!(formatter, "decode operation status: {error}"),
-            Self::GetStatus { message } => write!(formatter, "get operation status: {message}"),
-            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
-        }
-    }
 }
 
 impl From<NatsIoTimeout> for OperationStatusStoreError {

@@ -11,7 +11,6 @@ use super::{
 };
 use crate::machine::{MachineAddOperationState, MachineName};
 use crate::roles::InstallRolePolicy;
-use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationProjection {
@@ -19,30 +18,58 @@ pub enum OperationProjection {
     AlreadySatisfied,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatusProjectionError {
-    MissingOperation {
-        operation_id: OperationId,
-    },
+    #[error("missing operation {}", .operation_id.as_str())]
+    MissingOperation { operation_id: OperationId },
+    #[error(
+        "operation {} kind mismatch: expected {}, found {}",
+        .operation_id.as_str(),
+        operation_kind_name(*.expected),
+        operation_kind_name(*.actual)
+    )]
     OperationKindMismatch {
         operation_id: OperationId,
         expected: OperationKind,
         actual: OperationKind,
     },
+    #[error(
+        "operation {} subject mismatch: expected {}, found {}",
+        .operation_id.as_str(),
+        subject_ref_text(.expected),
+        subject_ref_text(.actual)
+    )]
     OperationSubjectMismatch {
         operation_id: OperationId,
         expected: OperationSubjectRef,
         actual: OperationSubjectRef,
     },
+    #[error(
+        "operation event mismatch: expected {}, found {}",
+        .expected_operation_id.as_str(),
+        .actual_operation_id.as_str()
+    )]
     OperationEventMismatch {
         expected_operation_id: OperationId,
         actual_operation_id: OperationId,
     },
+    #[error(
+        "operation {} is terminal in its {} state; a {} transition was attempted",
+        .operation_id.as_str(),
+        operation_kind_name(.current.kind()),
+        operation_kind_name(.attempted.kind())
+    )]
     TerminalState {
         operation_id: OperationId,
         current: Box<ProjectionOperationState>,
         attempted: Box<ProjectionOperationState>,
     },
+    #[error(
+        "operation {} cannot transition from its {} state to the attempted {} state",
+        .operation_id.as_str(),
+        operation_kind_name(.current.kind()),
+        operation_kind_name(.attempted.kind())
+    )]
     InvalidTransition {
         operation_id: OperationId,
         current: Box<ProjectionOperationState>,
@@ -60,17 +87,17 @@ pub enum ProjectionOperationState {
 
 impl ProjectionOperationState {
     #[must_use]
-    pub const fn kind_name(&self) -> &'static str {
+    pub const fn kind(&self) -> OperationKind {
         match self {
-            Self::Deploy(_) => "deploy",
-            Self::Cert(_) => "cert",
-            Self::MachineAdd(_) => "machine-add",
-            Self::MachineUpdate(_) => "machine-update",
+            Self::Deploy(_) => OperationKind::Deploy,
+            Self::Cert(_) => OperationKind::Cert,
+            Self::MachineAdd(_) => OperationKind::MachineAdd,
+            Self::MachineUpdate(_) => OperationKind::MachineUpdate,
         }
     }
 }
 
-const fn operation_kind_name(kind: OperationKind) -> &'static str {
+pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
     match kind {
         OperationKind::Deploy => "deploy",
         OperationKind::Cert => "cert",
@@ -87,69 +114,6 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         }
         OperationSubjectRef::MachineUpdate(machine_id) => {
             format!("machine-update {}", machine_id.as_str())
-        }
-    }
-}
-
-impl fmt::Display for StatusProjectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingOperation { operation_id } => {
-                write!(formatter, "missing operation {}", operation_id.as_str())
-            }
-            Self::OperationKindMismatch {
-                operation_id,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "operation {} kind mismatch: expected {}, found {}",
-                operation_id.as_str(),
-                operation_kind_name(*expected),
-                operation_kind_name(*actual)
-            ),
-            Self::OperationSubjectMismatch {
-                operation_id,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "operation {} subject mismatch: expected {}, found {}",
-                operation_id.as_str(),
-                subject_ref_text(expected),
-                subject_ref_text(actual)
-            ),
-            Self::OperationEventMismatch {
-                expected_operation_id,
-                actual_operation_id,
-            } => write!(
-                formatter,
-                "operation event mismatch: expected {}, found {}",
-                expected_operation_id.as_str(),
-                actual_operation_id.as_str()
-            ),
-            Self::TerminalState {
-                operation_id,
-                current,
-                attempted,
-            } => write!(
-                formatter,
-                "operation {} is terminal in its {} state; a {} transition was attempted",
-                operation_id.as_str(),
-                current.kind_name(),
-                attempted.kind_name()
-            ),
-            Self::InvalidTransition {
-                operation_id,
-                current,
-                attempted,
-            } => write!(
-                formatter,
-                "operation {} cannot transition from its {} state to the attempted {} state",
-                operation_id.as_str(),
-                current.kind_name(),
-                attempted.kind_name()
-            ),
         }
     }
 }

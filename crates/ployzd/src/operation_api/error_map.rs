@@ -2,22 +2,26 @@
 //! errors. Actionable states stay typed; storage and transport plumbing renders
 //! as evidence text.
 
-use crate::controllers::{
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommandError, SubmitCommandError,
-};
+use crate::controllers::{MachineAddSubmitCommandError, SubmitCommandError};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_nats::operations::{
-    RecordMachineAddEventError, RecordMachineJoinReportError, RecordOperationEventError,
+    RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
-    ReplayOperationEventsError, StoredEventMismatchKind, SubmitOperationError,
+    ReplayOperationEventsError, SubmitOperationError,
 };
 use ployz_sdk_types::{
     DeploySubmitError, MachineAddError, MachineJoinRedeemError, MachineJoinReportError,
     OpsWatchError,
 };
+
+/// The one definition of the corrupt-record evidence prefix, so the
+/// sentinel stays greppable and consistent across the operation API.
+pub(super) fn corrupt(detail: impl std::fmt::Display) -> String {
+    format!("operation record corrupt: {detail}")
+}
 
 pub(super) enum SubmitFailure {
     InvalidDeployTarget,
@@ -134,18 +138,6 @@ pub(super) fn machine_add_error_from_submit_error(
     }
 }
 
-pub(super) fn bootstrap_material_message(error: MachineAddBootstrapMaterialError) -> String {
-    match error {
-        MachineAddBootstrapMaterialError::Clock { message } => format!("clock: {message}"),
-        MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial => {
-            "machine-add bootstrap material contains invalid join token material".to_owned()
-        }
-        MachineAddBootstrapMaterialError::MissingJoinTemplate => {
-            "machine-add bootstrap material missing join template".to_owned()
-        }
-    }
-}
-
 fn machine_add_state_conflict(
     error: &RecordMachineJoinReportError,
 ) -> Option<(
@@ -201,15 +193,15 @@ pub(super) fn machine_join_report_error(
         },
         RecordMachineJoinReportError::RecordMachineAddEvent(source) => {
             MachineJoinReportError::Unavailable {
-                message: record_operation_event_message(&source),
+                message: source.to_string(),
             }
         }
         RecordMachineJoinReportError::JoinTokenMismatch { operation_id } => {
             MachineJoinReportError::Unavailable {
-                message: format!(
-                    "operation record corrupt: join token mismatch for {}",
+                message: corrupt(format_args!(
+                    "join token mismatch for {}",
                     operation_id.as_str()
-                ),
+                )),
             }
         }
     }
@@ -259,31 +251,28 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
         }
         RedeemMachineJoinTokenRepositoryError::RecordMachineAddEvent(source) => {
             MachineJoinRedeemError::Unavailable {
-                message: record_operation_event_message(&source),
+                message: source.to_string(),
             }
         }
         RedeemMachineJoinTokenRepositoryError::MissingOperation { operation_id } => {
             MachineJoinRedeemError::Unavailable {
-                message: format!(
-                    "operation record corrupt: missing operation {}",
-                    operation_id.as_str()
-                ),
+                message: corrupt(format_args!("missing operation {}", operation_id.as_str())),
             }
         }
         RedeemMachineJoinTokenRepositoryError::WrongOperationKind { operation_id } => {
             MachineJoinRedeemError::Unavailable {
-                message: format!(
-                    "operation record corrupt: {} is not a machine-add operation",
+                message: corrupt(format_args!(
+                    "{} is not a machine-add operation",
                     operation_id.as_str()
-                ),
+                )),
             }
         }
         RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { operation_id } => {
             MachineJoinRedeemError::Unavailable {
-                message: format!(
-                    "operation record corrupt: join token mismatch for {}",
+                message: corrupt(format_args!(
+                    "join token mismatch for {}",
                     operation_id.as_str()
-                ),
+                )),
             }
         }
     }
@@ -305,39 +294,6 @@ pub(super) fn ops_watch_error_from_replay_error(
             operation_id,
             message: source.to_string(),
         },
-    }
-}
-
-fn record_operation_event_message(error: &RecordOperationEventError) -> String {
-    match error {
-        RecordOperationEventError::LoadStatus(source) => source.to_string(),
-        RecordOperationEventError::StoreStatus(source) => source.to_string(),
-        RecordOperationEventError::MissingOperation { operation_id } => {
-            format!(
-                "operation record corrupt: missing operation {}",
-                operation_id.as_str()
-            )
-        }
-        RecordOperationEventError::ProjectStatus(source) => {
-            format!("operation status projection failed: {source}")
-        }
-        RecordOperationEventError::AppendEvent(source) => source.to_string(),
-        RecordOperationEventError::StoredEventMismatch {
-            operation_id,
-            sequence,
-            kind,
-        } => format!(
-            "stored {} mismatch for {} at sequence {}",
-            match kind {
-                StoredEventMismatchKind::Generic => "operation event",
-                StoredEventMismatchKind::DeployPlan => "deploy plan",
-            },
-            operation_id.as_str(),
-            sequence.get()
-        ),
-        RecordOperationEventError::StatusProjectionContended => {
-            "operation status projection contended".to_owned()
-        }
     }
 }
 
