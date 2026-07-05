@@ -1,10 +1,7 @@
-use async_nats::jetstream;
 use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
@@ -23,12 +20,13 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 #[tokio::test]
 async fn machine_runtime_serves_container_run_and_observes_created_container() {
     let nats = TestNats::start_bootstrapped().await;
+    let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let runtime = start_machine_runtime_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
-        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
+        runner.clone(),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
+        runner.clone(),
     )
     .await
     .expect("machine runtime starts");
@@ -40,7 +38,7 @@ async fn machine_runtime_serves_container_run_and_observes_created_container() {
         .expect("container run succeeds");
     let first_container_id = first.container_id().clone();
     assert!(matches!(first, MachineRunContainerOutcome::Created { .. }));
-    assert_observed_running(&nats.observations, &first_container_id).await;
+    assert_observed_running(&runner, &first_container_id);
 
     let second = container_runtime
         .run_container(&machine_id("machine_a"), run_request("run_1"))
@@ -62,12 +60,13 @@ async fn machine_runtime_serves_container_run_and_observes_created_container() {
 #[tokio::test]
 async fn machine_runtime_serves_container_remove_and_updates_observations() {
     let nats = TestNats::start_bootstrapped().await;
+    let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let runtime = start_machine_runtime_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
-        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
+        runner.clone(),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
+        runner.clone(),
     )
     .await
     .expect("machine runtime starts");
@@ -78,7 +77,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
         .await
         .expect("container run succeeds");
     let container_id = created.container_id().clone();
-    assert_observed_running(&nats.observations, &container_id).await;
+    assert_observed_running(&runner, &container_id);
 
     container_runtime
         .remove_container(
@@ -92,13 +91,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
         .await
         .expect("container remove succeeds");
 
-    assert!(
-        nats.observations
-            .container(&machine_id("machine_a"), &container_id)
-            .await
-            .expect("observation reads")
-            .is_none()
-    );
+    assert!(runner.snapshot().container(&container_id).is_none());
 
     runtime
         .shutdown()
@@ -109,17 +102,17 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
 #[tokio::test]
 async fn machine_runtime_serves_wireguard_ebpf_prepare() {
     let nats = TestNats::start_bootstrapped().await;
+    let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let runtime = start_machine_runtime_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
-        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
+        runner.clone(),
         ReadyWireGuardEbpf,
-        ObservingContainerRunner::new(machine_id("machine_a"), nats.observations.clone()),
+        runner,
     )
     .await
     .expect("machine runtime starts");
-    let mut preparer =
-        NatsMachineDataplanePreparer::new(nats.client.clone(), nats.observations.clone());
+    let mut preparer = NatsMachineDataplanePreparer::new(nats.client.clone());
 
     preparer
         .prepare_dataplane(DataplanePrepareRequest::for_machines(
@@ -139,9 +132,8 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
-    /// Machine principal: the machine-runtime service side and its observations.
+    /// Machine principal: the machine-runtime service side.
     machine_client: async_nats::Client,
-    observations: AsyncNatsObservationStore,
 }
 
 impl TestNats {
@@ -152,28 +144,22 @@ impl TestNats {
         nats.bootstrap_resources().await;
         let client = nats.controller.clone();
         let machine_client = nats.machine_client(&machine_id("machine_a")).await;
-        let machine_jetstream = jetstream::new(machine_client.clone());
-        let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
-            .await
-            .expect("open observations");
 
         Self {
             _nats: nats,
             client,
             machine_client,
-            observations,
         }
     }
 }
 
-async fn assert_observed_running(
-    observations: &AsyncNatsObservationStore,
-    container_id: &ContainerId,
+fn assert_observed_running(
+    runner: &ObservingContainerRunner,
+    container_id: &ployz_core::ids::ContainerId,
 ) {
-    let observation = observations
-        .container(&machine_id("machine_a"), container_id)
-        .await
-        .expect("observation reads")
+    let snapshot = runner.snapshot();
+    let observation = snapshot
+        .container(container_id)
         .expect("created container is observed");
 
     assert_eq!(observation.identity.service_id, service_id("svc_api"));

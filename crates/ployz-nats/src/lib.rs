@@ -11,7 +11,6 @@ pub mod bootstrap;
 pub mod connect;
 pub mod core_state;
 pub mod kv;
-pub mod observations;
 pub mod operation_api_client;
 pub mod operations;
 pub mod schedules;

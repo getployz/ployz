@@ -10,7 +10,6 @@ use ployz_core::ops::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operations::{
     OperationStatusReadError, OperationStatusStoreError, StoredMachineAddMintClaim,
     StoredMachineAddSecretDelivery,
@@ -107,7 +106,6 @@ impl std::error::Error for MintResumeError {}
 #[derive(Clone)]
 pub struct MachineCredentialMintRuntime {
     controllers: OperationControllers,
-    core_state: AsyncNatsCoreStateStore,
     authorization: NatsAuthorizationHandle,
     verify: MintVerifyEndpoint,
     machine_seed_file: PathBuf,
@@ -118,7 +116,6 @@ impl MachineCredentialMintRuntime {
     #[must_use]
     pub fn new(
         controllers: OperationControllers,
-        core_state: AsyncNatsCoreStateStore,
         authorization: NatsAuthorizationHandle,
         verify: MintVerifyEndpoint,
         machine_seed_file: PathBuf,
@@ -126,7 +123,6 @@ impl MachineCredentialMintRuntime {
     ) -> Self {
         Self {
             controllers,
-            core_state,
             authorization,
             verify,
             machine_seed_file,
@@ -245,23 +241,6 @@ impl MachineCredentialMintRuntime {
                     .await;
             }
         };
-        if let Err(error) = self
-            .core_state
-            .replace_nats_authorized_user(&NatsAuthorizedUser {
-                principal: NatsPrincipal::Machine {
-                    machine_id: request.machine_id.clone(),
-                },
-                nkey_public: claim.nkey_public.clone(),
-            })
-            .await
-        {
-            return self
-                .fail_render(
-                    &request,
-                    format!("failed to store principal record: {error}"),
-                )
-                .await;
-        }
         if let Some(outcome) = self
             .record_step(&request, MachineCredentialProvisioningStep::Minted)
             .await
@@ -272,7 +251,17 @@ impl MachineCredentialMintRuntime {
         let verify_config = self
             .verify
             .machine_connect_config(&request.machine_id, claim.nkey_seed.clone());
-        match self.authorization.render(Some(verify_config)).await {
+        let user = NatsAuthorizedUser {
+            principal: NatsPrincipal::Machine {
+                machine_id: request.machine_id.clone(),
+            },
+            nkey_public: claim.nkey_public.clone(),
+        };
+        match self
+            .authorization
+            .authorize_and_render(user, Some(verify_config))
+            .await
+        {
             Ok(_) => {}
             Err(RenderFailure::Prepare { failure }) => {
                 return self.fail_render(&request, failure.to_string()).await;

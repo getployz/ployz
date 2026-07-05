@@ -2,7 +2,7 @@
 
 use crate::deploy_worker::DataplanePreparer;
 use crate::machine_runtime::client::{
-    MachineCallError, NatsMachineDataplanePreparer, call_machine,
+    MachineCallError, MachineFactsReadRuntimeError, NatsMachineDataplanePreparer, call_machine,
 };
 use crate::machine_runtime::protocol::{
     MachineDataplanePrepareRpcRequest, MachinePloyzNativeMeshPrepareDomainError,
@@ -60,34 +60,12 @@ impl NatsMachineDataplanePreparer {
             return Ok(Vec::new());
         }
 
-        let public_ips = self
-            .observations
-            .machine_public_ips()
-            .await
-            .map_err(|error| {
-                invalid_ployz_native_mesh_report(format!(
-                    "machine public ip observations could not be read: {error}"
-                ))
-            })?;
-        let mut endpoints = Vec::new();
-        for member in membership {
-            let observation = public_ips
+        let mut endpoints = try_join_all(
+            membership
                 .iter()
-                .find(|observation| observation.machine_id == member.machine_id)
-                .cloned()
-                .ok_or_else(|| {
-                    ployz_native_mesh_unavailable(
-                        &member.machine_id,
-                        PloyzNativeMeshComponent::WireGuard,
-                        ployz_core::ops::FailureMessage::try_new(format!(
-                            "machine public ip observation for {} is missing",
-                            member.machine_id.as_str()
-                        ))
-                        .expect("generated dataplane failure message is non-empty"),
-                    )
-                })?;
-            endpoints.push(peer_endpoint_from_public_ip(member, observation));
-        }
+                .map(|member| load_wireguard_peer_endpoint(self, member)),
+        )
+        .await?;
         endpoints.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
         Ok(endpoints)
     }
@@ -118,6 +96,39 @@ impl NatsMachineDataplanePreparer {
         PloyzNativeMeshPrepareReport::for_request(&final_request, machines)
             .map_err(ployz_native_mesh_report_error)
     }
+}
+
+async fn load_wireguard_peer_endpoint(
+    preparer: &NatsMachineDataplanePreparer,
+    member: &DataplaneMember,
+) -> Result<WireGuardPeerEndpoint, WireGuardEbpfPrepareError> {
+    let facts = preparer
+        .facts_reader
+        .machine_facts(&member.machine_id)
+        .await
+        .map_err(|error| public_ip_fact_unavailable(&member.machine_id, error))?;
+    let public_ip = facts.public_ip().cloned().ok_or_else(|| {
+        ployz_native_mesh_unavailable(
+            &member.machine_id,
+            PloyzNativeMeshComponent::WireGuard,
+            failure_message(format!(
+                "machine public ip fact for {} is missing",
+                member.machine_id.as_str()
+            )),
+        )
+    })?;
+    Ok(peer_endpoint_from_public_ip(member, public_ip))
+}
+
+fn public_ip_fact_unavailable(
+    machine_id: &MachineId,
+    error: MachineFactsReadRuntimeError,
+) -> WireGuardEbpfPrepareError {
+    ployz_native_mesh_unavailable(
+        machine_id,
+        PloyzNativeMeshComponent::WireGuard,
+        failure_message(format!("machine public ip fact could not be read: {error}")),
+    )
 }
 
 fn validate_ployz_native_mesh_membership(

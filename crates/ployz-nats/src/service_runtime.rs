@@ -96,6 +96,29 @@ pub enum NatsJsonServiceRequestError {
     },
 }
 
+impl std::fmt::Display for NatsJsonServiceRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EncodeRequest { message } => {
+                write!(formatter, "failed to encode request: {message}")
+            }
+            Self::Request { failure } => write!(formatter, "request failed: {failure}"),
+            Self::Service { failure } => {
+                write!(formatter, "service returned an error: {}", failure.message)
+            }
+            Self::ServiceProtocol { error } => {
+                write!(
+                    formatter,
+                    "service error header could not be decoded: {error}"
+                )
+            }
+            Self::DecodeResponse { message } => {
+                write!(formatter, "failed to decode response: {message}")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServiceRequestFailure {
     TimedOut,
@@ -417,10 +440,35 @@ pub enum NatsServiceRuntimeError {
     Stopped,
 }
 
+impl std::fmt::Display for NatsServiceRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartService { name, message } => {
+                write!(formatter, "failed to start service {name}: {message}")
+            }
+            Self::AddEndpoint { subject, message } => {
+                write!(formatter, "failed to add endpoint {subject}: {message}")
+            }
+            Self::Stopped => write!(formatter, "service is stopped"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServiceShutdownError {
     StopService { message: String },
     EndpointTaskJoin { message: String },
+}
+
+impl std::fmt::Display for NatsServiceShutdownError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StopService { message } => write!(formatter, "failed to stop service: {message}"),
+            Self::EndpointTaskJoin { message } => {
+                write!(formatter, "endpoint task failed to join: {message}")
+            }
+        }
+    }
 }
 
 pub async fn start_nats_service(

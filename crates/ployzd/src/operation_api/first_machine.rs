@@ -129,9 +129,8 @@ async fn first_machine_active_machine(
     machine_id: &MachineId,
 ) -> Result<Option<ActiveMachineState>, InitFirstMachineActivateError> {
     handlers
-        .core_state
+        .machine_roster
         .active_machine(machine_id)
-        .await
         .map_err(|error| InitFirstMachineActivateError::Unavailable {
             message: error.to_string(),
         })

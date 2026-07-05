@@ -4,10 +4,9 @@
 
 use crate::controllers::OperationControllers;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
-use ployz_core::ops::MachineSubstrateVersions;
 use ployz_core::ops::OperationStatus;
+use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::operations::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -149,16 +148,16 @@ async fn repair_completed_machine_join_report(
     }))
 }
 
-/// Writes the completed machine-add into cluster truth. This is the API
-/// layer's own core-state write, not a query-runtime method: it runs only
-/// after the join report has been recorded.
+/// Writes the completed machine-add into core-owned roster intent. This is
+/// the API layer's own write, not a query-runtime method: it runs only after
+/// the join report has been recorded.
 async fn activate_reported_machine(
     handlers: &OperationApiHandlers,
     operation_id: &OperationId,
     machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
-    let mut active_machine = active_machine_from_completed_add(
+    let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
@@ -167,20 +166,18 @@ async fn activate_reported_machine(
     .map_err(|_| MachineJoinReportError::Unavailable {
         message: corrupt("completed machine-add did not produce active machine"),
     })?;
-    active_machine.substrate_versions = Some(MachineSubstrateVersions {
-        ployzd: Some(
-            InstallArtifactVersion::try_new(env!("CARGO_PKG_VERSION"))
-                .expect("crate package version is a valid install artifact version"),
-        ),
-        keeper: None,
-    });
     handlers
-        .core_state
+        .machine_roster
         .replace_active_machine(&active_machine)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
-        })
+        })?;
+    let _ = handlers
+        .intent_change_client
+        .publish(INTENT_CHANGED, Vec::new().into())
+        .await;
+    Ok(())
 }
 
 fn machine_add_failure_from_join_report_failure(

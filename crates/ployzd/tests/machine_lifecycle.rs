@@ -1,6 +1,5 @@
 //! Machine lifecycle operations against real NATS stores: drain and resume
-//! commit operator intent to the KV machine record with on-disk evidence,
-//! and the evidence file is adopted back into KV on control start.
+//! commit operator intent to the on-disk evidence file.
 
 use async_nats::jetstream;
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
@@ -13,8 +12,9 @@ use ployzd::controllers::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
 use ployzd::machine_lifecycle_runtime::{
-    MachineLifecycleOperationRuntime, adopt_machine_lifecycles_from_file,
+    MachineLifecycleOperationRuntime, machine_lifecycle_intent_from_file,
 };
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::tasks::TaskRegistry;
 
 use ployz_test_support::ids::{machine_id, operation_id};
@@ -23,21 +23,20 @@ use ployz_test_support::ids::{machine_id, operation_id};
 mod support;
 
 #[tokio::test]
-async fn drain_commits_lifecycle_with_evidence_and_resume_reverts() {
+async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     nats.bootstrap_resources().await;
     let jetstream = nats.jetstream.clone();
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
     let controllers = operation_controllers(&jetstream).await;
     let work_dir = tempfile::tempdir().expect("evidence dir");
     let evidence_file = work_dir.path().join("machine-lifecycles.json");
-    seed_active_machine(&core_state, "machine_a").await;
+    let machine_roster = MachineRosterStore::new(work_dir.path().join("machine-roster.json"));
+    seed_active_machine(&machine_roster, "machine_a").await;
 
     let runtime = MachineLifecycleOperationRuntime::new(
+        nats.controller.clone(),
         controllers.clone(),
-        core_state.clone(),
+        machine_roster.clone(),
         evidence_file.clone(),
         TaskRegistry::default(),
     );
@@ -52,16 +51,16 @@ async fn drain_commits_lifecycle_with_evidence_and_resume_reverts() {
         .expect("drain accepted");
     runtime.clone().run(accepted).await;
 
-    let drained = core_state
+    let active_record = machine_roster
         .active_machine(&machine_id("machine_a"))
-        .await
         .expect("machine reads")
         .expect("machine exists");
-    assert_eq!(drained.lifecycle, MachineLifecycle::Draining);
-    let evidence = std::fs::read_to_string(&evidence_file).expect("evidence file written");
-    assert!(
-        evidence.contains("machine_a"),
-        "evidence records the drained machine: {evidence}"
+    assert_eq!(active_record.lifecycle, MachineLifecycle::Active);
+    assert_eq!(
+        machine_lifecycle_intent_from_file(&evidence_file)
+            .expect("lifecycle intent reads")
+            .get(&machine_id("machine_a")),
+        Some(&MachineLifecycle::Draining)
     );
     assert_terminal_completed(&controllers, "op_drain_1").await;
 
@@ -75,16 +74,16 @@ async fn drain_commits_lifecycle_with_evidence_and_resume_reverts() {
         .expect("resume accepted");
     runtime.clone().run(accepted).await;
 
-    let resumed = core_state
+    let active_record = machine_roster
         .active_machine(&machine_id("machine_a"))
-        .await
         .expect("machine reads")
         .expect("machine exists");
-    assert_eq!(resumed.lifecycle, MachineLifecycle::Active);
-    let evidence = std::fs::read_to_string(&evidence_file).expect("evidence file exists");
+    assert_eq!(active_record.lifecycle, MachineLifecycle::Active);
+    let intent =
+        machine_lifecycle_intent_from_file(&evidence_file).expect("lifecycle intent reads");
     assert!(
-        !evidence.contains("machine_a"),
-        "resume clears the drained record: {evidence}"
+        !intent.contains_key(&machine_id("machine_a")),
+        "resume clears the drained record: {intent:?}"
     );
     assert_terminal_completed(&controllers, "op_resume_1").await;
 }
@@ -94,16 +93,15 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     nats.bootstrap_resources().await;
     let jetstream = nats.jetstream.clone();
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
     let controllers = operation_controllers(&jetstream).await;
     let work_dir = tempfile::tempdir().expect("evidence dir");
     let evidence_file = work_dir.path().join("machine-lifecycles.json");
+    let machine_roster = MachineRosterStore::new(work_dir.path().join("machine-roster.json"));
 
     let runtime = MachineLifecycleOperationRuntime::new(
+        nats.controller.clone(),
         controllers.clone(),
-        core_state.clone(),
+        machine_roster,
         evidence_file.clone(),
         TaskRegistry::default(),
     );
@@ -143,39 +141,7 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     );
 }
 
-#[tokio::test]
-async fn lifecycle_evidence_is_adopted_into_kv_on_start() {
-    let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
-    let jetstream = nats.jetstream.clone();
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
-    let work_dir = tempfile::tempdir().expect("evidence dir");
-    let evidence_file = work_dir.path().join("machine-lifecycles.json");
-    std::fs::write(&evidence_file, r#"{"draining":["machine_a"]}"#).expect("seed evidence file");
-    seed_active_machine(&core_state, "machine_a").await;
-    seed_active_machine(&core_state, "machine_b").await;
-
-    adopt_machine_lifecycles_from_file(&evidence_file, &core_state)
-        .await
-        .expect("adoption succeeds");
-
-    let drained = core_state
-        .active_machine(&machine_id("machine_a"))
-        .await
-        .expect("machine reads")
-        .expect("machine exists");
-    assert_eq!(drained.lifecycle, MachineLifecycle::Draining);
-    let untouched = core_state
-        .active_machine(&machine_id("machine_b"))
-        .await
-        .expect("machine reads")
-        .expect("machine exists");
-    assert_eq!(untouched.lifecycle, MachineLifecycle::Active);
-}
-
-async fn seed_active_machine(core_state: &AsyncNatsCoreStateStore, machine: &str) {
+async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str) {
     let active = active_machine_from_completed_add(
         operation_id("op_add"),
         machine_id(machine),
@@ -183,7 +149,7 @@ async fn seed_active_machine(core_state: &AsyncNatsCoreStateStore, machine: &str
         ployz_core::ops::MachineAddOperationState::Completed,
     )
     .expect("completed add activates");
-    core_state
+    machine_roster
         .replace_active_machine(&active)
         .await
         .expect("machine record writes");

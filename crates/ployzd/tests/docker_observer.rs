@@ -3,7 +3,6 @@ use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshotError, ManagedContainerIdentity,
     ManagedContainerObservation,
 };
-use ployz_core::state::MachineContainerObservationKey;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, machine_id};
 use ployzd::docker::labels::{
@@ -86,14 +85,6 @@ fn managed_container_labels_reject_unknown_container_kind() {
         Err(ManagedContainerLabelError::InvalidKind {
             value: "sidequest".to_owned()
         })
-    );
-}
-
-#[test]
-fn observation_key_matches_kv_obs_container_path() {
-    assert_eq!(
-        MachineContainerObservationKey::from_machine_id(&machine_id("machine_7")).as_str(),
-        "containers.machine_7"
     );
 }
 

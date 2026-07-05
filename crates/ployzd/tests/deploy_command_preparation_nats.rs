@@ -1,4 +1,3 @@
-use async_nats::jetstream;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
     ReplicaCount,
@@ -10,10 +9,8 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ServingTargetEntryKey};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_core::state::{ActiveMachineState, ServingTargetEntry};
+use ployz_nats::service_runtime::RunningNatsService;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, route_port,
@@ -23,23 +20,37 @@ use ployzd::deploy_worker::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
+use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
+use ployzd::machine_runtime::client::NatsMachineFactsReader;
+use ployzd::machine_runtime::runner::{
+    CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
+    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
+    MachineLogTail,
+};
+use ployzd::machine_runtime::service::{
+    MachinePloyzNativeMeshPreparer, start_machine_runtime_service,
+};
+use ployzd::namespace_intent::NamespaceIntentStore;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
 
-    core_state
-        .replace_serving_target_entry(&ServingTargetEntry {
+    nats.namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
         })
         .await
         .expect("serving target entry stores");
-    observations
-        .replace_machine_containers(&machine_snapshot(
+    let _machine_a = nats
+        .serve_machine_facts(machine_snapshot(
             "machine_a",
             [managed_observation_with_entry(
                 "machine_a",
@@ -49,11 +60,9 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                 ContainerRuntimeState::running_unroutable(),
             )],
         ))
-        .await
-        .expect("machine_a observations store");
-    let machine_b_observations = nats.machine_observations("machine_b").await;
-    machine_b_observations
-        .replace_machine_containers(&machine_snapshot(
+        .await;
+    let _machine_b = nats
+        .serve_machine_facts(machine_snapshot(
             "machine_b",
             [
                 managed_observation(
@@ -72,8 +81,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                 ),
             ],
         ))
-        .await
-        .expect("machine_b observations store");
+        .await;
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
@@ -82,8 +90,8 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
             machine_id("machine_b"),
             machine_id("machine_missing"),
         ]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -108,11 +116,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     );
     assert_eq!(
         command.eligible_machines(),
-        [
-            machine_id("machine_a"),
-            machine_id("machine_b"),
-            machine_id("machine_missing")
-        ]
+        [machine_id("machine_a"), machine_id("machine_b")]
     );
     assert_eq!(command.step_timeout(), Duration::from_secs(7));
     assert!(command.dataplane_machines().is_empty());
@@ -121,14 +125,15 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
 #[tokio::test]
 async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
-    core_state
+    let machine_roster = nats.machine_roster();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    let edge_observations = nats.machine_observations("edge_2").await;
-    edge_observations
-        .replace_machine_containers(&machine_snapshot(
+    let _edge_2 = nats
+        .serve_machine_facts(machine_snapshot(
             "edge_2",
             [managed_observation_with_entry(
                 "edge_2",
@@ -138,14 +143,13 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
                 ContainerRuntimeState::running_unroutable(),
             )],
         ))
-        .await
-        .expect("edge observations store");
+        .await;
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -164,31 +168,32 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
 #[tokio::test]
 async fn nats_preparation_excludes_draining_machines_from_placement() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
-    core_state
+    let machine_roster = nats.machine_roster();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
     let mut draining = active_machine("edge_3");
     draining.lifecycle = MachineLifecycle::Draining;
-    core_state
+    machine_roster
         .replace_active_machine(&draining)
         .await
         .expect("draining edge stores");
-    for machine in ["edge_2", "edge_3"] {
-        nats.machine_observations(machine)
-            .await
-            .replace_machine_containers(&machine_snapshot(machine, []))
-            .await
-            .expect("observations store");
-    }
+    let _edge_2 = nats
+        .serve_machine_facts(machine_snapshot("edge_2", []))
+        .await;
+    let _edge_3 = nats
+        .serve_machine_facts(machine_snapshot("edge_3", []))
+        .await;
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -206,22 +211,22 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
 #[tokio::test]
 async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
-    core_state
+    let machine_roster = nats.machine_roster();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    nats.machine_observations("edge_2")
-        .await
-        .replace_machine_containers(&machine_snapshot("edge_2", []))
-        .await
-        .expect("edge observations store");
+    let _edge_2 = nats
+        .serve_machine_facts(machine_snapshot("edge_2", []))
+        .await;
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -233,13 +238,17 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 #[tokio::test]
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    let _core_1 = nats
+        .serve_machine_facts(machine_snapshot("core_1", []))
+        .await;
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -251,18 +260,23 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
 #[tokio::test]
 async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
-    core_state
+    let machine_roster = nats.machine_roster();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
+    let _edge_2 = nats
+        .serve_machine_facts(machine_snapshot("edge_2", []))
+        .await;
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -273,14 +287,18 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
 #[tokio::test]
 async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    let _machine_a = nats
+        .serve_machine_facts(machine_snapshot("machine_a", []))
+        .await;
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await;
@@ -289,76 +307,48 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 }
 
 #[tokio::test]
-async fn nats_preparation_preserves_typed_active_state_read_failure() {
+async fn nats_preparation_preserves_unknown_intent_field_failure() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
-    let key = ServingTargetEntryKey::from_namespace_service(
-        &namespace_id("default"),
-        &service_id("svc_api"),
-    );
-    let wrong_service_state = ServingTargetEntry {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_worker"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-    };
-    nats.jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open KV_CORE")
-        .put(
-            key.as_str(),
-            serde_json::to_vec(&wrong_service_state)
-                .expect("serving target entry state encodes")
-                .into(),
-        )
-        .await
-        .expect("corrupt active state stores");
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
+    std::fs::write(
+        &nats.namespace_intent_file,
+        br#"{"route_bindings":[],"serving_target_entries":[],"extra":true}"#,
+    )
+    .expect("corrupt namespace intent stores");
 
     let request = deploy_request();
     let error = load_deploy_execution_facts_from_nats(
         &request,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await
-    .expect_err("wrong serving target entry payload is rejected");
+    .expect_err("unknown namespace intent field is rejected");
 
-    // The namespace-wide serving-target read detects the corruption first
-    // (omitted-service reconciliation loads every entry in the namespace).
     assert!(matches!(
         error,
-        DeployFactLoadError::ServingTargetEntriesRead { ref message }
-            if message.contains(key.as_str())
-                && message.contains("does not match canonical key")
+        DeployFactLoadError::IntentRead { ref message }
+            if message.contains("decode namespace intent evidence")
     ));
 }
 
 #[tokio::test]
 async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
-    let (core_state, observations) = nats.stores();
+    let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     let request = deploy_request();
-    let key = ServingTargetEntryKey::from_namespace_service(
-        &namespace_id("default"),
-        request
-            .primary_service_id()
-            .expect("test deploy request has a service"),
-    );
-    nats.jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open KV_CORE")
-        .put(key.as_str(), br#"{"service_id":"svc_api""#.to_vec().into())
-        .await
-        .expect("malformed active state stores");
+    std::fs::write(&nats.namespace_intent_file, br#"{"route_bindings":["#)
+        .expect("malformed namespace intent stores");
 
     let error = load_deploy_execution_facts_from_nats(
         &request,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
-        &core_state,
-        &observations,
+        &intent_reader,
+        &facts_reader,
         Duration::from_secs(7),
     )
     .await
@@ -366,8 +356,8 @@ async fn nats_preparation_preserves_decode_failure_message() {
 
     assert!(matches!(
         error,
-        DeployFactLoadError::ServingTargetEntriesRead { ref message }
-            if message.contains("decode serving target entry state")
+        DeployFactLoadError::IntentRead { ref message }
+            if message.contains("decode namespace intent evidence")
     ));
 }
 
@@ -375,15 +365,15 @@ async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
     machine_scope: DeployExecutionMachineScope,
-    core_state: &AsyncNatsCoreStateStore,
-    observations: &AsyncNatsObservationStore,
+    intent_reader: &NatsIntentReader,
+    facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::deploy_worker::DeployExecutionCommand {
     let facts = load_deploy_execution_facts_from_nats(
         &request,
         machine_scope,
-        core_state,
-        observations,
+        intent_reader,
+        facts_reader,
         step_timeout,
     )
     .await
@@ -393,26 +383,175 @@ async fn prepare_command_from_nats(
 
 struct TestNats {
     connected: ployz_test_support::nats::TestNats,
-    jetstream: jetstream::Context,
-    core_state: AsyncNatsCoreStateStore,
-    observations: AsyncNatsObservationStore,
+    machine_roster: MachineRosterStore,
+    _intent: RunningIntentRuntime,
+    _intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
+    namespace_intent_file: PathBuf,
 }
 
 impl TestNats {
-    fn stores(&self) -> (AsyncNatsCoreStateStore, AsyncNatsObservationStore) {
-        (self.core_state.clone(), self.observations.clone())
+    fn machine_roster(&self) -> MachineRosterStore {
+        self.machine_roster.clone()
     }
 
-    /// The observation store connected as the given machine — each machine may
-    /// only write its own observation keys.
-    async fn machine_observations(&self, machine_id_value: &str) -> AsyncNatsObservationStore {
-        let machine_client = self
-            .connected
-            .machine_client(&machine_id(machine_id_value))
-            .await;
-        AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
-            .await
-            .expect("open machine observation store")
+    fn facts_reader(&self) -> NatsMachineFactsReader {
+        NatsMachineFactsReader::new(self.connected.controller.clone())
+            .with_request_timeout(Duration::from_secs(1))
+    }
+
+    fn intent_reader(&self) -> NatsIntentReader {
+        NatsIntentReader::new(self.connected.controller.clone())
+            .with_request_timeout(Duration::from_secs(1))
+    }
+
+    async fn serve_machine_facts(
+        &self,
+        snapshot: MachineContainerObservationSnapshot,
+    ) -> RunningNatsService {
+        let machine_id = snapshot.machine_id().clone();
+        let machine_client = self.connected.machine_client(&machine_id).await;
+        start_machine_runtime_service(
+            machine_client,
+            machine_id,
+            StaticRunner::from_snapshot(snapshot),
+            UnusedPreparer,
+            UnusedLogs,
+        )
+        .await
+        .expect("machine facts service starts")
+    }
+}
+
+#[derive(Clone)]
+struct StaticRunner {
+    existing: Vec<ExistingManagedContainer>,
+}
+
+impl StaticRunner {
+    fn from_snapshot(snapshot: MachineContainerObservationSnapshot) -> Self {
+        let existing = snapshot
+            .containers()
+            .iter()
+            .map(|container| ExistingManagedContainer {
+                container_id: container.container_id.clone(),
+                identity: container.identity.clone(),
+                state: existing_state(&container.state),
+            })
+            .collect();
+        Self { existing }
+    }
+}
+
+impl MachineContainerRunner for StaticRunner {
+    async fn existing_managed_containers(
+        &self,
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
+        Ok(self.existing.clone())
+    }
+
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+            message: "not used".to_owned(),
+        })
+    }
+
+    async fn create_managed_container(
+        &self,
+        _command: CreateManagedContainer,
+    ) -> Result<ployz_core::ids::ContainerId, MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::Create {
+            message: "not used".to_owned(),
+        })
+    }
+
+    async fn start_managed_container(
+        &self,
+        container_id: &ployz_core::ids::ContainerId,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::Start {
+            container_id: container_id.clone(),
+            message: "not used".to_owned(),
+        })
+    }
+
+    async fn stop_managed_container(
+        &self,
+        container_id: &ployz_core::ids::ContainerId,
+        _expected_identity: &ployz_core::machine_runtime::ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::Stop {
+            container_id: container_id.clone(),
+            message: "not used".to_owned(),
+        })
+    }
+
+    async fn remove_managed_container(
+        &self,
+        container_id: &ployz_core::ids::ContainerId,
+        _expected_identity: &ployz_core::machine_runtime::ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::Remove {
+            container_id: container_id.clone(),
+            message: "not used".to_owned(),
+        })
+    }
+}
+
+fn existing_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
+    match state {
+        ContainerRuntimeState::Running { ip } => ExistingManagedContainerState::Running { ip: *ip },
+        ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
+    }
+}
+
+#[derive(Clone)]
+struct UnusedLogs;
+
+impl MachineLogReader for UnusedLogs {
+    async fn tail_container_logs(
+        &self,
+        container_id: &ployz_core::ids::ContainerId,
+        _tail_lines: Option<u16>,
+    ) -> Result<MachineLogTail, MachineLogReaderError> {
+        Err(MachineLogReaderError::NotFound {
+            container_id: container_id.clone(),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct UnusedPreparer;
+
+impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
+    async fn read_wireguard_public_key(
+        &self,
+    ) -> Result<
+        ployz_core::dataplane::WireGuardPublicKey,
+        ployz_core::dataplane::WireGuardEbpfPrepareError,
+    > {
+        Err(
+            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
+                message: ployz_core::ops::FailureMessage::try_new("not used")
+                    .expect("static message is valid"),
+            },
+        )
+    }
+
+    async fn prepare_ployz_native_mesh(
+        &self,
+        _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+        _peers: &[ployz_core::dataplane::WireGuardPeer],
+    ) -> Result<
+        ployz_core::dataplane::PloyzNativeMeshReady,
+        ployz_core::dataplane::WireGuardEbpfPrepareError,
+    > {
+        Err(
+            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
+                message: ployz_core::ops::FailureMessage::try_new("not used")
+                    .expect("static message is valid"),
+            },
+        )
     }
 }
 
@@ -426,21 +565,27 @@ async fn test_nats() -> TestNats {
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     connected.bootstrap_resources().await;
-    let jetstream = connected.jetstream.clone();
-    let machine_client = connected.machine_client(&machine_id("machine_a")).await;
-    let machine_jetstream = jetstream::new(machine_client);
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
-        .await
-        .expect("open observation store");
+    let intent_dir = tempfile::tempdir().expect("intent dir");
+    let namespace_intent_file = intent_dir.path().join("namespace-intent.json");
+    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
+    let machine_roster = MachineRosterStore::new(intent_dir.path().join("machine-roster.json"));
+    let intent = start_intent_runtime(
+        connected.controller.clone(),
+        machine_roster.clone(),
+        namespace_intent.clone(),
+        intent_dir.path().join("machine-lifecycles.json"),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("intent runtime starts");
 
     TestNats {
         connected,
-        jetstream,
-        core_state,
-        observations,
+        machine_roster,
+        _intent: intent,
+        _intent_dir: intent_dir,
+        namespace_intent,
+        namespace_intent_file,
     }
 }
 
@@ -528,7 +673,6 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
-        substrate_versions: None,
     }
 }
 

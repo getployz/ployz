@@ -8,7 +8,6 @@ use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::ops::MachineSubstrateVersions;
 use ployz_core::ops::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operations::AcceptedMachineUpdateSubmission;
 use ployz_nats::operations::RecordOperationEventError;
 use std::time::{Duration, Instant};
@@ -19,7 +18,6 @@ const UPDATE_REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone)]
 pub struct MachineUpdateOperationRuntime {
     controllers: OperationControllers,
-    core_state: AsyncNatsCoreStateStore,
     updater: NatsMachineSubstrateUpdater,
     task_registry: TaskRegistry,
 }
@@ -28,13 +26,11 @@ impl MachineUpdateOperationRuntime {
     #[must_use]
     pub const fn new(
         controllers: OperationControllers,
-        core_state: AsyncNatsCoreStateStore,
         updater: NatsMachineSubstrateUpdater,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
             controllers,
-            core_state,
             updater,
             task_registry,
         }
@@ -93,38 +89,6 @@ impl MachineUpdateOperationRuntime {
                         return;
                     }
                 };
-                let Some(mut active) = (match self.core_state.active_machine(&machine_id).await {
-                    Ok(active) => active,
-                    Err(error) => {
-                        self.record_failed(
-                            &operation_id,
-                            &machine_id,
-                            MachineUpdateFailure::StateCommitFailed {
-                                machine_id: machine_id.clone(),
-                                message: FailureMessage::try_new(format!(
-                                    "failed to read active machine before substrate version commit: {error}"
-                                ))
-                                .expect("state commit failure message is non-empty"),
-                            },
-                        )
-                        .await;
-                        return;
-                    }
-                }) else {
-                    self.record_failed(
-                        &operation_id,
-                        &machine_id,
-                        MachineUpdateFailure::MachineUnavailable {
-                            machine_id: machine_id.clone(),
-                            message: FailureMessage::try_new(
-                                "active machine disappeared before update completion",
-                            )
-                            .expect("machine unavailable message is non-empty"),
-                        },
-                    )
-                    .await;
-                    return;
-                };
 
                 if let Err(error) = self
                     .controllers
@@ -148,11 +112,6 @@ impl MachineUpdateOperationRuntime {
                     )
                     .await;
                     return;
-                }
-
-                active.substrate_versions = Some(reported);
-                if let Err(error) = self.core_state.replace_active_machine(&active).await {
-                    eprintln!("failed to commit active machine substrate versions: {error}");
                 }
             }
             Err(error) => {

@@ -1,44 +1,39 @@
-use async_nats::jetstream;
 use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot, ManagedContainerObservation,
+    MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
 use ployzd::gateway::{
-    GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,
-    project_gateway,
+    GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
 use ployzd::gateway_source::load_gateway_projection_update_from_nats;
+use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
+use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::runtime_facts::RuntimeFactsCache;
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[tokio::test]
 async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
-        .await
-        .expect("open observation store");
     let target = route_target("api.example.com", 443);
 
-    routes
-        .replace_serving_target_entry(&ServingTargetEntry {
+    nats.namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("serving target entry stores");
-    routes
-        .replace_route_binding(&RouteBindingState {
+    nats.namespace_intent
+        .replace_route_binding(RouteBindingState {
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
@@ -46,10 +41,8 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         })
         .await
         .expect("route stores");
-    AsyncNatsObservationStore::from_jetstream(&nats.machine_7_jetstream)
-        .await
-        .expect("open machine_7 observation store")
-        .replace_machine_containers(&machine_snapshot(
+    nats.facts
+        .record_machine_facts(machine_facts(machine_snapshot(
             "machine_7",
             [managed_observation(
                 "machine_7",
@@ -57,11 +50,9 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
                 "svc_api",
                 "entry_1",
             )],
-        ))
-        .await
-        .expect("machine snapshot stores");
+        )));
 
-    let update = load_gateway_projection_update_from_nats(&routes, &observations).await;
+    let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
     let GatewayProjectionUpdate::SourceAvailable(input) = update else {
         panic!("gateway source should be available, got {update:?}");
     };
@@ -82,51 +73,26 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
 }
 
 #[tokio::test]
-async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
+async fn gateway_source_reports_unreadable_intent_as_unavailable() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
-        .await
-        .expect("open observation store");
-    let core_bucket = nats
-        .jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open raw core bucket");
-    let payload = serde_json::to_vec(&RouteBindingState {
-        namespace_id: namespace_id("default"),
-        target: route_target("api.example.com", 443),
-        endpoint_port: route_port(8080),
-        service_id: service_id("svc_api"),
-    })
-    .expect("route state encodes");
-    core_bucket
-        .put("routes.deadbeef.443", payload.into())
-        .await
-        .expect("store corrupt route key");
+    std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
 
-    let update = load_gateway_projection_update_from_nats(&routes, &observations).await;
+    let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
 
-    let GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource { message }) =
-        update
-    else {
-        panic!("gateway source should be invalid, got {update:?}");
-    };
-    assert!(message.contains("route binding state key"));
+    assert!(matches!(
+        update,
+        GatewayProjectionUpdate::SourceUnavailable(_)
+    ));
 }
 
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
-    /// Controller principal: route-state writes and bucket administration.
-    jetstream: jetstream::Context,
-    /// The gateway machine's Machine principal: the read side (the gateway
-    /// runs as the machine's Machine user in v1).
-    machine_jetstream: jetstream::Context,
-    /// `machine_7`'s Machine principal: each machine may only write its own
-    /// observation keys, so the workload machine seeds its own snapshot.
-    machine_7_jetstream: jetstream::Context,
+    intent_reader: NatsIntentReader,
+    facts: RuntimeFactsCache,
+    _intent: RunningIntentRuntime,
+    _intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
+    namespace_intent_file: PathBuf,
 }
 
 async fn test_nats() -> TestNats {
@@ -137,15 +103,29 @@ async fn test_nats() -> TestNats {
     ])
     .await;
     nats.bootstrap_resources().await;
-    let machine_jetstream = jetstream::new(nats.machine_client(&gateway_machine).await);
-    let machine_7_jetstream = jetstream::new(nats.machine_client(&machine_id("machine_7")).await);
-    let jetstream = nats.jetstream.clone();
+    let machine_client = nats.machine_client(&gateway_machine).await;
+    let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
+    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
+    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
+    let intent = start_intent_runtime(
+        nats.controller.clone(),
+        MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json")),
+        namespace_intent.clone(),
+        lifecycle_dir.path().join("machine-lifecycles.json"),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("intent runtime starts");
 
     TestNats {
         _nats: nats,
-        jetstream,
-        machine_jetstream,
-        machine_7_jetstream,
+        intent_reader: NatsIntentReader::new(machine_client)
+            .with_request_timeout(Duration::from_secs(1)),
+        facts: RuntimeFactsCache::default(),
+        _intent: intent,
+        _intent_dir: lifecycle_dir,
+        namespace_intent,
+        namespace_intent_file,
     }
 }
 
@@ -155,6 +135,11 @@ fn machine_snapshot(
 ) -> MachineContainerObservationSnapshot {
     MachineContainerObservationSnapshot::try_new(machine_id(machine_id_value), containers)
         .expect("matching machine snapshot")
+}
+
+fn machine_facts(snapshot: MachineContainerObservationSnapshot) -> MachineFactsSnapshot {
+    MachineFactsSnapshot::try_new(snapshot.machine_id().clone(), snapshot, None, 1)
+        .expect("machine facts are valid")
 }
 
 fn managed_observation(

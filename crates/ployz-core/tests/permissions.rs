@@ -1,72 +1,43 @@
 use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
-    kv_read_js_api_subjects, machine_observation_kv_write_subjects,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
-    MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
+    INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status,
+    gateway_status_scope, machine_facts, machine_facts_scope, machine_service_scope,
 };
 use ployz_test_support::ids::machine_id;
 
 #[test]
-fn machine_credential_renders_own_scopes_and_route_state_reads() {
+fn machine_credential_renders_own_scopes_and_intent_request() {
     let machine_id = machine_id("machine_7");
     let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
         machine_id: machine_id.clone(),
     });
 
-    let mut expected_publish = vec![
+    let expected_publish = vec![
         "_INBOX_machine_machine_7.>".to_owned(),
-        machine_observation_scope(&machine_id),
+        INTENT_GET.to_owned(),
+        machine_facts(&machine_id),
+        gateway_status(&machine_id),
     ];
-    expected_publish.extend([
-        "$KV.KV_OBS.containers.machine_7".to_owned(),
-        "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
-        "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
-    ]);
-    expected_publish.extend(kv_read_js_api_subjects("KV_OBS"));
-    expected_publish.extend(kv_read_js_api_subjects("KV_CORE"));
     assert_eq!(profile.publish.allowed_subjects(), expected_publish);
-    assert_eq!(
-        profile.publish.denied_subjects(),
-        &["$KV.KV_CORE.>".to_owned()]
-    );
+    assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
             machine_service_scope(&machine_id),
+            INTENT_CHANGED.to_owned(),
+            machine_facts_scope(),
+            gateway_status_scope(),
             "$SRV.>".to_owned(),
             "_INBOX_machine_machine_7.>".to_owned()
         ]
     );
     assert_eq!(profile.subscribe.denied_subjects(), &[] as &[String]);
     assert_eq!(profile.allow_responses, ResponsePermission::Allowed);
-}
-
-#[test]
-fn machine_observation_kv_writes_are_scoped_to_the_machines_own_keys() {
-    let machine_id = machine_id("machine_7");
-
-    assert_eq!(
-        machine_observation_kv_write_subjects(&machine_id),
-        [
-            "$KV.KV_OBS.containers.machine_7".to_owned(),
-            "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
-            "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
-        ]
-    );
-    let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
-        machine_id: machine_id.clone(),
-    });
-    assert!(
-        !profile
-            .publish
-            .allowed_subjects()
-            .contains(&"$KV.KV_OBS.>".to_owned()),
-        "a machine credential must not hold the bucket-wide observation write scope"
-    );
 }
 
 #[test]
@@ -80,13 +51,11 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             API_SERVICE_SCOPE.to_owned(),
             MACHINE_SERVICE_SCOPE.to_owned(),
             OPS_STREAM_SUBJECT.to_owned(),
+            ployz_core::subjects::INTENT_GET.to_owned(),
+            ployz_core::subjects::INTENT_CHANGED.to_owned(),
             "$JS.API.>".to_owned(),
             "$JS.ACK.>".to_owned(),
-            "$KV.KV_CORE.services.*.*".to_owned(),
-            "$KV.KV_CORE.routes.*.*".to_owned(),
-            "$KV.KV_CORE.machines.*".to_owned(),
             "$KV.KV_CORE.namespace_locks.*".to_owned(),
-            "$KV.KV_CORE.nats_authorized_user.>".to_owned(),
             "$KV.KV_OPS.>".to_owned(),
         ]
     );
@@ -94,6 +63,10 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
         profile.subscribe.allowed_subjects(),
         &[
             API_SERVICE_SCOPE.to_owned(),
+            ployz_core::subjects::INTENT_CHANGED.to_owned(),
+            ployz_core::subjects::INTENT_GET.to_owned(),
+            machine_facts_scope(),
+            gateway_status_scope(),
             "$SRV.>".to_owned(),
             "_INBOX_ctl.>".to_owned()
         ]
@@ -233,14 +206,8 @@ fn subject_matches(pattern: &str, subject: &str) -> bool {
 
 #[test]
 fn every_state_key_family_pattern_spans_its_rendered_keys() {
-    use ployz_core::ids::{NamespaceId, ServiceId};
-    use ployz_core::nats_config::{NatsAuthorizedUser, NatsUserPublicKey};
-    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-    use ployz_core::security::NatsPrincipal;
-    use ployz_core::state::{
-        ActiveMachineStateKey, NamespaceLockStateKey, NatsAuthorizedUserKey, RouteBindingStateKey,
-        ServingTargetEntryKey,
-    };
+    use ployz_core::ids::NamespaceId;
+    use ployz_core::state::NamespaceLockStateKey;
 
     // One sample key per family, produced by the REAL production
     // constructor, matched against the family's own pattern. Driven by
@@ -248,44 +215,11 @@ fn every_state_key_family_pattern_spans_its_rendered_keys() {
     // cannot compile without a sample and cannot ship unspanned.
     fn sample_key(family: CoreStateKeyFamily) -> String {
         let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
-        let service = ServiceId::try_new("web").expect("valid service id");
         match family {
-            CoreStateKeyFamily::ServingTargetEntry => {
-                ServingTargetEntryKey::from_namespace_service(&namespace, &service)
-                    .as_str()
-                    .to_owned()
-            }
-            CoreStateKeyFamily::RouteBinding => {
-                let target = RouteTarget::new(
-                    RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-                    RoutePort::try_new(443).expect("valid route port"),
-                );
-                RouteBindingStateKey::from_target(&target)
-                    .as_str()
-                    .to_owned()
-            }
-            CoreStateKeyFamily::ActiveMachine => {
-                ActiveMachineStateKey::from_machine_id(&machine_id("machine_7"))
-                    .as_str()
-                    .to_owned()
-            }
             CoreStateKeyFamily::NamespaceLock => {
                 NamespaceLockStateKey::from_namespace_id(&namespace)
                     .as_str()
                     .to_owned()
-            }
-            CoreStateKeyFamily::NatsAuthorizedUser => {
-                NatsAuthorizedUserKey::from_user(&NatsAuthorizedUser {
-                    principal: NatsPrincipal::Machine {
-                        machine_id: machine_id("machine_7"),
-                    },
-                    nkey_public: NatsUserPublicKey::try_new(
-                        "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4",
-                    )
-                    .expect("valid nkey"),
-                })
-                .as_str()
-                .to_owned()
             }
         }
     }

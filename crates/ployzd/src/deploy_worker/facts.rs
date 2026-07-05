@@ -1,20 +1,17 @@
-//! Load deploy execution facts from current-state stores.
+//! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
-use futures_util::{StreamExt, stream};
+use crate::intent::NatsIntentReader;
+use crate::machine_runtime::client::{NatsMachineFactsReader, read_machine_container_snapshots};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::state::placement_rejection;
 use ployz_core::ops::UnusableMachine;
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_core::state::{IntentSnapshot, MachineUsabilityReason, placement_rejection};
 use std::fmt;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
 use super::preparation::namespace_cleanup_candidates;
-
-const MAX_CONCURRENT_OBSERVATION_READS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionMachineScope {
@@ -35,40 +32,51 @@ impl DeployExecutionMachineScope {
 pub async fn load_deploy_execution_facts_from_nats(
     request: &DeployRequest,
     machine_scope: DeployExecutionMachineScope,
-    core_state: &AsyncNatsCoreStateStore,
-    observations: &AsyncNatsObservationStore,
+    intent_reader: &NatsIntentReader,
+    facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let route_bindings = async {
-        core_state
-            .route_bindings()
+    let intent =
+        intent_reader
+            .intent()
             .await
-            .map_err(|source| DeployFactLoadError::RouteBindingsRead {
+            .map_err(|source| DeployFactLoadError::IntentRead {
                 message: source.to_string(),
-            })
-    };
-    let serving_entries = async {
-        core_state.serving_target_entries().await.map_err(|source| {
-            DeployFactLoadError::ServingTargetEntriesRead {
-                message: source.to_string(),
-            }
-        })
-    };
-    let machine_scope = load_active_machine_scope(core_state, machine_scope);
-    let (route_bindings, serving_entries, (machine_scope, unusable_machines)) =
-        tokio::try_join!(route_bindings, serving_entries, machine_scope)?;
-    let namespace_route_bindings = route_bindings
+            })?;
+    let (mut machine_scope, mut unusable_machines) =
+        load_active_machine_scope(&intent, machine_scope);
+    let namespace_route_bindings = intent
+        .route_bindings
         .into_iter()
         .filter(|binding| binding.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let namespace_serving_entries = serving_entries
+    let namespace_serving_entries = intent
+        .serving_target_entries
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let observed_machines =
-        load_machine_snapshots(observations, &machine_scope.observed_machine_ids).await?;
-    let dataplane_machines =
-        routed_dataplane_machines(request, machine_scope.observed_machine_ids.clone());
+    let (observed_machines, facts_unavailable) = read_machine_container_snapshots(
+        facts_reader,
+        machine_scope.observed_machine_ids.iter().cloned(),
+    )
+    .await;
+    let answering_machines = sorted_unique_machines(
+        observed_machines
+            .iter()
+            .map(MachineContainerObservationSnapshot::machine_id),
+    );
+    machine_scope
+        .eligible_machines
+        .retain(|machine_id| answering_machines.contains(machine_id));
+    unusable_machines.extend(
+        facts_unavailable
+            .into_iter()
+            .map(|machine_id| UnusableMachine {
+                machine_id,
+                reason: MachineUsabilityReason::FactsUnavailable,
+            }),
+    );
+    let dataplane_machines = routed_dataplane_machines(request, answering_machines);
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
@@ -98,72 +106,38 @@ fn routed_dataplane_machines(
     sorted_unique_machines(fallback_machines.iter())
 }
 
-/// Placement excludes machines by durable operator intent only: draining
-/// machines take no new work, with the rejection carried as typed evidence.
-/// Liveness is not consulted — a dead machine answers at the point of use
-/// (ADR 0027). The pre-cluster fallback scope (no machine records yet) is
-/// used unfiltered. This control-side gate is interim: with bid-based
-/// placement the draining machine declines its own bids.
-async fn load_active_machine_scope(
-    core_state: &AsyncNatsCoreStateStore,
+/// Durable operator intent builds the candidate scope first. Fresh
+/// machine-facts RPCs later decide which candidates have usable operation-time
+/// runtime evidence.
+fn load_active_machine_scope(
+    intent: &IntentSnapshot,
     fallback: DeployExecutionMachineScope,
-) -> Result<(DeployExecutionMachineScope, Vec<UnusableMachine>), DeployFactLoadError> {
-    let machines = core_state.active_machines().await.map_err(|source| {
-        DeployFactLoadError::ActiveMachineRead {
-            message: source.to_string(),
-        }
-    })?;
-    if machines.is_empty() {
-        return Ok((fallback, Vec::new()));
+) -> (DeployExecutionMachineScope, Vec<UnusableMachine>) {
+    if intent.active_machines.is_empty() {
+        return (fallback, Vec::new());
     }
 
     let mut eligible = Vec::new();
     let mut observed_ids = Vec::new();
     let mut unusable = Vec::new();
-    for machine in machines {
+    for machine in &intent.active_machines {
         observed_ids.push(machine.machine_id.clone());
         match placement_rejection(machine.lifecycle) {
-            None => eligible.push(machine.machine_id),
+            None => eligible.push(machine.machine_id.clone()),
             Some(reason) => unusable.push(UnusableMachine {
-                machine_id: machine.machine_id,
+                machine_id: machine.machine_id.clone(),
                 reason,
             }),
         }
     }
 
-    Ok((
+    (
         DeployExecutionMachineScope {
             eligible_machines: eligible,
             observed_machine_ids: observed_ids,
         },
         unusable,
-    ))
-}
-
-async fn load_machine_snapshots(
-    observations: &AsyncNatsObservationStore,
-    machine_ids: &[MachineId],
-) -> Result<Vec<MachineContainerObservationSnapshot>, DeployFactLoadError> {
-    let mut snapshots = Vec::new();
-    let mut reads = stream::iter(machine_ids.iter().cloned())
-        .map(|machine_id| async move {
-            observations
-                .machine_snapshot(&machine_id)
-                .await
-                .map_err(|source| DeployFactLoadError::MachineObservationRead {
-                    machine_id,
-                    message: source.to_string(),
-                })
-        })
-        .buffer_unordered(MAX_CONCURRENT_OBSERVATION_READS);
-
-    while let Some(snapshot) = reads.next().await {
-        if let Some(snapshot) = snapshot? {
-            snapshots.push(snapshot);
-        }
-    }
-
-    Ok(snapshots)
+    )
 }
 
 fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>) -> Vec<MachineId> {
@@ -175,50 +149,19 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
         .collect()
 }
 
-/// A current-state read failed before deploy execution started. Each variant
-/// carries the rendered store-error message as failure evidence.
+/// An intent read failed before deploy execution started. The rendered
+/// message is failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
-    RouteBindingsRead {
-        message: String,
-    },
-    ServingTargetEntriesRead {
-        message: String,
-    },
-    ActiveMachineRead {
-        message: String,
-    },
-    MachineObservationRead {
-        machine_id: MachineId,
-        message: String,
-    },
+    IntentRead { message: String },
 }
 
 impl fmt::Display for DeployFactLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RouteBindingsRead { message } => write!(
-                formatter,
-                "route binding state could not be read: {}",
-                message
-            ),
-            Self::ServingTargetEntriesRead { message } => write!(
-                formatter,
-                "serving target entries could not be read: {}",
-                message
-            ),
-            Self::ActiveMachineRead { message } => {
-                write!(formatter, "active machines could not be read: {message}")
+            Self::IntentRead { message } => {
+                write!(formatter, "intent could not be read: {message}")
             }
-            Self::MachineObservationRead {
-                machine_id,
-                message,
-            } => write!(
-                formatter,
-                "machine observations for {} could not be read: {}",
-                machine_id.as_str(),
-                message
-            ),
         }
     }
 }

@@ -8,10 +8,14 @@ use crate::gateway_pingora::{
 };
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
+use crate::intent::NatsIntentReader;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
+};
+use crate::runtime_facts::{
+    RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
 };
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
@@ -19,9 +23,8 @@ use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::net::SocketAddr;
@@ -45,6 +48,7 @@ pub struct RunningGatewayProcessRuntime {
     listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
+    facts_cache: RunningRuntimeFactsCache,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -55,6 +59,7 @@ impl RunningGatewayProcessRuntime {
         for task in self.tasks {
             let _ = task.await;
         }
+        self.facts_cache.shutdown().await;
     }
 
     #[must_use]
@@ -116,6 +121,10 @@ pub async fn start_gateway_process_runtime_with_client(
         RoutePort::try_new(listen_addr.port()).expect("bound TCP listener port is non-zero");
     let runtime = Arc::new(Mutex::new(GatewayRuntime::new()));
     let registry = PingoraRouteRegistry::new();
+    let facts_cache = start_runtime_facts_cache(client.clone())
+        .await
+        .map_err(GatewayProcessRuntimeError::StartFactsCache)?;
+    let facts = facts_cache.cache();
     let health = Arc::new(Mutex::new(GatewayProcessHealth {
         last_attempt: None,
         consecutive_failures: 0,
@@ -151,9 +160,10 @@ pub async fn start_gateway_process_runtime_with_client(
     let task_health = Arc::clone(&health);
     let mut refresh_shutdown = shutdown.subscribe();
     let refresh_client = client.clone();
+    let refresh_facts = facts.clone();
     let refresh_task = tokio::spawn(async move {
         let mut backoff = refresh_interval;
-        let mut source = GatewayProcessSource::new(refresh_client);
+        let mut source = GatewayProcessSource::new(refresh_client, refresh_facts);
         let mut refresh_wake_rx = refresh_wake_rx;
 
         loop {
@@ -199,6 +209,7 @@ pub async fn start_gateway_process_runtime_with_client(
         listen_addr,
         shutdown,
         pingora_shutdown,
+        facts_cache,
         tasks: vec![refresh_task, watch_task, http_task, health_task],
     })
 }
@@ -242,13 +253,15 @@ pub enum GatewayStatusPublishFailure {
 
 struct GatewayProcessSource {
     client: NatsClient,
+    facts: RuntimeFactsCache,
     stores: LazyHandle<GatewayProcessStores>,
 }
 
 impl GatewayProcessSource {
-    fn new(client: NatsClient) -> Self {
+    fn new(client: NatsClient, facts: RuntimeFactsCache) -> Self {
         Self {
             client,
+            facts,
             stores: LazyHandle::new(),
         }
     }
@@ -287,23 +300,30 @@ impl GatewayProcessSource {
     }
 
     async fn load_update(&mut self) -> Result<GatewayProjectionUpdate, GatewayProcessRuntimeError> {
+        let facts = self.facts.clone();
         let stores = self.stores().await?;
-        Ok(
-            load_gateway_projection_update_from_nats(&stores.core_state, &stores.observations)
-                .await,
-        )
+        Ok(load_gateway_projection_update_from_nats(&stores.intent_reader, &facts).await)
     }
 
     async fn replace_gateway_status(
         &mut self,
         status: &GatewayStatusObservation,
     ) -> Result<(), GatewayProcessRuntimeError> {
-        let stores = self.stores().await?;
-        stores
-            .observations
-            .replace_gateway_status(status)
+        let payload =
+            serde_json::to_vec(status).map_err(GatewayProcessRuntimeError::EncodeGatewayStatus)?;
+        self.client
+            .publish(gateway_status(&status.machine_id), payload.into())
             .await
-            .map_err(GatewayProcessRuntimeError::WriteObservations)
+            .map_err(|error| GatewayProcessRuntimeError::PublishGatewayStatus {
+                message: error.to_string(),
+            })?;
+        self.client.flush().await.map_err(|error| {
+            GatewayProcessRuntimeError::PublishGatewayStatus {
+                message: error.to_string(),
+            }
+        })?;
+        self.facts.record_gateway_status(status.clone());
+        Ok(())
     }
 
     async fn stores(&mut self) -> Result<&GatewayProcessStores, GatewayProcessRuntimeError> {
@@ -315,29 +335,14 @@ impl GatewayProcessSource {
 }
 
 struct GatewayProcessStores {
-    core_state: AsyncNatsCoreStateStore,
-    observations: AsyncNatsObservationStore,
+    intent_reader: NatsIntentReader,
 }
 
 async fn open_gateway_process_stores(
     client: NatsClient,
 ) -> Result<GatewayProcessStores, GatewayProcessRuntimeError> {
-    let jetstream = async_nats::jetstream::new(client);
-    let open_core_state = async {
-        AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-            .await
-            .map_err(GatewayProcessRuntimeError::OpenCoreState)
-    };
-    let open_observations = async {
-        AsyncNatsObservationStore::from_jetstream(&jetstream)
-            .await
-            .map_err(GatewayProcessRuntimeError::OpenObservations)
-    };
-    let (core_state, observations) = tokio::try_join!(open_core_state, open_observations)?;
-
     Ok(GatewayProcessStores {
-        core_state,
-        observations,
+        intent_reader: NatsIntentReader::new(client),
     })
 }
 
@@ -354,6 +359,7 @@ async fn wake_gateway_refresh_on_nats_changes(
         };
         match opened {
             Ok(mut watchers) => {
+                let _ = refresh_wake.try_send(());
                 match watch_gateway_changes(&mut watchers, &refresh_wake, &health, shutdown).await {
                     GatewayWatchLoopEnd::Shutdown => break,
                     GatewayWatchLoopEnd::Restart => {}
@@ -375,28 +381,29 @@ async fn wake_gateway_refresh_on_nats_changes(
 }
 
 struct GatewayChangeWatchers {
-    routes: async_nats::jetstream::kv::Watch,
-    observations: async_nats::jetstream::kv::Watch,
+    intent: async_nats::Subscriber,
+    machine_facts: async_nats::Subscriber,
 }
 
 async fn open_gateway_change_watchers(
     client: NatsClient,
 ) -> Result<GatewayChangeWatchers, GatewayProcessRuntimeError> {
-    let stores = open_gateway_process_stores(client).await?;
-    let routes = stores
-        .core_state
-        .watch_route_binding_changes()
-        .await
-        .map_err(GatewayProcessRuntimeError::WatchRoutes)?;
-    let observations = stores
-        .observations
-        .watch_machine_container_snapshot_changes()
-        .await
-        .map_err(GatewayProcessRuntimeError::WatchObservations)?;
+    let intent = client.subscribe(INTENT_CHANGED).await.map_err(|error| {
+        GatewayProcessRuntimeError::WatchIntent {
+            message: error.to_string(),
+        }
+    })?;
+    let subject = machine_facts_scope();
+    let machine_facts = client.subscribe(subject.clone()).await.map_err(|error| {
+        GatewayProcessRuntimeError::WatchFacts {
+            subject,
+            message: error.to_string(),
+        }
+    })?;
 
     Ok(GatewayChangeWatchers {
-        routes,
-        observations,
+        intent,
+        machine_facts,
     })
 }
 
@@ -408,8 +415,8 @@ async fn watch_gateway_changes(
 ) -> GatewayWatchLoopEnd {
     loop {
         tokio::select! {
-            route = watchers.routes.next() => {
-                match watch_event_change("routes", route) {
+            intent = watchers.intent.next() => {
+                match watch_intent_change(intent) {
                     GatewayWatchEvent::Changed => {
                         record_gateway_watch_success(health);
                         let _ = refresh_wake.try_send(());
@@ -420,8 +427,8 @@ async fn watch_gateway_changes(
                     }
                 }
             }
-            observation = watchers.observations.next() => {
-                match watch_event_change("observations", observation) {
+            facts = watchers.machine_facts.next() => {
+                match watch_plain_change("machine facts", facts) {
                     GatewayWatchEvent::Changed => {
                         record_gateway_watch_success(health);
                         let _ = refresh_wake.try_send(());
@@ -437,6 +444,20 @@ async fn watch_gateway_changes(
     }
 }
 
+fn watch_intent_change(event: Option<async_nats::Message>) -> GatewayWatchEvent {
+    watch_plain_change("intent", event)
+}
+
+fn watch_plain_change(
+    source: &'static str,
+    event: Option<async_nats::Message>,
+) -> GatewayWatchEvent {
+    match event {
+        Some(_) => GatewayWatchEvent::Changed,
+        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended { source }),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GatewayWatchLoopEnd {
     Restart,
@@ -446,21 +467,6 @@ enum GatewayWatchLoopEnd {
 enum GatewayWatchEvent {
     Changed,
     Failed(GatewayWatchFailure),
-}
-
-fn watch_event_change(
-    source: &'static str,
-    event: Option<
-        Result<async_nats::jetstream::kv::Entry, async_nats::jetstream::kv::WatcherError>,
-    >,
-) -> GatewayWatchEvent {
-    match event {
-        Some(Ok(_)) => GatewayWatchEvent::Changed,
-        Some(Err(error)) => GatewayWatchEvent::Failed(GatewayWatchFailure::Stream {
-            message: error.to_string(),
-        }),
-        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended { source }),
-    }
 }
 
 fn record_gateway_watch_success(health: &Mutex<GatewayProcessHealth>) {
@@ -714,12 +720,19 @@ pub enum GatewayProcessRuntimeError {
         addr: SocketAddr,
         timeout: Duration,
     },
-    OpenCoreState(CoreStateStoreError),
-    OpenObservations(ObservationStoreError),
-    WriteObservations(ObservationStoreError),
+    StartFactsCache(RuntimeFactsCacheError),
+    EncodeGatewayStatus(serde_json::Error),
+    PublishGatewayStatus {
+        message: String,
+    },
     UpdatePingoraRoutes(PingoraRouteRegistryError),
-    WatchRoutes(ployz_nats::core_state::RouteBindingStoreError),
-    WatchObservations(ObservationStoreError),
+    WatchIntent {
+        message: String,
+    },
+    WatchFacts {
+        subject: String,
+        message: String,
+    },
     RefreshTimedOut {
         timeout: Duration,
     },
@@ -750,14 +763,14 @@ impl fmt::Display for GatewayProcessRuntimeError {
                     timeout.as_secs()
                 )
             }
-            Self::OpenCoreState(error) => {
-                write!(formatter, "failed to open core state store: {error}")
+            Self::StartFactsCache(error) => {
+                write!(formatter, "failed to start runtime facts cache: {error}")
             }
-            Self::OpenObservations(error) => {
-                write!(formatter, "failed to open observation store: {error}")
+            Self::EncodeGatewayStatus(error) => {
+                write!(formatter, "failed to encode gateway status: {error}")
             }
-            Self::WriteObservations(error) => {
-                write!(formatter, "failed to write gateway observation: {error}")
+            Self::PublishGatewayStatus { message } => {
+                write!(formatter, "failed to publish gateway status: {message}")
             }
             Self::UpdatePingoraRoutes(error) => {
                 write!(
@@ -765,9 +778,9 @@ impl fmt::Display for GatewayProcessRuntimeError {
                     "failed to update Pingora gateway routes: {error}"
                 )
             }
-            Self::WatchRoutes(error) => write!(formatter, "failed to watch routes: {error}"),
-            Self::WatchObservations(error) => {
-                write!(formatter, "failed to watch observations: {error}")
+            Self::WatchIntent { message } => write!(formatter, "failed to watch intent: {message}"),
+            Self::WatchFacts { subject, message } => {
+                write!(formatter, "failed to watch {subject}: {message}")
             }
             Self::RefreshTimedOut { timeout } => {
                 write!(

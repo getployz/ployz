@@ -1,20 +1,13 @@
-//! NATS-backed canonical current-state adapters.
+//! NATS-backed namespace-lock adapter.
 
-mod active_machine;
 mod namespace_lock;
-mod nats_authorized_user;
-mod route_binding;
-mod serving_target_entry;
 
-use crate::kv::{KV_CORE_BUCKET, KvListError, NatsIoTimeout, with_io_timeout};
-pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};
+use crate::kv::{KV_CORE_BUCKET, NatsIoTimeout, with_io_timeout};
 use async_nats::jetstream;
 pub use namespace_lock::{
     NAMESPACE_LOCK_RENEW_INTERVAL_MS, NAMESPACE_LOCK_TTL_MS, NamespaceLockAcquire,
     NamespaceLockRenew,
 };
-use ployz_core::ids::ServiceId;
-pub use route_binding::RouteBindingStoreError;
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -63,21 +56,9 @@ pub enum CoreStateStoreError {
         key: String,
         message: String,
     },
-    ListKeys {
-        message: String,
-    },
-    CorruptServingTargetEntry {
-        key: String,
-        expected_service_id: ServiceId,
-        actual_service_id: ServiceId,
-    },
     CorruptNamespaceLock {
         key: String,
         message: String,
-    },
-    CorruptKey {
-        key: String,
-        actual_key: String,
     },
     Timeout {
         operation: &'static str,
@@ -90,33 +71,15 @@ impl fmt::Display for CoreStateStoreError {
             Self::OpenBucket { bucket, message } => {
                 write!(formatter, "open bucket {bucket}: {message}")
             }
-            Self::Encode(error) => write!(formatter, "encode serving target entry state: {error}"),
-            Self::Decode(error) => write!(formatter, "decode serving target entry state: {error}"),
+            Self::Encode(error) => write!(formatter, "encode core state: {error}"),
+            Self::Decode(error) => write!(formatter, "decode core state: {error}"),
             Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
             Self::CasConflict { message } => write!(formatter, "cas conflict: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
-            Self::ListKeys { message } => {
-                write!(formatter, "list serving target entry keys: {message}")
-            }
-            Self::CorruptServingTargetEntry {
-                key,
-                expected_service_id,
-                actual_service_id,
-            } => write!(
-                formatter,
-                "serving target entry state at {} belongs to {}, not {}",
-                key,
-                actual_service_id.as_str(),
-                expected_service_id.as_str()
-            ),
             Self::CorruptNamespaceLock { key, message } => {
                 write!(formatter, "namespace lock at {key} is corrupt: {message}")
             }
-            Self::CorruptKey { key, actual_key } => write!(
-                formatter,
-                "core state key {key} does not match canonical key {actual_key}"
-            ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
     }
@@ -126,16 +89,6 @@ impl From<NatsIoTimeout> for CoreStateStoreError {
     fn from(timeout: NatsIoTimeout) -> Self {
         Self::Timeout {
             operation: timeout.operation,
-        }
-    }
-}
-
-impl From<KvListError> for CoreStateStoreError {
-    fn from(error: KvListError) -> Self {
-        match error {
-            KvListError::Scan { message } => Self::ListKeys { message },
-            KvListError::Decode(error) => Self::Decode(error),
-            KvListError::CorruptKey { key, actual_key } => Self::CorruptKey { key, actual_key },
         }
     }
 }

@@ -8,25 +8,30 @@ use crate::machine_runtime::protocol::{
     MachineContainerRunDomainError, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
+    MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest,
 };
+use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
+use std::fmt;
 use std::time::Duration;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_FACT_READS: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {
@@ -37,8 +42,14 @@ pub struct NatsMachineContainerRuntime {
 #[derive(Debug, Clone)]
 pub struct NatsMachineDataplanePreparer {
     pub(super) client: async_nats::Client,
-    pub(super) observations: AsyncNatsObservationStore,
+    pub(super) facts_reader: NatsMachineFactsReader,
     pub(super) request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineFactsReader {
+    client: async_nats::Client,
+    request_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +85,18 @@ pub enum MachineLogsTailRuntimeError {
     ReadFailed {
         machine_id: MachineId,
         container_id: ployz_core::ids::ContainerId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineFactsReadRuntimeError {
+    GatherFailed {
+        machine_id: MachineId,
         message: ployz_core::ops::FailureMessage,
     },
     Unavailable {
@@ -162,6 +185,104 @@ impl NatsMachineLogsTailer {
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
     }
+}
+
+impl NatsMachineFactsReader {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn machine_facts(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineFactsSnapshot, MachineFactsReadRuntimeError> {
+        call_machine::<MachineFactsGetRpcOk, MachineFactsGetDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::FactsGet,
+            &MachineFactsGetRpcRequest {},
+        )
+        .await
+        .map(|ok| ok.facts)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineFactsReadRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+}
+
+pub(crate) async fn read_available_machine_facts(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> Vec<MachineFactsSnapshot> {
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move { facts_reader.machine_facts(&machine_id).await.ok() })
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+
+    let mut facts = Vec::new();
+    // Drain every read: an unavailable machine resolves to None and must be
+    // skipped, never end the gather, or one down machine would cancel the
+    // still-pending reads for healthy machines completing after it.
+    while let Some(snapshot) = reads.next().await {
+        if let Some(snapshot) = snapshot {
+            facts.push(snapshot);
+        }
+    }
+    facts.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts
+}
+
+pub(crate) async fn read_available_machine_facts_by_id(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> BTreeMap<MachineId, MachineFactsSnapshot> {
+    read_available_machine_facts(facts_reader, machine_ids)
+        .await
+        .into_iter()
+        .map(|facts| (facts.machine_id().clone(), facts))
+        .collect()
+}
+
+pub(crate) async fn read_machine_container_snapshots(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> (Vec<MachineContainerObservationSnapshot>, Vec<MachineId>) {
+    let mut snapshots = Vec::new();
+    let mut facts_unavailable = Vec::new();
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move {
+            facts_reader
+                .machine_facts(&machine_id)
+                .await
+                .map(|facts| facts.containers().clone())
+                .map_err(|_| machine_id)
+        })
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+
+    while let Some(snapshot) = reads.next().await {
+        match snapshot {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(machine_id) => facts_unavailable.push(machine_id),
+        }
+    }
+
+    snapshots.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts_unavailable.sort();
+    (snapshots, facts_unavailable)
 }
 
 impl NatsMachineSubstrateUpdater {
@@ -253,18 +374,41 @@ impl MachineSubstrateUpdateRuntimeError {
 
 impl NatsMachineDataplanePreparer {
     #[must_use]
-    pub fn new(client: async_nats::Client, observations: AsyncNatsObservationStore) -> Self {
+    pub fn new(client: async_nats::Client) -> Self {
         Self {
+            facts_reader: NatsMachineFactsReader::new(client.clone()),
             client,
-            observations,
             request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
     }
 
     #[must_use]
-    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
+        self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
         self
+    }
+}
+
+impl fmt::Display for MachineFactsReadRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GatherFailed {
+                machine_id,
+                message,
+            } => write!(
+                formatter,
+                "machine {} rejected facts gather: {}",
+                machine_id.as_str(),
+                message.as_str()
+            ),
+            Self::Unavailable { machine_id, reason } => write!(
+                formatter,
+                "machine {} facts unavailable: {}",
+                machine_id.as_str(),
+                reason.failure_message().as_str()
+            ),
+        }
     }
 }
 
@@ -479,6 +623,17 @@ impl MachineEnsureEndpointNetworkDomainError {
                 reason: MachineRuntimeUnavailableReason::ServiceUnavailable {
                     message: message.as_str().to_owned(),
                 },
+            },
+        }
+    }
+}
+
+impl MachineFactsGetDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineFactsReadRuntimeError {
+        match self {
+            Self::GatherFailed { message } => MachineFactsReadRuntimeError::GatherFailed {
+                machine_id,
+                message,
             },
         }
     }

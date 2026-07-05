@@ -7,11 +7,13 @@
 use crate::config::DnsProcessConfig;
 use crate::dns::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
 use crate::dns_source::load_dns_projection_update_from_nats;
+use crate::intent::NatsIntentReader;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::runtime_facts::{
+    RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
+};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -27,6 +29,7 @@ pub struct RunningDnsProcessRuntime {
     runtime: Arc<Mutex<DnsRuntime>>,
     health: Arc<Mutex<DnsProcessHealth>>,
     shutdown: broadcast::Sender<()>,
+    facts_cache: RunningRuntimeFactsCache,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -36,6 +39,7 @@ impl RunningDnsProcessRuntime {
         for task in self.tasks {
             let _ = task.await;
         }
+        self.facts_cache.shutdown().await;
     }
 
     #[must_use]
@@ -82,7 +86,10 @@ pub async fn start_dns_process_runtime_with_client(
         last_attempt: None,
         consecutive_failures: 0,
     }));
-    let stores = open_dns_process_stores(client).await?;
+    let facts_cache = start_runtime_facts_cache(client.clone())
+        .await
+        .map_err(DnsProcessRuntimeError::StartFactsCache)?;
+    let stores = open_dns_process_stores(client, facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let task_runtime = Arc::clone(&runtime);
     let task_health = Arc::clone(&health);
@@ -106,6 +113,7 @@ pub async fn start_dns_process_runtime_with_client(
         runtime,
         health,
         shutdown,
+        facts_cache,
         tasks: vec![refresh_task],
     })
 }
@@ -154,11 +162,9 @@ impl DnsProcessSource {
         &self,
         runtime: &Mutex<DnsRuntime>,
     ) -> Result<DnsRuntimeTick, DnsProcessRuntimeError> {
-        let update = load_dns_projection_update_from_nats(
-            &self.stores.core_state,
-            &self.stores.observations,
-        )
-        .await;
+        let update =
+            load_dns_projection_update_from_nats(&self.stores.intent_reader, &self.stores.facts)
+                .await;
         let mut runtime = runtime.lock().expect("dns runtime lock is not poisoned");
 
         Ok(runtime.apply_source_update(update))
@@ -166,30 +172,15 @@ impl DnsProcessSource {
 }
 
 struct DnsProcessStores {
-    core_state: AsyncNatsCoreStateStore,
-    observations: AsyncNatsObservationStore,
+    intent_reader: NatsIntentReader,
+    facts: RuntimeFactsCache,
 }
 
-async fn open_dns_process_stores(
-    client: NatsClient,
-) -> Result<DnsProcessStores, DnsProcessRuntimeError> {
-    let jetstream = async_nats::jetstream::new(client);
-    let open_core_state = async {
-        AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-            .await
-            .map_err(DnsProcessRuntimeError::OpenCoreState)
-    };
-    let open_observations = async {
-        AsyncNatsObservationStore::from_jetstream(&jetstream)
-            .await
-            .map_err(DnsProcessRuntimeError::OpenObservations)
-    };
-    let (core_state, observations) = tokio::try_join!(open_core_state, open_observations)?;
-
-    Ok(DnsProcessStores {
-        core_state,
-        observations,
-    })
+fn open_dns_process_stores(client: NatsClient, facts: RuntimeFactsCache) -> DnsProcessStores {
+    DnsProcessStores {
+        intent_reader: NatsIntentReader::new(client),
+        facts,
+    }
 }
 
 fn record_dns_attempt(
@@ -265,8 +256,7 @@ pub async fn run_dns_until_shutdown(
 pub enum DnsProcessRuntimeError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
-    OpenCoreState(CoreStateStoreError),
-    OpenObservations(ObservationStoreError),
+    StartFactsCache(RuntimeFactsCacheError),
     RefreshTimedOut { timeout: Duration },
     ShutdownSignal(std::io::Error),
 }
@@ -276,11 +266,8 @@ impl fmt::Display for DnsProcessRuntimeError {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
             Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::OpenCoreState(error) => {
-                write!(formatter, "failed to open core state store: {error}")
-            }
-            Self::OpenObservations(error) => {
-                write!(formatter, "failed to open observation store: {error}")
+            Self::StartFactsCache(error) => {
+                write!(formatter, "failed to start runtime facts cache: {error}")
             }
             Self::RefreshTimedOut { timeout } => {
                 write!(

@@ -140,10 +140,7 @@ pub(super) fn machine_add_error_from_submit_error(
 
 fn machine_add_state_conflict(
     error: &RecordMachineJoinReportError,
-) -> Option<(
-    OperationId,
-    ployz_core::ops::MachineAddOperationStateName,
-)> {
+) -> Option<(OperationId, ployz_core::ops::MachineAddOperationStateName)> {
     let RecordMachineJoinReportError::RecordMachineAddEvent(
         RecordMachineAddEventError::ProjectStatus(
             StatusProjectionError::InvalidTransition {
@@ -171,8 +168,7 @@ pub(super) fn completed_machine_add_operation_id(
     error: &RecordMachineJoinReportError,
 ) -> Option<OperationId> {
     machine_add_state_conflict(error).and_then(|(operation_id, state)| {
-        (state == ployz_core::ops::MachineAddOperationStateName::Completed)
-            .then_some(operation_id)
+        (state == ployz_core::ops::MachineAddOperationStateName::Completed).then_some(operation_id)
     })
 }
 
