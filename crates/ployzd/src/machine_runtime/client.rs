@@ -234,8 +234,13 @@ pub(crate) async fn read_available_machine_facts(
         .buffer_unordered(MAX_CONCURRENT_FACT_READS);
 
     let mut facts = Vec::new();
-    while let Some(Some(snapshot)) = reads.next().await {
-        facts.push(snapshot);
+    // Drain every read: an unavailable machine resolves to None and must be
+    // skipped, never end the gather, or one down machine would cancel the
+    // still-pending reads for healthy machines completing after it.
+    while let Some(snapshot) = reads.next().await {
+        if let Some(snapshot) = snapshot {
+            facts.push(snapshot);
+        }
     }
     facts.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
     facts
