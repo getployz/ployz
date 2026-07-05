@@ -211,8 +211,6 @@ async fn scenario_init_and_activate_first_machine() {
                 "authorized-users.conf must contain {principal}: {authorized}"
             );
         }
-
-        assert_obsolete_bootstrap_resources_absent(&core).await;
     })
     .await;
 
@@ -748,28 +746,3 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
 // ---------------------------------------------------------------------------
 // Scenario 1 detail assertions
 // ---------------------------------------------------------------------------
-
-/// Bootstrap evidence on the secured server: the removed core/operation KV and
-/// operation stream resources are no longer provisioned.
-async fn assert_obsolete_bootstrap_resources_absent(core: &CoreContext) {
-    let client = connect_core_client(
-        core,
-        NatsPrincipal::Controller,
-        &core.material.controller_seed,
-    )
-    .await
-    .expect("controller principal connects");
-    let jetstream = async_nats::jetstream::new(client);
-    for bucket in ["KV_CORE", "KV_OPS"] {
-        assert!(
-            jetstream.get_key_value(bucket).await.is_err(),
-            "obsolete KV bucket {bucket} exists"
-        );
-    }
-    for stream in ["PLZ_OPS"] {
-        assert!(
-            jetstream.get_stream(stream).await.is_err(),
-            "obsolete stream {stream} exists"
-        );
-    }
-}

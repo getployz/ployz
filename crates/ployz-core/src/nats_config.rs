@@ -31,7 +31,6 @@ pub struct NatsServerConfig {
     listener: NatsListener,
     port: u16,
     server_name: MachineId,
-    jetstream_store_dir: PathBuf,
     tls: NatsServerTlsFiles,
     authorized_users_include: PathBuf,
 }
@@ -39,7 +38,6 @@ pub struct NatsServerConfig {
 impl NatsServerConfig {
     pub fn single_machine(
         machine_id: MachineId,
-        jetstream_store_dir: PathBuf,
         listener: NatsListener,
         tls: NatsServerTlsFiles,
         authorized_users_include: PathBuf,
@@ -48,7 +46,6 @@ impl NatsServerConfig {
             listener,
             port: 4222,
             server_name: machine_id,
-            jetstream_store_dir,
             tls,
             authorized_users_include,
         };
@@ -72,11 +69,6 @@ impl NatsServerConfig {
 
     #[must_use]
     pub fn render(&self) -> String {
-        let store_dir = self
-            .jetstream_store_dir
-            .to_str()
-            .expect("validated nats store dir is UTF-8");
-        let store_dir = quote_nats_string(store_dir);
         let cert_file = quote_nats_string(
             self.tls
                 .cert_file
@@ -111,13 +103,12 @@ impl NatsServerConfig {
             rendered.push_str(&format!("client_advertise: {client_advertise}\n",));
         }
         rendered.push_str(&format!(
-            "tls {{\n  cert_file: {cert_file}\n  key_file: {key_file}\n}}\njetstream {{\n  store_dir: {store_dir}\n}}\ninclude {include_path}\n"
+            "tls {{\n  cert_file: {cert_file}\n  key_file: {key_file}\n}}\njetstream: disabled\ninclude {include_path}\n"
         ));
         rendered
     }
 
     fn validate(&self) -> Result<(), NatsServerConfigError> {
-        validate_config_path("jetstream_store_dir", &self.jetstream_store_dir)?;
         validate_config_path("tls.cert_file", &self.tls.cert_file)?;
         validate_config_path("tls.key_file", &self.tls.key_file)?;
         validate_include_path(&self.authorized_users_include)?;

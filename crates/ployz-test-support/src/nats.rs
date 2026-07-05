@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use async_nats::jetstream;
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
@@ -114,7 +113,6 @@ impl SecuredTestNats {
         let server_config = NatsServerConfig::single_machine(
             MachineId::try_new(SERVER_MACHINE_ID)
                 .expect("fixture server machine id is a valid subject token"),
-            dir.path().join("jetstream"),
             NatsListener::Loopback,
             NatsServerTlsFiles {
                 cert_file: tls.cert_path,
@@ -270,12 +268,11 @@ impl SecuredTestNats {
 }
 
 /// The one connected fixture the suites share: a [`SecuredTestNats`] server
-/// plus authenticated Controller/User clients and a JetStream context.
+/// plus authenticated Controller/User clients.
 pub struct TestNats {
     pub server: SecuredTestNats,
     pub controller: async_nats::Client,
     pub user: async_nats::Client,
-    pub jetstream: jetstream::Context,
 }
 
 impl TestNats {
@@ -296,13 +293,11 @@ impl TestNats {
         let user = connect_authenticated(&server.user_config(), TEST_NATS_CONNECT_TIMEOUT)
             .await
             .expect("operator connects");
-        let jetstream = jetstream::new(controller.clone());
 
         Self {
             server,
             controller,
             user,
-            jetstream,
         }
     }
 
