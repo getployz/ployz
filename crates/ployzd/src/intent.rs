@@ -83,7 +83,7 @@ impl std::fmt::Display for IntentReadError {
 impl From<NatsJsonServiceRequestError> for IntentReadError {
     fn from(error: NatsJsonServiceRequestError) -> Self {
         Self::Unavailable {
-            message: format!("{error:?}"),
+            message: format!("{error}"),
         }
     }
 }

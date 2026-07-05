@@ -256,7 +256,7 @@ impl fmt::Display for ControlRuntimeError {
             Self::OpenOperationStatus(error) => {
                 write!(
                     formatter,
-                    "failed to open operation status store: {error:?}"
+                    "failed to open operation status store: {error}"
                 )
             }
             Self::RenderNatsAuthorization(error) => {
@@ -269,19 +269,19 @@ impl fmt::Display for ControlRuntimeError {
                 )
             }
             Self::StartIntent(error) => {
-                write!(formatter, "failed to start intent service: {error:?}")
+                write!(formatter, "failed to start intent service: {error}")
             }
             Self::StartOperationApi(error) => {
                 write!(
                     formatter,
-                    "failed to start operation API service: {error:?}"
+                    "failed to start operation API service: {error}"
                 )
             }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")
             }
             Self::ShutdownOperationApi(error) => {
-                write!(formatter, "failed to stop operation API service: {error:?}")
+                write!(formatter, "failed to stop operation API service: {error}")
             }
         }
     }
