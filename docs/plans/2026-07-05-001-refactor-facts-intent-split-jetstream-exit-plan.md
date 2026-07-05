@@ -30,9 +30,12 @@ rewrite regressions from inherited failures.
 ## Stroke 1 — the facts plane
 
 One `MachineFactsSnapshot` per machine: containers with identity labels,
-public IP, roles, applied lifecycle, cert refs, `observed_at`. Machine
-ployzd publishes it on change (Docker events, debounced) and every 30s,
-and answers `facts.get` (H2). Machine credentials permit publishing only
+public IP, roles, applied lifecycle, applied substrate versions, cert
+refs, `observed_at`. Cert refs are defined in their post-Stroke-5 form
+(artifact digest plus machine-local path, never an Object Store
+reference) so the pinned schema survives Stroke 5. Machine ployzd
+publishes it on change (Docker events, debounced) and every 30s, and
+answers `facts.get` (H2). Machine credentials permit publishing only
 the machine's own facts subject. The core keeps a live fact cache. Passive
 read and data-plane surfaces may use cached or disk-backed last-known-good
 facts marked with `observed_at`; mutating operation runtime snapshots must
@@ -42,7 +45,12 @@ operation evidence, never as reuse, cleanup, or placement input.
 Delete in the same stroke: `KV_OBS`, `observations.rs` as a store, and
 every observation-scatter key. Flip every reader — `gateway_source`,
 `dns_source`, operation-API queries — to the cache/broadcast/gather path
-with disk-backed last-known-good.
+with disk-backed last-known-good (each role process owns and prunes its
+own LKG file under its own state directory). The SDK projection-source
+types lose their observation-store vocabulary here (`ployz-sdk-types`
+rework + TS regeneration ride this stroke). Permission changes in this
+stroke are limited to the machine facts-subject narrowing; the full
+profile rework belongs to Stroke 2.
 
 ## Stroke 2 — the intent plane and the serving commit
 
@@ -66,10 +74,19 @@ Authorized users are core-local intent consumed only by the core's own
 authorization render: they are never part of the intent broadcast or
 `intent.get` payload.
 
-Delete in the same stroke: all of `core_state/` (serving targets, route
-bindings, machine records, KV auth projection), the state-key machinery in
+Deploy planning re-points in this stroke: the eligibility scan and
+serving/route inputs (`deploy_worker/facts.rs`, `deploy_worker/ports.rs`)
+read `intent.get` plus facts gather as the interim source, replaced by
+bid RPCs in Stroke 4.
+
+Delete in the same stroke: all of `core_state/` except
+`namespace_lock.rs` (the deploy fence survives until Stroke 3 replaces it
+with the sequencer's in-process mutex), the state-key machinery in
 `ployz-core`, `NamespaceStateCommitter` and its adapters, and the KV
-commit halves of the deploy and lifecycle runtimes.
+commit halves of the deploy, lifecycle, and machine-update runtimes
+(reported substrate versions move to the facts snapshot). The SDK
+projection-source types lose their core-state vocabulary here (TS
+regeneration rides this stroke too).
 
 ## Stroke 3 — operations on evidence logs
 
@@ -92,10 +109,12 @@ persisted stream left to protect).
 
 ## Stroke 4 — placement bids and machine-side drain
 
-Placement flips from eligibility scan to live bid RPCs; draining machines
-decline (the planner consults intent as well). The ADR 0027 end-state
-lands here because Strokes 1–2 deleted the stores the eligibility scan
-read; bids against live machines replace the scan.
+Placement flips from the interim intent-scan (Stroke 2) to live bid
+RPCs; draining machines decline (the planner consults intent as well).
+The ADR 0027 end-state lands here.
+
+Delete in the same stroke: the interim eligibility scan and its
+intent-derived machine scope.
 
 ## Stroke 5 — JetStream off
 
@@ -127,8 +146,9 @@ unless an external or operator-held restore source exists.
 ## Notes
 
 - Strokes are dependency order, not compatibility order. 1 and 2 can be
-  built in parallel branches; 3 depends on 2 (the sequencer's home); 5 is
-  mechanical once 1–3 land.
+  built in parallel branches; 3 depends on 2 (the sequencer's home); 4
+  depends on 2 (it replaces the interim scan); 5 is mechanical once 1–3
+  land.
 - Tests are rewritten with their subsystems, not preserved: the JetStream
   fixtures die with the stores they exercised. Wire pins survive only for
   contracts that still exist (machine RPC protocol, SDK API shapes, fact
