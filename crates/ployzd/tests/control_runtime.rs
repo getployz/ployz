@@ -48,6 +48,7 @@ use ployzd::machine_runtime::protocol::{
     MachineSubstrateUpdateRpcResponse,
 };
 use ployzd::machine_runtime::service::start_machine_runtime_service;
+use ployzd::namespace_intent::NamespaceIntentStore;
 use ployzd::services::machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -274,12 +275,11 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
 async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
+    let namespace_intent =
+        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
     let runtime = nats.start_control(&config).await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
-    core_state
-        .replace_serving_target_entry(&ServingTargetEntry {
+    namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
@@ -324,6 +324,8 @@ async fn control_runtime_serves_active_service_queries() {
 async fn control_runtime_serves_runtime_snapshot_projection() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats.control_config();
+    let namespace_intent =
+        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
     let runtime = nats.start_control(&config).await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
@@ -333,16 +335,16 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
-    core_state
-        .replace_serving_target_entry(&ServingTargetEntry {
+    namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
         })
         .await
         .expect("serving target entry stores");
-    core_state
-        .replace_route_binding(&RouteBindingState {
+    namespace_intent
+        .replace_route_binding(RouteBindingState {
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
             endpoint_port: route_port(8080),
@@ -478,14 +480,18 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         ),
         "expected deploy to complete, got {status:?}"
     );
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
+    let namespace_intent =
+        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
     assert_eq!(
-        core_state
-            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
-            .await
-            .expect("serving target entry reads")
+        namespace_intent
+            .load()
+            .expect("namespace intent reads")
+            .serving_target_entries
+            .into_iter()
+            .find(|entry| {
+                entry.namespace_id == namespace_id("default")
+                    && entry.service_id == service_id("svc_api")
+            })
             .expect("serving target committed")
             .namespace_revision_entry_id,
         deploy_target_entry_id("svc_api")

@@ -1,4 +1,3 @@
-use async_nats::jetstream;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
     ReplicaCount,
@@ -10,9 +9,8 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{ActiveMachineState, ServingTargetEntry, ServingTargetEntryKey};
+use ployz_core::state::{ActiveMachineState, ServingTargetEntry};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::service_runtime::RunningNatsService;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -33,17 +31,18 @@ use ployzd::machine_runtime::runner::{
 use ployzd::machine_runtime::service::{
     MachinePloyzNativeMeshPreparer, start_machine_runtime_service,
 };
+use ployzd::namespace_intent::NamespaceIntentStore;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
 
-    core_state
-        .replace_serving_target_entry(&ServingTargetEntry {
+    nats.namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
@@ -308,31 +307,15 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 }
 
 #[tokio::test]
-async fn nats_preparation_preserves_typed_active_state_read_failure() {
+async fn nats_preparation_preserves_unknown_intent_field_failure() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
-    let key = ServingTargetEntryKey::from_namespace_service(
-        &namespace_id("default"),
-        &service_id("svc_api"),
-    );
-    let wrong_service_state = ServingTargetEntry {
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_worker"),
-        namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-    };
-    nats.jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open KV_CORE")
-        .put(
-            key.as_str(),
-            serde_json::to_vec(&wrong_service_state)
-                .expect("serving target entry state encodes")
-                .into(),
-        )
-        .await
-        .expect("corrupt active state stores");
+    std::fs::write(
+        &nats.namespace_intent_file,
+        br#"{"route_bindings":[],"serving_target_entries":[],"extra":true}"#,
+    )
+    .expect("corrupt namespace intent stores");
 
     let request = deploy_request();
     let error = load_deploy_execution_facts_from_nats(
@@ -343,15 +326,12 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
         Duration::from_secs(7),
     )
     .await
-    .expect_err("wrong serving target entry payload is rejected");
+    .expect_err("unknown namespace intent field is rejected");
 
-    // The namespace-wide serving-target read detects the corruption first
-    // (omitted-service reconciliation loads every entry in the namespace).
     assert!(matches!(
         error,
         DeployFactLoadError::IntentRead { ref message }
-            if message.contains(key.as_str())
-                && message.contains("does not match canonical key")
+            if message.contains("decode namespace intent evidence")
     ));
 }
 
@@ -361,19 +341,8 @@ async fn nats_preparation_preserves_decode_failure_message() {
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
     let request = deploy_request();
-    let key = ServingTargetEntryKey::from_namespace_service(
-        &namespace_id("default"),
-        request
-            .primary_service_id()
-            .expect("test deploy request has a service"),
-    );
-    nats.jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open KV_CORE")
-        .put(key.as_str(), br#"{"service_id":"svc_api""#.to_vec().into())
-        .await
-        .expect("malformed active state stores");
+    std::fs::write(&nats.namespace_intent_file, br#"{"route_bindings":["#)
+        .expect("malformed namespace intent stores");
 
     let error = load_deploy_execution_facts_from_nats(
         &request,
@@ -388,7 +357,7 @@ async fn nats_preparation_preserves_decode_failure_message() {
     assert!(matches!(
         error,
         DeployFactLoadError::IntentRead { ref message }
-            if message.contains("decode serving target entry state")
+            if message.contains("decode namespace intent evidence")
     ));
 }
 
@@ -414,9 +383,11 @@ async fn prepare_command_from_nats(
 
 struct TestNats {
     connected: ployz_test_support::nats::TestNats,
-    jetstream: jetstream::Context,
     core_state: AsyncNatsCoreStateStore,
     _intent: RunningIntentRuntime,
+    _intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
+    namespace_intent_file: PathBuf,
 }
 
 impl TestNats {
@@ -594,17 +565,17 @@ async fn test_nats() -> TestNats {
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     connected.bootstrap_resources().await;
-    let jetstream = connected.jetstream.clone();
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&connected.jetstream)
         .await
         .expect("open core state store");
+    let intent_dir = tempfile::tempdir().expect("intent dir");
+    let namespace_intent_file = intent_dir.path().join("namespace-intent.json");
+    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
     let intent = start_intent_runtime(
         connected.controller.clone(),
         core_state.clone(),
-        tempfile::tempdir()
-            .expect("lifecycle dir")
-            .path()
-            .join("machine-lifecycles.json"),
+        namespace_intent.clone(),
+        intent_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await
@@ -612,9 +583,11 @@ async fn test_nats() -> TestNats {
 
     TestNats {
         connected,
-        jetstream,
         core_state,
         _intent: intent,
+        _intent_dir: intent_dir,
+        namespace_intent,
+        namespace_intent_file,
     }
 }
 

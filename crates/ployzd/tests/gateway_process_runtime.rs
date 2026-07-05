@@ -17,6 +17,7 @@ use ployzd::gateway_process_runtime::{
     start_gateway_process_runtime_with_client,
 };
 use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
+use ployzd::namespace_intent::NamespaceIntentStore;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -85,24 +86,20 @@ async fn gateway_process_serves_http_from_nats_projection() {
     )
     .await
     .expect("gateway runtime starts");
-    let jetstream = jetstream::new(nats.client.clone());
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
         .await
         .expect("open observation store");
 
-    routes
-        .replace_serving_target_entry(&ServingTargetEntry {
+    nats.namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("serving target entry stores");
-    routes
-        .replace_route_binding(&RouteBindingState {
+    nats.namespace_intent
+        .replace_route_binding(RouteBindingState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", runtime.listen_addr().port()),
             endpoint_port: route_port(upstream.port()),
@@ -160,24 +157,20 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
     )
     .await
     .expect("gateway runtime starts");
-    let jetstream = jetstream::new(nats.client.clone());
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
         .await
         .expect("open observation store");
 
-    routes
-        .replace_serving_target_entry(&ServingTargetEntry {
+    nats.namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("serving target entry stores");
-    routes
-        .replace_route_binding(&RouteBindingState {
+    nats.namespace_intent
+        .replace_route_binding(RouteBindingState {
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
@@ -299,6 +292,8 @@ struct TestNats {
     /// Machine principal: the gateway process side (gateway runs as the
     /// machine's Machine user in v1) and observation writes.
     machine_client: async_nats::Client,
+    intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
 }
 
 impl TestNats {
@@ -308,11 +303,16 @@ impl TestNats {
                 .await;
         let client = connected.controller.clone();
         let machine_client = connected.machine_client(&machine_id("machine_7")).await;
+        let intent_dir = tempfile::tempdir().expect("intent dir");
+        let namespace_intent =
+            NamespaceIntentStore::new(intent_dir.path().join("namespace-intent.json"));
 
         Self {
             connected,
             client,
             machine_client,
+            intent_dir,
+            namespace_intent,
         }
     }
 
@@ -328,11 +328,11 @@ impl TestNats {
         let core_state = AsyncNatsCoreStateStore::from_jetstream(&self.connected.jetstream)
             .await
             .expect("open core state store");
-        let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
         start_intent_runtime(
             self.client.clone(),
             core_state,
-            lifecycle_dir.path().join("machine-lifecycles.json"),
+            self.namespace_intent.clone(),
+            self.intent_dir.path().join("machine-lifecycles.json"),
             Duration::from_millis(10),
         )
         .await

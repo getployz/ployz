@@ -28,6 +28,7 @@ pub mod machine_credentials;
 pub mod machine_lifecycle_runtime;
 pub mod machine_runtime;
 pub mod machine_update_runtime;
+pub mod namespace_intent;
 pub mod nats_authorization;
 pub mod nats_process;
 pub mod operation_api;

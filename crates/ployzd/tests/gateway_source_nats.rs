@@ -5,7 +5,6 @@ use ployz_core::machine_runtime::{
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -17,29 +16,28 @@ use ployzd::gateway::{
 };
 use ployzd::gateway_source::load_gateway_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::namespace_intent::NamespaceIntentStore;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
 async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let target = route_target("api.example.com", 443);
 
-    routes
-        .replace_serving_target_entry(&ServingTargetEntry {
+    nats.namespace_intent
+        .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         })
         .await
         .expect("serving target entry stores");
-    routes
-        .replace_route_binding(&RouteBindingState {
+    nats.namespace_intent
+        .replace_route_binding(RouteBindingState {
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
@@ -88,22 +86,7 @@ async fn gateway_source_reports_unreadable_intent_as_unavailable() {
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
-    let core_bucket = nats
-        .jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open raw core bucket");
-    let payload = serde_json::to_vec(&RouteBindingState {
-        namespace_id: namespace_id("default"),
-        target: route_target("api.example.com", 443),
-        endpoint_port: route_port(8080),
-        service_id: service_id("svc_api"),
-    })
-    .expect("route state encodes");
-    core_bucket
-        .put("routes.deadbeef.443", payload.into())
-        .await
-        .expect("store corrupt route key");
+    std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
 
     let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &observations).await;
 
@@ -115,13 +98,14 @@ async fn gateway_source_reports_unreadable_intent_as_unavailable() {
 
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
-    /// Controller principal: route-state writes and bucket administration.
-    jetstream: jetstream::Context,
     /// The gateway machine's Machine principal: the read side (the gateway
     /// runs as the machine's Machine user in v1).
     machine_jetstream: jetstream::Context,
     intent_reader: NatsIntentReader,
     _intent: RunningIntentRuntime,
+    _intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
+    namespace_intent_file: PathBuf,
     /// `machine_7`'s Machine principal: each machine may only write its own
     /// observation keys, so the workload machine seeds its own snapshot.
     machine_7_jetstream: jetstream::Context,
@@ -143,9 +127,12 @@ async fn test_nats() -> TestNats {
         .await
         .expect("open core state store");
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
+    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
+    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
     let intent = start_intent_runtime(
         nats.controller.clone(),
         core_state,
+        namespace_intent.clone(),
         lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
@@ -154,11 +141,13 @@ async fn test_nats() -> TestNats {
 
     TestNats {
         _nats: nats,
-        jetstream,
         machine_jetstream,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
         _intent: intent,
+        _intent_dir: lifecycle_dir,
+        namespace_intent,
+        namespace_intent_file,
         machine_7_jetstream,
     }
 }

@@ -43,8 +43,7 @@ pub use machine_update::{
     MachineUpdateTransition,
 };
 pub use projection::{
-    OperationProjection, ProjectionOperationState, StatusProjectionError,
-    project_operation_event,
+    OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
 pub use replay::{
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
