@@ -716,10 +716,14 @@ impl OperationRepository {
                     last_event_sequence,
                 }))
             }
-            state => Err(RedeemMachineJoinTokenError::OperationNotPending {
-                operation_id: id,
-                current: state.name(),
-            }),
+            state @ (MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. }) => {
+                Err(RedeemMachineJoinTokenError::OperationNotPending {
+                    operation_id: id,
+                    current: state.name(),
+                })
+            }
         }
     }
 
@@ -1543,7 +1547,30 @@ fn accepted_status_from_submitted_event(
             target,
             sequence,
         )),
-        event => Err(OperationStoreError::Directory {
+        event @ (OperationEvent::DeployPlanningStarted { .. }
+        | OperationEvent::DeployPlanCreated { .. }
+        | OperationEvent::DeployRunning { .. }
+        | OperationEvent::DeployDataplanePrepared { .. }
+        | OperationEvent::DeployContainerStarted { .. }
+        | OperationEvent::DeployHealthCheckStarted { .. }
+        | OperationEvent::DeployCleanupFinished { .. }
+        | OperationEvent::DeployCompleted { .. }
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertChallengePublished { .. }
+        | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertCompleted { .. }
+        | OperationEvent::CertFailed { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCredentialProvisioned { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. }
+        | OperationEvent::MachineUpdateRunning { .. }
+        | OperationEvent::MachineUpdateCompleted { .. }
+        | OperationEvent::MachineUpdateFailed { .. }
+        | OperationEvent::MachineLifecycleCompleted { .. }
+        | OperationEvent::MachineLifecycleFailed { .. }
+        | OperationEvent::Cancelled { .. }) => Err(OperationStoreError::Directory {
             message: format!(
                 "operation {} evidence starts with non-submitted event",
                 event.operation_id().as_str()
