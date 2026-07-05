@@ -94,10 +94,6 @@ pub async fn start_control_runtime_with_client_and_reload(
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenCoreState)?;
-    let facts_cache = start_runtime_facts_cache(client.clone())
-        .await
-        .map_err(ControlRuntimeError::StartFactsCache)?;
-    let facts = facts_cache.cache();
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
@@ -116,6 +112,15 @@ pub async fn start_control_runtime_with_client_and_reload(
         .render(None)
         .await
         .map_err(ControlRuntimeError::RenderNatsAuthorization)?;
+    // Start the facts cache only after authorization has rendered and
+    // reloaded permissions: its subscription to plz.v1.facts.* must not be
+    // established before the grant exists, or NATS rejects it asynchronously
+    // and the cache never resubscribes. Nothing between here and the
+    // operation API consumes the cache, so this ordering is free.
+    let facts_cache = start_runtime_facts_cache(client.clone())
+        .await
+        .map_err(ControlRuntimeError::StartFactsCache)?;
+    let facts = facts_cache.cache();
     let deploy_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
