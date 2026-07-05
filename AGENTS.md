@@ -5,8 +5,8 @@
 - Read `VISION.md` before product or architecture work.
 - Read `CONTEXT.md` before product, architecture, or domain-model work. Use
   its preferred terms in code, docs, tests, CLI copy, and operation/state names.
-- Read `docs/adr/` before architecture work; ADRs 0028 and 0029 (facts/intent
-  split, JetStream exit) are the current control-plane storage direction.
+- Read `docs/adr/` before architecture work; the accepted ADRs are the
+  current control-plane direction.
 
 ## Product Direction
 
