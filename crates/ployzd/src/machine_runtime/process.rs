@@ -4,20 +4,17 @@ use crate::config::MachineProcessConfig;
 use crate::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
 use crate::docker::runner::DockerManagedContainerRunner;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::machine_runtime::runner::{
-    ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
-    MachineLogReader,
+use crate::machine_runtime::runner::{MachineContainerRunner, MachineLogReader};
+use crate::machine_runtime::service::{
+    MachineFactsReadError, MachineServiceRuntimeError, current_unix_ms,
+    read_machine_facts_snapshot, start_machine_runtime_service_with_public_ip,
 };
-use crate::machine_runtime::service::{MachineServiceRuntimeError, start_machine_runtime_service};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, record_attempt, shutdown_signal,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, ManagedContainerObservation,
-};
-use ployz_core::state::MachinePublicIpObservation;
+use ployz_core::machine_runtime::MachineFactsSnapshot;
+use ployz_core::subjects::machine_facts;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
@@ -104,12 +101,13 @@ where
         + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let machine_service = start_machine_runtime_service(
+    let machine_service = start_machine_runtime_service_with_public_ip(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
         preparer,
         log_reader,
+        public_ip,
     )
     .await
     .map_err(MachineProcessRuntimeError::StartMachineService)?;
@@ -260,17 +258,17 @@ impl MachineObservationPublisher {
             })
             .await?;
 
-        publish_machine_observation_snapshot(machine_id, runner, observations).await?;
+        let facts = read_machine_facts_snapshot(machine_id, runner, public_ip, current_unix_ms())
+            .await
+            .map_err(MachineProcessRuntimeError::ReadFacts)?;
+        publish_machine_facts(&self.client, &facts).await?;
+        observations
+            .replace_machine_containers(facts.containers())
+            .await
+            .map_err(MachineProcessRuntimeError::PublishObservation)?;
 
-        match public_ip {
-            Some(public_ip) => {
-                observations
-                    .replace_machine_public_ip(&MachinePublicIpObservation {
-                        machine_id: machine_id.clone(),
-                        public_ip,
-                    })
-                    .await
-            }
+        match facts.public_ip() {
+            Some(public_ip) => observations.replace_machine_public_ip(public_ip).await,
             None => observations.clear_machine_public_ip(machine_id).await,
         }
         .map_err(MachineProcessRuntimeError::PublishObservation)?;
@@ -279,40 +277,23 @@ impl MachineObservationPublisher {
     }
 }
 
-async fn publish_machine_observation_snapshot<R>(
-    machine_id: &MachineId,
-    runner: &R,
-    observations: &AsyncNatsObservationStore,
-) -> Result<(), MachineProcessRuntimeError>
-where
-    R: MachineContainerRunner,
-{
-    let existing = runner
-        .existing_managed_containers()
+async fn publish_machine_facts(
+    client: &NatsClient,
+    facts: &MachineFactsSnapshot,
+) -> Result<(), MachineProcessRuntimeError> {
+    let payload = serde_json::to_vec(facts).map_err(MachineProcessRuntimeError::EncodeFacts)?;
+    client
+        .publish(machine_facts(facts.machine_id()), payload.into())
         .await
-        .map_err(MachineProcessRuntimeError::ListContainers)?;
-    let containers = existing
-        .into_iter()
-        .map(|container| ManagedContainerObservation {
-            machine_id: machine_id.clone(),
-            container_id: container.container_id,
-            identity: container.identity,
-            state: observation_state(container.state),
-        });
-    let snapshot = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
-        .map_err(MachineProcessRuntimeError::BuildSnapshot)?;
-    observations
-        .replace_machine_containers(&snapshot)
+        .map_err(|error| MachineProcessRuntimeError::PublishFacts {
+            message: error.to_string(),
+        })?;
+    client
+        .flush()
         .await
-        .map_err(MachineProcessRuntimeError::PublishObservation)
-}
-
-fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
-    match state {
-        ExistingManagedContainerState::Running { ip } => ContainerRuntimeState::Running { ip },
-        ExistingManagedContainerState::StartableStopped
-        | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
-    }
+        .map_err(|error| MachineProcessRuntimeError::PublishFacts {
+            message: error.to_string(),
+        })
 }
 
 pub async fn run_machine_until_shutdown(
@@ -333,8 +314,9 @@ pub enum MachineProcessRuntimeError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
     OpenObservations(ObservationStoreError),
-    ListContainers(MachineContainerRunnerError),
-    BuildSnapshot(MachineContainerObservationSnapshotError),
+    ReadFacts(MachineFactsReadError),
+    EncodeFacts(serde_json::Error),
+    PublishFacts { message: String },
     PublishObservation(ObservationStoreError),
     ObservationTimedOut { timeout: Duration },
     StartMachineService(MachineServiceRuntimeError),
@@ -350,14 +332,12 @@ impl fmt::Display for MachineProcessRuntimeError {
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")
             }
-            Self::ListContainers(error) => {
-                write!(
-                    formatter,
-                    "failed to list managed Docker containers: {error:?}"
-                )
+            Self::ReadFacts(error) => write!(formatter, "failed to read machine facts: {error}"),
+            Self::EncodeFacts(error) => {
+                write!(formatter, "failed to encode machine facts: {error}")
             }
-            Self::BuildSnapshot(error) => {
-                write!(formatter, "failed to build machine snapshot: {error}")
+            Self::PublishFacts { message } => {
+                write!(formatter, "failed to publish machine facts: {message}")
             }
             Self::PublishObservation(error) => {
                 write!(formatter, "failed to publish machine observation: {error}")
@@ -388,16 +368,18 @@ impl std::error::Error for MachineProcessRuntimeError {}
 mod tests {
     use super::*;
     use crate::machine_runtime::runner::{
-        CreateManagedContainer, ExistingManagedContainer, MachineContainerRunner,
-        MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
+        CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
+        MachineContainerRunner, MachineContainerRunnerError, MachineLogReader,
+        MachineLogReaderError, MachineLogTail,
     };
+    use crate::machine_runtime::service::observation_state;
     use ployz_core::dataplane::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use ployz_core::machine_runtime::ManagedContainerIdentity;
     use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerIdentity};
     use std::sync::{Arc, Mutex};
 
     #[test]

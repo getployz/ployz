@@ -8,19 +8,20 @@ use crate::machine_runtime::protocol::{
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkDomainError,
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
-    MachineEnsureEndpointNetworkRpcResponse, MachineLogsTailDomainError, MachineLogsTailResult,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
-    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
-    MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
-    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineEnsureEndpointNetworkRpcResponse, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineFactsGetRpcRequest, MachineFactsGetRpcResponse, MachineLogsTailDomainError,
+    MachineLogsTailResult, MachineLogsTailRpcOk, MachineLogsTailRpcRequest,
+    MachineLogsTailRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
+    MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateDomainError,
     MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest,
     MachineSubstrateUpdateRpcResponse,
 };
 use crate::machine_runtime::runner::{
-    CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
-    MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
-    decide_container_run,
+    CreateManagedContainer, ExistingManagedContainerState, MachineContainerRunDecision,
+    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
+    MachineLogTail, decide_container_run,
 };
 use crate::services::{machine_endpoint_spec, machine_runtime_service_base};
 use ployz_core::dataplane::{
@@ -29,7 +30,13 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
+    MachineContainerObservationSnapshotError, MachineFactsRole, MachineFactsSnapshot,
+    MachineFactsSnapshotError, ManagedContainerObservation,
+};
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
+use ployz_core::state::{MachineLifecycle, MachinePublicIpObservation};
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -37,8 +44,10 @@ use ployz_nats::service_runtime::{
 };
 use serde::Deserialize;
 use std::future::Future;
+use std::net::IpAddr;
 use std::path::Path;
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SUBSTRATE_VERSION_FILE: &str = "/var/lib/ployz/substrate-version.json";
 
@@ -54,11 +63,41 @@ where
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
+    start_machine_runtime_service_with_public_ip(
+        client, machine_id, runner, preparer, log_reader, None,
+    )
+    .await
+}
+
+pub async fn start_machine_runtime_service_with_public_ip<R, P, L>(
+    client: ployz_nats::service_runtime::NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+    public_ip: Option<IpAddr>,
+) -> Result<RunningNatsService, MachineServiceRuntimeError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
     let spec = machine_runtime_service_base(&machine_id);
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(MachineServiceRuntimeError::Nats)?;
 
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::FactsGet,
+        MachineFactsState {
+            runner: runner.clone(),
+            public_ip,
+        },
+        handle_facts_get,
+    )
+    .await?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
@@ -125,6 +164,12 @@ where
     .await?;
 
     Ok(runtime)
+}
+
+#[derive(Clone)]
+struct MachineFactsState<R> {
+    runner: R,
+    public_ip: Option<IpAddr>,
 }
 
 /// Bind one machine-scoped endpoint, handing every request the machine id and a
@@ -219,6 +264,104 @@ async fn handle_substrate_report(
             reported,
         },
     ))
+}
+
+async fn handle_facts_get<R>(
+    machine_id: MachineId,
+    state: MachineFactsState<R>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    if let Err(response) = decode_json_request::<MachineFactsGetRpcRequest>(&request) {
+        return response;
+    }
+
+    match read_machine_facts_snapshot(
+        &machine_id,
+        &state.runner,
+        state.public_ip,
+        current_unix_ms(),
+    )
+    .await
+    {
+        Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
+            facts,
+        })),
+        Err(error) => machine_domain_error(MachineFactsGetRpcResponse::DomainError {
+            machine_id,
+            error: MachineFactsGetDomainError::GatherFailed {
+                message: failure_message(error.to_string()),
+            },
+        }),
+    }
+}
+
+pub(crate) async fn read_machine_facts_snapshot<R>(
+    machine_id: &MachineId,
+    runner: &R,
+    public_ip: Option<IpAddr>,
+    observed_at_unix_ms: u64,
+) -> Result<MachineFactsSnapshot, MachineFactsReadError>
+where
+    R: MachineContainerRunner,
+{
+    let existing = runner
+        .existing_managed_containers()
+        .await
+        .map_err(MachineFactsReadError::ListContainers)?;
+    let containers = existing
+        .into_iter()
+        .map(|container| ManagedContainerObservation {
+            machine_id: machine_id.clone(),
+            container_id: container.container_id,
+            identity: container.identity,
+            state: observation_state(container.state),
+        });
+    let containers = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
+        .map_err(MachineFactsReadError::BuildContainerSnapshot)?;
+    let public_ip = public_ip.map(|public_ip| MachinePublicIpObservation {
+        machine_id: machine_id.clone(),
+        public_ip,
+    });
+
+    MachineFactsSnapshot::try_new(
+        machine_id.clone(),
+        containers,
+        public_ip,
+        vec![MachineFactsRole::Machine],
+        MachineLifecycle::Active,
+        MachineSubstrateVersions::default(),
+        Vec::new(),
+        observed_at_unix_ms,
+    )
+    .map_err(MachineFactsReadError::BuildFactsSnapshot)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MachineFactsReadError {
+    #[error("failed to list managed Docker containers: {0:?}")]
+    ListContainers(MachineContainerRunnerError),
+    #[error("failed to build container snapshot: {0}")]
+    BuildContainerSnapshot(MachineContainerObservationSnapshotError),
+    #[error("failed to build machine facts: {0}")]
+    BuildFactsSnapshot(MachineFactsSnapshotError),
+}
+
+pub(crate) fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
+    match state {
+        ExistingManagedContainerState::Running { ip } => ContainerRuntimeState::Running { ip },
+        ExistingManagedContainerState::StartableStopped
+        | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
+    }
+}
+
+pub(crate) fn current_unix_ms() -> u64 {
+    let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[derive(Deserialize)]

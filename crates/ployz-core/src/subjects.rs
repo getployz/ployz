@@ -162,6 +162,11 @@ pub fn machine_service_scope(machine_id: &MachineId) -> String {
     format!("plz.v1.svc.machine.{}.>", machine_id.as_str())
 }
 
+#[must_use]
+pub fn machine_facts(machine_id: &MachineId) -> String {
+    format!("plz.v1.facts.machine.{}", machine_id.as_str())
+}
+
 impl DeployRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
@@ -193,6 +198,7 @@ pub fn machine_observation_scope(machine_id: &MachineId) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MachineServiceEndpoint {
     Inspect,
+    FactsGet,
     ContainerEnsureEndpointNetwork,
     ContainerRun,
     ContainerStop,
@@ -208,6 +214,7 @@ impl MachineServiceEndpoint {
     pub const fn as_subject(self) -> &'static str {
         match self {
             Self::Inspect => "inspect",
+            Self::FactsGet => "facts.get",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerRun => "container.run",
             Self::ContainerStop => "container.stop",

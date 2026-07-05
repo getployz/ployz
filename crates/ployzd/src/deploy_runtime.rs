@@ -8,7 +8,9 @@ use crate::deploy_worker::{
     execute_deploy_operation, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use crate::machine_runtime::client::{
+    NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
+};
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
@@ -44,11 +46,11 @@ where
 {
     let DeployOperationStores {
         core_state,
-        observations,
         controllers,
         namespace_lock_lost,
     } = stores;
     let DeployOperationPorts {
+        facts_reader,
         dataplane,
         machine_runtime,
         health_checker,
@@ -59,7 +61,7 @@ where
         &request,
         machine_scope,
         &core_state,
-        &observations,
+        facts_reader,
         step_timeout,
     )
     .await
@@ -124,12 +126,12 @@ fn fact_load_failure(
 #[derive(Debug, Clone)]
 pub struct DeployOperationStores {
     pub core_state: AsyncNatsCoreStateStore,
-    pub observations: AsyncNatsObservationStore,
     pub controllers: OperationControllers,
     pub namespace_lock_lost: Arc<AtomicBool>,
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
+    pub facts_reader: &'a NatsMachineFactsReader,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
@@ -308,6 +310,8 @@ impl DeployOperationRuntime {
             .with_request_timeout(self.step_timeout);
         let mut health_checker =
             ObservationHealthChecker::new(self.observations.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
+        let facts_reader = NatsMachineFactsReader::new(self.client.clone())
+            .with_request_timeout(self.step_timeout);
 
         let namespace_id = accepted.target.namespace_id.clone();
         let operation_id = accepted.operation_id.clone();
@@ -325,11 +329,11 @@ impl DeployOperationRuntime {
             self.machine_scope,
             DeployOperationStores {
                 core_state: run_core_state,
-                observations: self.observations,
                 controllers: self.controllers,
                 namespace_lock_lost: lock_lost,
             },
             DeployOperationPorts {
+                facts_reader: &facts_reader,
                 dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,

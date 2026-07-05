@@ -84,18 +84,15 @@ pub enum MachineLifecycle {
     Draining,
 }
 
-/// Why a machine is excluded from new workload placement. Only operator
-/// intent excludes today; future reasons (placement constraints) join as
-/// their signals land. Liveness is never a reason (ADR 0027): a dead machine
-/// answers at the point of use — it does not reply to a placement RPC, and
-/// its upstreams fail at dial time. This control-side gate is interim: once
-/// placement is bid-based, a draining machine declines its own bids and the
-/// check moves into the machine.
+/// Why a machine is excluded from new workload placement for one operation.
+/// Operator intent excludes durably; unavailable machine facts exclude only
+/// the current operation runtime snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
     Draining,
+    FactsUnavailable,
 }
 
 #[must_use]

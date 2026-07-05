@@ -7,13 +7,18 @@
 
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
+use futures_util::StreamExt;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::NamespaceRevisionEntryId;
+use ployz_core::ids::{MachineId, NamespaceRevisionEntryId};
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
+use ployz_core::machine_runtime::{
+    MachineContainerObservationSnapshot, MachineFactsRole, MachineFactsSnapshot,
+};
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, OperationStatus, RouteTarget,
+    DeployCompletionOutcome, DeployOperationState, MachineSubstrateVersions, OperationStatus,
+    RouteTarget,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
@@ -22,7 +27,7 @@ use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
     RouteBindingState, ServingTargetEntry,
 };
-use ployz_core::subjects::OperationApiEndpoint;
+use ployz_core::subjects::{MachineServiceEndpoint, OperationApiEndpoint, machine_service};
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -36,6 +41,7 @@ use ployz_sdk_types::{
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
+use ployzd::machine_runtime::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
 use ployzd::machine_runtime::service::start_machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -200,17 +206,17 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     )
     .await
     .expect("minted machine credential connects");
-    let machine_jetstream = jetstream::new(minted_client);
+    let machine_jetstream = jetstream::new(minted_client.clone());
     let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observations");
-    observations
-        .replace_machine_public_ip(&MachinePublicIpObservation {
-            machine_id: machine_id("machine_2"),
-            public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)),
-        })
-        .await
-        .expect("public ip stores");
+    let _facts = start_facts_subscription(
+        minted_client.clone(),
+        machine_id("machine_2"),
+        empty_machine_snapshot("machine_2"),
+        Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2))),
+    )
+    .await;
     observations
         .replace_gateway_status(&GatewayStatusObservation {
             machine_id: machine_id("machine_2"),
@@ -317,9 +323,6 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("open core state");
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
-        .await
-        .expect("open observations");
     core_state
         .replace_active_machine(&active_machine("machine_a"))
         .await
@@ -341,8 +344,10 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         })
         .await
         .expect("route binding stores");
-    observations
-        .replace_machine_containers(&containers::snapshot(
+    let _facts = start_facts_subscription(
+        machine_client.clone(),
+        machine_id("machine_a"),
+        containers::snapshot(
             "machine_a",
             [containers::observation("machine_a", "ctr_api")
                 .with(
@@ -352,9 +357,10 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
                         .step("step_run"),
                 )
                 .running_unroutable()],
-        ))
-        .await
-        .expect("machine observations store");
+        ),
+        None,
+    )
+    .await;
 
     let snapshot = nats
         .api()
@@ -714,6 +720,66 @@ fn active_machine(value: &str) -> ActiveMachineState {
         activated_by: operation_id("op_machine_add"),
         substrate_versions: None,
     }
+}
+
+async fn start_facts_subscription(
+    client: async_nats::Client,
+    machine_id: MachineId,
+    containers: MachineContainerObservationSnapshot,
+    public_ip: Option<IpAddr>,
+) -> tokio::task::JoinHandle<()> {
+    let subject = machine_service(&machine_id, MachineServiceEndpoint::FactsGet);
+    let mut subscriber = client
+        .subscribe(subject)
+        .await
+        .expect("subscribe facts service");
+    client
+        .flush()
+        .await
+        .expect("flush facts service subscription");
+    tokio::spawn(async move {
+        while let Some(message) = subscriber.next().await {
+            let Some(reply) = message.reply else {
+                continue;
+            };
+            let facts = machine_facts(&machine_id, containers.clone(), public_ip);
+            let response =
+                serde_json::to_vec(&MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
+                    facts,
+                }))
+                .expect("facts response serializes");
+            let _ = client.publish(reply, response.into()).await;
+        }
+    })
+}
+
+fn machine_facts(
+    machine_id: &MachineId,
+    containers: MachineContainerObservationSnapshot,
+    public_ip: Option<IpAddr>,
+) -> MachineFactsSnapshot {
+    MachineFactsSnapshot::try_new(
+        machine_id.clone(),
+        containers,
+        public_ip.map(|public_ip| MachinePublicIpObservation {
+            machine_id: machine_id.clone(),
+            public_ip,
+        }),
+        vec![MachineFactsRole::Machine],
+        MachineLifecycle::Active,
+        MachineSubstrateVersions {
+            ployzd: None,
+            keeper: None,
+        },
+        Vec::new(),
+        1,
+    )
+    .expect("machine facts are valid")
+}
+
+fn empty_machine_snapshot(value: &str) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id(value), [])
+        .expect("empty machine snapshot is valid")
 }
 
 fn deploy_target(service_id: &str) -> DeployRequest {

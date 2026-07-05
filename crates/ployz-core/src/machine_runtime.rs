@@ -7,12 +7,197 @@ use std::time::Duration;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
+use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
+use crate::ops::MachineSubstrateVersions;
+use crate::state::{MachineLifecycle, MachinePublicIpObservation};
 
-/// How often each machine publishes its own reality (container snapshot,
-/// public ip, role status) into the observation KV. Observability cadence
-/// only — never an eligibility input (ADR 0027).
+/// How often each machine publishes its own facts. Operation planning gathers
+/// fresh facts by RPC; periodic broadcasts feed passive readers.
 pub const OBSERVATION_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
+pub const MACHINE_FACTS_PUBLISH_INTERVAL: Duration = OBSERVATION_PUBLISH_INTERVAL;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineFactsRole {
+    Control,
+    Machine,
+    Gateway,
+    Dns,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineCertificateRef {
+    pub artifact_digest: InstallSha256Digest,
+    pub machine_path: AbsoluteInstallPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "MachineFactsSnapshotWire",
+    into = "MachineFactsSnapshotWire"
+)]
+pub struct MachineFactsSnapshot {
+    machine_id: MachineId,
+    containers: MachineContainerObservationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_ip: Option<MachinePublicIpObservation>,
+    roles: Vec<MachineFactsRole>,
+    lifecycle: MachineLifecycle,
+    substrate_versions: MachineSubstrateVersions,
+    certificates: Vec<MachineCertificateRef>,
+    observed_at_unix_ms: u64,
+}
+
+impl MachineFactsSnapshot {
+    pub fn try_new(
+        machine_id: MachineId,
+        containers: MachineContainerObservationSnapshot,
+        public_ip: Option<MachinePublicIpObservation>,
+        roles: Vec<MachineFactsRole>,
+        lifecycle: MachineLifecycle,
+        substrate_versions: MachineSubstrateVersions,
+        certificates: Vec<MachineCertificateRef>,
+        observed_at_unix_ms: u64,
+    ) -> Result<Self, MachineFactsSnapshotError> {
+        if containers.machine_id() != &machine_id {
+            return Err(MachineFactsSnapshotError::ContainerMachineMismatch {
+                expected: machine_id,
+                actual: containers.machine_id().clone(),
+            });
+        }
+        if let Some(public_ip) = &public_ip
+            && public_ip.machine_id != machine_id
+        {
+            return Err(MachineFactsSnapshotError::PublicIpMachineMismatch {
+                expected: machine_id,
+                actual: public_ip.machine_id.clone(),
+            });
+        }
+
+        Ok(Self {
+            machine_id,
+            containers,
+            public_ip,
+            roles,
+            lifecycle,
+            substrate_versions,
+            certificates,
+            observed_at_unix_ms,
+        })
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub fn containers(&self) -> &MachineContainerObservationSnapshot {
+        &self.containers
+    }
+
+    #[must_use]
+    pub fn public_ip(&self) -> Option<&MachinePublicIpObservation> {
+        self.public_ip.as_ref()
+    }
+
+    #[must_use]
+    pub fn roles(&self) -> &[MachineFactsRole] {
+        &self.roles
+    }
+
+    #[must_use]
+    pub const fn lifecycle(&self) -> MachineLifecycle {
+        self.lifecycle
+    }
+
+    #[must_use]
+    pub const fn substrate_versions(&self) -> &MachineSubstrateVersions {
+        &self.substrate_versions
+    }
+
+    #[must_use]
+    pub fn certificates(&self) -> &[MachineCertificateRef] {
+        &self.certificates
+    }
+
+    #[must_use]
+    pub const fn observed_at_unix_ms(&self) -> u64 {
+        self.observed_at_unix_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsSnapshotError {
+    #[error(
+        "container snapshot belongs to machine {}, not facts machine {}",
+        actual.as_str(),
+        expected.as_str()
+    )]
+    ContainerMachineMismatch {
+        expected: MachineId,
+        actual: MachineId,
+    },
+    #[error(
+        "public ip belongs to machine {}, not facts machine {}",
+        actual.as_str(),
+        expected.as_str()
+    )]
+    PublicIpMachineMismatch {
+        expected: MachineId,
+        actual: MachineId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineFactsSnapshotWire {
+    machine_id: MachineId,
+    containers: MachineContainerObservationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_ip: Option<MachinePublicIpObservation>,
+    roles: Vec<MachineFactsRole>,
+    lifecycle: MachineLifecycle,
+    substrate_versions: MachineSubstrateVersions,
+    certificates: Vec<MachineCertificateRef>,
+    observed_at_unix_ms: u64,
+}
+
+impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
+    type Error = MachineFactsSnapshotError;
+
+    fn try_from(value: MachineFactsSnapshotWire) -> Result<Self, Self::Error> {
+        Self::try_new(
+            value.machine_id,
+            value.containers,
+            value.public_ip,
+            value.roles,
+            value.lifecycle,
+            value.substrate_versions,
+            value.certificates,
+            value.observed_at_unix_ms,
+        )
+    }
+}
+
+impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
+    fn from(value: MachineFactsSnapshot) -> Self {
+        Self {
+            machine_id: value.machine_id,
+            containers: value.containers,
+            public_ip: value.public_ip,
+            roles: value.roles,
+            lifecycle: value.lifecycle,
+            substrate_versions: value.substrate_versions,
+            certificates: value.certificates,
+            observed_at_unix_ms: value.observed_at_unix_ms,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
