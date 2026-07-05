@@ -20,11 +20,11 @@ use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::intent::NatsIntentReader;
 use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
+use crate::machine_roster::MachineRosterStore;
 use crate::machine_runtime::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::MachineCredentialMintRuntime;
 use ployz_core::ids::MachineId;
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use std::sync::Arc;
 
@@ -36,10 +36,8 @@ pub struct OperationApiHandlers {
     machine_lifecycle_runtime: Arc<MachineLifecycleOperationRuntime>,
     machine_mint: Arc<MachineCredentialMintRuntime>,
     local_machine_id: MachineId,
-    /// Cluster-truth store for the writes this layer owns (machine
-    /// activation on join completion) and the first-machine idempotency
-    /// read. The query runtimes stay genuinely read-only.
-    core_state: AsyncNatsCoreStateStore,
+    intent_change_client: async_nats::Client,
+    machine_roster: MachineRosterStore,
     machine_query: Arc<MachineQueryRuntime>,
     service_query: Arc<ServiceQueryRuntime>,
     runtime_snapshot_query: Arc<RuntimeSnapshotQueryRuntime>,
@@ -55,7 +53,8 @@ impl OperationApiHandlers {
         machine_lifecycle_runtime: MachineLifecycleOperationRuntime,
         machine_mint: MachineCredentialMintRuntime,
         local_machine_id: MachineId,
-        core_state: AsyncNatsCoreStateStore,
+        intent_change_client: async_nats::Client,
+        machine_roster: MachineRosterStore,
         observations: AsyncNatsObservationStore,
         facts_reader: NatsMachineFactsReader,
         intent_reader: NatsIntentReader,
@@ -77,7 +76,8 @@ impl OperationApiHandlers {
             machine_lifecycle_runtime: Arc::new(machine_lifecycle_runtime),
             machine_mint: Arc::new(machine_mint),
             local_machine_id,
-            core_state,
+            intent_change_client,
+            machine_roster,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
             runtime_snapshot_query: Arc::new(runtime_snapshot_query),

@@ -177,8 +177,8 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
         .collect()
 }
 
-/// A current-state read failed before deploy execution started. Each variant
-/// carries the rendered store-error message as failure evidence.
+/// An intent read failed before deploy execution started. The rendered
+/// message is failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
     IntentRead { message: String },

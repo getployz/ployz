@@ -4,7 +4,6 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -16,6 +15,7 @@ use ployzd::gateway::{
 };
 use ployzd::gateway_source::load_gateway_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -122,16 +122,12 @@ async fn test_nats() -> TestNats {
     let machine_client = nats.machine_client(&gateway_machine).await;
     let machine_jetstream = jetstream::new(machine_client.clone());
     let machine_7_jetstream = jetstream::new(nats.machine_client(&machine_id("machine_7")).await);
-    let jetstream = nats.jetstream.clone();
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
     let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
     let intent = start_intent_runtime(
         nats.controller.clone(),
-        core_state,
+        MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json")),
         namespace_intent.clone(),
         lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),

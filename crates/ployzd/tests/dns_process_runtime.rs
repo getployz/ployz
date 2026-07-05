@@ -3,7 +3,6 @@ use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::dns::DnsAnswer;
@@ -12,6 +11,7 @@ use ployzd::dns_process_runtime::{
     start_dns_process_runtime_with_client,
 };
 use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -103,12 +103,9 @@ impl TestNats {
     }
 
     async fn start_intent(&self) -> RunningIntentRuntime {
-        let core_state = AsyncNatsCoreStateStore::from_jetstream(&self.connected.jetstream)
-            .await
-            .expect("open core state store");
         start_intent_runtime(
             self.connected.controller.clone(),
-            core_state,
+            MachineRosterStore::new(self.intent_dir.path().join("machine-roster.json")),
             self.namespace_intent.clone(),
             self.intent_dir.path().join("machine-lifecycles.json"),
             Duration::from_millis(10),
