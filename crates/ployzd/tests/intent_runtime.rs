@@ -19,7 +19,6 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
-            substrate_versions: None,
             lifecycle: MachineLifecycle::Active,
         })
         .await
@@ -98,7 +97,6 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
-            substrate_versions: None,
             lifecycle: MachineLifecycle::Active,
         })
         .await

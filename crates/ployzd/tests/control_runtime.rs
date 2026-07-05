@@ -593,9 +593,8 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
             .active_machine(&machine_id("machine_a"))
             .await
             .expect("active machine reads")
-            .expect("machine remains active")
-            .substrate_versions,
-        None,
+            .expect("machine remains active"),
+        active_machine("machine_a"),
         "reported substrate versions are operation evidence and machine facts, not roster intent"
     );
 
@@ -785,7 +784,6 @@ fn active_machine(value: &str) -> ActiveMachineState {
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
-        substrate_versions: None,
     }
 }
 

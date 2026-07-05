@@ -566,6 +566,5 @@ fn active_machine_state(machine: &str, name: &str, operation: &str) -> ActiveMac
         machine_id: machine_id(machine),
         name: machine_name(name),
         activated_by: operation_id(operation),
-        substrate_versions: None,
     }
 }

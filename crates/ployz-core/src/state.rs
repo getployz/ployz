@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
-use crate::ops::{MachineSubstrateVersions, RoutePort, RouteTarget};
+use crate::ops::{RoutePort, RouteTarget};
 use crate::state_key::{id_prefixed_state_key, state_key_path};
 use std::net::{IpAddr, SocketAddr};
 
@@ -59,8 +59,6 @@ pub struct ActiveMachineState {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub activated_by: OperationId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub substrate_versions: Option<MachineSubstrateVersions>,
     /// Durable operator intent for this machine (Machine Lifecycle in the
     /// glossary). Absent in records written before lifecycle existed, so the
     /// default is active.

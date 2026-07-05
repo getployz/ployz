@@ -252,7 +252,7 @@ export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChalleng
 
 export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
 
-export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, substrate_versions?: MachineSubstrateVersions | null,
+export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId,
 /**
  * Durable operator intent for this machine (Machine Lifecycle in the
  * glossary). Absent in records written before lifecycle existed, so the
