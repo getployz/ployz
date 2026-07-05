@@ -227,6 +227,16 @@ impl OperationRepository {
                 current.last_event_sequence(),
             ));
         }
+        if inner
+            .index
+            .machine_add_submissions
+            .iter()
+            .any(|(key, submitted)| {
+                *key != idempotency_key && submitted.operation_id == requested_operation_id
+            })
+        {
+            return Err(SubmitMachineAddError::DuplicateIdempotencyKey);
+        }
         let claim = create_or_adopt(
             &mut inner.index.machine_add_claims,
             idempotency_key.clone(),
@@ -660,6 +670,18 @@ impl OperationRepository {
                         self.record_machine_add_joined(&id, &machine_id, joined_at)
                             .await
                             .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
+                        let Some(OperationStatus::MachineAdd {
+                            last_event_sequence,
+                            ..
+                        }) = self
+                            .get(&id)
+                            .await
+                            .map_err(RedeemMachineJoinTokenError::LoadStatus)?
+                        else {
+                            return Err(RedeemMachineJoinTokenError::MissingOperation {
+                                operation_id: id,
+                            });
+                        };
                         Ok(MachineJoinRedemption::Joined(RedeemedMachineJoin {
                             operation_id: id,
                             machine_id,

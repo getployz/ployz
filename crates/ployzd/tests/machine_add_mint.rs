@@ -421,6 +421,53 @@ async fn machine_join_redeem_waits_for_material_ready() {
         .expect("control runtime shuts down");
 }
 
+#[tokio::test]
+async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_dup", "idem_dup_a", "machine_dup").await;
+    let duplicate = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_dup"),
+            idempotency_key: idempotency_key("idem_dup_b"),
+            machine_id: machine_id("machine_dup_b"),
+            name: ployz_sdk_types::MachineName::try_new("machine_dup_b")
+                .expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        })
+        .await
+        .expect_err("duplicate operation id with new idempotency is rejected");
+    assert_eq!(
+        duplicate,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_dup"),
+            },
+        }
+    );
+
+    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    assert!(
+        redeemed.last_event_sequence.get() > accepted.accepted.start_sequence.get(),
+        "redeem response reports the joined event sequence"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+    let runtime = nats.start_control(&config).await;
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime restarts after rejected duplicate");
+}
+
 async fn machine_add(
     api: &OperationApiClient,
     operation: &str,

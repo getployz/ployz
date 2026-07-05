@@ -167,7 +167,12 @@ impl OperationControllers {
         let submitted = self.repository.submit_deploy(claimed).await;
 
         match submitted {
-            Ok(accepted) => Ok(accepted),
+            Ok(accepted) => {
+                if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &operation_id).await;
+                }
+                Ok(accepted)
+            }
             Err(error) => {
                 if matches!(claim, NamespaceClaim::Acquired) {
                     self.release_namespace(&namespace_id, &operation_id).await;
