@@ -119,7 +119,7 @@ impl RuntimeSnapshotQueryRuntime {
                 routes,
                 containers,
                 projection_sources: RuntimeProjectionSources {
-                    core_state: RuntimeProjectionSource {
+                    intent: RuntimeProjectionSource {
                         read_at_unix_seconds,
                     },
                     observations: RuntimeProjectionSource {

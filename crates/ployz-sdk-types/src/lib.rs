@@ -366,7 +366,7 @@ pub struct RuntimeServiceInstance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeProjectionSources {
-    pub core_state: RuntimeProjectionSource,
+    pub intent: RuntimeProjectionSource,
     pub observations: RuntimeProjectionSource,
     pub revisions: RuntimeDerivedCollectionSource,
     pub releases: RuntimeDerivedCollectionSource,
