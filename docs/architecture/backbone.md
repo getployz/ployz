@@ -38,14 +38,14 @@ core is a rendezvous and a rebuildable index; the machines are the facts.
    — live here. The ledger is authoritative for its machine and is never
    cluster truth.
 3. **NATS is the authority surface for intent.** Commands, operation records,
-   subject permissions, and atomic resource claims (ADR-0015) serialize
-   through the core. A command that cannot reach the core fails fast with a
-   typed error; it is never queued speculatively on the machine.
-4. **JetStream records are classified, every one of them** (ADR-0001): live
-   observation, rebuildable index, disposable operation memory, disposable
-   job trigger, optional evidence, or explicitly named durable authority.
-   Indexes assembled from machine facts and Docker reality are rebuildable by
-   construction. Unclassified records are a review failure.
+   subject permissions, and atomic resource claims serialize through the core.
+   Intent lives in core-local evidence files and is broadcast over plain NATS
+   subjects (ADR-0028/0029). A command that cannot reach the core fails fast
+   with a typed error; it is never queued speculatively on the machine.
+4. **JetStream is not a control-plane storage surface** (ADR-0029). Facts are
+   machine-owned broadcasts, intent is core-owned disk evidence, operation
+   progress is live NATS plus core-local evidence, and larger artifacts are
+   pushed by RPC to the machines that use them.
 5. **Machine-local storage outside the fact ledger and substrate state is cache
    and evidence**, never truth of any kind.
 
@@ -83,20 +83,19 @@ The fact ledger stays simple because these rules are absolute:
   Control-Plane Core through a local recovery command (ADR-0019). Machines
   reconnect or rejoin, publish fresh facts from Docker and their fact ledgers
   — containers, route attachments, served cert material, gateway/DNS
-  last-known-good state, and local role authority; an explicit reindex
-  operation rebuilds the core's indexes and adopts only unambiguous state
-  (ADR-0001). Recovery restores running reality and recorded machine facts,
-  not unrealized cluster intent.
-- The reindex operation is part of this backbone. Until it exists and is
-  exercised end-to-end (destroy the core's JetStream state, stand up a core,
-  reindex, verify), JetStream loss is unrecoverable in practice and the
-  thesis is not implemented. It is a blocking v1 deliverable, not a
-  follow-up.
+  last-known-good state, and local role authority. Core assurance adopts
+  preserved or operator-restored intent evidence and treats missing intent as
+  lost, not inferred (ADR-0028/0029). Recovery restores running reality and
+  recorded machine facts, not unrealized cluster intent.
+- Core assurance is part of this backbone. Until it is exercised end-to-end
+  (promote a core, adopt preserved/restored intent files, gather facts, verify
+  missing evidence is explicit), the thesis is not implemented. It is a
+  blocking v1 deliverable, not a follow-up.
 
 ## What This Rejects
 
 - Consensus anywhere in the cluster, including replicated JetStream
-  (ADR-0016). Replication factor stays 1.
+  (ADR-0016/0029).
 - A gossip/CRDT cluster store. Partition-tolerant writes require silent
   merge, and silent merge converts stale state into truth.
 - Background reconcilers that rewrite cluster policy. Observation is not
@@ -108,13 +107,12 @@ The fact ledger stays simple because these rules are absolute:
 
 These are review checks, not aspirations:
 
-- Every new KV bucket, stream, or object store bucket names its ADR-0001
-  classification in the change that introduces it.
+- New control-plane storage goes to a named owner: machine fact ledger,
+  core intent/evidence file, external durable subscriber, or explicit
+  machine-local artifact. JetStream buckets, streams, and Object Store are not
+  introduced for control-plane storage.
 - Every new fact-ledger table names its owner, its writer, and the operation
   or observation that mutates it, in the change that introduces it.
-- No JetStream resource sets replicas above one. Raising replication requires
-  superseding ADR-0016 with a design that answers quorum operations
-  end-to-end.
 - Cluster-scoped invariants (idempotency, resource locks, ordered operation
   timelines) serialize through core primitives, never through hand-rolled
   coordination on machines.
