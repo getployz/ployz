@@ -186,6 +186,15 @@ pub(super) fn project_state(
     attempted: MachineAddOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
+    if matches!(
+        (fields.state, &attempted),
+        (
+            MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Joining { .. }
+        )
+    ) {
+        return Ok(OperationProjection::AlreadySatisfied);
+    }
     if fields.state == &attempted {
         return Ok(OperationProjection::AlreadySatisfied);
     }
