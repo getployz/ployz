@@ -10,10 +10,9 @@ them.
 
 Reindexability here means recoverability after JetStream loss by an explicit
 reindex operation using non-JetStream evidence: Docker reality, machine-local
-facts, role-process facts, local NATS authorization files, and fresh
-observations. The reindex operation is still a required future capability, so
-the answers below describe the intended recovery contract, not an implemented
-command.
+facts, role-process facts, and local NATS authorization files. The reindex
+operation is still a required future capability, so the answers below describe
+the intended recovery contract, not an implemented command.
 
 ## Current Resources
 
@@ -23,7 +22,6 @@ Bootstrap currently creates these resources:
 | --- | --- | --- | --- | --- |
 | `KV_CORE` | JetStream KV | file | 1 | Current control-plane indexes. |
 | `KV_OPS` | JetStream KV | file | 1 | Operation status projection, machine-add pending-join handoff, mint claims, and temporary secret delivery records. |
-| `KV_OBS` | JetStream KV | file | 1 | Latest machine and role observations. |
 | `PLZ_OPS` | stream over `plz.v1.op.>` | file | 1 | Operation event timeline and replay source. |
 
 No Object Store bucket is currently bootstrapped. `ObjectBucketSpec` exists for
@@ -36,9 +34,11 @@ Older plan documents mention `KV_LOCKS`, `PLZ_JOBS`, `PLZ_AUDIT`,
 and Object Store buckets. Those are not current stored resources in the active
 manifest.
 
-Direct machine observation subjects such as `plz.v1.obs.machine.<machine_id>.*` are not
-captured by a stream today. The persisted latest observations live in
-`KV_OBS`.
+Live machine and role facts are not captured by JetStream today. Machines
+serve fresh `facts.get` RPC responses and publish latest snapshots on
+`plz.v1.facts.machine.<machine_id>`. Gateways publish status on
+`plz.v1.facts.gateway.<machine_id>`. Role runtimes keep only in-memory
+last-seen caches for those plain subjects.
 
 ## `KV_CORE`
 
@@ -55,22 +55,19 @@ JetStream.
 Current code does not store active certificates under `KV_CORE`; active certs
 appear as operation-event payloads.
 
-## `KV_OBS`
+## Live Facts Fanout
 
-`KV_OBS` stores latest observations. These are not cluster truth; they are
-freshness-sensitive read-side inputs.
+Live facts are no longer stored in JetStream. They are freshness-sensitive
+read-side inputs carried by machine RPC and plain NATS fanout.
 
-| Key pattern | Stored value | Writer | Classification | Reindexable? |
+| Subject / endpoint | Value | Writer | Classification | Reindexable? |
 | --- | --- | --- | --- | --- |
-| `containers.<machine_id>` | `MachineContainerObservationSnapshot` | Machine process scans local Docker and replaces the machine snapshot. | Live observation. | Yes. A machine reconnect or observation tick rebuilds this from Docker labels and runtime state. Until then, passive projections should treat the machine as missing or stale. |
-| `machines.<machine_id>.public_ip` | `MachinePublicIpObservation` | Machine process replaces or deletes the public IP observation. | Live observation. | Yes. Rebuilt by machine observation. Loss only removes cached public-IP evidence until the machine republishes. |
-| `gateways.<machine_id>.status` | `GatewayStatusObservation` | Gateway process refresh loop after applying route state. | Live role observation. | Yes. Rebuilt by the gateway process. Missing or stale gateway observations are warning/diagnostic evidence, not durable membership. |
+| `facts.get` machine RPC | `MachineFactsSnapshot` | Machine service gathers Docker/runtime state on request. | Live machine fact. | Yes. A fresh gather rebuilds it from Docker labels and runtime state. Silence is evidence of missing testimony, not stored truth. |
+| `plz.v1.facts.machine.<machine_id>` | `MachineFactsSnapshot` | Machine process periodic publisher. | Live machine fact fanout. | Yes. Rebuilt by the next publish tick or direct RPC gather. |
+| `plz.v1.facts.gateway.<machine_id>` | `GatewayStatusObservation` | Gateway process refresh loop after applying route state. | Live role fact fanout. | Yes. Rebuilt by the gateway process. Missing or stale gateway facts are warning/diagnostic evidence, not durable membership. |
 
-KV watch history on these keys is an invalidation mechanism. It is not a
+Plain-subject delivery is an invalidation/fanout mechanism. It is not a
 durable event log that reindex should preserve.
-
-KV revisions and delete tombstones are NATS-managed bucket metadata, not
-product records; reindex should rebuild current values, not revision numbers.
 
 ## `KV_OPS`
 
@@ -125,17 +122,15 @@ Known non-stored or future references:
 
 ## Backup And Restore Interaction
 
-The canonical product backup scope names `KV_CORE`, `KV_OPS`, `KV_OBS`, lock
-state, backup manifests, NATS credentials/config, Ployz domain config, and
-operation event streams as included control-plane concerns. The current backup
-bundle is narrower: runtime code snapshots only `KV_CORE`, restore validates
-only `KV_CORE`, and restore reports observations as rebuildable after machine
-reconnect.
+The canonical product backup scope names `KV_CORE`, `KV_OPS`, lock state,
+backup manifests, NATS credentials/config, Ployz domain config, and operation
+event streams as included control-plane concerns. The current backup bundle is
+narrower: runtime code snapshots only `KV_CORE` and restore validates only
+`KV_CORE`.
 
 That means today's backup/restore path preserves current `KV_CORE` records but
-does not preserve operation memory, observation cache, or operation event
-history. That matches the disposable/rebuildable direction for many records,
-but it leaves two audit gaps:
+does not preserve operation memory or operation event history. That matches
+the disposable direction for many records, but it leaves two audit gaps:
 
 - `KV_OPS` contains secret-bearing machine-add records; if it is not backed up,
   pending joins and exact operation evidence are intentionally lost after
@@ -147,18 +142,15 @@ but it leaves two audit gaps:
 
 An explicit reindex after JetStream loss should:
 
-1. Recreate the bootstrap resources: `KV_CORE`, `KV_OPS`, `KV_OBS`, and
-   `PLZ_OPS`.
+1. Recreate the bootstrap resources: `KV_CORE`, `KV_OPS`, and `PLZ_OPS`.
 2. Render NATS authorization from `authorized-users.conf`; if that file is
    lost, the authority set is not reindexable from JetStream.
-3. Wait for machines and role processes to reconnect and publish fresh
-   observations.
-4. Rebuild `KV_OBS` naturally from machine and gateway observation loops.
-5. Rebuild `KV_CORE.machines.*`, `KV_CORE.services.*`, and `KV_CORE.routes.*`
+3. Wait for machines and role processes to reconnect and publish fresh facts.
+4. Rebuild `KV_CORE.machines.*`, `KV_CORE.services.*`, and `KV_CORE.routes.*`
    only from unambiguous machine-local facts and Docker reality.
-6. Leave ambiguous or missing service, route, cert, and machine facts as
-   diagnostic observations until a named repair operation resolves them.
-7. Do not reconstruct `KV_OPS` machine-add handoff secrets, mint claims, status
+5. Leave ambiguous or missing service, route, cert, and machine facts as
+   diagnostic facts until a named repair operation resolves them.
+6. Do not reconstruct `KV_OPS` machine-add handoff secrets, mint claims, status
    records, or `PLZ_OPS` event timelines. Record the reindex operation's
    own evidence about what was adopted, skipped, or ambiguous.
 
@@ -169,7 +161,6 @@ An explicit reindex after JetStream loss should:
 - Key names and state models: `crates/ployz-core/src/state.rs`.
 - Operation stream subject names: `crates/ployz-core/src/subjects.rs`.
 - `KV_CORE` adapters: `crates/ployz-nats/src/core_state/`.
-- `KV_OBS` adapter: `crates/ployz-nats/src/observations.rs`.
 - `KV_OPS` keys and records: `crates/ployz-nats/src/operations/keys.rs` and
   `crates/ployz-nats/src/operations/status_store.rs`.
 - `PLZ_OPS` event writes/replay: `crates/ployz-nats/src/operations/events.rs`

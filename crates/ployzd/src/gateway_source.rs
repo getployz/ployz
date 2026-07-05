@@ -5,16 +5,15 @@ use crate::gateway::{
     GatewayServingEntry,
 };
 use crate::intent::{IntentReadError, NatsIntentReader};
+use crate::runtime_facts::RuntimeFactsCache;
+use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::observations::{
-    AsyncNatsObservationStore, MachineContainerObservationRecord, ObservationStoreError,
-};
 use std::fmt;
 pub async fn load_gateway_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
-    observations: &AsyncNatsObservationStore,
+    facts: &RuntimeFactsCache,
 ) -> GatewayProjectionUpdate {
-    match load_gateway_projection_input_from_nats(intent_reader, observations).await {
+    match load_gateway_projection_input_from_nats(intent_reader, facts).await {
         Ok(input) => GatewayProjectionUpdate::SourceAvailable(input),
         Err(GatewaySourceError::Invalid { message }) => {
             GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource {
@@ -31,7 +30,7 @@ pub async fn load_gateway_projection_update_from_nats(
 
 pub async fn load_gateway_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
-    observations: &AsyncNatsObservationStore,
+    facts: &RuntimeFactsCache,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let intent = async {
         intent_reader
@@ -39,13 +38,8 @@ pub async fn load_gateway_projection_input_from_nats(
             .await
             .map_err(GatewaySourceError::from)
     };
-    let observed_machines = async {
-        observations
-            .machine_snapshot_records()
-            .await
-            .map_err(GatewaySourceError::from)
-    };
-    let (intent, observed_machines) = tokio::try_join!(intent, observed_machines)?;
+    let intent = intent.await?;
+    let observed_machines = facts.machine_container_snapshots();
 
     Ok(gateway_projection_input_from_state(
         intent.route_bindings,
@@ -71,31 +65,6 @@ impl fmt::Display for GatewaySourceError {
     }
 }
 
-impl From<ObservationStoreError> for GatewaySourceError {
-    fn from(error: ObservationStoreError) -> Self {
-        match error {
-            ObservationStoreError::Decode(error) => Self::Invalid {
-                message: format!("decode observation snapshot: {error}"),
-            },
-            ObservationStoreError::CorruptKey { key, actual_key } => Self::Invalid {
-                message: format!(
-                    "observation key {key} does not match observation key {actual_key}"
-                ),
-            },
-            error @ (ObservationStoreError::OpenBucket { .. }
-            | ObservationStoreError::Encode(_)
-            | ObservationStoreError::ListKeys { .. }
-            | ObservationStoreError::Watch { .. }
-            | ObservationStoreError::Put { .. }
-            | ObservationStoreError::Delete { .. }
-            | ObservationStoreError::Get { .. }
-            | ObservationStoreError::Timeout { .. }) => Self::Unavailable {
-                message: error.to_string(),
-            },
-        }
-    }
-}
-
 impl From<IntentReadError> for GatewaySourceError {
     fn from(error: IntentReadError) -> Self {
         Self::Unavailable {
@@ -107,7 +76,7 @@ impl From<IntentReadError> for GatewaySourceError {
 fn gateway_projection_input_from_state(
     routes: Vec<RouteBindingState>,
     serving: Vec<ServingTargetEntry>,
-    observed_machines: Vec<MachineContainerObservationRecord>,
+    observed_machines: Vec<MachineContainerObservationSnapshot>,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
@@ -119,10 +88,7 @@ fn gateway_projection_input_from_state(
                 namespace_revision_entry_id: state.namespace_revision_entry_id,
             })
             .collect(),
-        observed_machines: observed_machines
-            .into_iter()
-            .map(|record| record.snapshot)
-            .collect(),
+        observed_machines,
     }
 }
 

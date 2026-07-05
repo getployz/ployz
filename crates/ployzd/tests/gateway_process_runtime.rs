@@ -1,10 +1,10 @@
-use async_nats::jetstream;
+use futures_util::StreamExt;
 use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot, ManagedContainerObservation,
+    MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{GatewayServingStatus, RouteBindingState, ServingTargetEntry};
-use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
@@ -86,9 +86,6 @@ async fn gateway_process_serves_http_from_nats_projection() {
     )
     .await
     .expect("gateway runtime starts");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
-        .await
-        .expect("open observation store");
 
     nats.namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {
@@ -107,17 +104,15 @@ async fn gateway_process_serves_http_from_nats_projection() {
         })
         .await
         .expect("route stores");
-    observations
-        .replace_machine_containers(&machine_snapshot(
+    nats.publish_machine_facts(machine_snapshot(
+        "machine_7",
+        [managed_observation_with_endpoint(
             "machine_7",
-            [managed_observation_with_endpoint(
-                "machine_7",
-                "ctr_7",
-                "127.0.0.1",
-            )],
-        ))
-        .await
-        .expect("observation stores");
+            "ctr_7",
+            "127.0.0.1",
+        )],
+    ))
+    .await;
 
     wait_until(Duration::from_secs(2), || {
         gateway_serves_route(&runtime, "127.0.0.1", upstream.port())
@@ -157,9 +152,11 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
     )
     .await
     .expect("gateway runtime starts");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
+    let mut status_sub = nats
+        .client
+        .subscribe(gateway_status(&machine_id("machine_7")))
         .await
-        .expect("open observation store");
+        .expect("subscribe gateway status");
 
     nats.namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {
@@ -178,13 +175,11 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
         })
         .await
         .expect("route stores");
-    observations
-        .replace_machine_containers(&machine_snapshot(
-            "machine_7",
-            [managed_observation("machine_7", "ctr_7")],
-        ))
-        .await
-        .expect("observation stores");
+    nats.publish_machine_facts(machine_snapshot(
+        "machine_7",
+        [managed_observation("machine_7", "ctr_7")],
+    ))
+    .await;
 
     wait_until(Duration::from_secs(2), || {
         gateway_serves_route(&runtime, "10.0.0.7", 8080)
@@ -194,7 +189,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
         runtime.health().last_attempt,
         Some(GatewayProcessAttempt::Current { route_count: 1 })
     );
-    wait_until_gateway_status_current(&observations, "machine_7").await;
+    wait_until_gateway_status_current(&mut status_sub).await;
 
     runtime.shutdown().await;
 }
@@ -245,22 +240,18 @@ async fn gateway_process_records_http_proxy_failures() {
     runtime.shutdown().await;
 }
 
-async fn wait_until_gateway_status_current(
-    observations: &AsyncNatsObservationStore,
-    machine_id_value: &str,
-) {
+async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscriber) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        let status = observations
-            .gateway_status(&machine_id(machine_id_value))
-            .await
-            .expect("gateway status loads");
-        if status.is_some_and(|status| {
-            status.serving == GatewayServingStatus::Current && status.route_count == 1
-        }) {
-            return;
+        if let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(50), status_sub.next()).await
+        {
+            let status: ployz_core::state::GatewayStatusObservation =
+                serde_json::from_slice(&message.payload).expect("gateway status decodes");
+            if status.serving == GatewayServingStatus::Current && status.route_count == 1 {
+                return;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("gateway status did not become current before timeout");
 }
@@ -290,7 +281,7 @@ struct TestNats {
     /// Controller principal: bucket administration and route-state writes.
     client: async_nats::Client,
     /// Machine principal: the gateway process side (gateway runs as the
-    /// machine's Machine user in v1) and observation writes.
+    /// machine's Machine user in v1) and fact writes.
     machine_client: async_nats::Client,
     intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
@@ -316,10 +307,6 @@ impl TestNats {
         }
     }
 
-    fn machine_jetstream(&self) -> jetstream::Context {
-        jetstream::new(self.machine_client.clone())
-    }
-
     async fn create_gateway_buckets(&self) {
         self.connected.bootstrap_resources().await;
     }
@@ -334,6 +321,20 @@ impl TestNats {
         )
         .await
         .expect("intent runtime starts")
+    }
+
+    async fn publish_machine_facts(&self, snapshot: MachineContainerObservationSnapshot) {
+        let facts = MachineFactsSnapshot::try_new(snapshot.machine_id().clone(), snapshot, None, 1)
+            .expect("machine facts are valid");
+        let payload = serde_json::to_vec(&facts).expect("machine facts encode");
+        self.machine_client
+            .publish(machine_facts(facts.machine_id()), payload.into())
+            .await
+            .expect("publish machine facts");
+        self.machine_client
+            .flush()
+            .await
+            .expect("flush machine facts");
     }
 }
 

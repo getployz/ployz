@@ -3,7 +3,6 @@ use ployz_core::dataplane::{
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
     WireGuardReadyEvidence,
 };
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
@@ -138,7 +137,7 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
         &["link", "show", "dev", DEFAULT_DATAPLANE_BRIDGE_IFNAME],
     );
 
-    let mut dataplane = NatsMachineDataplanePreparer::new(nats.client, nats.observations)
+    let mut dataplane = NatsMachineDataplanePreparer::new(nats.client)
         .with_request_timeout(Duration::from_secs(30));
     let report = dataplane
         .prepare_dataplane(DataplanePrepareRequest::for_machines(
@@ -324,7 +323,6 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
-    observations: AsyncNatsObservationStore,
     /// Machine principal: the machine-runtime service side.
     machine_client: async_nats::Client,
 }
@@ -334,15 +332,11 @@ async fn test_nats() -> TestNats {
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("core_1")]).await;
     nats.bootstrap_resources().await;
     let client = nats.controller.clone();
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open controller observation store");
     let machine_client = nats.machine_client(&machine_id("core_1")).await;
 
     TestNats {
         _nats: nats,
         client,
-        observations,
         machine_client,
     }
 }

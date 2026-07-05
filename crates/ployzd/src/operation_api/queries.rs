@@ -8,6 +8,7 @@ use crate::machine_runtime::client::{
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
+use crate::runtime_facts::RuntimeFactsCache;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
@@ -16,7 +17,6 @@ use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
     LogsTailError, LogsTailRequest, LogsTailResult, MachineInspectError, MachineListError,
     MachineListResult, MachineSnapshot, OpsListError, OpsListRequest, OpsListResult,
@@ -34,7 +34,7 @@ use super::error_map::ops_watch_error_from_replay_error;
 #[derive(Clone)]
 pub struct MachineQueryRuntime {
     intent_reader: NatsIntentReader,
-    observations: AsyncNatsObservationStore,
+    facts: RuntimeFactsCache,
     facts_reader: NatsMachineFactsReader,
 }
 
@@ -45,14 +45,15 @@ pub struct ServiceQueryRuntime {
 
 #[derive(Clone)]
 pub struct LogsQueryRuntime {
-    observations: AsyncNatsObservationStore,
+    intent_reader: NatsIntentReader,
+    facts_reader: NatsMachineFactsReader,
     tailer: NatsMachineLogsTailer,
 }
 
 #[derive(Clone)]
 pub struct RuntimeSnapshotQueryRuntime {
     intent_reader: NatsIntentReader,
-    observations: AsyncNatsObservationStore,
+    facts: RuntimeFactsCache,
     facts_reader: NatsMachineFactsReader,
 }
 
@@ -60,12 +61,12 @@ impl RuntimeSnapshotQueryRuntime {
     #[must_use]
     pub(crate) const fn new(
         intent_reader: NatsIntentReader,
-        observations: AsyncNatsObservationStore,
+        facts: RuntimeFactsCache,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
             intent_reader,
-            observations,
+            facts,
             facts_reader,
         }
     }
@@ -79,7 +80,7 @@ impl RuntimeSnapshotQueryRuntime {
         })?;
         let machine_query = MachineQueryRuntime::new(
             self.intent_reader.clone(),
-            self.observations.clone(),
+            self.facts.clone(),
             self.facts_reader.clone(),
         );
         let service_query = ServiceQueryRuntime::new(self.intent_reader.clone());
@@ -122,7 +123,7 @@ impl RuntimeSnapshotQueryRuntime {
                     intent: RuntimeProjectionSource {
                         read_at_unix_seconds,
                     },
-                    observations: RuntimeProjectionSource {
+                    facts: RuntimeProjectionSource {
                         read_at_unix_seconds,
                     },
                     revisions: derived_source(revisions.len(), missing_link_count),
@@ -140,12 +141,14 @@ impl RuntimeSnapshotQueryRuntime {
 
 impl LogsQueryRuntime {
     #[must_use]
-    pub(crate) const fn new(
-        observations: AsyncNatsObservationStore,
+    pub(crate) fn new(
+        intent_reader: NatsIntentReader,
+        facts_reader: NatsMachineFactsReader,
         tailer: NatsMachineLogsTailer,
     ) -> Self {
         Self {
-            observations,
+            intent_reader,
+            facts_reader,
             tailer,
         }
     }
@@ -190,20 +193,27 @@ impl LogsQueryRuntime {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<MachineId>, LogsTailError> {
-        let mut matches = self
-            .observations
-            .machine_snapshot_records()
-            .await
-            .map_err(|error| LogsTailError::Unavailable {
-                message: error.to_string(),
-                machine_id: None,
-            })?
+        let intent =
+            self.intent_reader
+                .intent()
+                .await
+                .map_err(|error| LogsTailError::Unavailable {
+                    message: error.to_string(),
+                    machine_id: None,
+                })?;
+        let machine_ids = intent
+            .active_machines
             .into_iter()
-            .filter_map(|record| {
-                record
-                    .snapshot
+            .map(|machine| machine.machine_id)
+            .collect::<Vec<_>>();
+        let mut matches = read_available_machine_facts(&self.facts_reader, machine_ids)
+            .await
+            .into_iter()
+            .filter_map(|facts| {
+                facts
+                    .containers()
                     .container(container_id)
-                    .map(|_| record.snapshot.machine_id().clone())
+                    .map(|_| facts.machine_id().clone())
             })
             .collect::<Vec<_>>();
         matches.sort();
@@ -224,20 +234,15 @@ impl LogsQueryRuntime {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<(), LogsTailError> {
-        let Some(snapshot) = self
-            .observations
-            .machine_snapshot(machine_id)
+        let facts = self
+            .facts_reader
+            .machine_facts(machine_id)
             .await
             .map_err(|error| LogsTailError::Unavailable {
                 message: error.to_string(),
                 machine_id: Some(machine_id.clone()),
-            })?
-        else {
-            return Err(LogsTailError::NoSuchContainer {
-                container_id: container_id.clone(),
-            });
-        };
-        if snapshot.container(container_id).is_none() {
+            })?;
+        if facts.containers().container(container_id).is_none() {
             return Err(LogsTailError::NoSuchContainer {
                 container_id: container_id.clone(),
             });
@@ -464,12 +469,12 @@ impl MachineQueryRuntime {
     #[must_use]
     pub(crate) fn new(
         intent_reader: NatsIntentReader,
-        observations: AsyncNatsObservationStore,
+        facts: RuntimeFactsCache,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
             intent_reader,
-            observations,
+            facts,
             facts_reader,
         }
     }
@@ -497,12 +502,8 @@ impl MachineQueryRuntime {
             })
             .collect::<BTreeMap<_, _>>();
         let gateway_statuses = self
-            .observations
+            .facts
             .gateway_statuses()
-            .await
-            .map_err(|error| MachineListError::Unavailable {
-                message: error.to_string(),
-            })?
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
@@ -563,11 +564,7 @@ impl MachineQueryRuntime {
             .await
             .ok();
         let public_ip = facts.as_ref().and_then(|facts| facts.public_ip().cloned());
-        let gateway = self
-            .observations
-            .gateway_status(&active.machine_id)
-            .await
-            .map_err(|error| error.to_string())?;
+        let gateway = self.facts.gateway_status(&active.machine_id);
 
         Ok(MachineSnapshot {
             active,

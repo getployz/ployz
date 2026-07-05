@@ -1,14 +1,13 @@
-use async_nats::jetstream;
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
-use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::dns::DnsAnswer;
 use ployzd::dns_process_runtime::{
-    DnsProcessAttempt, DnsProcessRuntimeError, RunningDnsProcessRuntime,
-    start_dns_process_runtime_with_client,
+    DnsProcessAttempt, RunningDnsProcessRuntime, start_dns_process_runtime_with_client,
 };
 use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
@@ -19,14 +18,20 @@ use std::time::{Duration, Instant};
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start_without_buckets().await;
-    let result =
+    let runtime =
         start_dns_process_runtime_with_client(nats.dns_client.clone(), Duration::from_millis(10))
-            .await;
-    let Err(error) = result else {
-        panic!("dns runtime should fail before buckets exist");
-    };
+            .await
+            .expect("dns runtime starts before sources exist");
 
-    assert!(matches!(error, DnsProcessRuntimeError::OpenObservations(_)));
+    wait_until(Duration::from_secs(2), || {
+        matches!(
+            runtime.health().last_attempt,
+            Some(DnsProcessAttempt::Failed { .. })
+        )
+    })
+    .await;
+
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
@@ -134,27 +139,48 @@ impl TestNats {
             .connected
             .machine_client(&machine_id(machine_id_value))
             .await;
-        let observations =
-            AsyncNatsObservationStore::from_jetstream(&jetstream::new(gateway_client))
-                .await
-                .expect("open gateway observation store");
-        observations
-            .replace_gateway_status(&GatewayStatusObservation {
-                machine_id: machine_id(machine_id_value),
-                listen_addr: SocketAddr::from(([0, 0, 0, 0], 8080)),
-                serving: GatewayServingStatus::Current,
-                route_count: 1,
-            })
+        let status = GatewayStatusObservation {
+            machine_id: machine_id(machine_id_value),
+            listen_addr: SocketAddr::from(([0, 0, 0, 0], 8080)),
+            serving: GatewayServingStatus::Current,
+            route_count: 1,
+        };
+        let facts = gateway_machine_facts(machine_id_value, address);
+        gateway_client
+            .publish(
+                gateway_status(&status.machine_id),
+                serde_json::to_vec(&status)
+                    .expect("gateway status encodes")
+                    .into(),
+            )
             .await
-            .expect("gateway status stores");
-        observations
-            .replace_machine_public_ip(&MachinePublicIpObservation {
-                machine_id: machine_id(machine_id_value),
-                public_ip: IpAddr::V4(Ipv4Addr::from(address)),
-            })
+            .expect("gateway status publishes");
+        gateway_client
+            .publish(
+                machine_facts(facts.machine_id()),
+                serde_json::to_vec(&facts)
+                    .expect("machine facts encode")
+                    .into(),
+            )
             .await
-            .expect("public ip stores");
+            .expect("machine facts publish");
+        gateway_client.flush().await.expect("flush gateway facts");
     }
+}
+
+fn gateway_machine_facts(machine_id_value: &str, address: [u8; 4]) -> MachineFactsSnapshot {
+    let machine_id = machine_id(machine_id_value);
+    MachineFactsSnapshot::try_new(
+        machine_id.clone(),
+        MachineContainerObservationSnapshot::try_new(machine_id.clone(), Vec::new())
+            .expect("empty container facts are valid"),
+        Some(MachinePublicIpObservation {
+            machine_id,
+            public_ip: IpAddr::V4(Ipv4Addr::from(address)),
+        }),
+        1,
+    )
+    .expect("machine facts are valid")
 }
 
 async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {

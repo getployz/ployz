@@ -24,8 +24,8 @@ use crate::machine_roster::MachineRosterStore;
 use crate::machine_runtime::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::MachineCredentialMintRuntime;
+use crate::runtime_facts::RuntimeFactsCache;
 use ployz_core::ids::MachineId;
-use ployz_nats::observations::AsyncNatsObservationStore;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -55,20 +55,20 @@ impl OperationApiHandlers {
         local_machine_id: MachineId,
         intent_change_client: async_nats::Client,
         machine_roster: MachineRosterStore,
-        observations: AsyncNatsObservationStore,
+        facts: RuntimeFactsCache,
         facts_reader: NatsMachineFactsReader,
         intent_reader: NatsIntentReader,
         logs_tailer: NatsMachineLogsTailer,
     ) -> Self {
-        let machine_query = MachineQueryRuntime::new(
+        let machine_query =
+            MachineQueryRuntime::new(intent_reader.clone(), facts.clone(), facts_reader.clone());
+        let service_query = ServiceQueryRuntime::new(intent_reader.clone());
+        let runtime_snapshot_query = RuntimeSnapshotQueryRuntime::new(
             intent_reader.clone(),
-            observations.clone(),
+            facts.clone(),
             facts_reader.clone(),
         );
-        let service_query = ServiceQueryRuntime::new(intent_reader.clone());
-        let runtime_snapshot_query =
-            RuntimeSnapshotQueryRuntime::new(intent_reader, observations.clone(), facts_reader);
-        let logs_query = LogsQueryRuntime::new(observations, logs_tailer);
+        let logs_query = LogsQueryRuntime::new(intent_reader, facts_reader, logs_tailer);
         Self {
             controllers,
             deploy_runtime: Arc::new(deploy_runtime),

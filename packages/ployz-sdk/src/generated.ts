@@ -324,7 +324,7 @@ export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: Ser
 
 export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
 
-export type RuntimeProjectionSources = { intent: RuntimeProjectionSource, observations: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
+export type RuntimeProjectionSources = { intent: RuntimeProjectionSource, facts: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
 
 export type RuntimeProjectionSource = { read_at_unix_seconds: number, };
 

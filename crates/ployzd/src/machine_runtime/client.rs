@@ -20,7 +20,6 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
@@ -28,6 +27,7 @@ use ployz_nats::service_runtime::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::Duration;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,7 +42,7 @@ pub struct NatsMachineContainerRuntime {
 #[derive(Debug, Clone)]
 pub struct NatsMachineDataplanePreparer {
     pub(super) client: async_nats::Client,
-    pub(super) observations: AsyncNatsObservationStore,
+    pub(super) facts_reader: NatsMachineFactsReader,
     pub(super) request_timeout: Duration,
 }
 
@@ -369,18 +369,41 @@ impl MachineSubstrateUpdateRuntimeError {
 
 impl NatsMachineDataplanePreparer {
     #[must_use]
-    pub fn new(client: async_nats::Client, observations: AsyncNatsObservationStore) -> Self {
+    pub fn new(client: async_nats::Client) -> Self {
         Self {
+            facts_reader: NatsMachineFactsReader::new(client.clone()),
             client,
-            observations,
             request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
     }
 
     #[must_use]
-    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
+        self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
         self
+    }
+}
+
+impl fmt::Display for MachineFactsReadRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GatherFailed {
+                machine_id,
+                message,
+            } => write!(
+                formatter,
+                "machine {} rejected facts gather: {}",
+                machine_id.as_str(),
+                message.as_str()
+            ),
+            Self::Unavailable { machine_id, reason } => write!(
+                formatter,
+                "machine {} facts unavailable: {}",
+                machine_id.as_str(),
+                reason.failure_message().as_str()
+            ),
+        }
     }
 }
 

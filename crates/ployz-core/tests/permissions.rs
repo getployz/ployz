@@ -1,13 +1,12 @@
 use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
-    kv_read_js_api_subjects, machine_observation_kv_write_subjects,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
-    INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT,
-    machine_observation_scope, machine_service_scope,
+    INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status,
+    gateway_status_scope, machine_facts, machine_facts_scope, machine_service_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -18,17 +17,12 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
         machine_id: machine_id.clone(),
     });
 
-    let mut expected_publish = vec![
+    let expected_publish = vec![
         "_INBOX_machine_machine_7.>".to_owned(),
         INTENT_GET.to_owned(),
-        machine_observation_scope(&machine_id),
+        machine_facts(&machine_id),
+        gateway_status(&machine_id),
     ];
-    expected_publish.extend([
-        "$KV.KV_OBS.containers.machine_7".to_owned(),
-        "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
-        "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
-    ]);
-    expected_publish.extend(kv_read_js_api_subjects("KV_OBS"));
     assert_eq!(profile.publish.allowed_subjects(), expected_publish);
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
     assert_eq!(
@@ -36,36 +30,14 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
         &[
             machine_service_scope(&machine_id),
             INTENT_CHANGED.to_owned(),
+            machine_facts_scope(),
+            gateway_status_scope(),
             "$SRV.>".to_owned(),
             "_INBOX_machine_machine_7.>".to_owned()
         ]
     );
     assert_eq!(profile.subscribe.denied_subjects(), &[] as &[String]);
     assert_eq!(profile.allow_responses, ResponsePermission::Allowed);
-}
-
-#[test]
-fn machine_observation_kv_writes_are_scoped_to_the_machines_own_keys() {
-    let machine_id = machine_id("machine_7");
-
-    assert_eq!(
-        machine_observation_kv_write_subjects(&machine_id),
-        [
-            "$KV.KV_OBS.containers.machine_7".to_owned(),
-            "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
-            "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
-        ]
-    );
-    let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
-        machine_id: machine_id.clone(),
-    });
-    assert!(
-        !profile
-            .publish
-            .allowed_subjects()
-            .contains(&"$KV.KV_OBS.>".to_owned()),
-        "a machine credential must not hold the bucket-wide observation write scope"
-    );
 }
 
 #[test]
@@ -93,6 +65,8 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             API_SERVICE_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
             ployz_core::subjects::INTENT_GET.to_owned(),
+            machine_facts_scope(),
+            gateway_status_scope(),
             "$SRV.>".to_owned(),
             "_INBOX_ctl.>".to_owned()
         ]

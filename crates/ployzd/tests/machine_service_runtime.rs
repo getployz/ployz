@@ -8,7 +8,6 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerIdentity};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -650,7 +649,7 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
         .flush()
         .await
         .expect("flush machine service subscription");
-    let mut client = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
+    let mut client = NatsMachineDataplanePreparer::new(nats.client);
 
     let report = client
         .prepare_dataplane(dataplane_request(&["machine_a"]))
@@ -732,7 +731,7 @@ async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
         .flush()
         .await
         .expect("flush machine service subscription");
-    let mut client = NatsMachineDataplanePreparer::new(nats.client, nats.observations);
+    let mut client = NatsMachineDataplanePreparer::new(nats.client);
 
     let error = client
         .prepare_dataplane(dataplane_request(&["machine_a"]))
@@ -1146,7 +1145,6 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
-    observations: AsyncNatsObservationStore,
     /// Machine principal: the machine-runtime service side.
     machine_a: async_nats::Client,
 }
@@ -1156,15 +1154,11 @@ async fn test_nats() -> TestNats {
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     nats.bootstrap_resources().await;
     let client = nats.controller.clone();
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open controller observation store");
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
 
     TestNats {
         _nats: nats,
         client,
-        observations,
         machine_a,
     }
 }

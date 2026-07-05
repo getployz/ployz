@@ -14,7 +14,7 @@ fn supported_single_core_plan() -> BootstrapPlan {
 fn single_core_bootstrap_contains_required_resources() {
     let plan = supported_single_core_plan();
 
-    for bucket in ["KV_CORE", "KV_OPS", "KV_OBS"] {
+    for bucket in ["KV_CORE", "KV_OPS"] {
         assert!(
             plan.kv_buckets.iter().any(|spec| spec.name == bucket),
             "missing KV bucket {bucket}"
@@ -69,7 +69,7 @@ async fn bootstrap_assurance_creates_and_adopts_resources() {
         .await
         .expect("existing resources are adopted");
 
-    for bucket in ["KV_CORE", "KV_OPS", "KV_OBS"] {
+    for bucket in ["KV_CORE", "KV_OPS"] {
         server
             .jetstream
             .get_key_value(bucket)

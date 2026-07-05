@@ -367,7 +367,7 @@ pub struct RuntimeServiceInstance {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeProjectionSources {
     pub intent: RuntimeProjectionSource,
-    pub observations: RuntimeProjectionSource,
+    pub facts: RuntimeProjectionSource,
     pub revisions: RuntimeDerivedCollectionSource,
     pub releases: RuntimeDerivedCollectionSource,
     pub instances: RuntimeDerivedCollectionSource,

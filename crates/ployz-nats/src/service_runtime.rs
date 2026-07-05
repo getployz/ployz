@@ -107,7 +107,10 @@ impl std::fmt::Display for NatsJsonServiceRequestError {
                 write!(formatter, "service returned an error: {}", failure.message)
             }
             Self::ServiceProtocol { error } => {
-                write!(formatter, "service error header could not be decoded: {error}")
+                write!(
+                    formatter,
+                    "service error header could not be decoded: {error}"
+                )
             }
             Self::DecodeResponse { message } => {
                 write!(formatter, "failed to decode response: {message}")
