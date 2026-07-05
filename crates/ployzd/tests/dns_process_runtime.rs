@@ -101,6 +101,10 @@ impl TestNats {
         start_intent_runtime(
             self.connected.controller.clone(),
             core_state,
+            tempfile::tempdir()
+                .expect("lifecycle dir")
+                .path()
+                .join("machine-lifecycles.json"),
             Duration::from_millis(10),
         )
         .await

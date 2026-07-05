@@ -2,11 +2,7 @@
 //!
 //! The evidence file is the durable commit: lifecycle is operator intent
 //! about a machine (which may be unreachable), so it is control-side
-//! durable authority like the authorized-user set — written to disk first,
-//! projected into the KV machine record after, and adopted back into KV on
-//! control start so the intent survives JetStream loss. A failed KV
-//! projection rolls the evidence back, so an operation that reported
-//! `Failed` cannot take effect at a later adoption.
+//! durable authority like the authorized-user set.
 
 use crate::controllers::OperationControllers;
 use crate::tasks::TaskRegistry;
@@ -16,6 +12,7 @@ use ployz_core::state::MachineLifecycle;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operations::AcceptedMachineLifecycleSubmission;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -69,8 +66,8 @@ impl MachineLifecycleOperationRuntime {
 
         let _evidence_guard = self.evidence_lock.lock().await;
 
-        let active = match self.core_state.active_machine(&machine_id).await {
-            Ok(Some(active)) => active,
+        match self.core_state.active_machine(&machine_id).await {
+            Ok(Some(_)) => {}
             Ok(None) => {
                 self.record_terminal(
                     &operation_id,
@@ -93,44 +90,15 @@ impl MachineLifecycleOperationRuntime {
                 .await;
                 return;
             }
-        };
+        }
 
-        let evidence_changed =
-            match record_lifecycle_evidence(&self.evidence_file, &machine_id, target) {
-                Ok(changed) => changed,
-                Err(message) => {
-                    self.record_terminal(
-                        &operation_id,
-                        &machine_id,
-                        MachineLifecycleTransition::Failed {
-                            failure: MachineLifecycleFailure::EvidenceWriteFailed { message },
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            };
-
-        let mut active = active;
-        active.lifecycle = target;
-        if let Err(error) = self.core_state.replace_active_machine(&active).await {
-            if evidence_changed {
-                let revert = match target {
-                    MachineLifecycle::Draining => MachineLifecycle::Active,
-                    MachineLifecycle::Active => MachineLifecycle::Draining,
-                };
-                if let Err(rollback) =
-                    record_lifecycle_evidence(&self.evidence_file, &machine_id, revert)
-                {
-                    eprintln!(
-                        "failed to roll back lifecycle evidence after state commit failure: {rollback}"
-                    );
-                }
-            }
-            self.record_state_commit_failed(
+        if let Err(message) = record_lifecycle_evidence(&self.evidence_file, &machine_id, target) {
+            self.record_terminal(
                 &operation_id,
                 &machine_id,
-                &format!("failed to commit machine lifecycle: {error}"),
+                MachineLifecycleTransition::Failed {
+                    failure: MachineLifecycleFailure::EvidenceWriteFailed { message },
+                },
             )
             .await;
             return;
@@ -234,33 +202,15 @@ fn failure(message: String) -> FailureMessage {
     FailureMessage::try_new(message).expect("lifecycle evidence failure message is non-empty")
 }
 
-/// Adopt-on-start: re-applies the drained set from disk into the KV machine
-/// records, so operator intent survives JetStream loss. Machines in the file
-/// without a KV record stay pending until the record is rebuilt; adoption is
-/// idempotent.
-pub async fn adopt_machine_lifecycles_from_file(
+pub fn machine_lifecycle_intent_from_file(
     path: &Path,
-    core_state: &AsyncNatsCoreStateStore,
-) -> Result<(), FailureMessage> {
+) -> Result<BTreeMap<MachineId, MachineLifecycle>, FailureMessage> {
     let evidence = read_lifecycle_evidence(path)?;
+    let mut lifecycles = BTreeMap::new();
     for machine in &evidence.draining {
         let machine_id = MachineId::try_new(machine.clone())
             .map_err(|error| failure(format!("lifecycle evidence machine id: {error}")))?;
-        let Some(mut active) = core_state
-            .active_machine(&machine_id)
-            .await
-            .map_err(|error| failure(format!("read machine for lifecycle adoption: {error}")))?
-        else {
-            continue;
-        };
-        if active.lifecycle == MachineLifecycle::Draining {
-            continue;
-        }
-        active.lifecycle = MachineLifecycle::Draining;
-        core_state
-            .replace_active_machine(&active)
-            .await
-            .map_err(|error| failure(format!("adopt machine lifecycle: {error}")))?;
+        lifecycles.insert(machine_id, MachineLifecycle::Draining);
     }
-    Ok(())
+    Ok(lifecycles)
 }

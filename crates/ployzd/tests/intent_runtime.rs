@@ -32,6 +32,10 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
         core_state,
+        tempfile::tempdir()
+            .expect("lifecycle dir")
+            .path()
+            .join("machine-lifecycles.json"),
         Duration::from_millis(10),
     )
     .await
@@ -58,10 +62,17 @@ async fn intent_reader_gets_current_intent() {
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state");
-    let _runtime =
-        start_intent_runtime(nats.controller.clone(), core_state, Duration::from_secs(30))
-            .await
-            .expect("intent runtime starts");
+    let _runtime = start_intent_runtime(
+        nats.controller.clone(),
+        core_state,
+        tempfile::tempdir()
+            .expect("lifecycle dir")
+            .path()
+            .join("machine-lifecycles.json"),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("intent runtime starts");
 
     let intent = NatsIntentReader::new(nats.controller)
         .with_request_timeout(Duration::from_secs(1))
@@ -72,4 +83,47 @@ async fn intent_reader_gets_current_intent() {
     assert!(intent.active_machines.is_empty());
     assert!(intent.route_bindings.is_empty());
     assert!(intent.serving_target_entries.is_empty());
+}
+
+#[tokio::test]
+async fn intent_reader_overlays_machine_lifecycle_evidence() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    nats.bootstrap_resources().await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state");
+    core_state
+        .replace_active_machine(&ActiveMachineState {
+            machine_id: machine_id("machine_a"),
+            name: ployz_core::machine::MachineName::try_new("machine_a")
+                .expect("valid machine name"),
+            activated_by: operation_id("op_machine_add"),
+            substrate_versions: None,
+            lifecycle: MachineLifecycle::Active,
+        })
+        .await
+        .expect("active machine stores");
+    let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
+    let lifecycle_file = lifecycle_dir.path().join("machine-lifecycles.json");
+    std::fs::write(&lifecycle_file, r#"{"draining":["machine_a"]}"#)
+        .expect("write lifecycle evidence");
+    let _runtime = start_intent_runtime(
+        nats.controller.clone(),
+        core_state,
+        lifecycle_file,
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("intent runtime starts");
+
+    let intent = NatsIntentReader::new(nats.controller)
+        .with_request_timeout(Duration::from_secs(1))
+        .intent()
+        .await
+        .expect("intent reads");
+
+    assert_eq!(
+        intent.active_machines[0].lifecycle,
+        MachineLifecycle::Draining
+    );
 }

@@ -328,9 +328,15 @@ impl TestNats {
         let core_state = AsyncNatsCoreStateStore::from_jetstream(&self.connected.jetstream)
             .await
             .expect("open core state store");
-        start_intent_runtime(self.client.clone(), core_state, Duration::from_millis(10))
-            .await
-            .expect("intent runtime starts")
+        let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
+        start_intent_runtime(
+            self.client.clone(),
+            core_state,
+            lifecycle_dir.path().join("machine-lifecycles.json"),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("intent runtime starts")
     }
 }
 
