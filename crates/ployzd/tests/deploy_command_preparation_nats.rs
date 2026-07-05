@@ -601,6 +601,10 @@ async fn test_nats() -> TestNats {
     let intent = start_intent_runtime(
         connected.controller.clone(),
         core_state.clone(),
+        tempfile::tempdir()
+            .expect("lifecycle dir")
+            .path()
+            .join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await

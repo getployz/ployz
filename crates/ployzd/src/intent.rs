@@ -1,5 +1,6 @@
 //! Core-owned operator intent service.
 
+use crate::machine_lifecycle_runtime::machine_lifecycle_intent_from_file;
 use crate::services::{intent_get_endpoint_spec, intent_service};
 use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET};
@@ -11,6 +12,7 @@ use ployz_nats::service_runtime::{
     start_nats_service,
 };
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -88,14 +90,17 @@ impl From<NatsJsonServiceRequestError> for IntentReadError {
 pub async fn start_intent_runtime(
     client: async_nats::Client,
     core_state: AsyncNatsCoreStateStore,
+    machine_lifecycles_file: PathBuf,
     publish_interval: Duration,
 ) -> Result<RunningIntentRuntime, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     let service_core_state = core_state.clone();
+    let service_machine_lifecycles_file = machine_lifecycles_file.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
             let core_state = service_core_state.clone();
-            async move { intent_get_response(request, &core_state).await }
+            let machine_lifecycles_file = service_machine_lifecycles_file.clone();
+            async move { intent_get_response(request, &core_state, &machine_lifecycles_file).await }
         })
         .await?;
 
@@ -103,7 +108,7 @@ pub async fn start_intent_runtime(
         let mut interval = tokio::time::interval(publish_interval);
         loop {
             interval.tick().await;
-            let Ok(intent) = load_intent(&core_state).await else {
+            let Ok(intent) = load_intent(&core_state, &machine_lifecycles_file).await else {
                 continue;
             };
             let Ok(payload) = serde_json::to_vec(&intent) else {
@@ -119,18 +124,22 @@ pub async fn start_intent_runtime(
 async fn intent_get_response(
     request: NatsServiceRequest,
     core_state: &AsyncNatsCoreStateStore,
+    machine_lifecycles_file: &Path,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<IntentGetRequest>(&request) {
         return response;
     }
 
-    match load_intent(core_state).await {
+    match load_intent(core_state, machine_lifecycles_file).await {
         Ok(intent) => NatsServiceResponse::json_ok(&intent),
         Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
     }
 }
 
-async fn load_intent(core_state: &AsyncNatsCoreStateStore) -> Result<IntentSnapshot, String> {
+async fn load_intent(
+    core_state: &AsyncNatsCoreStateStore,
+    machine_lifecycles_file: &Path,
+) -> Result<IntentSnapshot, String> {
     let active_machines = async {
         core_state
             .active_machines()
@@ -149,8 +158,15 @@ async fn load_intent(core_state: &AsyncNatsCoreStateStore) -> Result<IntentSnaps
             .await
             .map_err(|error| error.to_string())
     };
-    let (active_machines, route_bindings, serving_target_entries) =
+    let (mut active_machines, route_bindings, serving_target_entries) =
         tokio::try_join!(active_machines, route_bindings, serving_target_entries)?;
+    let lifecycle_intent = machine_lifecycle_intent_from_file(machine_lifecycles_file)
+        .map_err(|error| error.to_string())?;
+    for active in &mut active_machines {
+        if let Some(lifecycle) = lifecycle_intent.get(&active.machine_id) {
+            active.lifecycle = *lifecycle;
+        }
+    }
 
     Ok(IntentSnapshot {
         active_machines,

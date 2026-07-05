@@ -6,9 +6,7 @@ use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionMachineScope;
 use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use crate::machine_lifecycle_runtime::{
-    MachineLifecycleOperationRuntime, adopt_machine_lifecycles_from_file,
-};
+use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
 use crate::machine_runtime::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
@@ -116,14 +114,6 @@ pub async fn start_control_runtime_with_client_and_reload(
         .render(None)
         .await
         .map_err(ControlRuntimeError::RenderNatsAuthorization)?;
-    // Lifecycle intent adoption mirrors the authorized-users adoption just
-    // above: the on-disk drained set is recovery evidence for KV.
-    adopt_machine_lifecycles_from_file(
-        &config.nats_authorization.machine_lifecycles_file,
-        &core_state,
-    )
-    .await
-    .map_err(ControlRuntimeError::AdoptMachineLifecycles)?;
     let deploy_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
@@ -156,9 +146,14 @@ pub async fn start_control_runtime_with_client_and_reload(
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let facts_reader = NatsMachineFactsReader::new(client.clone());
     let intent_reader = NatsIntentReader::new(client.clone());
-    let intent = start_intent_runtime(client.clone(), core_state.clone(), INTENT_PUBLISH_INTERVAL)
-        .await
-        .map_err(ControlRuntimeError::StartIntent)?;
+    let intent = start_intent_runtime(
+        client.clone(),
+        core_state.clone(),
+        config.nats_authorization.machine_lifecycles_file.clone(),
+        INTENT_PUBLISH_INTERVAL,
+    )
+    .await
+    .map_err(ControlRuntimeError::StartIntent)?;
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update_runtime = MachineUpdateOperationRuntime::new(
         controllers.clone(),
@@ -232,7 +227,6 @@ pub enum ControlRuntimeError {
     StartNatsAuthorization(NatsAuthorizationStartError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
-    AdoptMachineLifecycles(ployz_core::ops::FailureMessage),
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
@@ -268,12 +262,6 @@ impl fmt::Display for ControlRuntimeError {
             }
             Self::RenderNatsAuthorization(error) => {
                 write!(formatter, "failed to render NATS authorization: {error}")
-            }
-            Self::AdoptMachineLifecycles(message) => {
-                write!(
-                    formatter,
-                    "failed to adopt machine lifecycle evidence: {message}"
-                )
             }
             Self::ResumeMachineAddMints(error) => {
                 write!(
