@@ -155,7 +155,6 @@ async fn test_nats() -> TestNats {
         machine_id("edge_4"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let machine_client = nats.machine_client(&dns_machine).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");

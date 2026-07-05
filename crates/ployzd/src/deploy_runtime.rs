@@ -14,23 +14,17 @@ use crate::machine_runtime::client::{
     NatsMachineFactsReader,
 };
 use crate::namespace_intent::NamespaceIntentStore;
+use crate::operation_log::{
+    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
+    RecordOperationEventError,
+};
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
 use ployz_core::subjects::INTENT_CHANGED;
-use ployz_nats::core_state::{
-    AsyncNatsCoreStateStore, CoreStateStoreError, NAMESPACE_LOCK_RENEW_INTERVAL_MS,
-    NamespaceLockRenew,
-};
-use ployz_nats::operations::{
-    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
-    RecordOperationEventError,
-};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
@@ -51,7 +45,6 @@ where
         intent_change_client,
         namespace_intent,
         controllers,
-        namespace_lock_lost,
     } = stores;
     let DeployOperationPorts {
         facts_reader,
@@ -89,11 +82,7 @@ where
     let command =
         prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
-    let mut namespace_state = LockCheckedNamespaceIntent::new(
-        intent_change_client,
-        namespace_intent,
-        namespace_lock_lost,
-    );
+    let mut namespace_state = NamespaceIntentCommitter::new(intent_change_client, namespace_intent);
     execute_deploy_operation(
         command,
         DeployExecutionPorts {
@@ -137,7 +126,6 @@ pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
     pub namespace_intent: NamespaceIntentStore,
     pub controllers: OperationControllers,
-    pub namespace_lock_lost: Arc<AtomicBool>,
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
@@ -148,35 +136,20 @@ pub struct DeployOperationPorts<'a, D, N, H> {
     pub health_checker: &'a mut H,
 }
 
-struct LockCheckedNamespaceIntent {
+struct NamespaceIntentCommitter {
     intent_change_client: async_nats::Client,
     namespace_intent: NamespaceIntentStore,
-    namespace_lock_lost: Arc<AtomicBool>,
 }
 
-impl LockCheckedNamespaceIntent {
+impl NamespaceIntentCommitter {
     fn new(
         intent_change_client: async_nats::Client,
         namespace_intent: NamespaceIntentStore,
-        namespace_lock_lost: Arc<AtomicBool>,
     ) -> Self {
         Self {
             intent_change_client,
             namespace_intent,
-            namespace_lock_lost,
         }
-    }
-
-    /// The one statement of the fencing contract: no namespace-state commit
-    /// proceeds after the Namespace Lock is lost.
-    fn ensure_lock_held(
-        &self,
-        lost: impl FnOnce() -> NamespaceCommitError,
-    ) -> Result<(), NamespaceCommitError> {
-        if self.namespace_lock_lost.load(Ordering::Relaxed) {
-            return Err(lost());
-        }
-        Ok(())
     }
 
     async fn publish_intent_changed(&self) {
@@ -187,16 +160,12 @@ impl LockCheckedNamespaceIntent {
     }
 }
 
-impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
+impl NamespaceStateCommitter for NamespaceIntentCommitter {
     async fn replace_route_binding(
         &mut self,
         state: ployz_core::state::RouteBindingState,
     ) -> Result<(), NamespaceCommitError> {
         let target = state.target.clone();
-        self.ensure_lock_held(|| NamespaceCommitError::RouteLockLost {
-            target: target.clone(),
-        })?;
-
         self.namespace_intent
             .replace_route_binding(state)
             .await
@@ -212,10 +181,6 @@ impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
         &mut self,
         target: ployz_core::ops::RouteTarget,
     ) -> Result<(), NamespaceCommitError> {
-        self.ensure_lock_held(|| NamespaceCommitError::RouteLockLost {
-            target: target.clone(),
-        })?;
-
         self.namespace_intent
             .remove_route_binding(&target)
             .await
@@ -235,10 +200,6 @@ impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
             service_id: state.service_id.clone(),
             namespace_revision_entry_id: state.namespace_revision_entry_id.clone(),
         };
-        self.ensure_lock_held(|| NamespaceCommitError::ServingTargetLockLost {
-            scope: scope.clone(),
-        })?;
-
         self.namespace_intent
             .replace_serving_target_entry(state)
             .await
@@ -258,10 +219,6 @@ impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
             service_id: entry.service_id.clone(),
             namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
         };
-        self.ensure_lock_held(|| NamespaceCommitError::ServingTargetLockLost {
-            scope: scope.clone(),
-        })?;
-
         self.namespace_intent
             .remove_serving_target_entry(&entry)
             .await
@@ -278,10 +235,6 @@ impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
 pub enum DeployOperationRunError {
     AlreadyStarted,
     ClaimStart(RecordDeployTransitionError),
-    Clock {
-        message: String,
-    },
-    NamespaceLock(CoreStateStoreError),
     LoadFacts {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
@@ -289,16 +242,9 @@ pub enum DeployOperationRunError {
     Execute(DeployExecutionError),
 }
 
-impl From<CoreStateStoreError> for DeployOperationRunError {
-    fn from(value: CoreStateStoreError) -> Self {
-        Self::NamespaceLock(value)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct DeployOperationRuntime {
     client: async_nats::Client,
-    core_state: AsyncNatsCoreStateStore,
     namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
     machine_scope: DeployExecutionMachineScope,
@@ -310,7 +256,6 @@ impl DeployOperationRuntime {
     #[must_use]
     pub fn new(
         client: async_nats::Client,
-        core_state: AsyncNatsCoreStateStore,
         namespace_intent: NamespaceIntentStore,
         controllers: OperationControllers,
         machine_scope: DeployExecutionMachineScope,
@@ -319,7 +264,6 @@ impl DeployOperationRuntime {
     ) -> Self {
         Self {
             client,
-            core_state,
             namespace_intent,
             controllers,
             machine_scope,
@@ -360,23 +304,15 @@ impl DeployOperationRuntime {
 
         let namespace_id = accepted.target.namespace_id.clone();
         let operation_id = accepted.operation_id.clone();
-        let lock_lost = Arc::new(AtomicBool::new(false));
-        let renew_core_state = self.core_state.clone();
         let namespace_intent = self.namespace_intent.clone();
-        let renew_task = tokio::spawn(renew_namespace_lock_until_lost(
-            renew_core_state,
-            namespace_id.clone(),
-            operation_id.clone(),
-            Arc::clone(&lock_lost),
-        ));
+        let controllers = self.controllers.clone();
         let result = run_deploy_operation(
             accepted,
             self.machine_scope,
             DeployOperationStores {
                 intent_change_client: self.client.clone(),
                 namespace_intent,
-                controllers: self.controllers,
-                namespace_lock_lost: lock_lost,
+                controllers: controllers.clone(),
             },
             DeployOperationPorts {
                 facts_reader: &facts_reader,
@@ -388,60 +324,11 @@ impl DeployOperationRuntime {
             self.step_timeout,
         )
         .await;
-        renew_task.abort();
-        let _ = renew_task.await;
-        let _ = self
-            .core_state
-            .release_namespace_lock(&namespace_id, &operation_id)
+        controllers
+            .release_deploy_namespace(&namespace_id, &operation_id)
             .await;
         result
     }
-}
-
-async fn renew_namespace_lock_until_lost(
-    core_state: AsyncNatsCoreStateStore,
-    namespace_id: ployz_core::ids::NamespaceId,
-    operation_id: ployz_core::ids::OperationId,
-    lock_lost: Arc<AtomicBool>,
-) {
-    let mut interval =
-        tokio::time::interval(Duration::from_millis(NAMESPACE_LOCK_RENEW_INTERVAL_MS));
-    let mut failures = 0_u8;
-    loop {
-        interval.tick().await;
-        match core_state
-            .renew_namespace_lock(
-                &namespace_id,
-                &operation_id,
-                current_unix_ms().unwrap_or(u64::MAX),
-            )
-            .await
-        {
-            Ok(NamespaceLockRenew::Renewed) => failures = 0,
-            Ok(NamespaceLockRenew::Lost) => {
-                lock_lost.store(true, Ordering::Relaxed);
-                return;
-            }
-            Err(_) => {
-                failures = failures.saturating_add(1);
-                if failures >= 3 {
-                    lock_lost.store(true, Ordering::Relaxed);
-                    return;
-                }
-            }
-        }
-    }
-}
-
-fn current_unix_ms() -> Result<u64, DeployOperationRunError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| DeployOperationRunError::Clock {
-            message: error.to_string(),
-        })?
-        .as_millis();
-
-    Ok(u64::try_from(millis).unwrap_or(u64::MAX))
 }
 
 async fn claim_deploy_execution(
@@ -453,10 +340,8 @@ async fn claim_deploy_execution(
         .record_deploy_transition(operation_id, DeployTransition::Planning)
         .await
     {
-        Ok(OperationStatusWrite::Stored { .. }) => Ok(true),
-        Ok(OperationStatusWrite::AlreadySatisfied { .. } | OperationStatusWrite::Stale { .. }) => {
-            Ok(false)
-        }
+        Ok(OperationStatusWrite::Stored) => Ok(true),
+        Ok(OperationStatusWrite::AlreadySatisfied { .. }) => Ok(false),
         Err(RecordOperationEventError::ProjectStatus(
             StatusProjectionError::InvalidTransition { .. }
             | StatusProjectionError::TerminalState { .. },

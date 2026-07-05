@@ -679,7 +679,6 @@ mod tests {
             let nats =
                 ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")])
                     .await;
-            nats.bootstrap_resources().await;
             let client = nats.machine_client(&machine_id("machine_a")).await;
 
             Self {

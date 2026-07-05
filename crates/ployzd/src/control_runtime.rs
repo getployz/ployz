@@ -18,15 +18,13 @@ use crate::nats_authorization::{
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
+use crate::operation_log::{OperationRepository, OperationStoreError};
 use crate::process_support::shutdown_signal;
 use crate::runtime_facts::{
     RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
 };
 use crate::tasks::TaskRegistry;
-use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
-use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::time::Duration;
@@ -83,26 +81,11 @@ pub async fn start_control_runtime_with_client_and_reload(
     if config.machine_bootstrap.join_material.is_none() {
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
     }
-    let plan = BootstrapPlan::for_single_server_client(&client)
-        .map_err(ControlRuntimeError::PlanBootstrap)?;
-    let jetstream = async_nats::jetstream::new(client.clone());
-    ployz_nats::bootstrap::assure_nats_resources(&jetstream, &plan)
-        .await
-        .map_err(ControlRuntimeError::AssureBootstrap)?;
 
-    let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .map_err(ControlRuntimeError::OpenCoreState)?;
-    let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
-        .await
-        .map_err(ControlRuntimeError::OpenOperationStatus)?;
-    let controllers = OperationControllers::new(
-        event_log,
-        status_store,
-        core_state.clone(),
-        config.machine_bootstrap.clone(),
-    );
+    let repository =
+        OperationRepository::open(config.operation_evidence_dir.clone(), client.clone())
+            .map_err(ControlRuntimeError::OpenOperationEvidence)?;
+    let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
     let authorization = NatsAuthorizationRuntime::start(
         config.nats_authorization.authorized_users_file.clone(),
         reload,
@@ -131,7 +114,6 @@ pub async fn start_control_runtime_with_client_and_reload(
         MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone());
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
-        core_state.clone(),
         namespace_intent.clone(),
         controllers.clone(),
         DeployExecutionMachineScope::same_machines(config.deploy_machines.clone()),
@@ -232,11 +214,8 @@ pub enum ControlRuntimeError {
     MissingMachineJoinTemplate,
     MissingDeployMachine,
     ConnectNats(NatsConnectError),
-    PlanBootstrap(BootstrapRefusal),
-    AssureBootstrap(BootstrapAssuranceError),
-    OpenCoreState(CoreStateStoreError),
+    OpenOperationEvidence(OperationStoreError),
     StartFactsCache(RuntimeFactsCacheError),
-    OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
@@ -255,16 +234,14 @@ impl fmt::Display for ControlRuntimeError {
                 write!(formatter, "control runtime requires a deploy machine")
             }
             Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::PlanBootstrap(error) => write!(formatter, "NATS bootstrap refused: {error}"),
-            Self::AssureBootstrap(error) => write!(formatter, "{error}"),
-            Self::OpenCoreState(error) => {
-                write!(formatter, "failed to open core state store: {error}")
+            Self::OpenOperationEvidence(error) => {
+                write!(
+                    formatter,
+                    "failed to open operation evidence store: {error}"
+                )
             }
             Self::StartFactsCache(error) => {
                 write!(formatter, "failed to start runtime facts cache: {error}")
-            }
-            Self::OpenOperationStatus(error) => {
-                write!(formatter, "failed to open operation status store: {error}")
             }
             Self::RenderNatsAuthorization(error) => {
                 write!(formatter, "failed to render NATS authorization: {error}")

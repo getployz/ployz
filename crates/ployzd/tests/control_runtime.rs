@@ -5,8 +5,6 @@
 //! Machine-add credential minting has its own suite in
 //! `machine_add_mint.rs`; the shared fixture lives in `support::control`.
 
-use async_nats::jetstream;
-use async_nats::jetstream::stream::StorageType;
 use futures_util::StreamExt;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
@@ -86,17 +84,17 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .jetstream
         .get_key_value("KV_CORE")
         .await
-        .expect("control runtime created KV_CORE");
+        .expect_err("control runtime does not create KV_CORE");
     nats.connected
         .jetstream
         .get_key_value("KV_OPS")
         .await
-        .expect("control runtime created KV_OPS");
+        .expect_err("control runtime does not create KV_OPS");
     nats.connected
         .jetstream
         .get_stream("PLZ_OPS")
         .await
-        .expect("control runtime created PLZ_OPS");
+        .expect_err("control runtime does not create PLZ_OPS");
     assert!(
         nats.connected
             .jetstream
@@ -699,43 +697,6 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
-}
-
-#[tokio::test]
-async fn control_runtime_refuses_bootstrap_resource_drift() {
-    let nats = TestNats::start().await;
-    nats.connected
-        .jetstream
-        .create_stream(jetstream::stream::Config {
-            name: "PLZ_OPS".to_owned(),
-            subjects: vec!["wrong.>".to_owned()],
-            storage: StorageType::File,
-            ..Default::default()
-        })
-        .await
-        .expect("create drifted PLZ_OPS stream");
-
-    let config = nats.control_config();
-    let error = match ployzd::control_runtime::start_control_runtime_with_client_and_reload(
-        nats.connected.controller.clone(),
-        &config,
-        nats.reload_runner(),
-    )
-    .await
-    {
-        Ok(runtime) => {
-            runtime.shutdown().await.expect("unexpected runtime stops");
-            panic!("control runtime should refuse drift");
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        ployzd::control_runtime::ControlRuntimeError::AssureBootstrap(
-            ployz_nats::bootstrap::BootstrapAssuranceError::RefuseResource { .. }
-        )
-    ));
 }
 
 fn image(value: &str) -> ImageReference {

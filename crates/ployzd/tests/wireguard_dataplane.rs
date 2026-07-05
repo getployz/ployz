@@ -330,7 +330,6 @@ struct TestNats {
 async fn test_nats() -> TestNats {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("core_1")]).await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_client = nats.machine_client(&machine_id("core_1")).await;
 

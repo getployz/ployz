@@ -5,13 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
-use crate::state_key::id_prefixed_state_key;
 use std::net::{IpAddr, SocketAddr};
-
-pub const KV_CORE_BUCKET: &str = "KV_CORE";
-pub const KV_OPS_BUCKET: &str = "KV_OPS";
-
-pub const NAMESPACE_LOCK_STATE_PREFIX: &str = "namespace_locks";
 
 /// Core-owned serving-target intent value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,16 +85,6 @@ pub fn placement_rejection(lifecycle: MachineLifecycle) -> Option<MachineUsabili
     }
 }
 
-/// Persisted `KV_CORE.namespace_locks.*` value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct NamespaceLockState {
-    pub namespace_id: NamespaceId,
-    pub operation_id: OperationId,
-    pub expires_at_unix_ms: u64,
-}
-
 /// Machine-owned public endpoint fact reported with machine facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -128,30 +112,6 @@ pub enum GatewayServingStatus {
     Current,
     LastKnownGood,
     Unavailable,
-}
-
-id_prefixed_state_key! { pub struct NamespaceLockStateKey; prefix: NAMESPACE_LOCK_STATE_PREFIX; fn from_namespace_id(&NamespaceId); }
-
-/// Every remaining KV_CORE write family. `permissions.rs` matches this
-/// exhaustively to build the controller grant, so a new key type cannot ship
-/// without an authority decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CoreStateKeyFamily {
-    NamespaceLock,
-}
-
-impl CoreStateKeyFamily {
-    pub const ALL: [Self; 1] = [Self::NamespaceLock];
-
-    /// The NATS subject pattern spanning every key this family writes. Each
-    /// arm delegates to the key type's own pattern so the grant and the key
-    /// format come from one renderer.
-    #[must_use]
-    pub fn wildcard_pattern(self) -> String {
-        match self {
-            Self::NamespaceLock => NamespaceLockStateKey::wildcard_pattern(),
-        }
-    }
 }
 
 #[cfg(test)]

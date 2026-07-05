@@ -1,13 +1,10 @@
 //! Machine lifecycle operations against real NATS stores: drain and resume
 //! commit operator intent to the on-disk evidence file.
 
-use async_nats::jetstream;
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
 use ployz_core::machine::active_machine_from_completed_add;
 use ployz_core::ops::{MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus};
 use ployz_core::state::MachineLifecycle;
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployzd::controllers::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
@@ -15,6 +12,7 @@ use ployzd::machine_lifecycle_runtime::{
     MachineLifecycleOperationRuntime, machine_lifecycle_intent_from_file,
 };
 use ployzd::machine_roster::MachineRosterStore;
+use ployzd::operation_log::OperationRepository;
 use ployzd::tasks::TaskRegistry;
 
 use ployz_test_support::ids::{machine_id, operation_id};
@@ -25,9 +23,7 @@ mod support;
 #[tokio::test]
 async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
-    let jetstream = nats.jetstream.clone();
-    let controllers = operation_controllers(&jetstream).await;
+    let controllers = operation_controllers(nats.controller.clone()).await;
     let work_dir = tempfile::tempdir().expect("evidence dir");
     let evidence_file = work_dir.path().join("machine-lifecycles.json");
     let machine_roster = MachineRosterStore::new(work_dir.path().join("machine-roster.json"));
@@ -91,9 +87,7 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
 #[tokio::test]
 async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
-    let jetstream = nats.jetstream.clone();
-    let controllers = operation_controllers(&jetstream).await;
+    let controllers = operation_controllers(nats.controller.clone()).await;
     let work_dir = tempfile::tempdir().expect("evidence dir");
     let evidence_file = work_dir.path().join("machine-lifecycles.json");
     let machine_roster = MachineRosterStore::new(work_dir.path().join("machine-roster.json"));
@@ -122,7 +116,6 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     );
     let status = controllers
         .repository()
-        .records()
         .get(&operation_id("op_drain_ghost"))
         .await
         .expect("status reads")
@@ -158,7 +151,6 @@ async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str)
 async fn assert_terminal_completed(controllers: &OperationControllers, operation: &str) {
     let status = controllers
         .repository()
-        .records()
         .get(&operation_id(operation))
         .await
         .expect("status reads")
@@ -169,15 +161,12 @@ async fn assert_terminal_completed(controllers: &OperationControllers, operation
     assert_eq!(state, MachineLifecycleOperationState::Completed);
 }
 
-async fn operation_controllers(jetstream: &jetstream::Context) -> OperationControllers {
+async fn operation_controllers(client: async_nats::Client) -> OperationControllers {
+    let evidence_dir = tempfile::tempdir()
+        .expect("operation evidence temp dir")
+        .keep();
     OperationControllers::new(
-        AsyncNatsOperationEventLog::new(jetstream.clone()),
-        AsyncNatsOperationStatusStore::from_jetstream(jetstream)
-            .await
-            .expect("open operation status store"),
-        AsyncNatsCoreStateStore::from_jetstream(jetstream)
-            .await
-            .expect("open core state store"),
+        OperationRepository::open(evidence_dir, client).expect("open operation repository"),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),

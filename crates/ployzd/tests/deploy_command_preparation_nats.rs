@@ -564,7 +564,6 @@ async fn test_nats() -> TestNats {
         machine_id("core_1"),
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
-    connected.bootstrap_resources().await;
     let intent_dir = tempfile::tempdir().expect("intent dir");
     let namespace_intent_file = intent_dir.path().join("namespace-intent.json");
     let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());

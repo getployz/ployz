@@ -65,10 +65,10 @@ pub enum OperationKind {
     MachineLifecycle,
 }
 
-/// Persisted `KV_OPS.status.*` value.
+/// Operation status projection rebuilt from local operation evidence.
 ///
 /// Changing this shape intentionally breaks operation status recovery unless
-/// paired with KV cleanup or migration.
+/// paired with evidence cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

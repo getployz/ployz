@@ -3,14 +3,14 @@
 //! as evidence text.
 
 use crate::controllers::{MachineAddSubmitCommandError, SubmitCommandError};
-use ployz_core::ids::OperationId;
-use ployz_core::ops::{
-    EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
-};
-use ployz_nats::operations::{
+use crate::operation_log::{
     RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
+};
+use ployz_core::ids::OperationId;
+use ployz_core::ops::{
+    EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_sdk_types::{
     DeploySubmitError, MachineAddError, MachineJoinRedeemError, MachineJoinReportError,
@@ -48,9 +48,6 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
         } => SubmitFailure::ResourceBusy {
             namespace_id,
             owner,
-        },
-        SubmitCommandError::NamespaceLock(source) => SubmitFailure::Unavailable {
-            message: source.to_string(),
         },
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget
@@ -297,12 +294,12 @@ pub(super) fn ops_watch_error_from_replay_error(
 mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
     use crate::controllers::SubmitCommandError;
-    use ployz_core::ids::{NamespaceId, OperationId};
-    use ployz_core::ops::EventSequence;
-    use ployz_nats::operations::{
+    use crate::operation_log::{
         OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
         OperationStatusStoreError, ReplayOperationEventsError, SubmitOperationError,
     };
+    use ployz_core::ids::{NamespaceId, OperationId};
+    use ployz_core::ops::EventSequence;
     use ployz_sdk_types::{DeploySubmitError, OpsWatchError};
 
     #[test]
@@ -320,7 +317,7 @@ mod tests {
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                message: "operation status CAS conflict: contended".to_owned(),
+                message: "operation working-record conflict: contended".to_owned(),
             }
         );
     }
@@ -333,14 +330,14 @@ mod tests {
             deploy_submit_error_from_submit_error(
                 operation_id.clone(),
                 SubmitCommandError::Submit(SubmitOperationError::AppendEvent(
-                    OperationEventLogError::PublishRequest {
-                        message: "publish unavailable".to_owned(),
+                    OperationEventLogError::WriteEvent {
+                        message: "write unavailable".to_owned(),
                     },
                 )),
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                message: "publish operation event: publish unavailable".to_owned(),
+                message: "write operation event: write unavailable".to_owned(),
             }
         );
     }
@@ -407,13 +404,13 @@ mod tests {
         assert_eq!(
             ops_watch_error_from_replay_error(
                 operation_id.clone(),
-                ReplayOperationEventsError::LoadStatus(OperationStatusReadError::GetStatus {
+                ReplayOperationEventsError::LoadStatus(OperationStatusReadError::Read {
                     message: "kv unavailable".to_owned(),
                 }),
             ),
             OpsWatchError::Unavailable {
                 operation_id,
-                message: "get operation status: kv unavailable".to_owned(),
+                message: "operation status read failed: kv unavailable".to_owned(),
             }
         );
     }

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
-    let nats = TestNats::start_without_buckets().await;
+    let nats = TestNats::start().await;
     let runtime =
         start_dns_process_runtime_with_client(nats.dns_client.clone(), Duration::from_millis(10))
             .await
@@ -36,8 +36,7 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
 
 #[tokio::test]
 async fn dns_process_applies_route_changes_on_next_poll() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let runtime =
         start_dns_process_runtime_with_client(nats.dns_client.clone(), Duration::from_millis(10))
@@ -84,7 +83,7 @@ struct TestNats {
 }
 
 impl TestNats {
-    async fn start_without_buckets() -> Self {
+    async fn start() -> Self {
         let connected = ployz_test_support::nats::TestNats::start_with_machines(&[
             machine_id("dns_machine"),
             machine_id("gateway_1"),
@@ -101,10 +100,6 @@ impl TestNats {
             intent_dir,
             namespace_intent,
         }
-    }
-
-    async fn create_buckets(&self) {
-        self.connected.bootstrap_resources().await;
     }
 
     async fn start_intent(&self) -> RunningIntentRuntime {

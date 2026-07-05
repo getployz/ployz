@@ -3,11 +3,11 @@
 //! truth (record-then-activate).
 
 use crate::controllers::OperationControllers;
+use crate::operation_log::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::OperationStatus;
 use ployz_core::subjects::INTENT_CHANGED;
-use ployz_nats::operations::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,
@@ -73,7 +73,6 @@ pub async fn machine_join_report(
     let status = handlers
         .controllers
         .repository()
-        .records()
         .get(&reported.operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
@@ -116,7 +115,6 @@ async fn repair_completed_machine_join_report(
     let Some(status) = handlers
         .controllers
         .repository()
-        .records()
         .get(&operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {

@@ -28,8 +28,7 @@ use ployz_core::ops::{
 };
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::KV_CORE_BUCKET;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_core::subjects::{API_RUNTIME_SNAPSHOT, MachineServiceEndpoint, machine_service};
 use ployz_e2e::bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
 };
@@ -213,7 +212,7 @@ async fn scenario_init_and_activate_first_machine() {
             );
         }
 
-        assert_bootstrap_resources_exist(&core).await;
+        assert_obsolete_bootstrap_resources_absent(&core).await;
     })
     .await;
 
@@ -677,7 +676,7 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
     );
 
     // (c) The edge machine's minted seed is fenced to its own scope: publishing
-    // into the core machine's service scope and writing core KV subjects both
+    // into the core machine's service scope and API command scope both
     // draw server-side permission violations.
     let edge_seed =
         read_file_from_container(&core.docker, &edge.container_id, EDGE_NATS_CREDS_FILE)
@@ -694,7 +693,7 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
     let (edge_client, mut edge_events) = connect_with_event_capture(&edge_machine_config).await;
     for subject in [
         machine_service(&machine_id("core_1"), MachineServiceEndpoint::Inspect),
-        format!("$KV.{KV_CORE_BUCKET}.machines.active.core_1"),
+        API_RUNTIME_SNAPSHOT.to_owned(),
     ] {
         edge_client
             .publish(subject.clone(), "evidence".into())
@@ -750,10 +749,9 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
 // Scenario 1 detail assertions
 // ---------------------------------------------------------------------------
 
-/// Bootstrap evidence on the secured server: the KV buckets and streams the
-/// control plane runs on exist (read with the Controller credential, whose
-/// profile carries `$JS.API.>`).
-async fn assert_bootstrap_resources_exist(core: &CoreContext) {
+/// Bootstrap evidence on the secured server: the removed core/operation KV and
+/// operation stream resources are no longer provisioned.
+async fn assert_obsolete_bootstrap_resources_absent(core: &CoreContext) {
     let client = connect_core_client(
         core,
         NatsPrincipal::Controller,
@@ -763,15 +761,15 @@ async fn assert_bootstrap_resources_exist(core: &CoreContext) {
     .expect("controller principal connects");
     let jetstream = async_nats::jetstream::new(client);
     for bucket in ["KV_CORE", "KV_OPS"] {
-        jetstream
-            .get_key_value(bucket)
-            .await
-            .unwrap_or_else(|error| panic!("bootstrap KV bucket {bucket} missing: {error}"));
+        assert!(
+            jetstream.get_key_value(bucket).await.is_err(),
+            "obsolete KV bucket {bucket} exists"
+        );
     }
     for stream in ["PLZ_OPS"] {
-        jetstream
-            .get_stream(stream)
-            .await
-            .unwrap_or_else(|error| panic!("bootstrap stream {stream} missing: {error}"));
+        assert!(
+            jetstream.get_stream(stream).await.is_err(),
+            "obsolete stream {stream} exists"
+        );
     }
 }

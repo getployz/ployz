@@ -1,6 +1,10 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::operation_log::{
+    OperationStatusReadError, OperationStatusStoreError, StoredMachineAddMintClaim,
+    StoredMachineAddSecretDelivery,
+};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinSecretDelivery;
 use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
@@ -10,10 +14,6 @@ use ployz_core::ops::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
-use ployz_nats::operations::{
-    OperationStatusReadError, OperationStatusStoreError, StoredMachineAddMintClaim,
-    StoredMachineAddSecretDelivery,
-};
 
 use crate::controllers::OperationControllers;
 
@@ -152,7 +152,6 @@ impl MachineCredentialMintRuntime {
         let submissions = self
             .controllers
             .repository()
-            .records()
             .machine_add_submissions()
             .await
             .map_err(MintResumeError::ListSubmissions)?;
@@ -161,7 +160,6 @@ impl MachineCredentialMintRuntime {
             let delivered = self
                 .controllers
                 .repository()
-                .records()
                 .machine_add_secret_delivery(&submission.idempotency_key)
                 .await
                 .map_err(MintResumeError::ReadSecretDelivery)?;
@@ -171,7 +169,6 @@ impl MachineCredentialMintRuntime {
             let Some(status) = self
                 .controllers
                 .repository()
-                .records()
                 .get(&submission.operation_id)
                 .await
                 .map_err(MintResumeError::ReadStatus)?
@@ -203,7 +200,6 @@ impl MachineCredentialMintRuntime {
         match self
             .controllers
             .repository()
-            .records()
             .machine_add_secret_delivery(&request.idempotency_key)
             .await
         {
@@ -227,7 +223,6 @@ impl MachineCredentialMintRuntime {
         let claim = match self
             .controllers
             .repository()
-            .records()
             .put_machine_add_mint_claim_if_absent(&request.idempotency_key, &candidate)
             .await
         {
@@ -307,7 +302,6 @@ impl MachineCredentialMintRuntime {
         if let Err(error) = self
             .controllers
             .repository()
-            .records()
             .put_machine_add_secret_delivery_if_absent(
                 &request.idempotency_key,
                 &StoredMachineAddSecretDelivery {

@@ -81,6 +81,7 @@ impl TestNats {
             machine_id("core_1"),
             self.server().controller_config(),
         )
+        .with_operation_evidence_dir(self.work_dir.path().join("operations"))
         .with_nats_authorization(ControlNatsAuthorizationConfig {
             authorized_users_file: self.server().authorized_users_path().to_path_buf(),
             machine_roster_file: self.work_dir.path().join("machine-roster.json"),
