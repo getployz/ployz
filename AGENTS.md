@@ -29,11 +29,11 @@ that changes cluster truth without an operation owner.
 Use NATS as the control-plane backplane:
 
 - NATS Service API for commands/RPC.
-- JetStream KV for current state.
-- JetStream streams for operation history and durable job triggers.
-- Durable consumers and queue groups for workers/retries.
-- Object Store for larger control-plane artifacts.
-- Message schedules for delayed/recurring work when supported.
+- Plain NATS subjects for facts, intent broadcasts, service calls, and live
+  operation progress.
+- Core-local intent and evidence files for durable control-plane storage.
+- Machine-local fact ledgers for machine-owned truth.
+- RPC artifact push for larger control-plane artifacts.
 - Subject permissions for authority.
 
 Use direct TLS-authenticated NATS for machine control-plane connectivity:
@@ -65,8 +65,8 @@ Expected crate shape:
 
 - `ployz-core`: ids, subjects, state models, operation models, deploy planning,
   security role models.
-- `ployz-nats`: NATS connection, bootstrap, KV, streams, Object Store,
-  services, schedules, permissions.
+- `ployz-nats`: NATS connection, bootstrap, services, subject construction,
+  permissions, and plain-subject transport helpers.
 - `ployzd`: process wiring, service handlers, controllers, machine agent, Docker,
   gateway, DNS, certs.
 - `ployzctl`: CLI client.
@@ -80,9 +80,9 @@ Transport adapters must not import product orchestration convenience types.
 - User-facing commands are NATS services.
 - Machine-local commands are machine-scoped NATS services.
 - Mutating services return operation ids quickly.
-- Workers consume durable operation/job subjects.
-- Queue groups distribute workers.
-- KV locks are only for resource fencing.
+- The core sequencer owns mutating operation admission and operation evidence.
+- Resource fences live in the core sequencer unless a named atomic authority
+  file is explicitly introduced.
 - Subject permissions are the authority boundary.
 - NATS credentials and subject permissions are the authority boundary.
 - No external control-plane I/O may wait forever.
@@ -94,9 +94,12 @@ Transport adapters must not import product orchestration convenience types.
 - Docker is execution reality.
 - Docker labels are recovery evidence.
 - Local machine storage is cache/evidence, not cluster truth.
-- KV stores current state.
-- Streams store event history and job triggers.
-- Object Store stores larger control-plane artifacts.
+- Machine facts are broadcast by machines and backed by machine-local fact
+  ledgers.
+- Core intent is stored in core-local evidence files and broadcast by the core.
+- Operation evidence is core-local and mortal with the core unless an external
+  subscriber such as Cloud stores it.
+- Larger artifacts are pushed by RPC to the machines that use them.
 - Active service state is committed only after successful deploy completion.
 - Pending and failed targets live in operation state/events.
 - Do not infer liveness into stored truth.

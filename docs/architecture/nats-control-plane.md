@@ -35,9 +35,13 @@ the authority boundary for every caller.
 
 ## Rules
 
-- KV is current state.
-- Streams are operation timelines and durable job triggers.
-- Object Store holds larger control-plane artifacts.
+- Plain NATS subjects carry fact broadcasts, intent broadcasts, service calls,
+  and live operation progress.
+- Core-local files hold operator intent and operation evidence.
+- Machine-local fact ledgers hold machine-owned facts.
+- Core-local timers create explicit operations for delayed or recurring work.
+- RPC artifact push moves larger control-plane artifacts to the machines that
+  use them.
 - Docker is execution reality.
 - Local machine storage is cache/evidence.
 - Private overlay transport is deferred from v1.

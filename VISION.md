@@ -61,12 +61,14 @@ CLI / SDK / Cloud
 The control plane uses NATS primitives directly:
 
 - Service API for commands.
-- JetStream KV for current state.
-- JetStream streams for operation history and job triggers.
-- Durable consumers and queue groups for workers.
-- Object Store for deploy bundles, diagnostics, rendered specs, and cert
-  material.
-- Message schedules for delayed or recurring work where available.
+- Plain subjects for fact broadcasts, intent broadcasts, service calls, and
+  live operation progress.
+- Core-local intent and evidence files for durable control-plane storage.
+- Machine-local fact ledgers for machine-owned truth.
+- RPC artifact push for deploy bundles, diagnostics, rendered specs, and cert
+  material that machines need.
+- Core-local timers that create explicit operations for delayed or recurring
+  work.
 - Subject permissions for authority.
 
 Machines reach the control plane through direct TLS-authenticated NATS by
@@ -78,7 +80,7 @@ machine async-nats
   -> nats-server
 ```
 
-Product behavior is expressed in NATS subjects, messages, KV records, streams,
+Product behavior is expressed in NATS subjects, messages, local evidence files,
 and service handlers. Private overlay transport may be revisited later, but it
 is not part of the v1 control-plane connection.
 
@@ -86,11 +88,15 @@ is not part of the v1 control-plane connection.
 
 Docker is execution reality.
 
-NATS KV is current control-plane state.
+Machines broadcast facts from Docker and their local fact ledgers.
 
-NATS streams are durable timelines.
+The core owns operator intent in local evidence files and broadcasts it.
 
-Object Store holds larger control-plane artifacts.
+Operation evidence is local to the core and mortal with it unless an external
+subscriber, such as Cloud, stores durable history.
+
+RPC artifact push moves larger control-plane artifacts to the machines that use
+them.
 
 Each machine keeps a local fact ledger of durable machine-owned facts: route
 attachments applied there, served certificate material, assigned substrate
@@ -123,8 +129,9 @@ Nothing in the cluster runs consensus.
 
 When the core is unreachable, operations fail loudly with typed errors and
 the data plane keeps serving last-known-good state with visible freshness.
-Recovering a lost core is a bounded reindex operation that rebuilds the
-core's view from fresh machine facts, not quorum repair.
+Recovering a lost core is bounded core promotion plus fresh machine fact
+broadcasts; preserved or restored intent evidence is adopted, while lost
+intent must be re-entered rather than inferred.
 
 Loud unavailability always beats silently divergent truth. Ployz does not
 adopt a consensus database, and it does not adopt a partition-tolerant store
@@ -152,9 +159,9 @@ commit active revision
 complete operation
 ```
 
-The hard infrastructure behavior should come from NATS. Ployz should not build
-custom versions of service discovery, job queues, progress streams, current
-state fanout, or permission routing.
+The hard infrastructure behavior should come from NATS subjects, service calls,
+and permissions. Ployz should not build custom versions of service discovery,
+job engines, progress fanout, current state fanout, or permission routing.
 
 Prefer:
 
