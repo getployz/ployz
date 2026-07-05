@@ -1,5 +1,9 @@
 # JetStream Data Audit
 
+Superseded for target architecture by ADR 0028 and ADR 0029. This document
+describes the pre-exit codebase and remains useful only as a deletion map for
+the JetStream exit plan.
+
 This audits the JetStream data stored by the current codebase. It excludes
 plain NATS request/reply subjects unless a JetStream stream or KV bucket stores
 them.

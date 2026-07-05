@@ -113,7 +113,7 @@ A bounded machine-local preparation step that makes a machine eligible for datap
 _Avoid_: Dataplane projection, host prep, substrate update, runtime preparation
 
 **Local Dataplane Material**:
-Machine-owned material required for dataplane projection that remains local to the machine and can be used as reindex evidence. It is not cluster truth, operation evidence, release material, or data that should be copied into JetStream.
+Machine-owned material required for dataplane projection that remains local to the machine and can be used as recovery evidence. It is not cluster truth, operation evidence, release material, or data that should be copied into core intent.
 _Avoid_: Cluster state, operation evidence, release artifact, NATS state
 
 **Dataplane-Capable Machine**:
@@ -197,7 +197,7 @@ An external product workflow owner that submits typed commands to core Ployz and
 _Avoid_: Runtime authority
 
 **Control-Plane Core**:
-The current machine role that hosts the cluster's NATS and JetStream authority surface. The core is disposable and may be replaced by promoting another existing joined machine.
+The current machine role that hosts the cluster's NATS authority surface and core-owned intent/evidence files. The core is disposable and may be replaced by promoting another existing joined machine.
 _Avoid_: Main machine, primary server, Cloud core
 
 **Access Provider**:
@@ -212,9 +212,9 @@ _Avoid_: Org role, project permission, Cloud permission
 Short-lived, single-use access-provider evidence that a gateway can consume to create or refresh a route access session. It is bound to the current route protection and access provider, and is not the requester's long-lived session.
 _Avoid_: Magic link, dashboard token, login token, route session
 
-**Reindex**:
-A future recovery operation that rebuilds JetStream-backed indexes after JetStream loss or reset by collecting fresh facts from machines and role processes, then adopting only unambiguous state.
-_Avoid_: Automatic recovery
+**Core Assurance**:
+A bounded recovery or startup action that adopts preserved or operator-restored core intent evidence, gathers fresh machine facts, and reports missing or ambiguous evidence without inferring lost intent. It replaces the old JetStream reindex model.
+_Avoid_: Reindex, automatic recovery, inferred intent
 
 **State Migration**:
 An explicit operation that moves persisted control-plane state from one schema to another so current runtime code can read it. It does not rewrite operation history or machine Local Authority unless that is part of a separate machine-local migration.
@@ -229,12 +229,12 @@ A local operator action on an existing joined machine that makes that machine th
 _Avoid_: Cloud failover, founder failover, provisioned replacement core
 
 **Local Authority**:
-Durable state outside JetStream, owned by a machine or role process, that can be trusted during future reindex for the specific fact that component owns.
+Durable state outside core intent, owned by a machine or role process, that can be trusted during recovery for the specific fact that component owns.
 _Avoid_: Cache
 
 **Runtime State**:
 The observed condition of a namespace at planning time, including service containers, health, machine availability, volumes, gateway observations, and certificate readiness. Runtime state is an input to deploy planning; it is not desired state or operation history.
-_Avoid_: Live state, JetStream truth
+_Avoid_: Live state, stored truth
 
 **Operation Runtime Snapshot**:
 The bounded runtime view collected for one explicit mutating operation. It uses live machine RPC for current machine-local facts; NATS observations may provide cached evidence or context, but they must not create placement, reuse, or cleanup candidates for that operation. Operation runtime snapshots are not durable cluster truth.
@@ -401,7 +401,7 @@ An explicit operation that resolves a machine endpoint subnet mismatch. Endpoint
 _Avoid_: Startup repair, implicit network cleanup, automatic adoption
 
 **Machine Endpoint Allocation Corruption**:
-A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics or reindex rather than making normal startup scan the whole cluster for impossible allocation states.
+A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics or core assurance rather than making normal startup scan the whole cluster for impossible allocation states.
 _Avoid_: Startup-wide subnet audit, automatic repair
 
 **Force Removed Machine**:
