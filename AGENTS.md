@@ -5,8 +5,8 @@
 - Read `VISION.md` before product or architecture work.
 - Read `CONTEXT.md` before product, architecture, or domain-model work. Use
   its preferred terms in code, docs, tests, CLI copy, and operation/state names.
-- Treat the current repository as a greenfield reset with an empty Rust
-  workspace. Build the new shape deliberately.
+- Read `docs/adr/` before architecture work; ADRs 0028 and 0029 (facts/intent
+  split, JetStream exit) are the current control-plane storage direction.
 
 ## Product Direction
 
@@ -28,13 +28,16 @@ that changes cluster truth without an operation owner.
 
 Use NATS as the control-plane backplane:
 
-- NATS Service API for commands/RPC.
-- Plain NATS subjects for facts, intent broadcasts, service calls, and live
-  operation progress.
+- NATS Service API for commands, machine RPC, and live testimony
+  (facts, bids, status).
+- Plain NATS subjects for fanout only: intent-changed and operation progress.
 - Core-local intent and evidence files for durable control-plane storage.
 - Machine-local fact ledgers for machine-owned truth.
 - RPC artifact push for larger control-plane artifacts.
 - Subject permissions for authority.
+
+The `Where Control-Plane State And Behavior Live` section below is the rule
+that decides which of these any new piece of state or behavior uses.
 
 Use direct TLS-authenticated NATS for machine control-plane connectivity:
 
@@ -83,7 +86,6 @@ Transport adapters must not import product orchestration convenience types.
 - The core sequencer owns mutating operation admission and operation evidence.
 - Resource fences live in the core sequencer unless a named atomic authority
   file is explicitly introduced.
-- Subject permissions are the authority boundary.
 - NATS credentials and subject permissions are the authority boundary.
 - No external control-plane I/O may wait forever.
 - Every long-running task needs shutdown, timeout, retry/backoff, and visible
@@ -127,15 +129,12 @@ Two disciplines keep the split honest:
 
 ## State Rules
 
+Where each kind of state lives is the `Where Control-Plane State And Behavior
+Live` section above. These rules are about truth semantics, not storage:
+
 - Docker is execution reality.
 - Docker labels are recovery evidence.
 - Local machine storage is cache/evidence, not cluster truth.
-- Machine facts are broadcast by machines and backed by machine-local fact
-  ledgers.
-- Core intent is stored in core-local evidence files and broadcast by the core.
-- Operation evidence is core-local and mortal with the core unless an external
-  subscriber such as Cloud stores it.
-- Larger artifacts are pushed by RPC to the machines that use them.
 - Active service state is committed only after successful deploy completion.
 - Pending and failed targets live in operation state/events.
 - Do not infer liveness into stored truth.
@@ -177,8 +176,8 @@ Two disciplines keep the split honest:
 - Match project enums exhaustively; no wildcard arms for convenience.
 - Never `.unwrap()` optional state; use `let Some(x) = opt else { ... }`.
 - Add `#[must_use]` to builder methods returning `Self`.
-- Prefer enums over booleans for modes, phases, policies, outcomes, freshness,
-  and failure classes.
+- Prefer enums over booleans for modes, phases, policies, outcomes, and
+  failure classes.
 - Prefer variant-specific data over optional fields shared across variants.
 - Booleans are only for obvious yes/no facts with no plausible third state.
 - Treat Clippy suppressions as a last resort; fix the shape first.
