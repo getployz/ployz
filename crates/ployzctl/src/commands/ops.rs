@@ -1,6 +1,6 @@
 use clap::Args;
 use ployz_core::ids::OperationId;
-use ployz_core::machine::MachineAddOperationState;
+use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
     CertOperationState, CertRunningStage, DeployOperationState, DeployRunningStage, EventSequence,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineUpdateOperationState, OperationEvent,

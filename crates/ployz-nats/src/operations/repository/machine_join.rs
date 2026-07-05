@@ -1,10 +1,12 @@
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState,
-    MachineAddOperationStateName, MachineName, RawJoinToken, redeem_pending_join_token,
+    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
+    redeem_pending_join_token,
 };
-use ployz_core::ops::{EventSequence, OperationStatus};
+use ployz_core::ops::{
+    EventSequence, MachineAddOperationState, MachineAddOperationStateName, OperationStatus,
+};
 use ployz_core::roles::InstallRolePolicy;
 
 use super::{

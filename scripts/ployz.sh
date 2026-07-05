@@ -226,8 +226,35 @@ manifest_value() {
   env_value "$manifest_file" "$1"
 }
 
+# A caller-supplied manifest URL is the release authority: when no version
+# was given, the manifest's own identity names the installed release so the
+# persisted release evidence and the update hint stay truthful.
+adopt_manifest_identity() {
+  adopted_tag="$(manifest_value PLOYZ_RELEASE_TAG)"
+  if [ -n "$adopted_tag" ] && [ -z "${release_tag:-}" ]; then
+    case "$adopted_tag" in
+      *[!A-Za-z0-9._-]*)
+        echo "ployz release tag contains unsupported characters: $adopted_tag" >&2
+        exit 1
+        ;;
+    esac
+    release_tag="$adopted_tag"
+  fi
+  adopted_version="$(manifest_value PLOYZ_VERSION)"
+  if [ -n "$adopted_version" ] && [ -z "${PLOYZ_VERSION:-}" ]; then
+    case "$adopted_version" in
+      *[!A-Za-z0-9._-]*)
+        echo "ployz version contains unsupported characters: $adopted_version" >&2
+        exit 1
+        ;;
+    esac
+    PLOYZ_VERSION="$adopted_version"
+  fi
+}
+
 verify_release_manifest_identity() {
   if [ "$release_manifest_identity_required" -eq 0 ]; then
+    adopt_manifest_identity
     return 0
   fi
 
@@ -325,4 +352,8 @@ persist_release_env
 
 echo "installed $keeper_bin"
 echo "run: sudo ployz-keeper bootstrap"
-echo "update existing substrate: sudo ployz-keeper substrate-update --version $release_tag"
+if [ -n "${release_tag:-}" ]; then
+  echo "update existing substrate: sudo ployz-keeper substrate-update --version $release_tag"
+else
+  echo "update existing substrate: sudo ployz-keeper substrate-update --version <release-tag>"
+fi
