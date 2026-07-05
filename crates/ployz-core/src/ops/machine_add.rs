@@ -20,19 +20,11 @@ use super::{EventSequence, OperationStatus};
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineAddOperationState {
-    Pending {
-        join_token: IssuedJoinToken,
-    },
-    Joining {
-        joined_at: JoinTokenRedeemedAt,
-    },
+    Pending { join_token: IssuedJoinToken },
+    Joining { joined_at: JoinTokenRedeemedAt },
     Completed,
-    Failed {
-        failure: MachineAddFailure,
-    },
-    Cancelled {
-        reason: CancellationReason,
-    },
+    Failed { failure: MachineAddFailure },
+    Cancelled { reason: CancellationReason },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,10 +241,7 @@ fn transition_allowed(
     }
 }
 
-fn failure_allowed(
-    current: &MachineAddOperationState,
-    failure: &MachineAddFailure,
-) -> bool {
+fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailure) -> bool {
     match (current, failure) {
         (
             MachineAddOperationState::Pending { .. },

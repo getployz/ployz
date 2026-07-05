@@ -56,19 +56,18 @@ pub use ployz_core::machine_runtime::{
     ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation,
 };
-pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
-    MachineAddOperationState, MachineAddOperationStateName,
-    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineLifecycleFailure,
-    MachineLifecycleOperationState, MachineSubstrateVersions, MachineUpdateFailure,
-    MachineUpdateOperationState, NonEmptyTextError, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationKind, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OperatorHint, ReplayedOperationEvent,
-    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort,
-    RoutePortError, RouteTarget, UnusableMachine,
+    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
+    MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
+    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationKind, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RouteTarget, UnusableMachine,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,
@@ -76,6 +75,7 @@ pub use ployz_core::ops::{
     DeployRunningStage,
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineLifecycle,
     MachinePublicIpObservation, RouteBindingState, ServingTargetEntry,

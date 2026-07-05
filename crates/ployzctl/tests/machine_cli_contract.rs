@@ -139,7 +139,7 @@ fn machine_list_renders_machine_summaries() {
 
     assert_eq!(
         output,
-        "machine_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3 substrate ployzd unknown keeper unknown\n"
+        "machine_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
     );
 }
 
@@ -163,7 +163,7 @@ fn machine_inspect_renders_machine_detail() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\nsubstrate ployzd unknown keeper unknown\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
     );
 }
 
@@ -176,7 +176,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\nsubstrate ployzd unknown keeper unknown\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\n"
     );
 }
 
@@ -197,7 +197,6 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
-            substrate_versions: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),

@@ -27,8 +27,8 @@ use crate::runtime::{
 use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
-use ployz_core::ops::MachineAddOperationState;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
+use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationEventReplayRequest, OperationStatus,

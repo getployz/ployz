@@ -248,14 +248,7 @@ pub fn project_operation_event(
             else {
                 return Err(kind_mismatch(current, OperationKind::MachineLifecycle));
             };
-            machine_lifecycle::project_event(
-                id,
-                machine_id,
-                *target,
-                state,
-                event,
-                event_sequence,
-            )
+            machine_lifecycle::project_event(id, machine_id, *target, state, event, event_sequence)
         }
     }
 }

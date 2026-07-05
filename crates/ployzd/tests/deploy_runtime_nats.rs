@@ -17,7 +17,7 @@ use ployz_core::ops::{
     MachineSubstrateVersions, OperationStatus,
 };
 use ployz_core::state::MachineLifecycle;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
@@ -36,14 +36,12 @@ use ployzd::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
+use ployzd::namespace_intent::NamespaceIntentStore;
 use std::time::Duration;
 
 #[tokio::test]
 async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
@@ -56,12 +54,18 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut intent_changed = nats
+        .client
+        .subscribe(INTENT_CHANGED)
+        .await
+        .expect("subscribe intent changes");
 
     let outcome = run_deploy_operation(
         accepted,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
-            core_state: core_state.clone(),
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
             namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
@@ -80,6 +84,10 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         outcome.namespace_revision_id,
         target_namespace_revision_id(1)
     );
+    tokio::time::timeout(Duration::from_secs(1), intent_changed.next())
+        .await
+        .expect("intent change is published")
+        .expect("intent change message exists");
     assert_eq!(runtime.requests.len(), 1);
     let [(run_machine_id, run_request)] = runtime.requests.as_slice() else {
         panic!("expected one container run request");
@@ -87,11 +95,16 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     assert_eq!(*run_machine_id, machine_id("machine_a"));
     assert_eq!(run_request.container.operation_id, operation_id("op_123"));
     assert_eq!(
-        core_state
-            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
-            .await
-            .expect("active state reads")
-            .expect("active state committed")
+        nats.namespace_intent
+            .load()
+            .expect("namespace intent reads")
+            .serving_target_entries
+            .into_iter()
+            .find(|entry| {
+                entry.namespace_id == namespace_id("default")
+                    && entry.service_id == service_id("svc_api")
+            })
+            .expect("serving target committed")
             .namespace_revision_entry_id,
         target_namespace_revision_entry_id()
     );
@@ -114,9 +127,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 #[tokio::test]
 async fn health_failure_records_failed_operation_without_committing_active_state() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
@@ -134,7 +144,8 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         accepted,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
-            core_state: core_state.clone(),
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
             namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
@@ -152,11 +163,11 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
-        core_state
-            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
-            .await
-            .expect("active state reads")
-            .is_none()
+        nats.namespace_intent
+            .load()
+            .expect("namespace intent reads")
+            .serving_target_entries
+            .is_empty()
     );
     assert!(matches!(
         controllers
@@ -180,9 +191,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 #[tokio::test]
 async fn missing_machine_responder_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let facts_reader = facts_reader(&nats.client, Duration::from_millis(200));
     let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
     let controllers = operation_controllers(&nats.jetstream).await;
@@ -199,7 +207,8 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         accepted,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_missing")]),
         DeployOperationStores {
-            core_state: core_state.clone(),
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
             namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
@@ -217,11 +226,11 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
 
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
-        core_state
-            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
-            .await
-            .expect("active state reads")
-            .is_none()
+        nats.namespace_intent
+            .load()
+            .expect("namespace intent reads")
+            .serving_target_entries
+            .is_empty()
     );
     assert!(matches!(
         controllers
@@ -255,9 +264,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         machine_id("machine_slow"),
     )
     .await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(&nats.jetstream).await;
@@ -274,7 +280,8 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         accepted,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_slow")]),
         DeployOperationStores {
-            core_state: core_state.clone(),
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
             namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
@@ -292,11 +299,11 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
 
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
-        core_state
-            .serving_target_entry(&namespace_id("default"), &service_id("svc_api"))
-            .await
-            .expect("active state reads")
-            .is_none()
+        nats.namespace_intent
+            .load()
+            .expect("namespace intent reads")
+            .serving_target_entries
+            .is_empty()
     );
     let status = controllers
         .repository()
@@ -329,9 +336,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
 #[tokio::test]
 async fn fact_load_failure_marks_accepted_operation_failed() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let controllers = operation_controllers(&nats.jetstream).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
@@ -352,7 +356,8 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         accepted,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
-            core_state,
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
             namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
@@ -468,6 +473,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     _intent: RunningIntentRuntime,
+    namespace_intent: NamespaceIntentStore,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -492,9 +498,12 @@ async fn test_nats() -> TestNats {
         .await
         .expect("open core state store");
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
+    let namespace_intent =
+        NamespaceIntentStore::new(lifecycle_dir.path().join("namespace-intent.json"));
     let intent = start_intent_runtime(
         client.clone(),
         core_state,
+        namespace_intent.clone(),
         lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
@@ -504,6 +513,7 @@ async fn test_nats() -> TestNats {
     TestNats {
         _nats: nats,
         _intent: intent,
+        namespace_intent,
         client,
         machine_a,
         machine_slow,

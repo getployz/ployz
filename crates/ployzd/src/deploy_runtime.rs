@@ -12,10 +12,12 @@ use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
 };
+use crate::namespace_intent::NamespaceIntentStore;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
+use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::core_state::{
     AsyncNatsCoreStateStore, CoreStateStoreError, NAMESPACE_LOCK_RENEW_INTERVAL_MS,
     NamespaceLockRenew,
@@ -46,7 +48,8 @@ where
     H: DeployHealthChecker,
 {
     let DeployOperationStores {
-        core_state,
+        intent_change_client,
+        namespace_intent,
         controllers,
         namespace_lock_lost,
     } = stores;
@@ -86,7 +89,11 @@ where
     let command =
         prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
-    let mut namespace_state = LockCheckedCoreState::new(core_state, namespace_lock_lost);
+    let mut namespace_state = LockCheckedNamespaceIntent::new(
+        intent_change_client,
+        namespace_intent,
+        namespace_lock_lost,
+    );
     execute_deploy_operation(
         command,
         DeployExecutionPorts {
@@ -127,7 +134,8 @@ fn fact_load_failure(
 
 #[derive(Debug, Clone)]
 pub struct DeployOperationStores {
-    pub core_state: AsyncNatsCoreStateStore,
+    pub intent_change_client: async_nats::Client,
+    pub namespace_intent: NamespaceIntentStore,
     pub controllers: OperationControllers,
     pub namespace_lock_lost: Arc<AtomicBool>,
 }
@@ -140,15 +148,21 @@ pub struct DeployOperationPorts<'a, D, N, H> {
     pub health_checker: &'a mut H,
 }
 
-struct LockCheckedCoreState {
-    core_state: AsyncNatsCoreStateStore,
+struct LockCheckedNamespaceIntent {
+    intent_change_client: async_nats::Client,
+    namespace_intent: NamespaceIntentStore,
     namespace_lock_lost: Arc<AtomicBool>,
 }
 
-impl LockCheckedCoreState {
-    fn new(core_state: AsyncNatsCoreStateStore, namespace_lock_lost: Arc<AtomicBool>) -> Self {
+impl LockCheckedNamespaceIntent {
+    fn new(
+        intent_change_client: async_nats::Client,
+        namespace_intent: NamespaceIntentStore,
+        namespace_lock_lost: Arc<AtomicBool>,
+    ) -> Self {
         Self {
-            core_state,
+            intent_change_client,
+            namespace_intent,
             namespace_lock_lost,
         }
     }
@@ -164,9 +178,16 @@ impl LockCheckedCoreState {
         }
         Ok(())
     }
+
+    async fn publish_intent_changed(&self) {
+        let _ = self
+            .intent_change_client
+            .publish(INTENT_CHANGED, Vec::new().into())
+            .await;
+    }
 }
 
-impl NamespaceStateCommitter for LockCheckedCoreState {
+impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
     async fn replace_route_binding(
         &mut self,
         state: ployz_core::state::RouteBindingState,
@@ -176,9 +197,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             target: target.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::replace_route_binding(&self.core_state, &state)
+        self.namespace_intent
+            .replace_route_binding(state)
             .await
-            .map_err(|error| NamespaceCommitError::RouteStore { target, error })
+            .map_err(|error| NamespaceCommitError::RouteStore {
+                target,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn remove_route_binding(
@@ -189,9 +216,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             target: target.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::remove_route_binding(&self.core_state, &target)
+        self.namespace_intent
+            .remove_route_binding(&target)
             .await
-            .map_err(|error| NamespaceCommitError::RouteStore { target, error })
+            .map_err(|error| NamespaceCommitError::RouteStore {
+                target,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn replace_serving_target_entry(
@@ -206,9 +239,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             scope: scope.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::replace_serving_target_entry(&self.core_state, &state)
+        self.namespace_intent
+            .replace_serving_target_entry(state)
             .await
-            .map_err(|error| NamespaceCommitError::ServingTargetStore { scope, error })
+            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+                scope,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn remove_serving_target_entry(
@@ -223,13 +262,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             scope: scope.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::remove_serving_target_entry(
-            &self.core_state,
-            &entry.namespace_id,
-            &entry.service_id,
-        )
-        .await
-        .map_err(|error| NamespaceCommitError::ServingTargetStore { scope, error })
+        self.namespace_intent
+            .remove_serving_target_entry(&entry)
+            .await
+            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+                scope,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 }
 
@@ -258,6 +299,7 @@ impl From<CoreStateStoreError> for DeployOperationRunError {
 pub struct DeployOperationRuntime {
     client: async_nats::Client,
     core_state: AsyncNatsCoreStateStore,
+    namespace_intent: NamespaceIntentStore,
     observations: AsyncNatsObservationStore,
     controllers: OperationControllers,
     machine_scope: DeployExecutionMachineScope,
@@ -270,6 +312,7 @@ impl DeployOperationRuntime {
     pub fn new(
         client: async_nats::Client,
         core_state: AsyncNatsCoreStateStore,
+        namespace_intent: NamespaceIntentStore,
         observations: AsyncNatsObservationStore,
         controllers: OperationControllers,
         machine_scope: DeployExecutionMachineScope,
@@ -279,6 +322,7 @@ impl DeployOperationRuntime {
         Self {
             client,
             core_state,
+            namespace_intent,
             observations,
             controllers,
             machine_scope,
@@ -322,7 +366,7 @@ impl DeployOperationRuntime {
         let operation_id = accepted.operation_id.clone();
         let lock_lost = Arc::new(AtomicBool::new(false));
         let renew_core_state = self.core_state.clone();
-        let run_core_state = self.core_state.clone();
+        let namespace_intent = self.namespace_intent.clone();
         let renew_task = tokio::spawn(renew_namespace_lock_until_lost(
             renew_core_state,
             namespace_id.clone(),
@@ -333,7 +377,8 @@ impl DeployOperationRuntime {
             accepted,
             self.machine_scope,
             DeployOperationStores {
-                core_state: run_core_state,
+                intent_change_client: self.client.clone(),
+                namespace_intent,
                 controllers: self.controllers,
                 namespace_lock_lost: lock_lost,
             },

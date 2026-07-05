@@ -9,10 +9,9 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::gateway::{
-    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError,
-    GatewayProjectionInput, GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute,
-    GatewayServingEntry, GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update,
-    project_gateway,
+    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
+    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+    GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,
 };
 use std::net::SocketAddr;
 

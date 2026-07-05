@@ -377,9 +377,9 @@ pub fn validate_fresh_deploy_evidence(
     Err(StatusProjectionError::InvalidTransition {
         operation_id: id.clone(),
         current: Box::new(ProjectionOperationState::Deploy(state.clone())),
-        attempted: Box::new(ProjectionOperationState::Deploy(
-            evidence_required_state(evidence),
-        )),
+        attempted: Box::new(ProjectionOperationState::Deploy(evidence_required_state(
+            evidence,
+        ))),
     })
 }
 
@@ -515,10 +515,7 @@ fn evidence_status(
     }
 }
 
-fn transition_satisfied(
-    current: &DeployOperationState,
-    attempted: &DeployOperationState,
-) -> bool {
+fn transition_satisfied(current: &DeployOperationState, attempted: &DeployOperationState) -> bool {
     match attempted {
         DeployOperationState::Accepted => matches!(current, DeployOperationState::Accepted),
         DeployOperationState::Planning => !matches!(current, DeployOperationState::Accepted),
@@ -571,10 +568,7 @@ fn validate_transition(
     })
 }
 
-fn transition_allowed(
-    current: &DeployOperationState,
-    attempted: &DeployOperationState,
-) -> bool {
+fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperationState) -> bool {
     match (current, attempted) {
         (DeployOperationState::Accepted, DeployOperationState::Planning)
         | (DeployOperationState::Accepted, DeployOperationState::Cancelled { .. })

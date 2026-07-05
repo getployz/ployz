@@ -12,6 +12,7 @@ use ployzd::dns_process_runtime::{
     start_dns_process_runtime_with_client,
 };
 use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
+use ployzd::namespace_intent::NamespaceIntentStore;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -73,6 +74,8 @@ struct TestNats {
     connected: ployz_test_support::nats::TestNats,
     /// The DNS machine's Machine principal: the runtime under test.
     dns_client: async_nats::Client,
+    intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
 }
 
 impl TestNats {
@@ -83,10 +86,15 @@ impl TestNats {
         ])
         .await;
         let dns_client = connected.machine_client(&machine_id("dns_machine")).await;
+        let intent_dir = tempfile::tempdir().expect("intent dir");
+        let namespace_intent =
+            NamespaceIntentStore::new(intent_dir.path().join("namespace-intent.json"));
 
         Self {
             connected,
             dns_client,
+            intent_dir,
+            namespace_intent,
         }
     }
 
@@ -101,10 +109,8 @@ impl TestNats {
         start_intent_runtime(
             self.connected.controller.clone(),
             core_state,
-            tempfile::tempdir()
-                .expect("lifecycle dir")
-                .path()
-                .join("machine-lifecycles.json"),
+            self.namespace_intent.clone(),
+            self.intent_dir.path().join("machine-lifecycles.json"),
             Duration::from_millis(10),
         )
         .await
@@ -113,11 +119,8 @@ impl TestNats {
 
     /// Commits an route binding as the controller principal.
     async fn commit_route(&self, hostname: &str) {
-        let routes = AsyncNatsCoreStateStore::from_jetstream(&self.connected.jetstream)
-            .await
-            .expect("open core state store");
-        routes
-            .replace_route_binding(&RouteBindingState {
+        self.namespace_intent
+            .replace_route_binding(RouteBindingState {
                 namespace_id: namespace_id("default"),
                 target: RouteTarget::new(route_hostname(hostname), route_port(443)),
                 endpoint_port: route_port(8080),

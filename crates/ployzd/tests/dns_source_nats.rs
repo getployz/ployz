@@ -4,7 +4,6 @@ use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::dns::{
@@ -12,25 +11,24 @@ use ployzd::dns::{
 };
 use ployzd::dns_source::load_dns_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::namespace_intent::NamespaceIntentStore;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
 async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_from_nats() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
 
-    routes
-        .replace_route_binding(&active_route_state("api.example.com", 443, 8080))
+    nats.namespace_intent
+        .replace_route_binding(active_route_state("api.example.com", 443, 8080))
         .await
         .expect("api route stores");
-    routes
-        .replace_route_binding(&active_route_state("www.example.com", 443, 8080))
+    nats.namespace_intent
+        .replace_route_binding(active_route_state("www.example.com", 443, 8080))
         .await
         .expect("www route stores");
     let gateway_1 = nats.machine_observations("gateway_1").await;
@@ -111,22 +109,7 @@ async fn dns_source_reports_unreadable_intent_as_unavailable() {
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
-    let core_bucket = nats
-        .jetstream
-        .get_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("open raw core bucket");
-    let payload = serde_json::to_vec(&RouteBindingState {
-        namespace_id: namespace_id("default"),
-        target: route_target("api.example.com", 443),
-        endpoint_port: route_port(8080),
-        service_id: service_id("svc_api"),
-    })
-    .expect("route state encodes");
-    core_bucket
-        .put("routes.deadbeef.443", payload.into())
-        .await
-        .expect("store corrupt route key");
+    std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
 
     let update = load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await;
 
@@ -136,17 +119,14 @@ async fn dns_source_reports_unreadable_intent_as_unavailable() {
 #[tokio::test]
 async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let mut runtime = DnsRuntime::new();
     let hostname = route_hostname("api.example.com");
 
-    routes
-        .replace_route_binding(&active_route_state("api.example.com", 443, 8080))
+    nats.namespace_intent
+        .replace_route_binding(active_route_state("api.example.com", 443, 8080))
         .await
         .expect("route stores");
     let gateway_1 = nats.machine_observations("gateway_1").await;
@@ -195,13 +175,14 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 
 struct TestNats {
     nats: ployz_test_support::nats::TestNats,
-    /// Controller principal: route-state writes and bucket administration.
-    jetstream: jetstream::Context,
     /// The DNS machine's Machine principal: the read side (DNS runs as the
     /// machine's Machine user in v1).
     machine_jetstream: jetstream::Context,
     intent_reader: NatsIntentReader,
     _intent: RunningIntentRuntime,
+    _intent_dir: tempfile::TempDir,
+    namespace_intent: NamespaceIntentStore,
+    namespace_intent_file: PathBuf,
 }
 
 impl TestNats {
@@ -236,9 +217,12 @@ async fn test_nats() -> TestNats {
         .await
         .expect("open core state store");
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
+    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
+    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
     let intent = start_intent_runtime(
         nats.controller.clone(),
         core_state,
+        namespace_intent.clone(),
         lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
@@ -247,11 +231,13 @@ async fn test_nats() -> TestNats {
 
     TestNats {
         nats,
-        jetstream,
         machine_jetstream,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
         _intent: intent,
+        _intent_dir: lifecycle_dir,
+        namespace_intent,
+        namespace_intent_file,
     }
 }
 

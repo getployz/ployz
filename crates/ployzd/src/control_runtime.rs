@@ -11,6 +11,7 @@ use crate::machine_runtime::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
+use crate::namespace_intent::NamespaceIntentStore;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
@@ -113,9 +114,12 @@ pub async fn start_control_runtime_with_client_and_reload(
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
+    let namespace_intent =
+        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         core_state.clone(),
+        namespace_intent.clone(),
         observations.clone(),
         controllers.clone(),
         DeployExecutionMachineScope::same_machines(config.deploy_machines.clone()),
@@ -143,6 +147,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let intent = start_intent_runtime(
         client.clone(),
         core_state.clone(),
+        namespace_intent,
         config.nats_authorization.machine_lifecycles_file.clone(),
         INTENT_PUBLISH_INTERVAL,
     )

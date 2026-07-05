@@ -28,6 +28,8 @@ pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
 pub const PLOYZ_MACHINE_LIFECYCLES_FILE_ENV: &str = "PLOYZ_MACHINE_LIFECYCLES_FILE";
 pub const DEFAULT_MACHINE_LIFECYCLES_FILE: &str = "/var/lib/ployz/machine-lifecycles.json";
+pub const PLOYZ_NAMESPACE_INTENT_FILE_ENV: &str = "PLOYZ_NAMESPACE_INTENT_FILE";
+pub const DEFAULT_NAMESPACE_INTENT_FILE: &str = "/var/lib/ployz/namespace-intent.json";
 pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
 pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
@@ -269,12 +271,14 @@ fn load_control_nats_authorization(
         machine_lifecycles_file: env_value(env, PLOYZ_MACHINE_LIFECYCLES_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.machine_lifecycles_file),
+        namespace_intent_file: env_value(env, PLOYZ_NAMESPACE_INTENT_FILE_ENV)
+            .map(PathBuf::from)
+            .unwrap_or(defaults.namespace_intent_file),
     }
 }
 
 /// Control-owned durable paths: the rendered authority file, the first
-/// machine's locally written `machine.seed`, and the machine lifecycle
-/// evidence file.
+/// machine's locally written `machine.seed`, and core intent evidence files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
@@ -282,6 +286,7 @@ pub struct ControlNatsAuthorizationConfig {
     /// Recovery evidence for machine lifecycle intent (drained machines);
     /// overlaid onto the intent snapshot at read time.
     pub machine_lifecycles_file: PathBuf,
+    pub namespace_intent_file: PathBuf,
 }
 
 impl ControlNatsAuthorizationConfig {
@@ -291,6 +296,7 @@ impl ControlNatsAuthorizationConfig {
             authorized_users_file: PathBuf::from(DEFAULT_NATS_AUTHORIZED_USERS_FILE),
             machine_seed_file: NatsMachineMaterialPaths::in_default_state_dir().machine_seed_file(),
             machine_lifecycles_file: PathBuf::from(DEFAULT_MACHINE_LIFECYCLES_FILE),
+            namespace_intent_file: PathBuf::from(DEFAULT_NAMESPACE_INTENT_FILE),
         }
     }
 }
