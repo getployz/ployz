@@ -527,6 +527,24 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineUpdateResponse",
     },
     {
+      name: "machine.drain",
+      subject: "plz.v1.svc.api.machine.drain",
+      execution: "accepts_operation",
+      request: "MachineLifecycleRequest",
+      success: "AcceptedOperation",
+      error: "MachineLifecycleError",
+      response: "MachineDrainResponse",
+    },
+    {
+      name: "machine.resume",
+      subject: "plz.v1.svc.api.machine.resume",
+      execution: "accepts_operation",
+      request: "MachineLifecycleRequest",
+      success: "AcceptedOperation",
+      error: "MachineLifecycleError",
+      response: "MachineResumeResponse",
+    },
+    {
       name: "machine.list",
       subject: "plz.v1.svc.api.machine.list",
       execution: "query",
@@ -901,7 +919,7 @@ function defaultFixture(): OperationFixture {
       ],
       instances: [],
       projection_sources: {
-        core_state: { read_at_unix_seconds: 1 },
+        intent: { read_at_unix_seconds: 1 },
         observations: { read_at_unix_seconds: 1 },
         revisions: { status: "complete", source_count: 1, missing_link_count: 0 },
         releases: { status: "complete", source_count: 1, missing_link_count: 0 },
