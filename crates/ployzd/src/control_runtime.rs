@@ -151,7 +151,6 @@ pub async fn start_control_runtime_with_client_and_reload(
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update_runtime = MachineUpdateOperationRuntime::new(
         controllers.clone(),
-        core_state.clone(),
         machine_updater,
         machine_update_tasks.clone(),
     );

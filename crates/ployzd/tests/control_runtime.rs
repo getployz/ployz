@@ -32,6 +32,7 @@ use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operation_api_client::OperationApiClientError;
+use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineUpdateError,
@@ -41,8 +42,13 @@ use ployz_sdk_types::{
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::machine_runtime::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
+use ployzd::machine_runtime::protocol::{
+    MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
+    MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
+    MachineSubstrateUpdateRpcResponse,
+};
 use ployzd::machine_runtime::service::start_machine_runtime_service;
+use ployzd::services::machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
@@ -543,6 +549,67 @@ async fn control_runtime_rejects_current_machine_update() {
 }
 
 #[tokio::test]
+async fn control_runtime_records_machine_update_without_mutating_roster_intent() {
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
+        .await
+        .expect("open core state");
+    core_state
+        .replace_active_machine(&active_machine("machine_a"))
+        .await
+        .expect("active machine stores");
+    let target_version = InstallArtifactVersion::try_new("0.2.0").expect("valid install version");
+    let machine_update_service = start_substrate_update_service(
+        nats.machine_client(&machine_id("machine_a")).await,
+        &machine_id("machine_a"),
+        target_version.clone(),
+    )
+    .await;
+
+    let accepted = nats
+        .api()
+        .machine_update(&MachineUpdateRequest {
+            operation_id: operation_id("op_update_machine_a"),
+            machine_id: machine_id("machine_a"),
+            target_version: target_version.clone(),
+        })
+        .await
+        .expect("machine update accepts");
+
+    let status =
+        wait_for_terminal_status(&nats.api(), &accepted.operation_id, Duration::from_secs(4)).await;
+    let OperationStatus::MachineUpdate {
+        state: ployz_core::ops::MachineUpdateOperationState::Completed { reported },
+        ..
+    } = status
+    else {
+        panic!("expected completed machine update, got {status:?}");
+    };
+    assert_eq!(reported.ployzd, Some(target_version));
+    assert_eq!(
+        core_state
+            .active_machine(&machine_id("machine_a"))
+            .await
+            .expect("active machine reads")
+            .expect("machine remains active")
+            .substrate_versions,
+        None,
+        "reported substrate versions are operation evidence and machine facts, not roster intent"
+    );
+
+    machine_update_service
+        .shutdown()
+        .await
+        .expect("machine update service shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn control_runtime_routed_deploy_serves_through_gateway() {
     let nats =
         TestNats::start_with_machines(&[machine_id("machine_a"), machine_id("machine_gateway")])
@@ -751,6 +818,68 @@ async fn start_facts_subscription(
             let _ = client.publish(reply, response.into()).await;
         }
     })
+}
+
+async fn start_substrate_update_service(
+    client: async_nats::Client,
+    machine_id: &MachineId,
+    reported_ployzd: InstallArtifactVersion,
+) -> RunningNatsService {
+    let spec = machine_runtime_service(machine_id);
+    let update_endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject == machine_service(machine_id, MachineServiceEndpoint::SubstrateUpdate)
+        })
+        .expect("substrate.update endpoint exists")
+        .clone();
+    let report_endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject == machine_service(machine_id, MachineServiceEndpoint::SubstrateReport)
+        })
+        .expect("substrate.report endpoint exists")
+        .clone();
+    let machine_id = machine_id.clone();
+    let mut service = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("start substrate update service");
+    service
+        .bind_endpoint(&update_endpoint, {
+            let machine_id = machine_id.clone();
+            move |_request| {
+                let machine_id = machine_id.clone();
+                async move {
+                    NatsServiceResponse::json_ok(&MachineSubstrateUpdateRpcResponse::Ok(
+                        MachineSubstrateUpdateRpcOk { machine_id },
+                    ))
+                }
+            }
+        })
+        .await
+        .expect("bind substrate.update endpoint");
+    service
+        .bind_endpoint(&report_endpoint, move |_request| {
+            let machine_id = machine_id.clone();
+            let reported_ployzd = reported_ployzd.clone();
+            async move {
+                NatsServiceResponse::json_ok(&MachineSubstrateReportRpcResponse::Ok(
+                    MachineSubstrateReportRpcOk {
+                        machine_id,
+                        reported: MachineSubstrateVersions {
+                            ployzd: Some(reported_ployzd),
+                            keeper: None,
+                        },
+                    },
+                ))
+            }
+        })
+        .await
+        .expect("bind substrate.report endpoint");
+    client.flush().await.expect("flush substrate service");
+    service
 }
 
 fn machine_facts(
