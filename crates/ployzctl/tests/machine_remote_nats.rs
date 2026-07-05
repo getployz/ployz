@@ -12,7 +12,8 @@ use ployz_core::install::{
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
 };
-use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
+use ployz_core::machine::MachineAddFailure;
+use ployz_core::ops::MachineAddOperationState;
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::{
     FailureMessage, OperationEventReplayPage, OperationStatus, OperationStatusSnapshot,

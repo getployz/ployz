@@ -1,8 +1,9 @@
 use super::fixtures::*;
-use ployz_core::machine::{
-    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
+use ployz_core::machine::{MachineAddFailure, MachineName};
+use ployz_core::ops::{
+    MachineAddOperationState, MachineAddOperationStateName, OperationEvent,
+    OperationEventReplayRequest, OperationStatus,
 };
-use ployz_core::ops::{OperationEvent, OperationEventReplayRequest, OperationStatus};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
@@ -40,7 +41,7 @@ async fn operation_repository_records_machine_add_joined_transition() {
             machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
-            state: ployz_core::machine::MachineAddOperationState::Joining {
+            state: ployz_core::ops::MachineAddOperationState::Joining {
                 joined_at: joined_at(50),
             },
             last_event_sequence: event_sequence(2),
