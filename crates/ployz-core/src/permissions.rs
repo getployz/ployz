@@ -18,8 +18,8 @@ use crate::state::{
 };
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
-    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_facts,
-    machine_observation_scope, machine_service_scope,
+    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_observation_scope,
+    machine_service_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -123,7 +123,6 @@ impl NatsPermissionProfile {
             NatsPrincipal::Machine { machine_id } => {
                 let mut publish_allow = request_reply_publications(&principal);
                 publish_allow.push(INTENT_GET.to_owned());
-                publish_allow.push(machine_facts(machine_id));
                 publish_allow.push(machine_observation_scope(machine_id));
                 publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
                 publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));

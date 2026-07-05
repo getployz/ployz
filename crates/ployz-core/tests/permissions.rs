@@ -6,7 +6,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
-    INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_facts,
+    INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT,
     machine_observation_scope, machine_service_scope,
 };
 use ployz_test_support::ids::machine_id;
@@ -21,7 +21,6 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
     let mut expected_publish = vec![
         "_INBOX_machine_machine_7.>".to_owned(),
         INTENT_GET.to_owned(),
-        machine_facts(&machine_id),
         machine_observation_scope(&machine_id),
     ];
     expected_publish.extend([

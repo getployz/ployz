@@ -1,9 +1,9 @@
 use std::fmt;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::evidence_file::write_file_atomically;
 use ployz_core::nats_config::{
     AuthorizedUsersParseError, NatsAuthorizedUser, parse_authorized_users, render_authorized_users,
 };
@@ -262,7 +262,12 @@ async fn handle_render_request(
         });
     }
 
-    write_file_atomically(path, &rendered).map_err(prepare)?;
+    write_file_atomically(path, rendered.as_bytes())
+        .map_err(|error| RenderPrepareFailure::WriteFile {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })
+        .map_err(prepare)?;
 
     let reload_outcome = tokio::time::timeout(
         RELOAD_COMMAND_TIMEOUT,
@@ -331,22 +336,4 @@ async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailu
     Err(RenderFailure::Verify {
         message: last_error,
     })
-}
-
-fn write_file_atomically(path: &Path, contents: &str) -> Result<(), RenderPrepareFailure> {
-    let write_error = |message: String| RenderPrepareFailure::WriteFile {
-        path: path.to_path_buf(),
-        message,
-    };
-    let Some(parent) = path.parent() else {
-        return Err(write_error("path has no parent directory".to_owned()));
-    };
-    let mut file =
-        tempfile::NamedTempFile::new_in(parent).map_err(|error| write_error(error.to_string()))?;
-    file.write_all(contents.as_bytes())
-        .and_then(|()| file.as_file().sync_all())
-        .map_err(|error| write_error(error.to_string()))?;
-    file.persist(path)
-        .map(|_| ())
-        .map_err(|error| write_error(error.error.to_string()))
 }

@@ -15,8 +15,9 @@ use crate::machine_runtime::protocol::{
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest,
 };
+use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine_runtime::MachineFactsSnapshot;
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -26,9 +27,11 @@ use ployz_nats::service_runtime::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_FACT_READS: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {
@@ -220,6 +223,61 @@ impl NatsMachineFactsReader {
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
     }
+}
+
+pub(crate) async fn read_available_machine_facts(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> Vec<MachineFactsSnapshot> {
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move { facts_reader.machine_facts(&machine_id).await.ok() })
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+
+    let mut facts = Vec::new();
+    while let Some(Some(snapshot)) = reads.next().await {
+        facts.push(snapshot);
+    }
+    facts.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts
+}
+
+pub(crate) async fn read_available_machine_facts_by_id(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> BTreeMap<MachineId, MachineFactsSnapshot> {
+    read_available_machine_facts(facts_reader, machine_ids)
+        .await
+        .into_iter()
+        .map(|facts| (facts.machine_id().clone(), facts))
+        .collect()
+}
+
+pub(crate) async fn read_machine_container_snapshots(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> (Vec<MachineContainerObservationSnapshot>, Vec<MachineId>) {
+    let mut snapshots = Vec::new();
+    let mut facts_unavailable = Vec::new();
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move {
+            facts_reader
+                .machine_facts(&machine_id)
+                .await
+                .map(|facts| facts.containers().clone())
+                .map_err(|_| machine_id)
+        })
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+
+    while let Some(snapshot) = reads.next().await {
+        match snapshot {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(machine_id) => facts_unavailable.push(machine_id),
+        }
+    }
+
+    snapshots.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts_unavailable.sort();
+    (snapshots, facts_unavailable)
 }
 
 impl NatsMachineSubstrateUpdater {

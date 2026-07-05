@@ -1,8 +1,7 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
 use crate::intent::NatsIntentReader;
-use crate::machine_runtime::client::NatsMachineFactsReader;
-use futures_util::{StreamExt, stream};
+use crate::machine_runtime::client::{NatsMachineFactsReader, read_machine_container_snapshots};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
@@ -13,8 +12,6 @@ use std::time::Duration;
 
 use super::DeployExecutionFacts;
 use super::preparation::namespace_cleanup_candidates;
-
-const MAX_CONCURRENT_FACT_READS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionMachineScope {
@@ -58,8 +55,11 @@ pub async fn load_deploy_execution_facts_from_nats(
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let (observed_machines, facts_unavailable) =
-        load_machine_snapshots(facts_reader, &machine_scope.observed_machine_ids).await;
+    let (observed_machines, facts_unavailable) = read_machine_container_snapshots(
+        facts_reader,
+        machine_scope.observed_machine_ids.iter().cloned(),
+    )
+    .await;
     let answering_machines = sorted_unique_machines(
         observed_machines
             .iter()
@@ -138,34 +138,6 @@ fn load_active_machine_scope(
         },
         unusable,
     )
-}
-
-async fn load_machine_snapshots(
-    facts_reader: &NatsMachineFactsReader,
-    machine_ids: &[MachineId],
-) -> (Vec<MachineContainerObservationSnapshot>, Vec<MachineId>) {
-    let mut snapshots = Vec::new();
-    let mut facts_unavailable = Vec::new();
-    let mut reads = stream::iter(machine_ids.iter().cloned())
-        .map(|machine_id| async move {
-            facts_reader
-                .machine_facts(&machine_id)
-                .await
-                .map(|facts| facts.containers().clone())
-                .map_err(|_| machine_id)
-        })
-        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
-
-    while let Some(snapshot) = reads.next().await {
-        match snapshot {
-            Ok(snapshot) => snapshots.push(snapshot),
-            Err(machine_id) => facts_unavailable.push(machine_id),
-        }
-    }
-
-    snapshots.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
-    facts_unavailable.sort();
-    (snapshots, facts_unavailable)
 }
 
 fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>) -> Vec<MachineId> {

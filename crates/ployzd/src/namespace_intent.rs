@@ -1,9 +1,9 @@
 //! Core-local namespace intent evidence.
 
+use crate::evidence_file::{EvidenceFileError, read_json_or_default, write_json};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,7 +28,7 @@ impl NamespaceIntentStore {
         state: RouteBindingState,
     ) -> Result<(), NamespaceIntentStoreError> {
         let _guard = self.lock.lock().await;
-        let mut evidence = read_evidence(&self.path)?;
+        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
         evidence
             .route_bindings
             .retain(|route| route.target != state.target);
@@ -48,7 +48,7 @@ impl NamespaceIntentStore {
         target: &RouteTarget,
     ) -> Result<(), NamespaceIntentStoreError> {
         let _guard = self.lock.lock().await;
-        let mut evidence = read_evidence(&self.path)?;
+        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
         evidence
             .route_bindings
             .retain(|route| &route.target != target);
@@ -60,7 +60,7 @@ impl NamespaceIntentStore {
         state: ServingTargetEntry,
     ) -> Result<(), NamespaceIntentStoreError> {
         let _guard = self.lock.lock().await;
-        let mut evidence = read_evidence(&self.path)?;
+        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
         evidence.serving_target_entries.retain(|entry| {
             entry.namespace_id != state.namespace_id || entry.service_id != state.service_id
         });
@@ -79,7 +79,7 @@ impl NamespaceIntentStore {
         entry: &ServingTargetEntry,
     ) -> Result<(), NamespaceIntentStoreError> {
         let _guard = self.lock.lock().await;
-        let mut evidence = read_evidence(&self.path)?;
+        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
         evidence.serving_target_entries.retain(|current| {
             current.namespace_id != entry.namespace_id || current.service_id != entry.service_id
         });
@@ -87,7 +87,7 @@ impl NamespaceIntentStore {
     }
 
     pub fn load(&self) -> Result<NamespaceIntentEvidence, NamespaceIntentStoreError> {
-        read_evidence(&self.path)
+        read_json_or_default(&self.path).map_err(NamespaceIntentStoreError::from)
     }
 }
 
@@ -104,7 +104,6 @@ pub enum NamespaceIntentStoreError {
     Decode { message: String },
     Encode { message: String },
     Write { message: String },
-    Commit { message: String },
 }
 
 impl std::fmt::Display for NamespaceIntentStoreError {
@@ -122,56 +121,26 @@ impl std::fmt::Display for NamespaceIntentStoreError {
             Self::Write { message } => {
                 write!(formatter, "write namespace intent evidence: {message}")
             }
-            Self::Commit { message } => {
-                write!(formatter, "commit namespace intent evidence: {message}")
-            }
         }
     }
 }
 
 impl std::error::Error for NamespaceIntentStoreError {}
 
-fn read_evidence(path: &Path) -> Result<NamespaceIntentEvidence, NamespaceIntentStoreError> {
-    let payload = match std::fs::read(path) {
-        Ok(payload) => payload,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(NamespaceIntentEvidence::default());
-        }
-        Err(error) => {
-            return Err(NamespaceIntentStoreError::Read {
-                message: error.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&payload).map_err(|error| NamespaceIntentStoreError::Decode {
-        message: error.to_string(),
-    })
-}
-
 fn write_evidence(
     path: &Path,
     evidence: &NamespaceIntentEvidence,
 ) -> Result<(), NamespaceIntentStoreError> {
-    let payload =
-        serde_json::to_vec_pretty(evidence).map_err(|error| NamespaceIntentStoreError::Encode {
-            message: error.to_string(),
-        })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| NamespaceIntentStoreError::Write {
-            message: error.to_string(),
-        })?;
+    write_json(path, evidence).map_err(NamespaceIntentStoreError::from)
+}
+
+impl From<EvidenceFileError> for NamespaceIntentStoreError {
+    fn from(error: EvidenceFileError) -> Self {
+        match error {
+            EvidenceFileError::Read { message } => Self::Read { message },
+            EvidenceFileError::Decode { message } => Self::Decode { message },
+            EvidenceFileError::Encode { message } => Self::Encode { message },
+            EvidenceFileError::Write { message } => Self::Write { message },
+        }
     }
-    let temp_path = path.with_extension("tmp");
-    let mut file =
-        std::fs::File::create(&temp_path).map_err(|error| NamespaceIntentStoreError::Write {
-            message: error.to_string(),
-        })?;
-    file.write_all(&payload)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| NamespaceIntentStoreError::Write {
-            message: error.to_string(),
-        })?;
-    std::fs::rename(&temp_path, path).map_err(|error| NamespaceIntentStoreError::Commit {
-        message: error.to_string(),
-    })
 }

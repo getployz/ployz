@@ -18,6 +18,7 @@ pub mod dns;
 pub mod dns_process_runtime;
 pub mod dns_source;
 pub mod docker;
+pub(crate) mod evidence_file;
 pub mod gateway;
 pub mod gateway_pingora;
 pub mod gateway_process_runtime;

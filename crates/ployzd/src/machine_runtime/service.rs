@@ -32,11 +32,11 @@ use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, MachineFactsRole, MachineFactsSnapshot,
-    MachineFactsSnapshotError, ManagedContainerObservation,
+    MachineContainerObservationSnapshotError, MachineFactsSnapshot, MachineFactsSnapshotError,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
-use ployz_core::state::{MachineLifecycle, MachinePublicIpObservation};
+use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -330,10 +330,6 @@ where
         machine_id.clone(),
         containers,
         public_ip,
-        vec![MachineFactsRole::Machine],
-        MachineLifecycle::Active,
-        MachineSubstrateVersions::default(),
-        Vec::new(),
         observed_at_unix_ms,
     )
     .map_err(MachineFactsReadError::BuildFactsSnapshot)

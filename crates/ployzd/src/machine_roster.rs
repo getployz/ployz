@@ -1,10 +1,10 @@
 //! Core-local active-machine roster evidence.
 
+use crate::evidence_file::{EvidenceFileError, read_json_or_default, write_json};
 use ployz_core::ids::MachineId;
 use ployz_core::state::ActiveMachineState;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -28,7 +28,7 @@ impl MachineRosterStore {
         state: &ActiveMachineState,
     ) -> Result<(), MachineRosterStoreError> {
         let _guard = self.lock.lock().await;
-        let mut evidence = read_evidence(&self.path)?;
+        let mut evidence: MachineRosterEvidence = read_json_or_default(&self.path)?;
         evidence
             .active_machines
             .retain(|active| active.machine_id != state.machine_id);
@@ -43,14 +43,14 @@ impl MachineRosterStore {
         &self,
         machine_id: &MachineId,
     ) -> Result<Option<ActiveMachineState>, MachineRosterStoreError> {
-        Ok(read_evidence(&self.path)?
+        Ok(read_json_or_default::<MachineRosterEvidence>(&self.path)?
             .active_machines
             .into_iter()
             .find(|active| &active.machine_id == machine_id))
     }
 
     pub fn active_machines(&self) -> Result<Vec<ActiveMachineState>, MachineRosterStoreError> {
-        Ok(read_evidence(&self.path)?.active_machines)
+        Ok(read_json_or_default::<MachineRosterEvidence>(&self.path)?.active_machines)
     }
 }
 
@@ -66,7 +66,6 @@ pub enum MachineRosterStoreError {
     Decode { message: String },
     Encode { message: String },
     Write { message: String },
-    Commit { message: String },
 }
 
 impl std::fmt::Display for MachineRosterStoreError {
@@ -82,56 +81,26 @@ impl std::fmt::Display for MachineRosterStoreError {
             Self::Write { message } => {
                 write!(formatter, "write machine roster evidence: {message}")
             }
-            Self::Commit { message } => {
-                write!(formatter, "commit machine roster evidence: {message}")
-            }
         }
     }
 }
 
 impl std::error::Error for MachineRosterStoreError {}
 
-fn read_evidence(path: &Path) -> Result<MachineRosterEvidence, MachineRosterStoreError> {
-    let payload = match std::fs::read(path) {
-        Ok(payload) => payload,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineRosterEvidence::default());
-        }
-        Err(error) => {
-            return Err(MachineRosterStoreError::Read {
-                message: error.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&payload).map_err(|error| MachineRosterStoreError::Decode {
-        message: error.to_string(),
-    })
-}
-
 fn write_evidence(
-    path: &Path,
+    path: &std::path::Path,
     evidence: &MachineRosterEvidence,
 ) -> Result<(), MachineRosterStoreError> {
-    let payload =
-        serde_json::to_vec_pretty(evidence).map_err(|error| MachineRosterStoreError::Encode {
-            message: error.to_string(),
-        })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| MachineRosterStoreError::Write {
-            message: error.to_string(),
-        })?;
+    write_json(path, evidence).map_err(MachineRosterStoreError::from)
+}
+
+impl From<EvidenceFileError> for MachineRosterStoreError {
+    fn from(error: EvidenceFileError) -> Self {
+        match error {
+            EvidenceFileError::Read { message } => Self::Read { message },
+            EvidenceFileError::Decode { message } => Self::Decode { message },
+            EvidenceFileError::Encode { message } => Self::Encode { message },
+            EvidenceFileError::Write { message } => Self::Write { message },
+        }
     }
-    let temp_path = path.with_extension("tmp");
-    let mut file =
-        std::fs::File::create(&temp_path).map_err(|error| MachineRosterStoreError::Write {
-            message: error.to_string(),
-        })?;
-    file.write_all(&payload)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| MachineRosterStoreError::Write {
-            message: error.to_string(),
-        })?;
-    std::fs::rename(&temp_path, path).map_err(|error| MachineRosterStoreError::Commit {
-        message: error.to_string(),
-    })
 }

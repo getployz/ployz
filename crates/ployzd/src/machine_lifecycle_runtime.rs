@@ -5,6 +5,7 @@
 //! durable authority like the authorized-user set.
 
 use crate::controllers::OperationControllers;
+use crate::evidence_file::{EvidenceFileError, read_json_or_default, write_json};
 use crate::machine_roster::MachineRosterStore;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
@@ -15,7 +16,6 @@ use ployz_nats::operations::AcceptedMachineLifecycleSubmission;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -177,7 +177,8 @@ fn record_lifecycle_evidence(
     machine_id: &MachineId,
     target: MachineLifecycle,
 ) -> Result<bool, FailureMessage> {
-    let mut evidence = read_lifecycle_evidence(path)?;
+    let mut evidence = read_json_or_default::<MachineLifecycleEvidence>(path)
+        .map_err(lifecycle_evidence_failure)?;
     let changed = match target {
         MachineLifecycle::Draining => evidence.draining.insert(machine_id.as_str().to_owned()),
         MachineLifecycle::Active => evidence.draining.remove(machine_id.as_str()),
@@ -186,33 +187,29 @@ fn record_lifecycle_evidence(
         return Ok(false);
     }
 
-    let payload = serde_json::to_vec_pretty(&evidence)
-        .map_err(|error| failure(format!("encode lifecycle evidence: {error}")))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| failure(format!("create lifecycle evidence directory: {error}")))?;
-    }
-    let temp_path = path.with_extension("tmp");
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|error| failure(format!("create lifecycle evidence temp file: {error}")))?;
-    file.write_all(&payload)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| failure(format!("write lifecycle evidence: {error}")))?;
-    std::fs::rename(&temp_path, path)
-        .map_err(|error| failure(format!("commit lifecycle evidence: {error}")))?;
+    write_json(path, &evidence).map_err(lifecycle_evidence_failure)?;
     Ok(true)
 }
 
 fn read_lifecycle_evidence(path: &Path) -> Result<MachineLifecycleEvidence, FailureMessage> {
-    let payload = match std::fs::read(path) {
-        Ok(payload) => payload,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineLifecycleEvidence::default());
+    read_json_or_default(path).map_err(lifecycle_evidence_failure)
+}
+
+fn lifecycle_evidence_failure(error: EvidenceFileError) -> FailureMessage {
+    match error {
+        EvidenceFileError::Read { message } => {
+            failure(format!("read lifecycle evidence: {message}"))
         }
-        Err(error) => return Err(failure(format!("read lifecycle evidence: {error}"))),
-    };
-    serde_json::from_slice(&payload)
-        .map_err(|error| failure(format!("decode lifecycle evidence: {error}")))
+        EvidenceFileError::Decode { message } => {
+            failure(format!("decode lifecycle evidence: {message}"))
+        }
+        EvidenceFileError::Encode { message } => {
+            failure(format!("encode lifecycle evidence: {message}"))
+        }
+        EvidenceFileError::Write { message } => {
+            failure(format!("write lifecycle evidence: {message}"))
+        }
+    }
 }
 
 fn failure(message: String) -> FailureMessage {
