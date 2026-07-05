@@ -132,7 +132,7 @@ fn authorized_users_render_one_block_per_principal_with_own_inbox() {
 }
 
 #[test]
-fn authorized_machine_user_denies_core_kv_writes() {
+fn authorized_machine_user_uses_intent_service_without_core_kv_access() {
     let rendered = render_authorized_users(&[NatsAuthorizedUser {
         principal: NatsPrincipal::Machine {
             machine_id: machine_id("machine_7"),
@@ -140,9 +140,9 @@ fn authorized_machine_user_denies_core_kv_writes() {
         nkey_public: user_public_key('C'),
     }]);
 
-    assert!(rendered.contains("deny: [\"$KV.KV_CORE.>\"]"));
     assert!(rendered.contains("\"_INBOX_machine_machine_7.>\""));
-    assert!(rendered.contains("\"$JS.API.DIRECT.GET.KV_KV_CORE.>\""));
+    assert!(rendered.contains("\"plz.v1.svc.intent.get\""));
+    assert!(!rendered.contains("KV_KV_CORE"));
 }
 
 #[test]

@@ -7,8 +7,8 @@
 //! so a low-privilege credential cannot sniff another client's replies.
 //!
 //! There is no Gateway principal in v1: gateway and DNS processes
-//! authenticate as their machine's `Machine{machine_id}` user, and the Machine
-//! profile carries the read-only route-state subjects they need.
+//! authenticate as their machine's `Machine{machine_id}` user, and read
+//! operator intent through the core intent service.
 
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
@@ -22,7 +22,6 @@ use crate::subjects::{
     machine_observation_scope, machine_service_scope,
 };
 
-const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
@@ -122,20 +121,15 @@ impl NatsPermissionProfile {
         let inbox_scope = inbox_subscribe_scope(&principal);
         match &principal {
             NatsPrincipal::Machine { machine_id } => {
-                // Gateway and DNS authenticate as the machine's Machine user in
-                // v1, so this profile carries their read-only route-state
-                // access (KV_CORE reads stay read-only via the publish deny).
                 let mut publish_allow = request_reply_publications(&principal);
                 publish_allow.push(INTENT_GET.to_owned());
                 publish_allow.push(machine_facts(machine_id));
                 publish_allow.push(machine_observation_scope(machine_id));
                 publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
                 publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
-                publish_allow.extend(kv_read_js_api_subjects(KV_CORE_BUCKET));
                 Self {
                     principal: principal.clone(),
-                    publish: SubjectPermissions::allowing_all(publish_allow)
-                        .with_denied([CORE_KV_WRITES]),
+                    publish: SubjectPermissions::allowing_all(publish_allow),
                     subscribe: machine_service_server_subscriptions(machine_id, inbox_scope),
                     allow_responses: ResponsePermission::Allowed,
                 }
