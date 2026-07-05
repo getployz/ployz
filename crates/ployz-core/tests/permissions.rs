@@ -12,7 +12,7 @@ use ployz_core::subjects::{
 use ployz_test_support::ids::machine_id;
 
 #[test]
-fn machine_credential_renders_own_scopes_and_route_state_reads() {
+fn machine_credential_renders_own_scopes_and_intent_request() {
     let machine_id = machine_id("machine_7");
     let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
         machine_id: machine_id.clone(),
@@ -30,12 +30,8 @@ fn machine_credential_renders_own_scopes_and_route_state_reads() {
         "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
     ]);
     expected_publish.extend(kv_read_js_api_subjects("KV_OBS"));
-    expected_publish.extend(kv_read_js_api_subjects("KV_CORE"));
     assert_eq!(profile.publish.allowed_subjects(), expected_publish);
-    assert_eq!(
-        profile.publish.denied_subjects(),
-        &["$KV.KV_CORE.>".to_owned()]
-    );
+    assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
