@@ -123,6 +123,68 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 }
 
 #[tokio::test]
+async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
+    let nats = test_nats().await;
+    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _placement =
+        start_placement_bid_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let placement_bidder = placement_bidder(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .await
+        .expect("deploy operation accepted");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+
+    run_deploy_operation(
+        accepted,
+        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            controllers: controllers.clone(),
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            placement_bidder: &placement_bidder,
+            intent_reader: &intent_reader,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("deploy completes");
+    controllers
+        .release_deploy_namespace(&namespace_id("default"), &operation_id("op_123"))
+        .await;
+
+    let retry = controllers
+        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .await
+        .expect("completed deploy retry adopts existing operation");
+    assert!(
+        !retry.should_start_execution,
+        "completed retry must not spawn execution"
+    );
+
+    let next = controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_next"),
+            idempotency_key: idempotency_key("idem_deploy_next"),
+            target: deploy_request(1),
+        })
+        .await
+        .expect("next deploy can acquire the namespace");
+    assert!(next.should_start_execution);
+}
+
+#[tokio::test]
 async fn health_failure_records_failed_operation_without_committing_active_state() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
