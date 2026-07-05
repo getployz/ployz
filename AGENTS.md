@@ -89,6 +89,42 @@ Transport adapters must not import product orchestration convenience types.
 - Every long-running task needs shutdown, timeout, retry/backoff, and visible
   health.
 
+## Where Control-Plane State And Behavior Live
+
+Every new piece of state or behavior is exactly one of four kinds. Classify it
+before adding it; the kind fixes where it lives and how it is read. Lean on
+NATS Services for the request/reply kinds — the product already runs on the
+NATS Service API, so this is discipline, not new dependency.
+
+- **Durable operator decision** — roster, lifecycle, route bindings, serving
+  promotions, authorized users. Lives in core-local intent evidence files,
+  served by one `intent.get` service endpoint, invalidated by an
+  `intent.changed` broadcast. Readers call the endpoint and never import the
+  storage behind it: one projection owner, many storage-blind callers, so
+  moving a store is invisible to every reader.
+- **Live machine or role testimony** — facts, placement bids, gateway/DNS
+  status, logs. Answered by a NATS service request at the point of use, never
+  cached into shared truth. A stale answer is one fresh gather away, and a
+  dead responder surfaces as silence, not as inferred state.
+- **Fanout invalidation** — `intent.changed`, operation progress. A plain
+  subject carrying "something changed / here is the latest," never authority.
+  A missed message is repaired by the periodic rebroadcast or a re-list on
+  reconnect, never by trusting the delta.
+- **Durable operation evidence** — operation records and events. The
+  sequencer's local append-only log, mortal with the core; an external
+  subscriber such as Cloud keeps durable history if it wants it.
+
+Two disciplines keep the split honest:
+
+- **A gather is driven by a known set, never by who answers.** Request-reply
+  reports only responders, so take the candidate set from intent; silence is
+  `intent − responders`, recorded as typed evidence, never read as "none." A
+  service's own PING/INFO/STATS discovery is observability, never membership
+  or truth.
+- **No NATS Service is authoritative by existing.** A responder answering does
+  not make it a member, and a service call never stores state or orders work
+  durably — those are intent files, the sequencer, and the evidence log.
+
 ## State Rules
 
 - Docker is execution reality.
