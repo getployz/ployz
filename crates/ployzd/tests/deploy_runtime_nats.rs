@@ -1,10 +1,7 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 #[allow(dead_code)]
 #[path = "deploy_operation/fixtures.rs"]
 mod fixtures;
 
-use async_nats::jetstream;
 use fixtures::*;
 use futures_util::StreamExt;
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
@@ -14,8 +11,6 @@ use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use ployzd::controllers::{
@@ -33,6 +28,7 @@ use ployzd::machine_runtime::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
 use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::operation_log::OperationRepository;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -42,7 +38,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request))
@@ -64,7 +60,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
-            namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
@@ -108,7 +103,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     assert!(matches!(
         controllers
             .repository()
-            .records()
             .get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
@@ -127,7 +121,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request))
@@ -144,7 +138,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
-            namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
@@ -168,7 +161,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     );
     assert!(matches!(
         controllers
-            .repository().records().get(&operation_id("op_123"))
+            .repository().get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
@@ -190,7 +183,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     let nats = test_nats().await;
     let facts_reader = facts_reader(&nats.client, Duration::from_millis(200));
     let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request(1)))
         .await
@@ -207,7 +200,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
-            namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
@@ -231,7 +223,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     );
     assert!(matches!(
         controllers
-            .repository().records().get(&operation_id("op_123"))
+            .repository().get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
@@ -263,7 +255,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request(1)))
         .await
@@ -280,7 +272,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
-            namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
@@ -304,7 +295,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     );
     let status = controllers
         .repository()
-        .records()
         .get(&operation_id("op_123"))
         .await
         .expect("operation status reads");
@@ -333,7 +323,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
 #[tokio::test]
 async fn fact_load_failure_marks_accepted_operation_failed() {
     let nats = test_nats().await;
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request))
@@ -354,7 +344,6 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             controllers: controllers.clone(),
-            namespace_lock_lost: Arc::new(AtomicBool::new(false)),
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
@@ -378,7 +367,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     assert!(runtime.requests.is_empty());
     assert!(matches!(
         controllers
-            .repository().records().get(&operation_id("op_123"))
+            .repository().get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
@@ -400,7 +389,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
 #[tokio::test]
 async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation() {
     let nats = test_nats().await;
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     controllers
         .submit_deploy(DeploySubmitCommand {
             operation_id: operation_id("op_first"),
@@ -430,7 +419,6 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
     assert!(
         controllers
             .repository()
-            .records()
             .get(&operation_id("op_second"))
             .await
             .expect("operation status reads")
@@ -441,7 +429,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
 #[tokio::test]
 async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation() {
     let nats = test_nats().await;
-    let controllers = operation_controllers(&nats.jetstream).await;
+    let controllers = operation_controllers(nats.client.clone()).await;
     let first = controllers
         .submit_deploy(DeploySubmitCommand {
             operation_id: operation_id("op_first"),
@@ -477,7 +465,6 @@ struct TestNats {
     machine_a: async_nats::Client,
     /// Machine principal for the stubbed slow machine service.
     machine_slow: async_nats::Client,
-    jetstream: jetstream::Context,
 }
 
 async fn test_nats() -> TestNats {
@@ -486,11 +473,9 @@ async fn test_nats() -> TestNats {
         machine_id("machine_slow"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
-    let jetstream = nats.jetstream.clone();
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
     let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
@@ -514,7 +499,6 @@ async fn test_nats() -> TestNats {
         client,
         machine_a,
         machine_slow,
-        jetstream,
     }
 }
 
@@ -617,15 +601,12 @@ async fn start_endpoint_network_subscription(
     })
 }
 
-async fn operation_controllers(jetstream: &jetstream::Context) -> OperationControllers {
+async fn operation_controllers(client: async_nats::Client) -> OperationControllers {
+    let evidence_dir = tempfile::tempdir()
+        .expect("operation evidence temp dir")
+        .keep();
     OperationControllers::new(
-        AsyncNatsOperationEventLog::new(jetstream.clone()),
-        AsyncNatsOperationStatusStore::from_jetstream(jetstream)
-            .await
-            .expect("open operation status store"),
-        AsyncNatsCoreStateStore::from_jetstream(jetstream)
-            .await
-            .expect("open core state store"),
+        OperationRepository::open(evidence_dir, client).expect("open operation repository"),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),

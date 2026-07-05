@@ -1,3 +1,4 @@
+use crate::operation_log::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{
@@ -7,7 +8,6 @@ use ployz_core::ops::{
     ControlPlaneCommitScope, DeployOperationFailure, FailureMessage, HealthCheckFailure,
     OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
 };
-use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use std::future::Future;
 use std::time::Duration;
 

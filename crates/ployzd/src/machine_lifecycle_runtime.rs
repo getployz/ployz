@@ -7,12 +7,12 @@
 use crate::controllers::OperationControllers;
 use crate::evidence_file::{EvidenceFileError, read_json_or_default, write_json};
 use crate::machine_roster::MachineRosterStore;
+use crate::operation_log::AcceptedMachineLifecycleSubmission;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
 use ployz_core::ops::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::INTENT_CHANGED;
-use ployz_nats::operations::AcceptedMachineLifecycleSubmission;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

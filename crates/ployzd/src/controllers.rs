@@ -1,5 +1,11 @@
 //! Controller wiring for operation execution.
 
+use crate::operation_log::{
+    AcceptedDeploySubmission, AcceptedMachineAddSubmission, DeployOperationSubmission,
+    MachineAddOperationSubmission, MachineJoinRedemption, MachineLifecycleOperationSubmission,
+    MachineUpdateOperationSubmission, OperationRepository, OperationStatusReadError,
+    RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
+};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::install::{
@@ -11,15 +17,10 @@ use ployz_core::machine::{
 };
 use ployz_core::ops::{OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::InstallRolePolicy;
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError, NamespaceLockAcquire};
-use ployz_nats::operations::{
-    AcceptedDeploySubmission, AcceptedMachineAddSubmission, AsyncNatsOperationEventLog,
-    AsyncNatsOperationRepository, AsyncNatsOperationStatusStore, DeployOperationSubmission,
-    MachineAddOperationSubmission, MachineJoinRedemption, MachineUpdateOperationSubmission,
-    OperationStatusReadError, RedeemMachineJoinTokenError, SubmitMachineAddError,
-    SubmitOperationError,
-};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
 
@@ -119,22 +120,20 @@ impl MachineAddBootstrapConfig {
 
 #[derive(Debug, Clone)]
 pub struct OperationControllers {
-    repository: AsyncNatsOperationRepository,
-    core_state: AsyncNatsCoreStateStore,
+    repository: OperationRepository,
+    namespace_locks: Arc<Mutex<BTreeMap<NamespaceId, OperationId>>>,
     machine_bootstrap: MachineAddBootstrapConfig,
 }
 
 impl OperationControllers {
     #[must_use]
     pub fn new(
-        event_log: AsyncNatsOperationEventLog,
-        status_store: AsyncNatsOperationStatusStore,
-        core_state: AsyncNatsCoreStateStore,
+        repository: OperationRepository,
         machine_bootstrap: MachineAddBootstrapConfig,
     ) -> Self {
         Self {
-            repository: AsyncNatsOperationRepository::new(event_log, status_store),
-            core_state,
+            repository,
+            namespace_locks: Arc::default(),
             machine_bootstrap,
         }
     }
@@ -157,18 +156,12 @@ impl OperationControllers {
         let operation_id = claimed.operation_id.clone();
         let target = claimed.target.clone();
         let namespace_id = target.namespace_id.clone();
-        match self
-            .core_state
-            .acquire_namespace_lock(&namespace_id, &operation_id, current_unix_ms()?)
-            .await?
-        {
-            NamespaceLockAcquire::Acquired => {}
-            NamespaceLockAcquire::Busy { owner } => {
-                return Err(SubmitCommandError::NamespaceBusy {
-                    namespace_id,
-                    owner,
-                });
-            }
+        let claim = self.claim_namespace(&namespace_id, &operation_id).await;
+        if let NamespaceClaim::Busy { owner } = claim {
+            return Err(SubmitCommandError::NamespaceBusy {
+                namespace_id,
+                owner,
+            });
         }
 
         let submitted = self.repository.submit_deploy(claimed).await;
@@ -176,10 +169,9 @@ impl OperationControllers {
         match submitted {
             Ok(accepted) => Ok(accepted),
             Err(error) => {
-                let _ = self
-                    .core_state
-                    .release_namespace_lock(&namespace_id, &operation_id)
-                    .await;
+                if matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &operation_id).await;
+                }
                 Err(SubmitCommandError::Submit(error))
             }
         }
@@ -207,7 +199,7 @@ impl OperationControllers {
     pub async fn submit_machine_update(
         &self,
         command: MachineUpdateSubmitCommand,
-    ) -> Result<ployz_nats::operations::AcceptedMachineUpdateSubmission, SubmitCommandError> {
+    ) -> Result<crate::operation_log::AcceptedMachineUpdateSubmission, SubmitCommandError> {
         Ok(self
             .repository
             .submit_machine_update(MachineUpdateOperationSubmission {
@@ -221,17 +213,14 @@ impl OperationControllers {
     pub async fn submit_machine_lifecycle(
         &self,
         command: MachineLifecycleSubmitCommand,
-    ) -> Result<ployz_nats::operations::AcceptedMachineLifecycleSubmission, SubmitCommandError>
-    {
+    ) -> Result<crate::operation_log::AcceptedMachineLifecycleSubmission, SubmitCommandError> {
         Ok(self
             .repository
-            .submit_machine_lifecycle(
-                ployz_nats::operations::MachineLifecycleOperationSubmission {
-                    operation_id: command.operation_id,
-                    machine_id: command.machine_id,
-                    target: command.target,
-                },
-            )
+            .submit_machine_lifecycle(MachineLifecycleOperationSubmission {
+                operation_id: command.operation_id,
+                machine_id: command.machine_id,
+                target: command.target,
+            })
             .await?)
     }
 
@@ -247,8 +236,16 @@ impl OperationControllers {
     /// The repository this controller submits into. Record/read paths that
     /// need no command-side join-token policy go straight here.
     #[must_use]
-    pub const fn repository(&self) -> &AsyncNatsOperationRepository {
+    pub const fn repository(&self) -> &OperationRepository {
         &self.repository
+    }
+
+    pub async fn release_deploy_namespace(
+        &self,
+        namespace_id: &NamespaceId,
+        operation_id: &OperationId,
+    ) {
+        self.release_namespace(namespace_id, operation_id).await;
     }
 
     pub fn issue_machine_add_bootstrap_material(
@@ -301,8 +298,40 @@ impl OperationControllers {
     pub async fn operation_statuses(
         &self,
     ) -> Result<Vec<OperationStatus>, OperationStatusReadError> {
-        self.repository.records().list().await
+        self.repository.operation_statuses().await
     }
+
+    async fn claim_namespace(
+        &self,
+        namespace_id: &NamespaceId,
+        operation_id: &OperationId,
+    ) -> NamespaceClaim {
+        let mut locks = self.namespace_locks.lock().await;
+        match locks.get(namespace_id) {
+            Some(owner) if owner == operation_id => NamespaceClaim::AlreadyOwned,
+            Some(owner) => NamespaceClaim::Busy {
+                owner: owner.clone(),
+            },
+            None => {
+                locks.insert(namespace_id.clone(), operation_id.clone());
+                NamespaceClaim::Acquired
+            }
+        }
+    }
+
+    async fn release_namespace(&self, namespace_id: &NamespaceId, operation_id: &OperationId) {
+        let mut locks = self.namespace_locks.lock().await;
+        if locks.get(namespace_id) == Some(operation_id) {
+            locks.remove(namespace_id);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NamespaceClaim {
+    Acquired,
+    AlreadyOwned,
+    Busy { owner: OperationId },
 }
 
 /// How a submit command fails at the controller.
@@ -315,7 +344,6 @@ pub enum SubmitCommandError {
         namespace_id: NamespaceId,
         owner: OperationId,
     },
-    NamespaceLock(CoreStateStoreError),
     Submit(SubmitOperationError),
 }
 
@@ -325,11 +353,6 @@ impl From<SubmitOperationError> for SubmitCommandError {
     }
 }
 
-impl From<CoreStateStoreError> for SubmitCommandError {
-    fn from(value: CoreStateStoreError) -> Self {
-        Self::NamespaceLock(value)
-    }
-}
 /// Machine-add extends the shared submit command failure with join-token
 /// validation.
 #[derive(Debug)]
@@ -358,17 +381,6 @@ fn current_unix_seconds() -> Result<u64, String> {
         .as_secs();
 
     Ok(seconds)
-}
-
-fn current_unix_ms() -> Result<u64, SubmitCommandError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| SubmitCommandError::Clock {
-            message: error.to_string(),
-        })?
-        .as_millis();
-
-    Ok(u64::try_from(millis).unwrap_or(u64::MAX))
 }
 
 fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenError> {

@@ -547,7 +547,6 @@ async fn test_nats() -> TestNats {
         machine_id("machine_b"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_b = nats.machine_client(&machine_id("machine_b")).await;

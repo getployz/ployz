@@ -34,6 +34,7 @@ pub mod namespace_intent;
 pub mod nats_authorization;
 pub mod nats_process;
 pub mod operation_api;
+pub mod operation_log;
 pub mod process_support;
 pub mod role;
 pub mod runtime_facts;

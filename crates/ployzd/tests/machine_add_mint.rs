@@ -10,11 +10,9 @@ use ployz_core::machine::MachineAddFailure;
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
-use ployz_core::permissions::core_state_kv_write_scope;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::CoreStateKeyFamily;
-use ployz_core::subjects::OperationApiEndpoint;
+use ployz_core::subjects::{OPS_STREAM_SUBJECT, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
@@ -239,17 +237,17 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
 async fn startup_renders_current_authorization_permissions() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
-    let namespace_lock_scope = core_state_kv_write_scope(CoreStateKeyFamily::NamespaceLock);
+    let progress_scope = OPS_STREAM_SUBJECT;
     let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     assert!(
-        existing.contains(&namespace_lock_scope),
+        existing.contains(progress_scope),
         "fixture starts with current controller permissions"
     );
-    let stale = existing.replace(&format!("\"{namespace_lock_scope}\", "), "");
+    let stale = existing.replace(progress_scope, "plz.v1.oldprogress");
     assert!(
-        !stale.contains(&namespace_lock_scope),
-        "stale fixture removes the namespace-lock publish scope"
+        !stale.contains(progress_scope),
+        "stale fixture removes the operation progress publish scope"
     );
     std::fs::write(nats.server().authorized_users_path(), stale)
         .expect("stale authority file writes");
@@ -263,7 +261,7 @@ async fn startup_renders_current_authorization_permissions() {
     let repaired = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("repaired authorized-users file is readable");
     assert!(
-        repaired.contains(&namespace_lock_scope),
+        repaired.contains(progress_scope),
         "startup render restores the current controller permission profile"
     );
     assert_eq!(

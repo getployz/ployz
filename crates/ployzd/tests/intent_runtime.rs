@@ -12,7 +12,6 @@ use std::time::Duration;
 #[tokio::test]
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
     let machine_roster = temp_machine_roster();
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -59,7 +58,6 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
 #[tokio::test]
 async fn intent_reader_gets_current_intent() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
         temp_machine_roster(),
@@ -87,7 +85,6 @@ async fn intent_reader_gets_current_intent() {
 #[tokio::test]
 async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
     let machine_roster = temp_machine_roster();
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -128,7 +125,6 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
 #[tokio::test]
 async fn intent_reader_gets_namespace_intent_from_file() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    nats.bootstrap_resources().await;
     let namespace_intent = temp_namespace_intent();
     namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {

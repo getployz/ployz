@@ -23,31 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
-async fn gateway_process_reports_unavailable_before_projection_sources_exist() {
-    let nats = TestNats::start_without_buckets().await;
-    let runtime = start_gateway_process_runtime_with_client(
-        nats.machine_client.clone(),
-        Duration::from_millis(10),
-        socket_addr("127.0.0.1:0"),
-        machine_id("machine_7"),
-    )
-    .await
-    .expect("gateway runtime starts before buckets exist");
-
-    wait_until(Duration::from_secs(2), || {
-        matches!(
-            runtime.health().last_attempt,
-            Some(GatewayProcessAttempt::Failed { .. })
-        )
-    })
-    .await;
-
-    runtime.shutdown().await;
-}
-
-#[tokio::test]
 async fn gateway_process_reports_http_bind_failure_before_returning() {
-    let nats = TestNats::start_without_buckets().await;
+    let nats = TestNats::start().await;
     let occupied_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind occupied listener");
@@ -74,8 +51,7 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
 
 #[tokio::test]
 async fn gateway_process_serves_http_from_nats_projection() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_gateway_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let upstream = TestUpstream::start().await;
     let runtime = start_gateway_process_runtime_with_client(
@@ -141,8 +117,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
 
 #[tokio::test]
 async fn gateway_process_applies_route_changes_on_next_poll() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_gateway_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
@@ -196,8 +171,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
 
 #[tokio::test]
 async fn gateway_process_records_http_proxy_failures() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_gateway_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
@@ -277,8 +251,8 @@ fn gateway_serves_route(
 }
 
 struct TestNats {
-    connected: ployz_test_support::nats::TestNats,
-    /// Controller principal: bucket administration and route-state writes.
+    _connected: ployz_test_support::nats::TestNats,
+    /// Controller principal: route-state writes and intent service.
     client: async_nats::Client,
     /// Machine principal: the gateway process side (gateway runs as the
     /// machine's Machine user in v1) and fact writes.
@@ -288,7 +262,7 @@ struct TestNats {
 }
 
 impl TestNats {
-    async fn start_without_buckets() -> Self {
+    async fn start() -> Self {
         let connected =
             ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")])
                 .await;
@@ -299,16 +273,12 @@ impl TestNats {
             NamespaceIntentStore::new(intent_dir.path().join("namespace-intent.json"));
 
         Self {
-            connected,
+            _connected: connected,
             client,
             machine_client,
             intent_dir,
             namespace_intent,
         }
-    }
-
-    async fn create_gateway_buckets(&self) {
-        self.connected.bootstrap_resources().await;
     }
 
     async fn start_intent(&self) -> RunningIntentRuntime {

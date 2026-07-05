@@ -21,7 +21,6 @@ use ployz_core::nats_config::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
-use ployz_nats::bootstrap::{BootstrapPlan, assure_nats_resources};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
@@ -305,16 +304,6 @@ impl TestNats {
             user,
             jetstream,
         }
-    }
-
-    /// Assures the production single-core resource manifest on the fixture
-    /// server — no parallel test-only resource recipes.
-    pub async fn bootstrap_resources(&self) {
-        let plan = BootstrapPlan::for_single_server_client(&self.controller)
-            .expect("bootstrap plan builds");
-        assure_nats_resources(&self.jetstream, &plan)
-            .await
-            .expect("nats resources bootstrap");
     }
 
     /// The operator-facing operation API client (User principal).
