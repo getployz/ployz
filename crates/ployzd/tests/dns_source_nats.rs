@@ -8,11 +8,12 @@ use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::dns::{
-    DnsAnswer, DnsProjectionError, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState,
-    project_dns,
+    DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, project_dns,
 };
 use ployzd::dns_source::load_dns_projection_update_from_nats;
+use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Duration;
 
 #[tokio::test]
 async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_from_nats() {
@@ -77,7 +78,7 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .await
         .expect("non-gateway public ip stores");
 
-    let update = load_dns_projection_update_from_nats(&routes, &observations).await;
+    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await;
     let DnsProjectionUpdate::SourceAvailable(input) = update else {
         panic!("DNS source should be available, got {update:?}");
     };
@@ -105,11 +106,8 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
 }
 
 #[tokio::test]
-async fn dns_source_reports_invalid_route_state_as_invalid_source() {
+async fn dns_source_reports_unreadable_intent_as_unavailable() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
@@ -130,13 +128,9 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
         .await
         .expect("store corrupt route key");
 
-    let update = load_dns_projection_update_from_nats(&routes, &observations).await;
+    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await;
 
-    let DnsProjectionUpdate::SourceInvalid(DnsProjectionError::InvalidSource { message }) = update
-    else {
-        panic!("DNS source should be invalid, got {update:?}");
-    };
-    assert!(message.contains("route binding state key"));
+    assert_eq!(update, DnsProjectionUpdate::SourceUnavailable);
 }
 
 #[tokio::test]
@@ -169,8 +163,9 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         .await
         .expect("public ip stores");
 
-    let first_tick = runtime
-        .apply_source_update(load_dns_projection_update_from_nats(&routes, &observations).await);
+    let first_tick = runtime.apply_source_update(
+        load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await,
+    );
     assert_eq!(
         first_tick.serving,
         DnsServingState::Current { record_count: 1 }
@@ -184,8 +179,9 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 20]))
         .await
         .expect("updated public ip stores");
-    let second_tick = runtime
-        .apply_source_update(load_dns_projection_update_from_nats(&routes, &observations).await);
+    let second_tick = runtime.apply_source_update(
+        load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await,
+    );
 
     assert_eq!(
         second_tick.serving,
@@ -204,6 +200,8 @@ struct TestNats {
     /// The DNS machine's Machine principal: the read side (DNS runs as the
     /// machine's Machine user in v1).
     machine_jetstream: jetstream::Context,
+    intent_reader: NatsIntentReader,
+    _intent: RunningIntentRuntime,
 }
 
 impl TestNats {
@@ -231,13 +229,23 @@ async fn test_nats() -> TestNats {
     ])
     .await;
     nats.bootstrap_resources().await;
-    let machine_jetstream = jetstream::new(nats.machine_client(&dns_machine).await);
+    let machine_client = nats.machine_client(&dns_machine).await;
+    let machine_jetstream = jetstream::new(machine_client.clone());
     let jetstream = nats.jetstream.clone();
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    let intent = start_intent_runtime(nats.controller.clone(), core_state, Duration::from_secs(30))
+        .await
+        .expect("intent runtime starts");
 
     TestNats {
         nats,
         jetstream,
         machine_jetstream,
+        intent_reader: NatsIntentReader::new(machine_client)
+            .with_request_timeout(Duration::from_secs(1)),
+        _intent: intent,
     }
 }
 
