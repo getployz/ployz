@@ -80,28 +80,6 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 
     assert!(accepted.operation_id.as_str().starts_with("op_deploy_"));
     assert_eq!(accepted.start_sequence, event_sequence(1));
-    nats.connected
-        .jetstream
-        .get_key_value("KV_CORE")
-        .await
-        .expect_err("control runtime does not create KV_CORE");
-    nats.connected
-        .jetstream
-        .get_key_value("KV_OPS")
-        .await
-        .expect_err("control runtime does not create KV_OPS");
-    nats.connected
-        .jetstream
-        .get_stream("PLZ_OPS")
-        .await
-        .expect_err("control runtime does not create PLZ_OPS");
-    assert!(
-        nats.connected
-            .jetstream
-            .get_object_store("PLZ_BACKUPS")
-            .await
-            .is_err()
-    );
 
     runtime
         .shutdown()

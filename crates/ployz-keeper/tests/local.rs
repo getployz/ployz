@@ -1162,10 +1162,9 @@ fn test_identity() -> &'static ClusterNatsIdentity {
 
 fn expected_loopback_nats_config(root: &Path) -> String {
     format!(
-        "server_name: machine_1\nhost: 127.0.0.1\nport: 4222\ntls {{\n  cert_file: \"{cert}\"\n  key_file: \"{key}\"\n}}\njetstream {{\n  store_dir: \"{store}\"\n}}\ninclude \"authorized-users.conf\"\n",
+        "server_name: machine_1\nhost: 127.0.0.1\nport: 4222\ntls {{\n  cert_file: \"{cert}\"\n  key_file: \"{key}\"\n}}\njetstream: disabled\ninclude \"authorized-users.conf\"\n",
         cert = root.join("nats/server.crt").display(),
         key = root.join("nats/server.key").display(),
-        store = root.join("nats").display(),
     )
 }
 
