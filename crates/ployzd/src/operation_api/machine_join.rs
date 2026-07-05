@@ -75,9 +75,6 @@ pub async fn machine_join_report(
         .repository()
         .get(&reported.operation_id)
         .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })?
         .ok_or(MachineJoinReportError::Unavailable {
             message: corrupt("missing machine-add operation after join report"),
         })?;
@@ -117,9 +114,6 @@ async fn repair_completed_machine_join_report(
         .repository()
         .get(&operation_id)
         .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })?
     else {
         return Err(MachineJoinReportError::Unavailable {
             message: corrupt("missing completed machine-add operation"),

@@ -3,7 +3,7 @@
 use crate::operation_log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, DeployOperationSubmission,
     MachineAddOperationSubmission, MachineJoinRedemption, MachineLifecycleOperationSubmission,
-    MachineUpdateOperationSubmission, OperationRepository, OperationStatusReadError,
+    MachineUpdateOperationSubmission, OperationRepository,
     RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
 };
 use ployz_core::deploy::DeployRequest;
@@ -300,15 +300,13 @@ impl OperationControllers {
     pub async fn operation_status_snapshot(
         &self,
         operation_id: &OperationId,
-    ) -> Result<Option<OperationStatusSnapshot>, OperationStatusReadError> {
+    ) -> Option<OperationStatusSnapshot> {
         self.repository
             .operation_status_snapshot(operation_id)
             .await
     }
 
-    pub async fn operation_statuses(
-        &self,
-    ) -> Result<Vec<OperationStatus>, OperationStatusReadError> {
+    pub async fn operation_statuses(&self) -> Vec<OperationStatus> {
         self.repository.operation_statuses().await
     }
 

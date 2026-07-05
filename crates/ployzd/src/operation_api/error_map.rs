@@ -232,11 +232,6 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
                 message: format!("clock: {message}"),
             }
         }
-        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => {
-            MachineJoinRedeemError::Unavailable {
-                message: source.to_string(),
-            }
-        }
         RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => {
             MachineJoinRedeemError::Unavailable {
                 message: source.to_string(),
@@ -279,10 +274,6 @@ pub(super) fn ops_watch_error_from_replay_error(
         ReplayOperationEventsError::MissingOperation { operation_id } => {
             OpsWatchError::NoSuchOperation { operation_id }
         }
-        ReplayOperationEventsError::LoadStatus(source) => OpsWatchError::Unavailable {
-            operation_id,
-            message: source.to_string(),
-        },
         ReplayOperationEventsError::ReadEvents(source) => OpsWatchError::Unavailable {
             operation_id,
             message: source.to_string(),
@@ -295,8 +286,8 @@ mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
     use crate::controllers::SubmitCommandError;
     use crate::operation_log::{
-        OperationEventLogError, OperationStatusReadError, OperationStatusStoreError,
-        ReplayOperationEventsError, SubmitOperationError,
+        OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
+        SubmitOperationError,
     };
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
@@ -394,24 +385,6 @@ mod tests {
                 },
             ),
             OpsWatchError::NoSuchOperation { operation_id }
-        );
-    }
-
-    #[test]
-    fn ops_watch_renders_status_store_failure_to_message() {
-        let operation_id = operation_id("op_123");
-
-        assert_eq!(
-            ops_watch_error_from_replay_error(
-                operation_id.clone(),
-                ReplayOperationEventsError::LoadStatus(OperationStatusReadError::Read {
-                    message: "kv unavailable".to_owned(),
-                }),
-            ),
-            OpsWatchError::Unavailable {
-                operation_id,
-                message: "operation status read failed: kv unavailable".to_owned(),
-            }
         );
     }
 

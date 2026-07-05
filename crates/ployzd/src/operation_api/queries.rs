@@ -614,12 +614,8 @@ pub async fn ops_status(
     operation_id: OperationId,
 ) -> Result<OperationStatusSnapshot, OpsStatusError> {
     match controllers.operation_status_snapshot(&operation_id).await {
-        Ok(Some(snapshot)) => Ok(snapshot),
-        Ok(None) => Err(ops_status_missing(&operation_id)),
-        Err(error) => Err(OpsStatusError::Unavailable {
-            operation_id,
-            message: error.to_string(),
-        }),
+        Some(snapshot) => Ok(snapshot),
+        None => Err(ops_status_missing(&operation_id)),
     }
 }
 
@@ -630,9 +626,6 @@ pub async fn ops_list(
     let operations = controllers
         .operation_statuses()
         .await
-        .map_err(|error| OpsListError::Unavailable {
-            message: error.to_string(),
-        })?
         .into_iter()
         .filter(|status| !request.active_only || !status.is_terminal())
         .map(OperationStatusSnapshot::new)
