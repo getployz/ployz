@@ -1,9 +1,8 @@
-use async_nats::jetstream;
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
-use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::dns::{
     DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, project_dns,
@@ -12,6 +11,7 @@ use ployzd::dns_source::load_dns_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::runtime_facts::RuntimeFactsCache;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -19,9 +19,6 @@ use std::time::Duration;
 #[tokio::test]
 async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_from_nats() {
     let nats = test_nats().await;
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
-        .await
-        .expect("open observation store");
 
     nats.namespace_intent
         .replace_route_binding(active_route_state("api.example.com", 443, 8080))
@@ -31,52 +28,31 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .replace_route_binding(active_route_state("www.example.com", 443, 8080))
         .await
         .expect("www route stores");
-    let gateway_1 = nats.machine_observations("gateway_1").await;
-    let gateway_2 = nats.machine_observations("gateway_2").await;
-    let gateway_3 = nats.machine_observations("gateway_3").await;
-    gateway_1
-        .replace_gateway_status(&gateway_status(
-            "gateway_1",
-            GatewayServingStatus::Current,
-            2,
-        ))
-        .await
-        .expect("current gateway status stores");
-    gateway_2
-        .replace_gateway_status(&gateway_status(
-            "gateway_2",
-            GatewayServingStatus::LastKnownGood,
-            1,
-        ))
-        .await
-        .expect("last-good gateway status stores");
-    gateway_3
-        .replace_gateway_status(&gateway_status(
-            "gateway_3",
-            GatewayServingStatus::Current,
-            0,
-        ))
-        .await
-        .expect("empty gateway status stores");
-    gateway_1
-        .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 10]))
-        .await
-        .expect("gateway one public ip stores");
-    gateway_2
-        .replace_machine_public_ip(&machine_public_ip("gateway_2", [203, 0, 113, 11]))
-        .await
-        .expect("gateway two public ip stores");
-    gateway_3
-        .replace_machine_public_ip(&machine_public_ip("gateway_3", [203, 0, 113, 12]))
-        .await
-        .expect("empty gateway public ip stores");
-    nats.machine_observations("edge_4")
-        .await
-        .replace_machine_public_ip(&machine_public_ip("edge_4", [203, 0, 113, 13]))
-        .await
-        .expect("non-gateway public ip stores");
+    nats.facts.record_gateway_status(gateway_status(
+        "gateway_1",
+        GatewayServingStatus::Current,
+        2,
+    ));
+    nats.facts.record_gateway_status(gateway_status(
+        "gateway_2",
+        GatewayServingStatus::LastKnownGood,
+        1,
+    ));
+    nats.facts.record_gateway_status(gateway_status(
+        "gateway_3",
+        GatewayServingStatus::Current,
+        0,
+    ));
+    nats.facts
+        .record_machine_facts(machine_facts("gateway_1", Some([203, 0, 113, 10])));
+    nats.facts
+        .record_machine_facts(machine_facts("gateway_2", Some([203, 0, 113, 11])));
+    nats.facts
+        .record_machine_facts(machine_facts("gateway_3", Some([203, 0, 113, 12])));
+    nats.facts
+        .record_machine_facts(machine_facts("edge_4", Some([203, 0, 113, 13])));
 
-    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await;
+    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
     let DnsProjectionUpdate::SourceAvailable(input) = update else {
         panic!("DNS source should be available, got {update:?}");
     };
@@ -106,12 +82,9 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
 #[tokio::test]
 async fn dns_source_reports_unreadable_intent_as_unavailable() {
     let nats = test_nats().await;
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
-        .await
-        .expect("open observation store");
     std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
 
-    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await;
+    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
 
     assert_eq!(update, DnsProjectionUpdate::SourceUnavailable);
 }
@@ -119,9 +92,6 @@ async fn dns_source_reports_unreadable_intent_as_unavailable() {
 #[tokio::test]
 async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let nats = test_nats().await;
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
-        .await
-        .expect("open observation store");
     let mut runtime = DnsRuntime::new();
     let hostname = route_hostname("api.example.com");
 
@@ -129,22 +99,16 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         .replace_route_binding(active_route_state("api.example.com", 443, 8080))
         .await
         .expect("route stores");
-    let gateway_1 = nats.machine_observations("gateway_1").await;
-    gateway_1
-        .replace_gateway_status(&gateway_status(
-            "gateway_1",
-            GatewayServingStatus::Current,
-            1,
-        ))
-        .await
-        .expect("gateway status stores");
-    gateway_1
-        .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 10]))
-        .await
-        .expect("public ip stores");
+    nats.facts.record_gateway_status(gateway_status(
+        "gateway_1",
+        GatewayServingStatus::Current,
+        1,
+    ));
+    nats.facts
+        .record_machine_facts(machine_facts("gateway_1", Some([203, 0, 113, 10])));
 
     let first_tick = runtime.apply_source_update(
-        load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await,
+        load_dns_projection_update_from_nats(&nats.intent_reader, &nats.facts).await,
     );
     assert_eq!(
         first_tick.serving,
@@ -155,12 +119,10 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         &[DnsAnswer::try_new("203.0.113.10").expect("valid answer")]
     );
 
-    gateway_1
-        .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 20]))
-        .await
-        .expect("updated public ip stores");
+    nats.facts
+        .record_machine_facts(machine_facts("gateway_1", Some([203, 0, 113, 20])));
     let second_tick = runtime.apply_source_update(
-        load_dns_projection_update_from_nats(&nats.intent_reader, &observations).await,
+        load_dns_projection_update_from_nats(&nats.intent_reader, &nats.facts).await,
     );
 
     assert_eq!(
@@ -174,29 +136,13 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 }
 
 struct TestNats {
-    nats: ployz_test_support::nats::TestNats,
-    /// The DNS machine's Machine principal: the read side (DNS runs as the
-    /// machine's Machine user in v1).
-    machine_jetstream: jetstream::Context,
+    _nats: ployz_test_support::nats::TestNats,
     intent_reader: NatsIntentReader,
+    facts: RuntimeFactsCache,
     _intent: RunningIntentRuntime,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
     namespace_intent_file: PathBuf,
-}
-
-impl TestNats {
-    /// The observation store connected as the given machine — each machine may
-    /// only write its own observation keys.
-    async fn machine_observations(&self, machine_id_value: &str) -> AsyncNatsObservationStore {
-        let machine_client = self
-            .nats
-            .machine_client(&machine_id(machine_id_value))
-            .await;
-        AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
-            .await
-            .expect("open machine observation store")
-    }
 }
 
 async fn test_nats() -> TestNats {
@@ -211,7 +157,6 @@ async fn test_nats() -> TestNats {
     .await;
     nats.bootstrap_resources().await;
     let machine_client = nats.machine_client(&dns_machine).await;
-    let machine_jetstream = jetstream::new(machine_client.clone());
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
     let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
@@ -226,10 +171,10 @@ async fn test_nats() -> TestNats {
     .expect("intent runtime starts");
 
     TestNats {
-        nats,
-        machine_jetstream,
+        _nats: nats,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
+        facts: RuntimeFactsCache::default(),
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
@@ -264,6 +209,18 @@ fn machine_public_ip(machine_id_value: &str, address: [u8; 4]) -> MachinePublicI
         machine_id: machine_id(machine_id_value),
         public_ip: IpAddr::V4(Ipv4Addr::from(address)),
     }
+}
+
+fn machine_facts(machine_id_value: &str, public_ip: Option<[u8; 4]>) -> MachineFactsSnapshot {
+    let machine_id = machine_id(machine_id_value);
+    MachineFactsSnapshot::try_new(
+        machine_id.clone(),
+        MachineContainerObservationSnapshot::try_new(machine_id, Vec::new())
+            .expect("empty container facts are valid"),
+        public_ip.map(|address| machine_public_ip(machine_id_value, address)),
+        1,
+    )
+    .expect("machine facts are valid")
 }
 
 fn dns_record<const N: usize>(hostname: &str, answers: [DnsAnswer; N]) -> DnsRecordSet {

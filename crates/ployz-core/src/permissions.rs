@@ -12,14 +12,11 @@
 
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
-use crate::state::{
-    CoreStateKeyFamily, GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
-    MachineContainerObservationKey, MachinePublicIpObservationKey,
-};
+use crate::state::{CoreStateKeyFamily, KV_CORE_BUCKET, KV_OPS_BUCKET};
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
-    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_observation_scope,
-    machine_service_scope,
+    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status, gateway_status_scope,
+    machine_facts, machine_facts_scope, machine_service_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -66,26 +63,6 @@ pub fn operation_status_kv_write_scope() -> String {
     format!("$KV.{KV_OPS_BUCKET}.>")
 }
 
-/// A machine's observation writes in `KV_OBS`, fenced to its own keys.
-///
-/// The subjects derive from the same typed keys the observation store
-/// writes (`containers.<machine>`, `machines.<machine>.public_ip`,
-/// `gateways.<machine>.status`), so one machine's Machine credential cannot
-/// overwrite another machine's observations — routing and serving
-/// eligibility read these. Machines keep read access to the whole bucket via
-/// [`kv_read_js_api_subjects`].
-#[must_use]
-pub fn machine_observation_kv_write_subjects(machine_id: &MachineId) -> [String; 3] {
-    let containers = MachineContainerObservationKey::from_machine_id(machine_id);
-    let public_ip = MachinePublicIpObservationKey::from_machine_id(machine_id);
-    let gateway_status = GatewayStatusObservationKey::from_machine_id(machine_id);
-    [
-        format!("$KV.{KV_OBS_BUCKET}.{}", containers.as_str()),
-        format!("$KV.{KV_OBS_BUCKET}.{}", public_ip.as_str()),
-        format!("$KV.{KV_OBS_BUCKET}.{}", gateway_status.as_str()),
-    ]
-}
-
 /// JetStream API subjects a client publishes to for read-only access to one
 /// KV bucket: stream info, direct gets, and ordered-consumer lifecycle for
 /// watches/scans. Replies and watch deliveries arrive on the client's own
@@ -123,9 +100,8 @@ impl NatsPermissionProfile {
             NatsPrincipal::Machine { machine_id } => {
                 let mut publish_allow = request_reply_publications(&principal);
                 publish_allow.push(INTENT_GET.to_owned());
-                publish_allow.push(machine_observation_scope(machine_id));
-                publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
-                publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
+                publish_allow.push(machine_facts(machine_id));
+                publish_allow.push(gateway_status(machine_id));
                 Self {
                     principal: principal.clone(),
                     publish: SubjectPermissions::allowing_all(publish_allow),
@@ -183,6 +159,8 @@ fn api_service_server_subscriptions(inbox_scope: String) -> SubjectPermissions {
         API_SERVICE_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
         INTENT_GET.to_owned(),
+        machine_facts_scope(),
+        gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])
@@ -196,6 +174,8 @@ fn machine_service_server_subscriptions(
     SubjectPermissions::allowing([
         machine_service_scope(machine_id),
         INTENT_CHANGED.to_owned(),
+        machine_facts_scope(),
+        gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])

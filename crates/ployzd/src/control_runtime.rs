@@ -19,11 +19,13 @@ use crate::nats_authorization::{
 };
 use crate::operation_api::OperationApiHandlers;
 use crate::process_support::shutdown_signal;
+use crate::runtime_facts::{
+    RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
+};
 use crate::tasks::TaskRegistry;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
@@ -39,6 +41,7 @@ pub struct RunningControlRuntime {
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
+    facts_cache: RunningRuntimeFactsCache,
     authorization: NatsAuthorizationRuntime,
 }
 
@@ -50,6 +53,7 @@ impl RunningControlRuntime {
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
+        self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
     }
@@ -90,9 +94,10 @@ pub async fn start_control_runtime_with_client_and_reload(
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenCoreState)?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+    let facts_cache = start_runtime_facts_cache(client.clone())
         .await
-        .map_err(ControlRuntimeError::OpenObservations)?;
+        .map_err(ControlRuntimeError::StartFactsCache)?;
+    let facts = facts_cache.cache();
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
@@ -123,7 +128,6 @@ pub async fn start_control_runtime_with_client_and_reload(
         client.clone(),
         core_state.clone(),
         namespace_intent.clone(),
-        observations.clone(),
         controllers.clone(),
         DeployExecutionMachineScope::same_machines(config.deploy_machines.clone()),
         config.deploy_step_timeout,
@@ -184,7 +188,7 @@ pub async fn start_control_runtime_with_client_and_reload(
                 .ok_or(ControlRuntimeError::MissingDeployMachine)?,
             client.clone(),
             machine_roster,
-            observations,
+            facts,
             facts_reader,
             intent_reader,
             logs_tailer,
@@ -200,6 +204,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         machine_update_tasks,
         machine_lifecycle_tasks,
         mint_tasks,
+        facts_cache,
         authorization,
     })
 }
@@ -225,7 +230,7 @@ pub enum ControlRuntimeError {
     PlanBootstrap(BootstrapRefusal),
     AssureBootstrap(BootstrapAssuranceError),
     OpenCoreState(CoreStateStoreError),
-    OpenObservations(ObservationStoreError),
+    StartFactsCache(RuntimeFactsCacheError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
@@ -250,14 +255,11 @@ impl fmt::Display for ControlRuntimeError {
             Self::OpenCoreState(error) => {
                 write!(formatter, "failed to open core state store: {error}")
             }
-            Self::OpenObservations(error) => {
-                write!(formatter, "failed to open observation store: {error}")
+            Self::StartFactsCache(error) => {
+                write!(formatter, "failed to start runtime facts cache: {error}")
             }
             Self::OpenOperationStatus(error) => {
-                write!(
-                    formatter,
-                    "failed to open operation status store: {error}"
-                )
+                write!(formatter, "failed to open operation status store: {error}")
             }
             Self::RenderNatsAuthorization(error) => {
                 write!(formatter, "failed to render NATS authorization: {error}")
@@ -272,10 +274,7 @@ impl fmt::Display for ControlRuntimeError {
                 write!(formatter, "failed to start intent service: {error}")
             }
             Self::StartOperationApi(error) => {
-                write!(
-                    formatter,
-                    "failed to start operation API service: {error}"
-                )
+                write!(formatter, "failed to start operation API service: {error}")
             }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")

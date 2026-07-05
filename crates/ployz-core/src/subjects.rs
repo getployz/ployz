@@ -169,6 +169,21 @@ pub fn machine_facts(machine_id: &MachineId) -> String {
     format!("plz.v1.facts.machine.{}", machine_id.as_str())
 }
 
+#[must_use]
+pub fn machine_facts_scope() -> String {
+    "plz.v1.facts.machine.>".to_owned()
+}
+
+#[must_use]
+pub fn gateway_status(machine_id: &MachineId) -> String {
+    format!("plz.v1.facts.gateway.{}", machine_id.as_str())
+}
+
+#[must_use]
+pub fn gateway_status_scope() -> String {
+    "plz.v1.facts.gateway.>".to_owned()
+}
+
 impl DeployRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
@@ -181,20 +196,6 @@ impl DeployRunningStage {
             Self::RemovingSupersededContainers => "removing_superseded_containers",
         }
     }
-}
-
-#[must_use]
-pub fn machine_observation(machine_id: &MachineId, event: MachineObservationEvent) -> String {
-    format!(
-        "plz.v1.obs.machine.{}.{}",
-        machine_id.as_str(),
-        event.as_subject()
-    )
-}
-
-#[must_use]
-pub fn machine_observation_scope(machine_id: &MachineId) -> String {
-    format!("plz.v1.obs.machine.{}.>", machine_id.as_str())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,26 +226,6 @@ impl MachineServiceEndpoint {
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MachineObservationEvent {
-    Heartbeat,
-    PublicIpChanged,
-    ContainerRunning,
-    ContainerExited,
-}
-
-impl MachineObservationEvent {
-    #[must_use]
-    pub const fn as_subject(self) -> &'static str {
-        match self {
-            Self::Heartbeat => "heartbeat",
-            Self::PublicIpChanged => "public_ip.changed",
-            Self::ContainerRunning => "container.running",
-            Self::ContainerExited => "container.exited",
         }
     }
 }

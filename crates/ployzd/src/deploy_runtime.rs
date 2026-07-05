@@ -10,7 +10,8 @@ use crate::deploy_worker::{
 };
 use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
+    MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
+    NatsMachineFactsReader,
 };
 use crate::namespace_intent::NamespaceIntentStore;
 use crate::tasks::TaskRegistry;
@@ -22,7 +23,6 @@ use ployz_nats::core_state::{
     AsyncNatsCoreStateStore, CoreStateStoreError, NAMESPACE_LOCK_RENEW_INTERVAL_MS,
     NamespaceLockRenew,
 };
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
@@ -300,7 +300,6 @@ pub struct DeployOperationRuntime {
     client: async_nats::Client,
     core_state: AsyncNatsCoreStateStore,
     namespace_intent: NamespaceIntentStore,
-    observations: AsyncNatsObservationStore,
     controllers: OperationControllers,
     machine_scope: DeployExecutionMachineScope,
     step_timeout: Duration,
@@ -313,7 +312,6 @@ impl DeployOperationRuntime {
         client: async_nats::Client,
         core_state: AsyncNatsCoreStateStore,
         namespace_intent: NamespaceIntentStore,
-        observations: AsyncNatsObservationStore,
         controllers: OperationControllers,
         machine_scope: DeployExecutionMachineScope,
         step_timeout: Duration,
@@ -323,7 +321,6 @@ impl DeployOperationRuntime {
             client,
             core_state,
             namespace_intent,
-            observations,
             controllers,
             machine_scope,
             step_timeout,
@@ -350,15 +347,14 @@ impl DeployOperationRuntime {
             return Err(DeployOperationRunError::AlreadyStarted);
         }
 
-        let mut dataplane =
-            NatsMachineDataplanePreparer::new(self.client.clone(), self.observations.clone())
-                .with_request_timeout(self.step_timeout);
+        let mut dataplane = NatsMachineDataplanePreparer::new(self.client.clone())
+            .with_request_timeout(self.step_timeout);
         let mut machine_runtime = NatsMachineContainerRuntime::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
-        let mut health_checker =
-            ObservationHealthChecker::new(self.observations.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
         let facts_reader = NatsMachineFactsReader::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
+        let mut health_checker =
+            MachineFactsHealthChecker::new(facts_reader.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
         let intent_reader =
             NatsIntentReader::new(self.client.clone()).with_request_timeout(self.step_timeout);
 
@@ -469,22 +465,22 @@ async fn claim_deploy_execution(
     }
 }
 
-pub struct ObservationHealthChecker {
-    observations: AsyncNatsObservationStore,
+pub struct MachineFactsHealthChecker {
+    facts_reader: NatsMachineFactsReader,
     poll_interval: Duration,
 }
 
-impl ObservationHealthChecker {
+impl MachineFactsHealthChecker {
     #[must_use]
-    pub fn new(observations: AsyncNatsObservationStore, poll_interval: Duration) -> Self {
+    pub fn new(facts_reader: NatsMachineFactsReader, poll_interval: Duration) -> Self {
         Self {
-            observations,
+            facts_reader,
             poll_interval,
         }
     }
 }
 
-impl DeployHealthChecker for ObservationHealthChecker {
+impl DeployHealthChecker for MachineFactsHealthChecker {
     async fn wait_healthy(
         &mut self,
         containers: &[DeployContainer],
@@ -493,24 +489,22 @@ impl DeployHealthChecker for ObservationHealthChecker {
         loop {
             let mut all_running = true;
             for container in containers {
-                match self
-                    .observations
-                    .container(&container.machine_id, &container.container_id)
-                    .await
-                {
-                    Ok(Some(observation)) => match observed_container_health(&observation) {
-                        ObservedContainerHealth::Healthy => {
-                            memory.record_running(container);
-                        }
-                        ObservedContainerHealth::Failed(message) => {
-                            if memory.should_wait_for_fresh_start_observation(container) {
-                                all_running = false;
-                                continue;
+                match self.facts_reader.machine_facts(&container.machine_id).await {
+                    Ok(facts) => match facts.containers().container(&container.container_id) {
+                        Some(observation) => match observed_container_health(observation) {
+                            ObservedContainerHealth::Healthy => {
+                                memory.record_running(container);
                             }
-                            return Err(unhealthy_container(container, message));
-                        }
+                            ObservedContainerHealth::Failed(message) => {
+                                if memory.should_wait_for_fresh_start_observation(container) {
+                                    all_running = false;
+                                    continue;
+                                }
+                                return Err(unhealthy_container(container, message));
+                            }
+                        },
+                        None => all_running = false,
                     },
-                    Ok(None) => all_running = false,
                     Err(error) => {
                         return Err(unhealthy_container(container, health_read_error(error)));
                     }
@@ -591,8 +585,8 @@ fn unhealthy_container(
     }
 }
 
-fn health_read_error(error: ObservationStoreError) -> String {
-    format!("container observation could not be read: {error}")
+fn health_read_error(error: MachineFactsReadRuntimeError) -> String {
+    format!("machine facts could not be read: {error}")
 }
 
 #[cfg(test)]

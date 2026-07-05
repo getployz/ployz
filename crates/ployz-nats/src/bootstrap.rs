@@ -4,7 +4,6 @@
 mod assurance;
 
 use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
-use crate::observations::KV_OBS_BUCKET;
 use crate::operations::{KV_OPS_BUCKET, PLZ_OPS_STREAM};
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
@@ -90,7 +89,6 @@ impl BootstrapPlan {
             kv_buckets: vec![
                 KvBucketSpec::new(KV_CORE_BUCKET),
                 KvBucketSpec::new(KV_OPS_BUCKET),
-                KvBucketSpec::new(KV_OBS_BUCKET),
             ],
             streams: vec![StreamSpec::new(
                 PLZ_OPS_STREAM,

@@ -762,7 +762,7 @@ async fn assert_bootstrap_resources_exist(core: &CoreContext) {
     .await
     .expect("controller principal connects");
     let jetstream = async_nats::jetstream::new(client);
-    for bucket in ["KV_CORE", "KV_OPS", "KV_OBS"] {
+    for bucket in ["KV_CORE", "KV_OPS"] {
         jetstream
             .get_key_value(bucket)
             .await

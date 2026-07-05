@@ -10,12 +10,8 @@ use std::net::{IpAddr, SocketAddr};
 
 pub const KV_CORE_BUCKET: &str = "KV_CORE";
 pub const KV_OPS_BUCKET: &str = "KV_OPS";
-pub const KV_OBS_BUCKET: &str = "KV_OBS";
 
 pub const NAMESPACE_LOCK_STATE_PREFIX: &str = "namespace_locks";
-pub const MACHINE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
-pub const MACHINE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "machines";
-pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 
 /// Core-owned serving-target intent value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,7 +101,7 @@ pub struct NamespaceLockState {
     pub expires_at_unix_ms: u64,
 }
 
-/// Persisted `KV_OBS.machines.*.public_ip` value.
+/// Machine-owned public endpoint fact reported with machine facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -114,7 +110,7 @@ pub struct MachinePublicIpObservation {
     pub public_ip: IpAddr,
 }
 
-/// Persisted `KV_OBS.gateways.*.status` value.
+/// Gateway role status fact reported by the gateway process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -155,69 +151,6 @@ impl CoreStateKeyFamily {
         match self {
             Self::NamespaceLock => NamespaceLockStateKey::wildcard_pattern(),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MachineContainerObservationKey(String);
-
-impl MachineContainerObservationKey {
-    #[must_use]
-    pub fn from_machine_id(machine_id: &MachineId) -> Self {
-        Self(format!(
-            "{MACHINE_CONTAINER_OBSERVATION_PREFIX}.{}",
-            machine_id.as_str()
-        ))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MachinePublicIpObservationKey(String);
-
-impl MachinePublicIpObservationKey {
-    #[must_use]
-    pub fn from_machine_id(machine_id: &MachineId) -> Self {
-        Self(format!(
-            "{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}.{}.public_ip",
-            machine_id.as_str()
-        ))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn matches(value: &str) -> bool {
-        value.starts_with(&format!("{MACHINE_PUBLIC_IP_OBSERVATION_PREFIX}."))
-            && value.ends_with(".public_ip")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GatewayStatusObservationKey(String);
-
-impl GatewayStatusObservationKey {
-    #[must_use]
-    pub fn from_machine_id(machine_id: &MachineId) -> Self {
-        Self(format!(
-            "{GATEWAY_STATUS_OBSERVATION_PREFIX}.{}.status",
-            machine_id.as_str()
-        ))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 

@@ -204,9 +204,9 @@ impl ContainerRuntimeState {
 /// machine observations, sent in machine run commands, and compared for
 /// cleanup fencing - one struct everywhere, so the copies cannot drift.
 ///
-/// This is persisted in Docker labels and `KV_OBS.containers.*`. Changing this
-/// shape intentionally breaks existing clusters unless paired with container
-/// cleanup and/or KV cleanup.
+/// This is persisted in Docker labels and reported in machine facts. Changing
+/// this shape intentionally breaks existing clusters unless paired with
+/// container cleanup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -237,7 +237,7 @@ impl ManagedContainerIdentity {
     }
 }
 
-/// Persisted `KV_OBS.containers.*` entry payload.
+/// Machine-owned container fact payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
