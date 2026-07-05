@@ -29,18 +29,20 @@ coordinated cutover:
   candidates are a healthy choice, never a race. Promotion is instant rather
   than a backup restore because Reachable Machines mirror the core's intent
   files off the drumbeat.
-- **Cloud's button is an SSH-triggered local promotion.** Cloud is the main
-  consumer, and the one-button flow — "core deleted → select a replacement →
-  done" — is Cloud running the local promote command over SSH on the chosen
-  Reachable Machine. The install injects Cloud's promotion public key as a
+- **Cloud's button is an optional SSH-triggered local promotion.** Cloud is
+  the main consumer, and the one-button flow — "core deleted → select a
+  replacement → done" — is Cloud running the local promote command over SSH on
+  the chosen Reachable Machine. Granting this is **opt-in**: an operator who
+  wants the button lets the install inject Cloud's promotion public key as a
   forced command (`command="ployz core-promote" …`), so the key can only
-  trigger promotion, never open a shell. Cloud's connectivity to the button
-  therefore does not route through the dead cluster hub, satisfying "Cloud
-  must not lose the ability to recover," while the machine self-authorizes
-  with local root — so Cloud triggers, and never authorizes. Manual local
-  promotion remains the floor: if Cloud is down the operator SSHes in and runs
-  the same command. This keeps the Cloud Lens invariant — Cloud is the easy
-  button, never the required authority.
+  trigger promotion, never open a shell, and Cloud's path to the button does
+  not route through the dead cluster hub. An operator who does not want a cloud
+  service holding SSH access simply declines it and promotes by running the
+  same command on the machine directly — copy-paste, no Cloud involved. Either
+  way the machine self-authorizes with local root, so Cloud only ever triggers
+  and never authorizes. This keeps the Cloud Lens invariant — Cloud is the easy
+  button when you opt in, never the required authority — and keeps
+  self-hosted clusters free of any cloud-held credential.
 
 This rejects: automatic promotion or leader election (the coordination problem
 the disposable-core model exists to avoid); a declared stability classification
