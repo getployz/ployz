@@ -11,7 +11,8 @@ use crate::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkRpcResponse, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineFactsGetRpcResponse, MachineLogsTailDomainError,
     MachineLogsTailResult, MachineLogsTailRpcOk, MachineLogsTailRpcRequest,
-    MachineLogsTailRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
+    MachineLogsTailRpcResponse, MachinePlacementBidRpcOk, MachinePlacementBidRpcRequest,
+    MachinePlacementBidRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateDomainError,
@@ -96,6 +97,14 @@ where
             public_ip,
         },
         handle_facts_get,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::PlacementBid,
+        (),
+        handle_placement_bid,
     )
     .await?;
     bind_machine_endpoint(
@@ -194,6 +203,20 @@ where
         })
         .await
         .map_err(MachineServiceRuntimeError::Nats)
+}
+
+async fn handle_placement_bid(
+    machine_id: MachineId,
+    _state: (),
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    if let Err(response) = decode_json_request::<MachinePlacementBidRpcRequest>(&request) {
+        return response;
+    }
+
+    machine_success(MachinePlacementBidRpcResponse::Ok(
+        MachinePlacementBidRpcOk { machine_id },
+    ))
 }
 
 async fn handle_substrate_update(

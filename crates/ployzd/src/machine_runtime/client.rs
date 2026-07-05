@@ -10,15 +10,17 @@ use crate::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
-    MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
-    MachineSubstrateUpdateRpcRequest,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachinePlacementBidDomainError,
+    MachinePlacementBidRpcOk, MachinePlacementBidRpcRequest, MachineRpcResponder,
+    MachineRpcResponse, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
+    MachineSubstrateReportRpcRequest, MachineSubstrateUpdateDomainError,
+    MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
+use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
@@ -31,7 +33,7 @@ use std::fmt;
 use std::time::Duration;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CONCURRENT_FACT_READS: usize = 16;
+const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {
@@ -48,6 +50,12 @@ pub struct NatsMachineDataplanePreparer {
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineFactsReader {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachinePlacementBidder {
     client: async_nats::Client,
     request_timeout: Duration,
 }
@@ -99,6 +107,14 @@ pub enum MachineFactsReadRuntimeError {
         machine_id: MachineId,
         message: ployz_core::ops::FailureMessage,
     },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachinePlacementBidRuntimeError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
@@ -225,13 +241,86 @@ impl NatsMachineFactsReader {
     }
 }
 
+impl NatsMachinePlacementBidder {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn placement_bid(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<(), MachinePlacementBidRuntimeError> {
+        call_machine::<MachinePlacementBidRpcOk, MachinePlacementBidDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::PlacementBid,
+            &MachinePlacementBidRpcRequest {},
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachinePlacementBidRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => match error {},
+        })
+    }
+}
+
+pub(crate) struct MachinePlacementFacts {
+    pub machine_id: MachineId,
+    pub lifecycle: MachineLifecycle,
+    pub placement_available: bool,
+    pub containers: Option<MachineContainerObservationSnapshot>,
+}
+
+pub(crate) async fn read_machine_placement_facts(
+    facts_reader: &NatsMachineFactsReader,
+    placement_bidder: &NatsMachinePlacementBidder,
+    machine_lifecycles: impl IntoIterator<Item = (MachineId, MachineLifecycle)>,
+) -> Vec<MachinePlacementFacts> {
+    let mut reads = stream::iter(machine_lifecycles)
+        .map(|(machine_id, lifecycle)| async move {
+            let (placement, facts) = tokio::join!(
+                placement_bidder.placement_bid(&machine_id),
+                facts_reader.machine_facts(&machine_id)
+            );
+            MachinePlacementFacts {
+                machine_id,
+                lifecycle,
+                placement_available: placement.is_ok(),
+                containers: facts.ok().map(|facts| facts.containers().clone()),
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
+
+    let mut facts = Vec::new();
+    while let Some(machine) = reads.next().await {
+        facts.push(machine);
+    }
+    facts.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    facts
+}
+
 pub(crate) async fn read_available_machine_facts(
     facts_reader: &NatsMachineFactsReader,
     machine_ids: impl IntoIterator<Item = MachineId>,
 ) -> Vec<MachineFactsSnapshot> {
     let mut reads = stream::iter(machine_ids)
         .map(|machine_id| async move { facts_reader.machine_facts(&machine_id).await.ok() })
-        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
 
     let mut facts = Vec::new();
     // Drain every read: an unavailable machine resolves to None and must be
@@ -255,34 +344,6 @@ pub(crate) async fn read_available_machine_facts_by_id(
         .into_iter()
         .map(|facts| (facts.machine_id().clone(), facts))
         .collect()
-}
-
-pub(crate) async fn read_machine_container_snapshots(
-    facts_reader: &NatsMachineFactsReader,
-    machine_ids: impl IntoIterator<Item = MachineId>,
-) -> (Vec<MachineContainerObservationSnapshot>, Vec<MachineId>) {
-    let mut snapshots = Vec::new();
-    let mut facts_unavailable = Vec::new();
-    let mut reads = stream::iter(machine_ids)
-        .map(|machine_id| async move {
-            facts_reader
-                .machine_facts(&machine_id)
-                .await
-                .map(|facts| facts.containers().clone())
-                .map_err(|_| machine_id)
-        })
-        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
-
-    while let Some(snapshot) = reads.next().await {
-        match snapshot {
-            Ok(snapshot) => snapshots.push(snapshot),
-            Err(machine_id) => facts_unavailable.push(machine_id),
-        }
-    }
-
-    snapshots.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
-    facts_unavailable.sort();
-    (snapshots, facts_unavailable)
 }
 
 impl NatsMachineSubstrateUpdater {

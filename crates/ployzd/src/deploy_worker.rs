@@ -17,7 +17,7 @@ use ployz_core::ops::{
 };
 
 pub use facts::{
-    DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
+    DeployFactLoadError, DeployMachineCandidates, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,

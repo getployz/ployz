@@ -27,6 +27,7 @@ use ployzd::machine_runtime::protocol::{
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
+    MachinePlacementBidRpcOk, MachinePlacementBidRpcRequest, MachinePlacementBidRpcResponse,
     MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse,
@@ -159,6 +160,42 @@ async fn machine_runtime_service_gets_fresh_facts_without_observation_tick() {
         ContainerRuntimeState::running_unroutable()
     );
     assert!(facts.observed_at_unix_ms() > 0);
+}
+
+#[tokio::test]
+async fn machine_runtime_service_accepts_placement_bid() {
+    let nats = test_nats().await;
+    let _service = start_machine_runtime_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        idle_runner(),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let active = request_json::<_, MachinePlacementBidRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::PlacementBid,
+        ),
+        &MachinePlacementBidRpcRequest {},
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("placement bid responds");
+    assert_eq!(
+        active,
+        MachinePlacementBidRpcResponse::Ok(MachinePlacementBidRpcOk {
+            machine_id: machine_id("machine_a")
+        })
+    );
 }
 
 #[tokio::test]

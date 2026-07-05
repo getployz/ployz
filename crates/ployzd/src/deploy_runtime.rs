@@ -2,16 +2,16 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
-    DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionMachineScope,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
-    execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionOutcome,
+    DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError, DeployHealthChecker,
+    DeployMachineCandidates, MachineContainerRuntime, NamespaceCommitError,
+    NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
 use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
     MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader,
+    NatsMachineFactsReader, NatsMachinePlacementBidder,
 };
 use crate::namespace_intent::NamespaceIntentStore;
 use crate::operation_log::{
@@ -31,7 +31,7 @@ const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 pub async fn run_deploy_operation<D, N, H>(
     accepted: AcceptedDeploySubmission,
-    machine_scope: DeployExecutionMachineScope,
+    machine_candidates: DeployMachineCandidates,
     stores: DeployOperationStores,
     ports: DeployOperationPorts<'_, D, N, H>,
     step_timeout: Duration,
@@ -48,6 +48,7 @@ where
     } = stores;
     let DeployOperationPorts {
         facts_reader,
+        placement_bidder,
         intent_reader,
         dataplane,
         machine_runtime,
@@ -57,9 +58,10 @@ where
 
     let facts = match load_deploy_execution_facts_from_nats(
         &request,
-        machine_scope,
+        machine_candidates,
         intent_reader,
         facts_reader,
+        placement_bidder,
         step_timeout,
     )
     .await
@@ -130,6 +132,7 @@ pub struct DeployOperationStores {
 
 pub struct DeployOperationPorts<'a, D, N, H> {
     pub facts_reader: &'a NatsMachineFactsReader,
+    pub placement_bidder: &'a NatsMachinePlacementBidder,
     pub intent_reader: &'a NatsIntentReader,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
@@ -247,7 +250,7 @@ pub struct DeployOperationRuntime {
     client: async_nats::Client,
     namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
-    machine_scope: DeployExecutionMachineScope,
+    machine_candidates: DeployMachineCandidates,
     step_timeout: Duration,
     task_registry: TaskRegistry,
 }
@@ -258,7 +261,7 @@ impl DeployOperationRuntime {
         client: async_nats::Client,
         namespace_intent: NamespaceIntentStore,
         controllers: OperationControllers,
-        machine_scope: DeployExecutionMachineScope,
+        machine_candidates: DeployMachineCandidates,
         step_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
@@ -266,7 +269,7 @@ impl DeployOperationRuntime {
             client,
             namespace_intent,
             controllers,
-            machine_scope,
+            machine_candidates,
             step_timeout,
             task_registry,
         }
@@ -297,6 +300,8 @@ impl DeployOperationRuntime {
             .with_request_timeout(self.step_timeout);
         let facts_reader = NatsMachineFactsReader::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
+        let placement_bidder = NatsMachinePlacementBidder::new(self.client.clone())
+            .with_request_timeout(self.step_timeout);
         let mut health_checker =
             MachineFactsHealthChecker::new(facts_reader.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
         let intent_reader =
@@ -308,7 +313,7 @@ impl DeployOperationRuntime {
         let controllers = self.controllers.clone();
         let result = run_deploy_operation(
             accepted,
-            self.machine_scope,
+            self.machine_candidates,
             DeployOperationStores {
                 intent_change_client: self.client.clone(),
                 namespace_intent,
@@ -316,6 +321,7 @@ impl DeployOperationRuntime {
             },
             DeployOperationPorts {
                 facts_reader: &facts_reader,
+                placement_bidder: &placement_bidder,
                 intent_reader: &intent_reader,
                 dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
