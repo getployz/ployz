@@ -22,13 +22,10 @@ use ployzd::deploy_runtime::{
 use ployzd::deploy_worker::DeployMachineCandidates;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
-use ployzd::machine_runtime::client::{
-    NatsMachineContainerRuntime, NatsMachineFactsReader, NatsMachinePlacementBidder,
-};
+use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
-    MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachinePlacementBidRpcOk,
-    MachinePlacementBidRpcRequest, MachinePlacementBidRpcResponse,
+    MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
 use ployzd::namespace_intent::NamespaceIntentStore;
 use ployzd::operation_log::OperationRepository;
@@ -39,10 +36,7 @@ use std::time::Duration;
 async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
-    let _placement =
-        start_placement_bid_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let placement_bidder = placement_bidder(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
@@ -69,7 +63,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
-            placement_bidder: &placement_bidder,
             intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
@@ -126,10 +119,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
-    let _placement =
-        start_placement_bid_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let placement_bidder = placement_bidder(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
@@ -150,7 +140,6 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
-            placement_bidder: &placement_bidder,
             intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
@@ -188,10 +177,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
 async fn health_failure_records_failed_operation_without_committing_active_state() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
-    let _placement =
-        start_placement_bid_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let placement_bidder = placement_bidder(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
@@ -213,7 +199,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
-            placement_bidder: &placement_bidder,
             intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
@@ -255,7 +240,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 async fn missing_machine_responder_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
     let facts_reader = facts_reader(&nats.client, Duration::from_millis(200));
-    let placement_bidder = placement_bidder(&nats.client, Duration::from_millis(200));
     let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
@@ -277,7 +261,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
-            placement_bidder: &placement_bidder,
             intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
@@ -320,9 +303,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let nats = test_nats().await;
     let _facts =
         start_facts_subscription(nats.machine_slow.clone(), machine_id("machine_slow")).await;
-    let _placement =
-        start_placement_bid_subscription(nats.machine_slow.clone(), machine_id("machine_slow"))
-            .await;
     let _endpoint_network =
         start_endpoint_network_subscription(nats.machine_slow.clone(), machine_id("machine_slow"))
             .await;
@@ -332,7 +312,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     )
     .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let placement_bidder = placement_bidder(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
@@ -354,7 +333,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
-            placement_bidder: &placement_bidder,
             intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
@@ -410,7 +388,6 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         .await
         .expect("deploy operation accepted");
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let placement_bidder = placement_bidder(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     std::fs::write(&nats.namespace_intent_file, b"{")
         .expect("namespace intent evidence is corrupted");
@@ -428,7 +405,6 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
-            placement_bidder: &placement_bidder,
             intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
@@ -633,43 +609,9 @@ async fn start_facts_subscription(
     })
 }
 
-async fn start_placement_bid_subscription(
-    client: async_nats::Client,
-    machine_id: ployz_core::ids::MachineId,
-) -> tokio::task::JoinHandle<()> {
-    let subject = machine_service(&machine_id, MachineServiceEndpoint::PlacementBid);
-    let mut subscriber = client
-        .subscribe(subject)
-        .await
-        .expect("subscribe placement bid service");
-    client
-        .flush()
-        .await
-        .expect("flush placement bid service subscription");
-    tokio::spawn(async move {
-        while let Some(message) = subscriber.next().await {
-            let Some(reply) = message.reply else {
-                continue;
-            };
-            let _request: MachinePlacementBidRpcRequest =
-                serde_json::from_slice(&message.payload).expect("placement bid request decodes");
-            let response = serde_json::to_vec(&MachinePlacementBidRpcResponse::Ok(
-                MachinePlacementBidRpcOk {
-                    machine_id: machine_id.clone(),
-                },
-            ))
-            .expect("placement bid response serializes");
-            let _ = client.publish(reply, response.into()).await;
-        }
-    })
-}
 
 fn facts_reader(client: &async_nats::Client, timeout: Duration) -> NatsMachineFactsReader {
     NatsMachineFactsReader::new(client.clone()).with_request_timeout(timeout)
-}
-
-fn placement_bidder(client: &async_nats::Client, timeout: Duration) -> NatsMachinePlacementBidder {
-    NatsMachinePlacementBidder::new(client.clone()).with_request_timeout(timeout)
 }
 
 fn intent_reader(client: &async_nats::Client, timeout: Duration) -> NatsIntentReader {
