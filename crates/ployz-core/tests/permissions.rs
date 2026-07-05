@@ -88,7 +88,6 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             "$KV.KV_CORE.routes.*.*".to_owned(),
             "$KV.KV_CORE.machines.*".to_owned(),
             "$KV.KV_CORE.namespace_locks.*".to_owned(),
-            "$KV.KV_CORE.nats_authorized_user.>".to_owned(),
             "$KV.KV_OPS.>".to_owned(),
         ]
     );
@@ -238,12 +237,9 @@ fn subject_matches(pattern: &str, subject: &str) -> bool {
 #[test]
 fn every_state_key_family_pattern_spans_its_rendered_keys() {
     use ployz_core::ids::{NamespaceId, ServiceId};
-    use ployz_core::nats_config::{NatsAuthorizedUser, NatsUserPublicKey};
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-    use ployz_core::security::NatsPrincipal;
     use ployz_core::state::{
-        ActiveMachineStateKey, NamespaceLockStateKey, NatsAuthorizedUserKey, RouteBindingStateKey,
-        ServingTargetEntryKey,
+        ActiveMachineStateKey, NamespaceLockStateKey, RouteBindingStateKey, ServingTargetEntryKey,
     };
 
     // One sample key per family, produced by the REAL production
@@ -277,19 +273,6 @@ fn every_state_key_family_pattern_spans_its_rendered_keys() {
                 NamespaceLockStateKey::from_namespace_id(&namespace)
                     .as_str()
                     .to_owned()
-            }
-            CoreStateKeyFamily::NatsAuthorizedUser => {
-                NatsAuthorizedUserKey::from_user(&NatsAuthorizedUser {
-                    principal: NatsPrincipal::Machine {
-                        machine_id: machine_id("machine_7"),
-                    },
-                    nkey_public: NatsUserPublicKey::try_new(
-                        "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4",
-                    )
-                    .expect("valid nkey"),
-                })
-                .as_str()
-                .to_owned()
             }
         }
     }

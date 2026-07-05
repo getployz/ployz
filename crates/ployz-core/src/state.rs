@@ -5,7 +5,6 @@ use std::fmt::Write as _;
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
-use crate::nats_config::NatsAuthorizedUser;
 use crate::ops::{MachineSubstrateVersions, RoutePort, RouteTarget};
 use crate::state_key::{id_prefixed_state_key, state_key_path};
 use std::net::{IpAddr, SocketAddr};
@@ -17,9 +16,6 @@ pub const KV_OBS_BUCKET: &str = "KV_OBS";
 pub const SERVING_TARGET_ENTRY_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 pub const NAMESPACE_LOCK_STATE_PREFIX: &str = "namespace_locks";
-/// `KV_CORE` prefix of the durable NATS authorized-principal records
-/// (ADR-0001: their recovery evidence is `authorized-users.conf`).
-pub const NATS_AUTHORIZED_USER_PREFIX: &str = "nats_authorized_user";
 pub const ROUTE_BINDING_STATE_PREFIX: &str = "routes";
 pub const MACHINE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
 pub const MACHINE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "machines";
@@ -223,34 +219,6 @@ fn route_hostname_key_token(target: &RouteTarget) -> String {
 id_prefixed_state_key! { pub struct ActiveMachineStateKey; prefix: ACTIVE_MACHINE_STATE_PREFIX; fn from_machine_id(&MachineId); }
 id_prefixed_state_key! { pub struct NamespaceLockStateKey; prefix: NAMESPACE_LOCK_STATE_PREFIX; fn from_namespace_id(&NamespaceId); }
 
-/// KV key for one durable authorized-principal record. The record key
-/// nests further segments (`user.<nkey>`, `machine_<id>`), so the spanning
-/// pattern is a `>` scope rather than per-segment stars; both still render
-/// against the same prefix here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsAuthorizedUserKey(String);
-
-impl NatsAuthorizedUserKey {
-    #[must_use]
-    pub fn from_user(user: &NatsAuthorizedUser) -> Self {
-        Self(state_key_path(
-            NATS_AUTHORIZED_USER_PREFIX,
-            &[user.authority_record_key().as_str()],
-        ))
-    }
-
-    /// The NATS subject pattern spanning every authorized-user key.
-    #[must_use]
-    pub fn wildcard_pattern() -> String {
-        format!("{NATS_AUTHORIZED_USER_PREFIX}.>")
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// Every KV_CORE write family. `permissions.rs` matches this exhaustively to
 /// build the controller grant, so a new key type cannot ship without an
 /// authority decision. Add new variants here, next to their key types, and
@@ -261,22 +229,19 @@ pub enum CoreStateKeyFamily {
     RouteBinding,
     ActiveMachine,
     NamespaceLock,
-    NatsAuthorizedUser,
 }
 
 impl CoreStateKeyFamily {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 4] = [
         Self::ServingTargetEntry,
         Self::RouteBinding,
         Self::ActiveMachine,
         Self::NamespaceLock,
-        Self::NatsAuthorizedUser,
     ];
 
     /// The NATS subject pattern spanning every key this family writes. Each
     /// arm delegates to the key type's own pattern so the grant and the key
-    /// format come from one renderer; authorized-user records span nested
-    /// segments, so that family is an explicit `>` scope.
+    /// format come from one renderer.
     #[must_use]
     pub fn wildcard_pattern(self) -> String {
         match self {
@@ -284,7 +249,6 @@ impl CoreStateKeyFamily {
             Self::RouteBinding => RouteBindingStateKey::wildcard_pattern(),
             Self::ActiveMachine => ActiveMachineStateKey::wildcard_pattern(),
             Self::NamespaceLock => NamespaceLockStateKey::wildcard_pattern(),
-            Self::NatsAuthorizedUser => NatsAuthorizedUserKey::wildcard_pattern(),
         }
     }
 }

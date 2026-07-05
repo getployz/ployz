@@ -21,7 +21,7 @@ Bootstrap currently creates these resources:
 
 | Resource | Kind | Storage | Replicas | Current role |
 | --- | --- | --- | --- | --- |
-| `KV_CORE` | JetStream KV | file | 1 | Current control-plane indexes and explicitly named NATS authority. |
+| `KV_CORE` | JetStream KV | file | 1 | Current control-plane indexes. |
 | `KV_OPS` | JetStream KV | file | 1 | Operation status projection, machine-add pending-join handoff, mint claims, and temporary secret delivery records. |
 | `KV_OBS` | JetStream KV | file | 1 | Latest machine and role observations. |
 | `PLZ_OPS` | stream over `plz.v1.op.>` | file | 1 | Operation event timeline and replay source. |
@@ -42,16 +42,15 @@ captured by a stream today. The persisted latest observations live in
 
 ## `KV_CORE`
 
-`KV_CORE` stores current cluster indexes and the NATS authorized-principal set.
-Most records are intended to be rebuildable indexes. The authorized-principal
-set is different: it is durable authority with an on-disk recovery file.
+`KV_CORE` stores current cluster indexes. The NATS authorized-principal set
+lives in the core-local `authorized-users.conf` authority file, outside
+JetStream.
 
 | Key pattern | Stored value | Writer | Classification | Reindexable? |
 | --- | --- | --- | --- | --- |
 | `services.<service_id>` | `ActiveServiceState { service_id, active_revision }` | Deploy worker after successful active-service commit. | Rebuildable current-state index. | Yes, with ambiguity checks. Rebuild from managed Docker containers and machine facts that prove the current serving revision. Do not adopt if multiple revisions or missing evidence make the serving target ambiguous. The original operation id and timeline are not recovered here. |
 | `routes.<hex_hostname>.<port>` | `ActiveRouteState { target, endpoint_port, service_id, revision_id }` | Deploy worker during route cutover; gateway and DNS watch this prefix. | Rebuildable route index. | Yes, with ambiguity checks. Rebuild from machine-local route facts and gateway/DNS last-known-good facts. Conflicting route claims must stay ambiguous until a repair operation resolves them. |
 | `machines.<machine_id>` | `ActiveMachineState { machine_id, name, activated_by }` | Machine join report / first-machine activation after machine-add completion. | Current machine index. | Partially. Current machine identity can be adopted from reconnecting machines, keeper/local authority, and NATS authorization recovery evidence. The exact historical `activated_by` operation id is operation history; it is only exact if operation history or backup survives. |
-| `nats_authorized_user.<authority_key>` | `NatsAuthorizedUser { principal, nkey_public }` | Machine credential minting; control start also adopts entries from `authorized-users.conf`. | Explicitly named durable authority. | Yes from local authority, not from inference. Rebuild by reading `authorized-users.conf` and adopting missing principals into KV before rendering. If both KV and that file are lost, the authority set is not reindexable. |
 
 Current code does not store active certificates under `KV_CORE`; active certs
 appear as operation-event payloads.
@@ -150,8 +149,8 @@ An explicit reindex after JetStream loss should:
 
 1. Recreate the bootstrap resources: `KV_CORE`, `KV_OPS`, `KV_OBS`, and
    `PLZ_OPS`.
-2. Adopt NATS authorized users from `authorized-users.conf` into
-   `KV_CORE.nats_authorized_user.*` before rendering authorization.
+2. Render NATS authorization from `authorized-users.conf`; if that file is
+   lost, the authority set is not reindexable from JetStream.
 3. Wait for machines and role processes to reconnect and publish fresh
    observations.
 4. Rebuild `KV_OBS` naturally from machine and gateway observation loops.
