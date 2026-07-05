@@ -84,9 +84,6 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
             "$JS.API.>".to_owned(),
             "$JS.ACK.>".to_owned(),
-            "$KV.KV_CORE.services.*.*".to_owned(),
-            "$KV.KV_CORE.routes.*.*".to_owned(),
-            "$KV.KV_CORE.machines.*".to_owned(),
             "$KV.KV_CORE.namespace_locks.*".to_owned(),
             "$KV.KV_OPS.>".to_owned(),
         ]
@@ -236,11 +233,8 @@ fn subject_matches(pattern: &str, subject: &str) -> bool {
 
 #[test]
 fn every_state_key_family_pattern_spans_its_rendered_keys() {
-    use ployz_core::ids::{NamespaceId, ServiceId};
-    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-    use ployz_core::state::{
-        ActiveMachineStateKey, NamespaceLockStateKey, RouteBindingStateKey, ServingTargetEntryKey,
-    };
+    use ployz_core::ids::NamespaceId;
+    use ployz_core::state::NamespaceLockStateKey;
 
     // One sample key per family, produced by the REAL production
     // constructor, matched against the family's own pattern. Driven by
@@ -248,27 +242,7 @@ fn every_state_key_family_pattern_spans_its_rendered_keys() {
     // cannot compile without a sample and cannot ship unspanned.
     fn sample_key(family: CoreStateKeyFamily) -> String {
         let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
-        let service = ServiceId::try_new("web").expect("valid service id");
         match family {
-            CoreStateKeyFamily::ServingTargetEntry => {
-                ServingTargetEntryKey::from_namespace_service(&namespace, &service)
-                    .as_str()
-                    .to_owned()
-            }
-            CoreStateKeyFamily::RouteBinding => {
-                let target = RouteTarget::new(
-                    RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-                    RoutePort::try_new(443).expect("valid route port"),
-                );
-                RouteBindingStateKey::from_target(&target)
-                    .as_str()
-                    .to_owned()
-            }
-            CoreStateKeyFamily::ActiveMachine => {
-                ActiveMachineStateKey::from_machine_id(&machine_id("machine_7"))
-                    .as_str()
-                    .to_owned()
-            }
             CoreStateKeyFamily::NamespaceLock => {
                 NamespaceLockStateKey::from_namespace_id(&namespace)
                     .as_str()

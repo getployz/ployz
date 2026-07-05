@@ -7,6 +7,7 @@ use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionMachineScope;
 use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
+use crate::machine_roster::MachineRosterStore;
 use crate::machine_runtime::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
@@ -116,6 +117,8 @@ pub async fn start_control_runtime_with_client_and_reload(
     let mint_tasks = TaskRegistry::default();
     let namespace_intent =
         NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+    let machine_roster =
+        MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone());
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         core_state.clone(),
@@ -146,7 +149,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let intent_reader = NatsIntentReader::new(client.clone());
     let intent = start_intent_runtime(
         client.clone(),
-        core_state.clone(),
+        machine_roster.clone(),
         namespace_intent,
         config.nats_authorization.machine_lifecycles_file.clone(),
         INTENT_PUBLISH_INTERVAL,
@@ -160,13 +163,14 @@ pub async fn start_control_runtime_with_client_and_reload(
         machine_update_tasks.clone(),
     );
     let machine_lifecycle_runtime = MachineLifecycleOperationRuntime::new(
+        client.clone(),
         controllers.clone(),
-        core_state.clone(),
+        machine_roster.clone(),
         config.nats_authorization.machine_lifecycles_file.clone(),
         machine_lifecycle_tasks.clone(),
     );
     let operation_api = start_operation_api_service_with_handlers(
-        client,
+        client.clone(),
         OperationApiHandlers::execute_operations(
             controllers,
             deploy_runtime,
@@ -178,7 +182,8 @@ pub async fn start_control_runtime_with_client_and_reload(
                 .first()
                 .cloned()
                 .ok_or(ControlRuntimeError::MissingDeployMachine)?,
-            core_state,
+            client.clone(),
+            machine_roster,
             observations,
             facts_reader,
             intent_reader,

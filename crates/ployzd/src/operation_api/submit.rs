@@ -142,9 +142,8 @@ pub async fn machine_update(
     }
     let operation_id = request.operation_id.clone();
     let target_machine = handlers
-        .core_state
+        .machine_roster
         .active_machine(&request.machine_id)
-        .await
         .map_err(|error| MachineUpdateError::Unavailable {
             operation_id: operation_id.clone(),
             message: error.to_string(),
@@ -219,9 +218,8 @@ async fn machine_lifecycle(
     target: ployz_core::state::MachineLifecycle,
 ) -> Result<AcceptedOperation, MachineLifecycleError> {
     let target_machine = handlers
-        .core_state
+        .machine_roster
         .active_machine(&machine_id)
-        .await
         .map_err(|error| MachineLifecycleError::Unavailable {
             operation_id: operation_id.clone(),
             message: error.to_string(),

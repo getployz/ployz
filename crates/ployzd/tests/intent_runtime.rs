@@ -3,9 +3,9 @@ use ployz_core::state::{
     ActiveMachineState, IntentSnapshot, MachineLifecycle, RouteBindingState, ServingTargetEntry,
 };
 use ployz_core::subjects::INTENT_CHANGED;
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_test_support::ids::{machine_id, namespace_revision_entry_id, operation_id, service_id};
 use ployzd::intent::{NatsIntentReader, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
 use std::time::Duration;
 
@@ -13,10 +13,8 @@ use std::time::Duration;
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     nats.bootstrap_resources().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state");
-    core_state
+    let machine_roster = temp_machine_roster();
+    machine_roster
         .replace_active_machine(&ActiveMachineState {
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
@@ -33,7 +31,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
         .expect("subscribe intent changes");
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
-        core_state,
+        machine_roster,
         temp_namespace_intent(),
         tempfile::tempdir()
             .expect("lifecycle dir")
@@ -62,12 +60,9 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
 async fn intent_reader_gets_current_intent() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     nats.bootstrap_resources().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state");
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
-        core_state,
+        temp_machine_roster(),
         temp_namespace_intent(),
         tempfile::tempdir()
             .expect("lifecycle dir")
@@ -93,10 +88,8 @@ async fn intent_reader_gets_current_intent() {
 async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     nats.bootstrap_resources().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state");
-    core_state
+    let machine_roster = temp_machine_roster();
+    machine_roster
         .replace_active_machine(&ActiveMachineState {
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
@@ -112,7 +105,7 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
         .expect("write lifecycle evidence");
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
-        core_state,
+        machine_roster,
         temp_namespace_intent(),
         lifecycle_file,
         Duration::from_secs(30),
@@ -136,9 +129,6 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
 async fn intent_reader_gets_namespace_intent_from_file() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     nats.bootstrap_resources().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state");
     let namespace_intent = temp_namespace_intent();
     namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {
@@ -159,7 +149,7 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         .expect("route binding stores");
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
-        core_state,
+        temp_machine_roster(),
         namespace_intent,
         tempfile::tempdir()
             .expect("lifecycle dir")
@@ -186,6 +176,15 @@ fn temp_namespace_intent() -> NamespaceIntentStore {
             .expect("namespace intent dir")
             .path()
             .join("namespace-intent.json"),
+    )
+}
+
+fn temp_machine_roster() -> MachineRosterStore {
+    MachineRosterStore::new(
+        tempfile::tempdir()
+            .expect("machine roster dir")
+            .path()
+            .join("machine-roster.json"),
     )
 }
 

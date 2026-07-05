@@ -10,7 +10,6 @@ use ployz_core::machine_runtime::{
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{ActiveMachineState, ServingTargetEntry};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::service_runtime::RunningNatsService;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -22,6 +21,7 @@ use ployzd::deploy_worker::{
     prepare_deploy_execution_command,
 };
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::machine_runtime::client::NatsMachineFactsReader;
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -125,10 +125,10 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
 #[tokio::test]
 async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
+    let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
@@ -168,16 +168,16 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
 #[tokio::test]
 async fn nats_preparation_excludes_draining_machines_from_placement() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
+    let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
     let mut draining = active_machine("edge_3");
     draining.lifecycle = MachineLifecycle::Draining;
-    core_state
+    machine_roster
         .replace_active_machine(&draining)
         .await
         .expect("draining edge stores");
@@ -211,10 +211,10 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
 #[tokio::test]
 async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
+    let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
@@ -260,10 +260,10 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
 #[tokio::test]
 async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
+    let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
@@ -383,7 +383,7 @@ async fn prepare_command_from_nats(
 
 struct TestNats {
     connected: ployz_test_support::nats::TestNats,
-    core_state: AsyncNatsCoreStateStore,
+    machine_roster: MachineRosterStore,
     _intent: RunningIntentRuntime,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
@@ -391,8 +391,8 @@ struct TestNats {
 }
 
 impl TestNats {
-    fn core_state(&self) -> AsyncNatsCoreStateStore {
-        self.core_state.clone()
+    fn machine_roster(&self) -> MachineRosterStore {
+        self.machine_roster.clone()
     }
 
     fn facts_reader(&self) -> NatsMachineFactsReader {
@@ -565,15 +565,13 @@ async fn test_nats() -> TestNats {
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     connected.bootstrap_resources().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&connected.jetstream)
-        .await
-        .expect("open core state store");
     let intent_dir = tempfile::tempdir().expect("intent dir");
     let namespace_intent_file = intent_dir.path().join("namespace-intent.json");
     let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
+    let machine_roster = MachineRosterStore::new(intent_dir.path().join("machine-roster.json"));
     let intent = start_intent_runtime(
         connected.controller.clone(),
-        core_state.clone(),
+        machine_roster.clone(),
         namespace_intent.clone(),
         intent_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
@@ -583,7 +581,7 @@ async fn test_nats() -> TestNats {
 
     TestNats {
         connected,
-        core_state,
+        machine_roster,
         _intent: intent,
         _intent_dir: intent_dir,
         namespace_intent,

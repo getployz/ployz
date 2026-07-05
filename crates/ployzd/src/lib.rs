@@ -26,6 +26,7 @@ pub mod gateway_source;
 pub mod intent;
 pub mod machine_credentials;
 pub mod machine_lifecycle_runtime;
+pub mod machine_roster;
 pub mod machine_runtime;
 pub mod machine_update_runtime;
 pub mod namespace_intent;

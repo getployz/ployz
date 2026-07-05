@@ -1,30 +1,23 @@
-//! Current-state records stored in JetStream KV.
+//! Runtime and intent state records.
 
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
-use crate::state_key::{id_prefixed_state_key, state_key_path};
+use crate::state_key::id_prefixed_state_key;
 use std::net::{IpAddr, SocketAddr};
 
 pub const KV_CORE_BUCKET: &str = "KV_CORE";
 pub const KV_OPS_BUCKET: &str = "KV_OPS";
 pub const KV_OBS_BUCKET: &str = "KV_OBS";
 
-pub const SERVING_TARGET_ENTRY_PREFIX: &str = "services";
-pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 pub const NAMESPACE_LOCK_STATE_PREFIX: &str = "namespace_locks";
-pub const ROUTE_BINDING_STATE_PREFIX: &str = "routes";
 pub const MACHINE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
 pub const MACHINE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "machines";
 pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 
-/// Persisted `KV_CORE.services.*` value.
-///
-/// Changing this shape intentionally breaks existing clusters unless paired
-/// with a KV cleanup or migration.
+/// Core-owned serving-target intent value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -34,10 +27,7 @@ pub struct ServingTargetEntry {
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
 }
 
-/// Persisted `KV_CORE.routes.*` value.
-///
-/// Changing this shape intentionally breaks existing clusters unless paired
-/// with a KV cleanup or migration.
+/// Core-owned route-binding intent value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -48,10 +38,7 @@ pub struct RouteBindingState {
     pub service_id: ServiceId,
 }
 
-/// Persisted `KV_CORE.machines.*` value.
-///
-/// Changing this shape intentionally breaks existing clusters unless paired
-/// with a KV cleanup or migration.
+/// Core-owned active-machine roster value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -147,95 +134,18 @@ pub enum GatewayServingStatus {
     Unavailable,
 }
 
-/// KV key for one serving target entry, scoped by namespace so equally
-/// named services in different namespaces never share a record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServingTargetEntryKey(String);
-
-impl ServingTargetEntryKey {
-    /// Segment count shared by the constructor and the wildcard pattern:
-    /// arity is stated once, so the two renderings cannot drift.
-    const ARITY: usize = 2;
-
-    #[must_use]
-    pub fn from_namespace_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
-        let segments: [&str; Self::ARITY] = [namespace_id.as_str(), service_id.as_str()];
-        Self(state_key_path(SERVING_TARGET_ENTRY_PREFIX, &segments))
-    }
-
-    /// The NATS subject pattern spanning every serving target entry key,
-    /// rendered by the same helper and arity as the constructor.
-    #[must_use]
-    pub fn wildcard_pattern() -> String {
-        state_key_path(SERVING_TARGET_ENTRY_PREFIX, &["*"; Self::ARITY])
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RouteBindingStateKey(String);
-
-impl RouteBindingStateKey {
-    /// Segment count shared by the constructor and the wildcard pattern:
-    /// arity is stated once, so the two renderings cannot drift.
-    const ARITY: usize = 2;
-
-    #[must_use]
-    pub fn from_target(target: &RouteTarget) -> Self {
-        let hostname_token = route_hostname_key_token(target);
-        let port_token = target.port.get().to_string();
-        let segments: [&str; Self::ARITY] = [hostname_token.as_str(), port_token.as_str()];
-        Self(state_key_path(ROUTE_BINDING_STATE_PREFIX, &segments))
-    }
-
-    /// The NATS subject pattern spanning every route binding key, rendered
-    /// by the same helper and arity as the constructor.
-    #[must_use]
-    pub fn wildcard_pattern() -> String {
-        state_key_path(ROUTE_BINDING_STATE_PREFIX, &["*"; Self::ARITY])
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-fn route_hostname_key_token(target: &RouteTarget) -> String {
-    let hostname = target.hostname.as_str();
-    let mut token = String::with_capacity(hostname.len() * 2);
-    for byte in hostname.bytes() {
-        write!(&mut token, "{byte:02x}").expect("writing to string cannot fail");
-    }
-    token
-}
-
-id_prefixed_state_key! { pub struct ActiveMachineStateKey; prefix: ACTIVE_MACHINE_STATE_PREFIX; fn from_machine_id(&MachineId); }
 id_prefixed_state_key! { pub struct NamespaceLockStateKey; prefix: NAMESPACE_LOCK_STATE_PREFIX; fn from_namespace_id(&NamespaceId); }
 
-/// Every KV_CORE write family. `permissions.rs` matches this exhaustively to
-/// build the controller grant, so a new key type cannot ship without an
-/// authority decision. Add new variants here, next to their key types, and
-/// extend [`CoreStateKeyFamily::ALL`].
+/// Every remaining KV_CORE write family. `permissions.rs` matches this
+/// exhaustively to build the controller grant, so a new key type cannot ship
+/// without an authority decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreStateKeyFamily {
-    ServingTargetEntry,
-    RouteBinding,
-    ActiveMachine,
     NamespaceLock,
 }
 
 impl CoreStateKeyFamily {
-    pub const ALL: [Self; 4] = [
-        Self::ServingTargetEntry,
-        Self::RouteBinding,
-        Self::ActiveMachine,
-        Self::NamespaceLock,
-    ];
+    pub const ALL: [Self; 1] = [Self::NamespaceLock];
 
     /// The NATS subject pattern spanning every key this family writes. Each
     /// arm delegates to the key type's own pattern so the grant and the key
@@ -243,9 +153,6 @@ impl CoreStateKeyFamily {
     #[must_use]
     pub fn wildcard_pattern(self) -> String {
         match self {
-            Self::ServingTargetEntry => ServingTargetEntryKey::wildcard_pattern(),
-            Self::RouteBinding => RouteBindingStateKey::wildcard_pattern(),
-            Self::ActiveMachine => ActiveMachineStateKey::wildcard_pattern(),
             Self::NamespaceLock => NamespaceLockStateKey::wildcard_pattern(),
         }
     }

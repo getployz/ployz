@@ -31,6 +31,7 @@ use ployzd::deploy_runtime::{
 };
 use ployzd::deploy_worker::DeployExecutionMachineScope;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
@@ -494,15 +495,13 @@ async fn test_nats() -> TestNats {
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
     let jetstream = nats.jetstream.clone();
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-        .await
-        .expect("open core state store");
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent =
         NamespaceIntentStore::new(lifecycle_dir.path().join("namespace-intent.json"));
+    let machine_roster = MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json"));
     let intent = start_intent_runtime(
         client.clone(),
-        core_state,
+        machine_roster,
         namespace_intent.clone(),
         lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),

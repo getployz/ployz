@@ -1,11 +1,11 @@
 //! Core-owned operator intent service.
 
 use crate::machine_lifecycle_runtime::machine_lifecycle_intent_from_file;
+use crate::machine_roster::MachineRosterStore;
 use crate::namespace_intent::NamespaceIntentStore;
 use crate::services::{intent_get_endpoint_spec, intent_service};
 use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -90,24 +90,24 @@ impl From<NatsJsonServiceRequestError> for IntentReadError {
 
 pub async fn start_intent_runtime(
     client: async_nats::Client,
-    core_state: AsyncNatsCoreStateStore,
+    machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
     machine_lifecycles_file: PathBuf,
     publish_interval: Duration,
 ) -> Result<RunningIntentRuntime, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
-    let service_core_state = core_state.clone();
+    let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
     let service_machine_lifecycles_file = machine_lifecycles_file.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
-            let core_state = service_core_state.clone();
+            let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
             let machine_lifecycles_file = service_machine_lifecycles_file.clone();
             async move {
                 intent_get_response(
                     request,
-                    &core_state,
+                    &machine_roster,
                     &namespace_intent,
                     &machine_lifecycles_file,
                 )
@@ -121,7 +121,7 @@ pub async fn start_intent_runtime(
         loop {
             interval.tick().await;
             let Ok(intent) =
-                load_intent(&core_state, &namespace_intent, &machine_lifecycles_file).await
+                load_intent(&machine_roster, &namespace_intent, &machine_lifecycles_file).await
             else {
                 continue;
             };
@@ -137,7 +137,7 @@ pub async fn start_intent_runtime(
 
 async fn intent_get_response(
     request: NatsServiceRequest,
-    core_state: &AsyncNatsCoreStateStore,
+    machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     machine_lifecycles_file: &Path,
 ) -> NatsServiceResponse {
@@ -145,20 +145,19 @@ async fn intent_get_response(
         return response;
     }
 
-    match load_intent(core_state, namespace_intent, machine_lifecycles_file).await {
+    match load_intent(machine_roster, namespace_intent, machine_lifecycles_file).await {
         Ok(intent) => NatsServiceResponse::json_ok(&intent),
         Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
     }
 }
 
 async fn load_intent(
-    core_state: &AsyncNatsCoreStateStore,
+    machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     machine_lifecycles_file: &Path,
 ) -> Result<IntentSnapshot, String> {
-    let mut active_machines = core_state
+    let mut active_machines = machine_roster
         .active_machines()
-        .await
         .map_err(|error| error.to_string())?;
     let namespace_intent = namespace_intent.load().map_err(|error| error.to_string())?;
     let lifecycle_intent = machine_lifecycle_intent_from_file(machine_lifecycles_file)

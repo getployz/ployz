@@ -5,11 +5,12 @@
 //! durable authority like the authorized-user set.
 
 use crate::controllers::OperationControllers;
+use crate::machine_roster::MachineRosterStore;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
 use ployz_core::ops::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
 use ployz_core::state::MachineLifecycle;
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::operations::AcceptedMachineLifecycleSubmission;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -24,8 +25,9 @@ use tokio::sync::Mutex;
 /// one runtime instance per evidence file.
 #[derive(Debug, Clone)]
 pub struct MachineLifecycleOperationRuntime {
+    intent_change_client: async_nats::Client,
     controllers: OperationControllers,
-    core_state: AsyncNatsCoreStateStore,
+    machine_roster: MachineRosterStore,
     evidence_file: PathBuf,
     evidence_lock: Arc<Mutex<()>>,
     task_registry: TaskRegistry,
@@ -34,14 +36,16 @@ pub struct MachineLifecycleOperationRuntime {
 impl MachineLifecycleOperationRuntime {
     #[must_use]
     pub fn new(
+        intent_change_client: async_nats::Client,
         controllers: OperationControllers,
-        core_state: AsyncNatsCoreStateStore,
+        machine_roster: MachineRosterStore,
         evidence_file: PathBuf,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
+            intent_change_client,
             controllers,
-            core_state,
+            machine_roster,
             evidence_file,
             evidence_lock: Arc::new(Mutex::new(())),
             task_registry,
@@ -66,7 +70,7 @@ impl MachineLifecycleOperationRuntime {
 
         let _evidence_guard = self.evidence_lock.lock().await;
 
-        match self.core_state.active_machine(&machine_id).await {
+        match self.machine_roster.active_machine(&machine_id) {
             Ok(Some(_)) => {}
             Ok(None) => {
                 self.record_terminal(
@@ -92,16 +96,25 @@ impl MachineLifecycleOperationRuntime {
             }
         }
 
-        if let Err(message) = record_lifecycle_evidence(&self.evidence_file, &machine_id, target) {
-            self.record_terminal(
-                &operation_id,
-                &machine_id,
-                MachineLifecycleTransition::Failed {
-                    failure: MachineLifecycleFailure::EvidenceWriteFailed { message },
-                },
-            )
-            .await;
-            return;
+        let changed = match record_lifecycle_evidence(&self.evidence_file, &machine_id, target) {
+            Ok(changed) => changed,
+            Err(message) => {
+                self.record_terminal(
+                    &operation_id,
+                    &machine_id,
+                    MachineLifecycleTransition::Failed {
+                        failure: MachineLifecycleFailure::EvidenceWriteFailed { message },
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+        if changed {
+            let _ = self
+                .intent_change_client
+                .publish(INTENT_CHANGED, Vec::new().into())
+                .await;
         }
 
         self.record_terminal(
@@ -175,6 +188,10 @@ fn record_lifecycle_evidence(
 
     let payload = serde_json::to_vec_pretty(&evidence)
         .map_err(|error| failure(format!("encode lifecycle evidence: {error}")))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| failure(format!("create lifecycle evidence directory: {error}")))?;
+    }
     let temp_path = path.with_extension("tmp");
     let mut file = std::fs::File::create(&temp_path)
         .map_err(|error| failure(format!("create lifecycle evidence temp file: {error}")))?;

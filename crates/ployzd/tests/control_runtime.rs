@@ -29,7 +29,6 @@ use ployz_core::state::{
 };
 use ployz_core::subjects::{MachineServiceEndpoint, OperationApiEndpoint, machine_service};
 use ployz_nats::connect::connect_authenticated;
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
@@ -42,6 +41,7 @@ use ployz_sdk_types::{
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
+use ployzd::machine_roster::MachineRosterStore;
 use ployzd::machine_runtime::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
@@ -115,15 +115,12 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 async fn control_runtime_does_not_mutate_machine_state_on_startup() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
+    let machine_roster = machine_roster(&config);
     let runtime = nats.start_control(&config).await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
 
     assert!(
-        core_state
+        machine_roster
             .active_machines()
-            .await
             .expect("active machines read")
             .is_empty()
     );
@@ -326,12 +323,10 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     let config = nats.control_config();
     let namespace_intent =
         NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+    let machine_roster = machine_roster(&config);
     let runtime = nats.start_control(&config).await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
@@ -433,16 +428,14 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config);
     let runtime = nats.start_control(&config).await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let machine_jetstream = jetstream::new(machine_client.clone());
     let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observations");
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
@@ -558,11 +551,9 @@ async fn control_runtime_rejects_current_machine_update() {
 async fn control_runtime_records_machine_update_without_mutating_roster_intent() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats.control_config();
+    let machine_roster = machine_roster(&config);
     let runtime = nats.start_control(&config).await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
@@ -595,9 +586,8 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
     };
     assert_eq!(reported.ployzd, Some(target_version));
     assert_eq!(
-        core_state
+        machine_roster
             .active_machine(&machine_id("machine_a"))
-            .await
             .expect("active machine reads")
             .expect("machine remains active"),
         active_machine("machine_a"),
@@ -623,16 +613,14 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config);
     let runtime = nats.start_control(&config).await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let machine_jetstream = jetstream::new(machine_client.clone());
     let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observations");
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
-        .await
-        .expect("open core state");
-    core_state
+    machine_roster
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
@@ -782,6 +770,10 @@ fn image(value: &str) -> ImageReference {
 
 fn replicas(value: u16) -> ReplicaCount {
     ReplicaCount::try_new(value).expect("valid replica count")
+}
+
+fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> MachineRosterStore {
+    MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone())
 }
 
 fn active_machine(value: &str) -> ActiveMachineState {
