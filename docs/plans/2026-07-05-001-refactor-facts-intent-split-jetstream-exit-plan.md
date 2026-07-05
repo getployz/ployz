@@ -1,14 +1,14 @@
-# Facts/Intent Split and JetStream Exit — Migration Plan
+# Facts/Intent Split and JetStream Exit — Rewrite Plan
 
 Implements ADR 0028 (machines broadcast facts; the core owns intent) and
-ADR 0029 (JetStream exits). Every phase ships green on its own; JetStream
-degrades from truth → mirror → deleted, which ADR 0001's rebuildable-index
-framing already licenses. No data migration ever runs: the destination
-state is, by construction, whatever machines say next plus what the core's
-evidence files already hold.
+ADR 0029 (JetStream exits). There are no live clusters and no persisted
+data to honor: this is a rewrite, not a migration. No dual-writes, no
+compatibility windows, no wire-format preservation — each stroke deletes
+the old subsystem and lands its replacement in the same PR. The only gate
+is that the workspace compiles and its tests pass at every merge.
 
-Design decisions were stress-tested by adversarial review; the hardening
-items it produced are marked (H#) and are requirements, not suggestions:
+The stress-test arena produced five hardening requirements (H#). They are
+requirements of the design, not of the transition:
 
 - H1: intent is rebroadcast on the same periodic drumbeat as facts —
   change-only broadcast over at-most-once transport is forbidden.
@@ -18,77 +18,71 @@ items it produced are marked (H#) and are requirements, not suggestions:
   fold never serves from facts alone.
 - H4: `ops` gather queries name unanswering machines; partial never
   renders as complete.
-- H5: readers re-list intent on every reconnect (ADR 0005).
+- H5: readers re-list intent on every reconnect.
 
-## Phase 1 — the fact snapshot and broadcast (pure addition)
+## Stroke 1 — the facts plane
 
-- One `MachineFactsSnapshot` per machine: containers with identity labels,
-  public IP, roles, applied lifecycle, cert refs, `observed_at`. Machine
-  ployzd publishes it on change (Docker events, debounced) and every 30s
-  (`OBSERVATION_PUBLISH_INTERVAL`), and answers `facts.get` (H2).
-- Machine credentials permit publishing only the machine's own facts
-  subject.
-- Existing KV observation writes continue in parallel; nothing reads the
-  broadcasts yet.
+One `MachineFactsSnapshot` per machine: containers with identity labels,
+public IP, roles, applied lifecycle, cert refs, `observed_at`. Machine
+ployzd publishes it on change (Docker events, debounced) and every 30s,
+and answers `facts.get` (H2). Machine credentials permit publishing only
+the machine's own facts subject. The core keeps a live fact cache.
 
-## Phase 2 — readers flip to facts
+Delete in the same stroke: `KV_OBS`, `observations.rs` as a store, and
+every observation-scatter key. Flip every reader — `gateway_source`,
+`dns_source`, operation-API queries, deploy-worker runtime snapshots —
+to the cache/broadcast/gather path with disk-backed last-known-good.
 
-- `gateway_source.rs`, `dns_source.rs`, and the operation-API query
-  runtimes read the core's live fact cache / broadcasts with disk-backed
-  last-known-good, instead of `KV_OBS`.
-- The deploy worker's runtime snapshots come from `facts.get` gathers.
-- `KV_OBS` writes go dark; `observations.rs` shrinks to the broadcast
-  client.
+## Stroke 2 — the intent plane and the serving commit
 
-## Phase 3 — intent files and the serving commit
+Core-owned evidence files: roster (identity, name, subnet), lifecycle,
+route bindings, serving promotions, authorized users. Written only by
+operations through the core sequencer (tmp+rename, single process, so the
+serving commit stays atomic — H3). Core serves `intent.get`, broadcasts
+`intent.changed`, rebroadcasts full intent on the drumbeat (H1); readers
+re-list on reconnect (H5). Gateways/DNS fold `intent × facts`.
 
-- Core-owned evidence files gain `route-bindings.json` and
-  `serving-promotions.json` beside the existing authorized-users and
-  machine-lifecycles files; machine roster (identity, name, subnet) moves
-  from KV machine records into the roster file written by join/add/remove
-  operations.
-- The deploy worker commits route bindings and serving promotions to
-  intent files (single-process atomic write, tmp+rename) instead of KV
-  CAS; `NamespaceStateCommitter` and its lock-checked adapter are deleted.
-- The core serves `intent.get`, broadcasts `intent.changed`, and
-  rebroadcasts full intent on the drumbeat (H1). Gateways/DNS fold
-  `intent × facts`, re-listing on reconnect (H5); serving requires a
-  promotion record (H3).
-- Delete `core_state/serving_target_entry.rs`, `core_state/route_binding.rs`,
-  `core_state/active_machine.rs` and their state-key machinery.
+Delete in the same stroke: all of `core_state/` (serving targets, route
+bindings, machine records, KV auth projection), the state-key machinery in
+`ployz-core`, `NamespaceStateCommitter` and its adapters, and the KV
+commit halves of the deploy and lifecycle runtimes.
 
-## Phase 4 — operations move to the evidence log
+## Stroke 3 — operations on evidence logs
 
-- The sequencer writes one append-only evidence file per operation; live
-  progress publishes on plain subjects; `ops watch` replays the file then
-  tails; `ops list/status` read the log and mark unanswering parties (H4).
-- The namespace lock becomes the sequencer's in-process mutex; terminal
-  dedup becomes the sequencer writing its terminal record once.
-- Delete `operations/repository*`, `operations/status_store`,
-  `core_state/namespace_lock.rs`, and the event-stream append path.
+The sequencer writes one append-only evidence file per operation; live
+progress on plain subjects; `ops watch` replays the file then tails;
+`ops list/status` read the log and mark unanswering parties (H4). The
+namespace fence becomes the sequencer's in-process mutex; terminal dedup
+becomes writing the terminal record once. Machines record their own steps
+in their fact ledgers for deep-inspect corroboration.
 
-## Phase 5 — placement bids and machine-side drain decline
+Delete in the same stroke: `operations/repository*`, `status_store`, the
+event-stream append path, `namespace_lock.rs`, and the operation-event
+message-id dedup contract (its wire pins go with it — there is no
+persisted stream left to protect).
 
-- Placement flips from the eligibility scan to live bid RPCs; draining
-  machines decline (intent consulted by the planner as well); the ADR 0027
-  end-state lands.
+## Stroke 4 — placement bids and machine-side drain
 
-## Phase 6 — JetStream off
+Placement flips from eligibility scan to live bid RPCs; draining machines
+decline (the planner consults intent as well). The ADR 0027 end-state
+lands.
 
-- `jetstream: disabled` in the NATS process config; delete `kv.rs`,
-  `streams.rs`, `schedules.rs`, bootstrap assurance, and the JetStream
-  test-support bootstrap (retiring the contention flake class).
-- Retire "Reindex" from CONTEXT.md; recovery is documented as: adopt
-  evidence files, wait one broadcast tick.
+## Stroke 5 — JetStream off
 
-## Sequencing notes
+`jetstream: disabled`; delete `kv.rs`, `streams.rs`, `schedules.rs`,
+bootstrap assurance, and the JetStream test-support bootstrap (retiring
+the contention flake class). Retire "Reindex" from CONTEXT.md; recovery is
+documented as: adopt evidence files, wait one broadcast tick.
 
-- Phases 1–2 and 3 are independent workstreams after Phase 1 lands.
-- The wire contract for the SDK/CLI is unchanged in shape through Phase 4;
-  gather-backed queries add `observed_at` / unanswered-machine fields only.
-- The point of maximum dual-run is Phases 2–3 (KV written but unread);
-  both phases delete their dual-write in the same PR that flips readers,
-  so no long-lived mirror state exists.
-- ADR 0019 (core promotion) is unchanged; after Phase 6 promotion recovers
-  intent files only, and the generation fence prevents a healed old core
-  from writing intent.
+## Notes
+
+- Strokes are dependency order, not compatibility order. 1 and 2 can be
+  built in parallel branches; 3 depends on 2 (the sequencer's home); 5 is
+  mechanical once 1–3 land.
+- Tests are rewritten with their subsystems, not preserved: the JetStream
+  fixtures die with the stores they exercised. Wire pins survive only for
+  contracts that still exist (machine RPC protocol, SDK API shapes, fact
+  snapshot and intent file schemas — pin those fresh).
+- ADR 0019 (core promotion) is unchanged; after Stroke 5 promotion
+  recovers intent files only, and the generation fence prevents a healed
+  old core from writing intent.
