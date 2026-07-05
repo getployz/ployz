@@ -350,6 +350,7 @@ async fn wake_gateway_refresh_on_nats_changes(
         };
         match opened {
             Ok(mut watchers) => {
+                let _ = refresh_wake.try_send(());
                 match watch_gateway_changes(&mut watchers, &refresh_wake, &health, shutdown).await {
                     GatewayWatchLoopEnd::Shutdown => break,
                     GatewayWatchLoopEnd::Restart => {}

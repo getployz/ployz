@@ -13,10 +13,11 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::gateway::{
-    GatewayProjectedRoute, GatewayProjectionError, GatewayProjectionUpdate, GatewayUpstream,
-    project_gateway,
+    GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
 use ployzd::gateway_source::load_gateway_projection_update_from_nats;
+use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use std::time::Duration;
 
 #[tokio::test]
 async fn gateway_source_loads_routes_and_current_observations_from_nats() {
@@ -61,7 +62,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         .await
         .expect("machine snapshot stores");
 
-    let update = load_gateway_projection_update_from_nats(&routes, &observations).await;
+    let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &observations).await;
     let GatewayProjectionUpdate::SourceAvailable(input) = update else {
         panic!("gateway source should be available, got {update:?}");
     };
@@ -82,11 +83,8 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
 }
 
 #[tokio::test]
-async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
+async fn gateway_source_reports_unreadable_intent_as_unavailable() {
     let nats = test_nats().await;
-    let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
@@ -107,14 +105,12 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
         .await
         .expect("store corrupt route key");
 
-    let update = load_gateway_projection_update_from_nats(&routes, &observations).await;
+    let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &observations).await;
 
-    let GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource { message }) =
-        update
-    else {
-        panic!("gateway source should be invalid, got {update:?}");
-    };
-    assert!(message.contains("route binding state key"));
+    assert!(matches!(
+        update,
+        GatewayProjectionUpdate::SourceUnavailable(_)
+    ));
 }
 
 struct TestNats {
@@ -124,6 +120,8 @@ struct TestNats {
     /// The gateway machine's Machine principal: the read side (the gateway
     /// runs as the machine's Machine user in v1).
     machine_jetstream: jetstream::Context,
+    intent_reader: NatsIntentReader,
+    _intent: RunningIntentRuntime,
     /// `machine_7`'s Machine principal: each machine may only write its own
     /// observation keys, so the workload machine seeds its own snapshot.
     machine_7_jetstream: jetstream::Context,
@@ -137,14 +135,24 @@ async fn test_nats() -> TestNats {
     ])
     .await;
     nats.bootstrap_resources().await;
-    let machine_jetstream = jetstream::new(nats.machine_client(&gateway_machine).await);
+    let machine_client = nats.machine_client(&gateway_machine).await;
+    let machine_jetstream = jetstream::new(machine_client.clone());
     let machine_7_jetstream = jetstream::new(nats.machine_client(&machine_id("machine_7")).await);
     let jetstream = nats.jetstream.clone();
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    let intent = start_intent_runtime(nats.controller.clone(), core_state, Duration::from_secs(30))
+        .await
+        .expect("intent runtime starts");
 
     TestNats {
         _nats: nats,
         jetstream,
         machine_jetstream,
+        intent_reader: NatsIntentReader::new(machine_client)
+            .with_request_timeout(Duration::from_secs(1)),
+        _intent: intent,
         machine_7_jetstream,
     }
 }
