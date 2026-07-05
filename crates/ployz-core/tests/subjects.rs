@@ -98,10 +98,6 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.svc.machine.machine_7.facts.get"
     );
     assert_eq!(
-        machine_service(&machine_id, MachineServiceEndpoint::PlacementBid),
-        "plz.v1.svc.machine.machine_7.placement.bid"
-    );
-    assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::ContainerStop),
         "plz.v1.svc.machine.machine_7.container.stop"
     );

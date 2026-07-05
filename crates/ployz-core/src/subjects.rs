@@ -202,7 +202,6 @@ impl DeployRunningStage {
 pub enum MachineServiceEndpoint {
     Inspect,
     FactsGet,
-    PlacementBid,
     ContainerEnsureEndpointNetwork,
     ContainerRun,
     ContainerStop,
@@ -219,7 +218,6 @@ impl MachineServiceEndpoint {
         match self {
             Self::Inspect => "inspect",
             Self::FactsGet => "facts.get",
-            Self::PlacementBid => "placement.bid",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerRun => "container.run",
             Self::ContainerStop => "container.stop",

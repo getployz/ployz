@@ -10,8 +10,7 @@ use crate::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachinePlacementBidDomainError,
-    MachinePlacementBidRpcOk, MachinePlacementBidRpcRequest, MachineRpcResponder,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder,
     MachineRpcResponse, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcRequest, MachineSubstrateUpdateDomainError,
     MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest,
@@ -50,12 +49,6 @@ pub struct NatsMachineDataplanePreparer {
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineFactsReader {
-    client: async_nats::Client,
-    request_timeout: Duration,
-}
-
-#[derive(Debug, Clone)]
-pub struct NatsMachinePlacementBidder {
     client: async_nats::Client,
     request_timeout: Duration,
 }
@@ -107,14 +100,6 @@ pub enum MachineFactsReadRuntimeError {
         machine_id: MachineId,
         message: ployz_core::ops::FailureMessage,
     },
-    Unavailable {
-        machine_id: MachineId,
-        reason: MachineRuntimeUnavailableReason,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachinePlacementBidRuntimeError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
@@ -241,66 +226,22 @@ impl NatsMachineFactsReader {
     }
 }
 
-impl NatsMachinePlacementBidder {
-    #[must_use]
-    pub fn new(client: async_nats::Client) -> Self {
-        Self {
-            client,
-            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
-        }
-    }
-
-    #[must_use]
-    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
-        self.request_timeout = request_timeout;
-        self
-    }
-
-    pub async fn placement_bid(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<(), MachinePlacementBidRuntimeError> {
-        call_machine::<MachinePlacementBidRpcOk, MachinePlacementBidDomainError>(
-            &self.client,
-            self.request_timeout,
-            machine_id,
-            MachineServiceEndpoint::PlacementBid,
-            &MachinePlacementBidRpcRequest {},
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => MachinePlacementBidRuntimeError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason,
-            },
-            MachineCallError::Domain(error) => match error {},
-        })
-    }
-}
-
 pub(crate) struct MachinePlacementFacts {
     pub machine_id: MachineId,
     pub lifecycle: MachineLifecycle,
-    pub placement_available: bool,
     pub containers: Option<MachineContainerObservationSnapshot>,
 }
 
 pub(crate) async fn read_machine_placement_facts(
     facts_reader: &NatsMachineFactsReader,
-    placement_bidder: &NatsMachinePlacementBidder,
     machine_lifecycles: impl IntoIterator<Item = (MachineId, MachineLifecycle)>,
 ) -> Vec<MachinePlacementFacts> {
     let mut reads = stream::iter(machine_lifecycles)
         .map(|(machine_id, lifecycle)| async move {
-            let (placement, facts) = tokio::join!(
-                placement_bidder.placement_bid(&machine_id),
-                facts_reader.machine_facts(&machine_id)
-            );
+            let facts = facts_reader.machine_facts(&machine_id).await;
             MachinePlacementFacts {
                 machine_id,
                 lifecycle,
-                placement_available: placement.is_ok(),
                 containers: facts.ok().map(|facts| facts.containers().clone()),
             }
         })

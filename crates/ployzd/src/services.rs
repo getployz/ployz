@@ -140,7 +140,6 @@ pub fn machine_runtime_service(machine_id: &MachineId) -> NatsServiceSpec {
         vec![
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsGet),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::PlacementBid),
             machine_endpoint_spec(
                 machine_id,
                 MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
@@ -178,7 +177,6 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
     match endpoint {
         MachineServiceEndpoint::Inspect => "machine.inspect",
         MachineServiceEndpoint::FactsGet => "machine.facts.get",
-        MachineServiceEndpoint::PlacementBid => "machine.placement.bid",
         MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
             "machine.container.ensure_endpoint_network"
         }

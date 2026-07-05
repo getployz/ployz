@@ -11,7 +11,7 @@ use crate::deploy_worker::{
 use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
     MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader, NatsMachinePlacementBidder,
+    NatsMachineFactsReader,
 };
 use crate::namespace_intent::NamespaceIntentStore;
 use crate::operation_log::{
@@ -48,7 +48,6 @@ where
     } = stores;
     let DeployOperationPorts {
         facts_reader,
-        placement_bidder,
         intent_reader,
         dataplane,
         machine_runtime,
@@ -61,7 +60,6 @@ where
         machine_candidates,
         intent_reader,
         facts_reader,
-        placement_bidder,
         step_timeout,
     )
     .await
@@ -132,7 +130,6 @@ pub struct DeployOperationStores {
 
 pub struct DeployOperationPorts<'a, D, N, H> {
     pub facts_reader: &'a NatsMachineFactsReader,
-    pub placement_bidder: &'a NatsMachinePlacementBidder,
     pub intent_reader: &'a NatsIntentReader,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
@@ -300,8 +297,6 @@ impl DeployOperationRuntime {
             .with_request_timeout(self.step_timeout);
         let facts_reader = NatsMachineFactsReader::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
-        let placement_bidder = NatsMachinePlacementBidder::new(self.client.clone())
-            .with_request_timeout(self.step_timeout);
         let mut health_checker =
             MachineFactsHealthChecker::new(facts_reader.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
         let intent_reader =
@@ -321,7 +316,6 @@ impl DeployOperationRuntime {
             },
             DeployOperationPorts {
                 facts_reader: &facts_reader,
-                placement_bidder: &placement_bidder,
                 intent_reader: &intent_reader,
                 dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,

@@ -2,7 +2,7 @@
 
 use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
-    NatsMachineFactsReader, NatsMachinePlacementBidder, read_machine_placement_facts,
+    NatsMachineFactsReader, read_machine_placement_facts,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
@@ -37,7 +37,6 @@ pub async fn load_deploy_execution_facts_from_nats(
     fallback_candidates: DeployMachineCandidates,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
-    placement_bidder: &NatsMachinePlacementBidder,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent =
@@ -59,7 +58,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
     let placement_facts =
-        read_machine_placement_facts(facts_reader, placement_bidder, machine_lifecycles).await;
+        read_machine_placement_facts(facts_reader, machine_lifecycles).await;
     let observed_machines = placement_facts
         .iter()
         .filter_map(|facts| facts.containers.clone())
@@ -140,7 +139,11 @@ fn classify_machine_usability(
             continue;
         }
 
-        if facts.placement_available && facts.containers.is_some() {
+        // Eligibility is reachability plus operator intent: a machine that
+        // answered with its facts and is not draining can take work. Placement
+        // does not ask a machine to bid — a dead machine is silent here and
+        // fails again at the point of use (ADR 0027).
+        if facts.containers.is_some() {
             eligible.push(facts.machine_id.clone());
             continue;
         }

@@ -94,30 +94,6 @@ pub enum MachineFactsGetDomainError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachinePlacementBidRpcRequest {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachinePlacementBidRpcOk {
-    pub machine_id: MachineId,
-}
-
-impl MachineRpcResponder for MachinePlacementBidRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id } = self;
-        machine_id
-    }
-}
-
-pub type MachinePlacementBidRpcResponse =
-    MachineRpcResponse<MachinePlacementBidRpcOk, MachinePlacementBidDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachinePlacementBidDomainError {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineEnsureEndpointNetworkDomainError {
     EnsureFailed { message: FailureMessage },
@@ -649,34 +625,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn placement_bid_wire_shape_is_pinned() {
-        let request = MachinePlacementBidRpcRequest {};
-        let request_json = json!({});
-        assert_eq!(
-            serde_json::to_value(&request).expect("request serializes"),
-            request_json
-        );
-        assert_eq!(
-            serde_json::from_value::<MachinePlacementBidRpcRequest>(request_json)
-                .expect("request deserializes"),
-            request
-        );
-
-        let ok = MachinePlacementBidRpcResponse::Ok(MachinePlacementBidRpcOk {
-            machine_id: machine_id("machine_a"),
-        });
-        let ok_json = json!({ "status": "ok", "machine_id": "machine_a" });
-        assert_eq!(
-            serde_json::to_value(&ok).expect("response serializes"),
-            ok_json
-        );
-        assert_eq!(
-            serde_json::from_value::<MachinePlacementBidRpcResponse>(ok_json)
-                .expect("response deserializes"),
-            ok
-        );
-    }
 
     #[test]
     fn container_run_response_wire_shape_is_pinned() {
