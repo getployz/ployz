@@ -5,6 +5,7 @@ use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionMachineScope;
+use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use crate::machine_lifecycle_runtime::{
     MachineLifecycleOperationRuntime, adopt_machine_lifecycles_from_file,
 };
@@ -29,8 +30,10 @@ use std::fmt;
 use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const INTENT_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct RunningControlRuntime {
+    intent: RunningIntentRuntime,
     operation_api: RunningNatsService,
     deploy_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
@@ -42,6 +45,7 @@ pub struct RunningControlRuntime {
 impl RunningControlRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
+        self.intent.shutdown().await?;
         self.deploy_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
@@ -151,6 +155,10 @@ pub async fn start_control_runtime_with_client_and_reload(
         .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let facts_reader = NatsMachineFactsReader::new(client.clone());
+    let intent_reader = NatsIntentReader::new(client.clone());
+    let intent = start_intent_runtime(client.clone(), core_state.clone(), INTENT_PUBLISH_INTERVAL)
+        .await
+        .map_err(ControlRuntimeError::StartIntent)?;
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update_runtime = MachineUpdateOperationRuntime::new(
         controllers.clone(),
@@ -180,6 +188,7 @@ pub async fn start_control_runtime_with_client_and_reload(
             core_state,
             observations,
             facts_reader,
+            intent_reader,
             logs_tailer,
         ),
     )
@@ -187,6 +196,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     .map_err(ControlRuntimeError::StartOperationApi)?;
 
     Ok(RunningControlRuntime {
+        intent,
         operation_api,
         deploy_tasks,
         machine_update_tasks,
@@ -223,6 +233,7 @@ pub enum ControlRuntimeError {
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
     AdoptMachineLifecycles(ployz_core::ops::FailureMessage),
+    StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
@@ -269,6 +280,9 @@ impl fmt::Display for ControlRuntimeError {
                     formatter,
                     "failed to reconcile unfinished machine-add mints: {error}"
                 )
+            }
+            Self::StartIntent(error) => {
+                write!(formatter, "failed to start intent service: {error:?}")
             }
             Self::StartOperationApi(error) => {
                 write!(

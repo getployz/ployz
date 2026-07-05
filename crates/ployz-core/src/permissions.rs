@@ -17,8 +17,9 @@ use crate::state::{
     MachineContainerObservationKey, MachinePublicIpObservationKey,
 };
 use crate::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
-    OPS_STREAM_SUBJECT, machine_facts, machine_observation_scope, machine_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
+    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, machine_facts,
+    machine_observation_scope, machine_service_scope,
 };
 
 const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
@@ -125,6 +126,7 @@ impl NatsPermissionProfile {
                 // v1, so this profile carries their read-only route-state
                 // access (KV_CORE reads stay read-only via the publish deny).
                 let mut publish_allow = request_reply_publications(&principal);
+                publish_allow.push(INTENT_GET.to_owned());
                 publish_allow.push(machine_facts(machine_id));
                 publish_allow.push(machine_observation_scope(machine_id));
                 publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
@@ -186,6 +188,8 @@ fn machine_service_client_publications() -> SubjectPermissions {
 fn api_service_server_subscriptions(inbox_scope: String) -> SubjectPermissions {
     SubjectPermissions::allowing([
         API_SERVICE_SCOPE.to_owned(),
+        INTENT_CHANGED.to_owned(),
+        INTENT_GET.to_owned(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])
@@ -198,6 +202,7 @@ fn machine_service_server_subscriptions(
 ) -> SubjectPermissions {
     SubjectPermissions::allowing([
         machine_service_scope(machine_id),
+        INTENT_CHANGED.to_owned(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])
@@ -210,6 +215,8 @@ fn controller_publications() -> SubjectPermissions {
     allow.extend(machine_service_client_publications().into_allowed_subjects());
     allow.extend([
         OPS_STREAM_SUBJECT.to_owned(),
+        INTENT_GET.to_owned(),
+        INTENT_CHANGED.to_owned(),
         JETSTREAM_API_SCOPE.to_owned(),
         JETSTREAM_ACK_SCOPE.to_owned(),
     ]);

@@ -1,13 +1,13 @@
-//! Load deploy execution facts from core state and fresh machine facts RPCs.
+//! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
+use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::NatsMachineFactsReader;
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::UnusableMachine;
-use ployz_core::state::{MachineUsabilityReason, placement_rejection};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_core::state::{IntentSnapshot, MachineUsabilityReason, placement_rejection};
 use std::fmt;
 use std::time::Duration;
 
@@ -35,33 +35,26 @@ impl DeployExecutionMachineScope {
 pub async fn load_deploy_execution_facts_from_nats(
     request: &DeployRequest,
     machine_scope: DeployExecutionMachineScope,
-    core_state: &AsyncNatsCoreStateStore,
+    intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let route_bindings = async {
-        core_state
-            .route_bindings()
+    let intent =
+        intent_reader
+            .intent()
             .await
-            .map_err(|source| DeployFactLoadError::RouteBindingsRead {
+            .map_err(|source| DeployFactLoadError::IntentRead {
                 message: source.to_string(),
-            })
-    };
-    let serving_entries = async {
-        core_state.serving_target_entries().await.map_err(|source| {
-            DeployFactLoadError::ServingTargetEntriesRead {
-                message: source.to_string(),
-            }
-        })
-    };
-    let machine_scope = load_active_machine_scope(core_state, machine_scope);
-    let (route_bindings, serving_entries, (mut machine_scope, mut unusable_machines)) =
-        tokio::try_join!(route_bindings, serving_entries, machine_scope)?;
-    let namespace_route_bindings = route_bindings
+            })?;
+    let (mut machine_scope, mut unusable_machines) =
+        load_active_machine_scope(&intent, machine_scope);
+    let namespace_route_bindings = intent
+        .route_bindings
         .into_iter()
         .filter(|binding| binding.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let namespace_serving_entries = serving_entries
+    let namespace_serving_entries = intent
+        .serving_target_entries
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
@@ -116,40 +109,35 @@ fn routed_dataplane_machines(
 /// Durable operator intent builds the candidate scope first. Fresh
 /// machine-facts RPCs later decide which candidates have usable operation-time
 /// runtime evidence.
-async fn load_active_machine_scope(
-    core_state: &AsyncNatsCoreStateStore,
+fn load_active_machine_scope(
+    intent: &IntentSnapshot,
     fallback: DeployExecutionMachineScope,
-) -> Result<(DeployExecutionMachineScope, Vec<UnusableMachine>), DeployFactLoadError> {
-    let machines = core_state.active_machines().await.map_err(|source| {
-        DeployFactLoadError::ActiveMachineRead {
-            message: source.to_string(),
-        }
-    })?;
-    if machines.is_empty() {
-        return Ok((fallback, Vec::new()));
+) -> (DeployExecutionMachineScope, Vec<UnusableMachine>) {
+    if intent.active_machines.is_empty() {
+        return (fallback, Vec::new());
     }
 
     let mut eligible = Vec::new();
     let mut observed_ids = Vec::new();
     let mut unusable = Vec::new();
-    for machine in machines {
+    for machine in &intent.active_machines {
         observed_ids.push(machine.machine_id.clone());
         match placement_rejection(machine.lifecycle) {
-            None => eligible.push(machine.machine_id),
+            None => eligible.push(machine.machine_id.clone()),
             Some(reason) => unusable.push(UnusableMachine {
-                machine_id: machine.machine_id,
+                machine_id: machine.machine_id.clone(),
                 reason,
             }),
         }
     }
 
-    Ok((
+    (
         DeployExecutionMachineScope {
             eligible_machines: eligible,
             observed_machine_ids: observed_ids,
         },
         unusable,
-    ))
+    )
 }
 
 async fn load_machine_snapshots(
@@ -193,26 +181,14 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
 /// carries the rendered store-error message as failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
-    RouteBindingsRead { message: String },
-    ServingTargetEntriesRead { message: String },
-    ActiveMachineRead { message: String },
+    IntentRead { message: String },
 }
 
 impl fmt::Display for DeployFactLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RouteBindingsRead { message } => write!(
-                formatter,
-                "route binding state could not be read: {}",
-                message
-            ),
-            Self::ServingTargetEntriesRead { message } => write!(
-                formatter,
-                "serving target entries could not be read: {}",
-                message
-            ),
-            Self::ActiveMachineRead { message } => {
-                write!(formatter, "active machines could not be read: {message}")
+            Self::IntentRead { message } => {
+                write!(formatter, "intent could not be read: {message}")
             }
         }
     }

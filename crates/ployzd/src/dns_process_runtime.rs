@@ -7,10 +7,10 @@
 use crate::config::DnsProcessConfig;
 use crate::dns::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
 use crate::dns_source::load_dns_projection_update_from_nats;
+use crate::intent::NatsIntentReader;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
@@ -155,7 +155,7 @@ impl DnsProcessSource {
         runtime: &Mutex<DnsRuntime>,
     ) -> Result<DnsRuntimeTick, DnsProcessRuntimeError> {
         let update = load_dns_projection_update_from_nats(
-            &self.stores.core_state,
+            &self.stores.intent_reader,
             &self.stores.observations,
         )
         .await;
@@ -166,28 +166,23 @@ impl DnsProcessSource {
 }
 
 struct DnsProcessStores {
-    core_state: AsyncNatsCoreStateStore,
+    intent_reader: NatsIntentReader,
     observations: AsyncNatsObservationStore,
 }
 
 async fn open_dns_process_stores(
     client: NatsClient,
 ) -> Result<DnsProcessStores, DnsProcessRuntimeError> {
-    let jetstream = async_nats::jetstream::new(client);
-    let open_core_state = async {
-        AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-            .await
-            .map_err(DnsProcessRuntimeError::OpenCoreState)
-    };
+    let jetstream = async_nats::jetstream::new(client.clone());
     let open_observations = async {
         AsyncNatsObservationStore::from_jetstream(&jetstream)
             .await
             .map_err(DnsProcessRuntimeError::OpenObservations)
     };
-    let (core_state, observations) = tokio::try_join!(open_core_state, open_observations)?;
+    let observations = open_observations.await?;
 
     Ok(DnsProcessStores {
-        core_state,
+        intent_reader: NatsIntentReader::new(client),
         observations,
     })
 }
@@ -265,7 +260,6 @@ pub async fn run_dns_until_shutdown(
 pub enum DnsProcessRuntimeError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
-    OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     RefreshTimedOut { timeout: Duration },
     ShutdownSignal(std::io::Error),
@@ -276,9 +270,6 @@ impl fmt::Display for DnsProcessRuntimeError {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
             Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::OpenCoreState(error) => {
-                write!(formatter, "failed to open core state store: {error}")
-            }
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")
             }

@@ -23,6 +23,7 @@ pub mod gateway_pingora;
 pub mod gateway_process_runtime;
 pub mod gateway_runtime;
 pub mod gateway_source;
+pub mod intent;
 pub mod machine_credentials;
 pub mod machine_lifecycle_runtime;
 pub mod machine_runtime;
