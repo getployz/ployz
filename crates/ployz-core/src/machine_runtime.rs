@@ -7,33 +7,11 @@ use std::time::Duration;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
-use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
-use crate::ops::MachineSubstrateVersions;
-use crate::state::{MachineLifecycle, MachinePublicIpObservation};
+use crate::state::MachinePublicIpObservation;
 
-/// How often each machine publishes its own facts. Operation planning gathers
-/// fresh facts by RPC; periodic broadcasts feed passive readers.
+/// How often each machine refreshes machine-owned observations. Operation
+/// planning gathers fresh facts by RPC.
 pub const OBSERVATION_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
-
-pub const MACHINE_FACTS_PUBLISH_INTERVAL: Duration = OBSERVATION_PUBLISH_INTERVAL;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum MachineFactsRole {
-    Control,
-    Machine,
-    Gateway,
-    Dns,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct MachineCertificateRef {
-    pub artifact_digest: InstallSha256Digest,
-    pub machine_path: AbsoluteInstallPath,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -45,10 +23,6 @@ pub struct MachineFactsSnapshot {
     containers: MachineContainerObservationSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     public_ip: Option<MachinePublicIpObservation>,
-    roles: Vec<MachineFactsRole>,
-    lifecycle: MachineLifecycle,
-    substrate_versions: MachineSubstrateVersions,
-    certificates: Vec<MachineCertificateRef>,
     observed_at_unix_ms: u64,
 }
 
@@ -57,10 +31,6 @@ impl MachineFactsSnapshot {
         machine_id: MachineId,
         containers: MachineContainerObservationSnapshot,
         public_ip: Option<MachinePublicIpObservation>,
-        roles: Vec<MachineFactsRole>,
-        lifecycle: MachineLifecycle,
-        substrate_versions: MachineSubstrateVersions,
-        certificates: Vec<MachineCertificateRef>,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
         if containers.machine_id() != &machine_id {
@@ -82,10 +52,6 @@ impl MachineFactsSnapshot {
             machine_id,
             containers,
             public_ip,
-            roles,
-            lifecycle,
-            substrate_versions,
-            certificates,
             observed_at_unix_ms,
         })
     }
@@ -103,26 +69,6 @@ impl MachineFactsSnapshot {
     #[must_use]
     pub fn public_ip(&self) -> Option<&MachinePublicIpObservation> {
         self.public_ip.as_ref()
-    }
-
-    #[must_use]
-    pub fn roles(&self) -> &[MachineFactsRole] {
-        &self.roles
-    }
-
-    #[must_use]
-    pub const fn lifecycle(&self) -> MachineLifecycle {
-        self.lifecycle
-    }
-
-    #[must_use]
-    pub const fn substrate_versions(&self) -> &MachineSubstrateVersions {
-        &self.substrate_versions
-    }
-
-    #[must_use]
-    pub fn certificates(&self) -> &[MachineCertificateRef] {
-        &self.certificates
     }
 
     #[must_use]
@@ -160,10 +106,6 @@ struct MachineFactsSnapshotWire {
     containers: MachineContainerObservationSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     public_ip: Option<MachinePublicIpObservation>,
-    roles: Vec<MachineFactsRole>,
-    lifecycle: MachineLifecycle,
-    substrate_versions: MachineSubstrateVersions,
-    certificates: Vec<MachineCertificateRef>,
     observed_at_unix_ms: u64,
 }
 
@@ -175,10 +117,6 @@ impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
             value.machine_id,
             value.containers,
             value.public_ip,
-            value.roles,
-            value.lifecycle,
-            value.substrate_versions,
-            value.certificates,
             value.observed_at_unix_ms,
         )
     }
@@ -190,10 +128,6 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
             machine_id: value.machine_id,
             containers: value.containers,
             public_ip: value.public_ip,
-            roles: value.roles,
-            lifecycle: value.lifecycle,
-            substrate_versions: value.substrate_versions,
-            certificates: value.certificates,
             observed_at_unix_ms: value.observed_at_unix_ms,
         }
     }

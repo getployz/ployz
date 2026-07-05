@@ -9,17 +9,12 @@ use fixtures::*;
 use futures_util::StreamExt;
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
-use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot, MachineFactsRole, MachineFactsSnapshot,
-};
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
-    MachineSubstrateVersions, OperationStatus,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
-use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
@@ -38,6 +33,7 @@ use ployzd::machine_runtime::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
 use ployzd::namespace_intent::NamespaceIntentStore;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
@@ -345,10 +341,8 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         .expect("deploy operation accepted");
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    nats.jetstream
-        .delete_key_value(KV_CORE_BUCKET)
-        .await
-        .expect("delete core state bucket");
+    std::fs::write(&nats.namespace_intent_file, b"{")
+        .expect("namespace intent evidence is corrupted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
@@ -474,7 +468,9 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     _intent: RunningIntentRuntime,
+    _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
+    namespace_intent_file: PathBuf,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -496,8 +492,8 @@ async fn test_nats() -> TestNats {
     let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
     let jetstream = nats.jetstream.clone();
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
-    let namespace_intent =
-        NamespaceIntentStore::new(lifecycle_dir.path().join("namespace-intent.json"));
+    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
+    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
     let machine_roster = MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json"));
     let intent = start_intent_runtime(
         client.clone(),
@@ -512,7 +508,9 @@ async fn test_nats() -> TestNats {
     TestNats {
         _nats: nats,
         _intent: intent,
+        _intent_dir: lifecycle_dir,
         namespace_intent,
+        namespace_intent_file,
         client,
         machine_a,
         machine_slow,
@@ -583,10 +581,6 @@ fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsS
         MachineContainerObservationSnapshot::try_new(machine_id.clone(), [])
             .expect("empty machine snapshot is valid"),
         None,
-        vec![MachineFactsRole::Machine],
-        MachineLifecycle::Active,
-        MachineSubstrateVersions::default(),
-        Vec::new(),
         1,
     )
     .expect("empty machine facts are valid")

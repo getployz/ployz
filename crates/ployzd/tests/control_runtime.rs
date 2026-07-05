@@ -13,9 +13,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{MachineId, NamespaceRevisionEntryId};
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
-use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot, MachineFactsRole, MachineFactsSnapshot,
-};
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, MachineSubstrateVersions, OperationStatus,
     RouteTarget,
@@ -890,13 +888,6 @@ fn machine_facts(
             machine_id: machine_id.clone(),
             public_ip,
         }),
-        vec![MachineFactsRole::Machine],
-        MachineLifecycle::Active,
-        MachineSubstrateVersions {
-            ployzd: None,
-            keeper: None,
-        },
-        Vec::new(),
         1,
     )
     .expect("machine facts are valid")
