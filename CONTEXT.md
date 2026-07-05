@@ -228,6 +228,10 @@ _Avoid_: Recovery version, failover counter
 A local operator action on an existing joined machine that makes that machine the Control-Plane Core after core loss. It preserves the cluster identity, increments the Control-Plane Epoch, and is authorized by local root access plus existing machine-held cluster material rather than Cloud.
 _Avoid_: Cloud failover, founder failover, provisioned replacement core
 
+**Reachable Machine**:
+A machine observed to accept inbound control-plane connections at a public address, so peers can dial into it. Reachability is observed from connection source addresses, never declared at install. It is the eligibility basis for core promotion candidacy and peer dial-in, and the same observation later informs which machines suit public roles such as DNS answers; it is not machine lifecycle, placement eligibility, or a configured attribute.
+_Avoid_: Stable machine, public machine, gateway node, declared reachability
+
 **Local Authority**:
 Durable state outside core intent, owned by a machine or role process, that can be trusted during recovery for the specific fact that component owns.
 _Avoid_: Cache

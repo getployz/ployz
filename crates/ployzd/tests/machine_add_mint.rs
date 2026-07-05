@@ -7,8 +7,8 @@
 //! fence and the ADR-0001 authority-file durability rules.
 
 use ployz_core::machine::MachineAddFailure;
-use ployz_core::ops::MachineAddOperationState;
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
+use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
 use ployz_core::permissions::core_state_kv_write_scope;
 use ployz_core::roles::InstallRolePolicy;
@@ -168,15 +168,13 @@ async fn concurrent_machine_adds_both_render_their_keys() {
         .expect("control runtime shuts down");
 }
 
-/// ADR-0001 durability: with a pre-existing file containing an unknown
-/// user and an empty KV set, startup adopts the entry and a subsequent
-/// render does not shrink the file.
+/// File authority durability: with a pre-existing file containing an
+/// unknown user, startup and a subsequent render preserve the entry.
 #[tokio::test]
-async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
+async fn startup_preserves_existing_authorized_users_when_rendering() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
-    // Plant an unknown principal in the recovery-evidence file before
-    // control ever runs (KV is empty: fresh JetStream).
+    // Plant an unknown principal in the authority file before control runs.
     let ghost = nkeys::KeyPair::new_user();
     let ghost_public =
         NatsUserPublicKey::try_new(ghost.public_key()).expect("generated public key is valid");
@@ -207,7 +205,7 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     let api = nats.api();
 
     // Trigger a render through a real machine-add.
-    let accepted = machine_add(&api, "op_adopt", "idem_adopt", "machine_new").await;
+    let accepted = machine_add(&api, "op_preserve", "idem_preserve", "machine_new").await;
     redeem_when_ready(&api, &accepted.join_token).await;
 
     let rendered = std::fs::read_to_string(nats.server().authorized_users_path())
@@ -216,17 +214,17 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     assert_eq!(
         rendered_principal_key(&users, "machine_ghost"),
         Some(ghost_public),
-        "adopted unknown user survives the render (never shrink)"
+        "unknown user survives the render"
     );
     assert!(
         rendered_principal_key(&users, "machine_new").is_some(),
-        "minted user is rendered alongside the adopted one"
+        "minted user is rendered alongside the existing one"
     );
     assert!(
         users.iter().any(|user| {
             user.principal == NatsPrincipal::User && user.nkey_public == cloud_public
         }),
-        "adopted extra User credential survives the render"
+        "extra User credential survives the render"
     );
 
     runtime

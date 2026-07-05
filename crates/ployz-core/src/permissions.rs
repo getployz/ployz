@@ -7,21 +7,18 @@
 //! so a low-privilege credential cannot sniff another client's replies.
 //!
 //! There is no Gateway principal in v1: gateway and DNS processes
-//! authenticate as their machine's `Machine{machine_id}` user, and the Machine
-//! profile carries the read-only route-state subjects they need.
+//! authenticate as their machine's `Machine{machine_id}` user, and read
+//! operator intent through the core intent service.
 
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
-use crate::state::{
-    CoreStateKeyFamily, GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
-    MachineContainerObservationKey, MachinePublicIpObservationKey,
-};
+use crate::state::{CoreStateKeyFamily, KV_CORE_BUCKET, KV_OPS_BUCKET};
 use crate::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
-    OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
+    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status, gateway_status_scope,
+    machine_facts, machine_facts_scope, machine_service_scope,
 };
 
-const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
@@ -66,26 +63,6 @@ pub fn operation_status_kv_write_scope() -> String {
     format!("$KV.{KV_OPS_BUCKET}.>")
 }
 
-/// A machine's observation writes in `KV_OBS`, fenced to its own keys.
-///
-/// The subjects derive from the same typed keys the observation store
-/// writes (`containers.<machine>`, `machines.<machine>.public_ip`,
-/// `gateways.<machine>.status`), so one machine's Machine credential cannot
-/// overwrite another machine's observations — routing and serving
-/// eligibility read these. Machines keep read access to the whole bucket via
-/// [`kv_read_js_api_subjects`].
-#[must_use]
-pub fn machine_observation_kv_write_subjects(machine_id: &MachineId) -> [String; 3] {
-    let containers = MachineContainerObservationKey::from_machine_id(machine_id);
-    let public_ip = MachinePublicIpObservationKey::from_machine_id(machine_id);
-    let gateway_status = GatewayStatusObservationKey::from_machine_id(machine_id);
-    [
-        format!("$KV.{KV_OBS_BUCKET}.{}", containers.as_str()),
-        format!("$KV.{KV_OBS_BUCKET}.{}", public_ip.as_str()),
-        format!("$KV.{KV_OBS_BUCKET}.{}", gateway_status.as_str()),
-    ]
-}
-
 /// JetStream API subjects a client publishes to for read-only access to one
 /// KV bucket: stream info, direct gets, and ordered-consumer lifecycle for
 /// watches/scans. Replies and watch deliveries arrive on the client's own
@@ -121,18 +98,13 @@ impl NatsPermissionProfile {
         let inbox_scope = inbox_subscribe_scope(&principal);
         match &principal {
             NatsPrincipal::Machine { machine_id } => {
-                // Gateway and DNS authenticate as the machine's Machine user in
-                // v1, so this profile carries their read-only route-state
-                // access (KV_CORE reads stay read-only via the publish deny).
                 let mut publish_allow = request_reply_publications(&principal);
-                publish_allow.push(machine_observation_scope(machine_id));
-                publish_allow.extend(machine_observation_kv_write_subjects(machine_id));
-                publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
-                publish_allow.extend(kv_read_js_api_subjects(KV_CORE_BUCKET));
+                publish_allow.push(INTENT_GET.to_owned());
+                publish_allow.push(machine_facts(machine_id));
+                publish_allow.push(gateway_status(machine_id));
                 Self {
                     principal: principal.clone(),
-                    publish: SubjectPermissions::allowing_all(publish_allow)
-                        .with_denied([CORE_KV_WRITES]),
+                    publish: SubjectPermissions::allowing_all(publish_allow),
                     subscribe: machine_service_server_subscriptions(machine_id, inbox_scope),
                     allow_responses: ResponsePermission::Allowed,
                 }
@@ -185,6 +157,10 @@ fn machine_service_client_publications() -> SubjectPermissions {
 fn api_service_server_subscriptions(inbox_scope: String) -> SubjectPermissions {
     SubjectPermissions::allowing([
         API_SERVICE_SCOPE.to_owned(),
+        INTENT_CHANGED.to_owned(),
+        INTENT_GET.to_owned(),
+        machine_facts_scope(),
+        gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])
@@ -197,6 +173,9 @@ fn machine_service_server_subscriptions(
 ) -> SubjectPermissions {
     SubjectPermissions::allowing([
         machine_service_scope(machine_id),
+        INTENT_CHANGED.to_owned(),
+        machine_facts_scope(),
+        gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,
     ])
@@ -209,6 +188,8 @@ fn controller_publications() -> SubjectPermissions {
     allow.extend(machine_service_client_publications().into_allowed_subjects());
     allow.extend([
         OPS_STREAM_SUBJECT.to_owned(),
+        INTENT_GET.to_owned(),
+        INTENT_CHANGED.to_owned(),
         JETSTREAM_API_SCOPE.to_owned(),
         JETSTREAM_ACK_SCOPE.to_owned(),
     ]);

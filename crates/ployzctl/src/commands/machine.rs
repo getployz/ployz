@@ -844,44 +844,25 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\nsubstrate {}\n",
+            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
             self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
             render_public_ip(&self.machine),
             render_gateway(&self.machine),
             self.machine.observed_container_count,
-            render_substrate_versions(&self.machine),
         )
     }
 }
 
 fn render_machine_summary(machine: &MachineSnapshot) -> String {
     format!(
-        "{} {} public-ip {} gateway {} containers {} substrate {}",
+        "{} {} public-ip {} gateway {} containers {}",
         machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
         render_public_ip(machine),
         render_gateway(machine),
         machine.observed_container_count,
-        render_substrate_versions(machine),
-    )
-}
-
-fn render_substrate_versions(machine: &MachineSnapshot) -> String {
-    let Some(versions) = &machine.active.substrate_versions else {
-        return "ployzd unknown keeper unknown".to_owned();
-    };
-    format!(
-        "ployzd {} keeper {}",
-        versions
-            .ployzd
-            .as_ref()
-            .map_or("unknown", |version| version.as_str()),
-        versions
-            .keeper
-            .as_ref()
-            .map_or("unknown", |version| version.as_str())
     )
 }
 

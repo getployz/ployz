@@ -5,45 +5,55 @@ use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionMachineScope;
-use crate::machine_lifecycle_runtime::{
-    MachineLifecycleOperationRuntime, adopt_machine_lifecycles_from_file,
+use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
+use crate::machine_roster::MachineRosterStore;
+use crate::machine_runtime::client::{
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
-use crate::machine_runtime::client::{NatsMachineLogsTailer, NatsMachineSubstrateUpdater};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
+use crate::namespace_intent::NamespaceIntentStore;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
-    NatsAuthorizationStartError, NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
+    NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
 use crate::process_support::shutdown_signal;
+use crate::runtime_facts::{
+    RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
+};
 use crate::tasks::TaskRegistry;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const INTENT_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct RunningControlRuntime {
+    intent: RunningIntentRuntime,
     operation_api: RunningNatsService,
     deploy_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
+    facts_cache: RunningRuntimeFactsCache,
     authorization: NatsAuthorizationRuntime,
 }
 
 impl RunningControlRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
+        self.intent.shutdown().await?;
         self.deploy_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
+        self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
     }
@@ -84,9 +94,6 @@ pub async fn start_control_runtime_with_client_and_reload(
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenCoreState)?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .map_err(ControlRuntimeError::OpenObservations)?;
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
@@ -96,36 +103,36 @@ pub async fn start_control_runtime_with_client_and_reload(
         core_state.clone(),
         config.machine_bootstrap.clone(),
     );
-    // Adopt-on-start happens here, before any render: the on-disk
-    // authorized-users file is the authority set's recovery evidence.
     let authorization = NatsAuthorizationRuntime::start(
         config.nats_authorization.authorized_users_file.clone(),
-        core_state.clone(),
         reload,
-    )
-    .await
-    .map_err(ControlRuntimeError::StartNatsAuthorization)?;
+    );
     authorization
         .handle()
         .render(None)
         .await
         .map_err(ControlRuntimeError::RenderNatsAuthorization)?;
-    // Lifecycle intent adoption mirrors the authorized-users adoption just
-    // above: the on-disk drained set is recovery evidence for KV.
-    adopt_machine_lifecycles_from_file(
-        &config.nats_authorization.machine_lifecycles_file,
-        &core_state,
-    )
-    .await
-    .map_err(ControlRuntimeError::AdoptMachineLifecycles)?;
+    // Start the facts cache only after authorization has rendered and
+    // reloaded permissions: its subscription to plz.v1.facts.* must not be
+    // established before the grant exists, or NATS rejects it asynchronously
+    // and the cache never resubscribes. Nothing between here and the
+    // operation API consumes the cache, so this ordering is free.
+    let facts_cache = start_runtime_facts_cache(client.clone())
+        .await
+        .map_err(ControlRuntimeError::StartFactsCache)?;
+    let facts = facts_cache.cache();
     let deploy_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
+    let namespace_intent =
+        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+    let machine_roster =
+        MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone());
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         core_state.clone(),
-        observations.clone(),
+        namespace_intent.clone(),
         controllers.clone(),
         DeployExecutionMachineScope::same_machines(config.deploy_machines.clone()),
         config.deploy_step_timeout,
@@ -133,7 +140,6 @@ pub async fn start_control_runtime_with_client_and_reload(
     );
     let machine_mint = MachineCredentialMintRuntime::new(
         controllers.clone(),
-        core_state.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
         config.nats_authorization.machine_seed_file.clone(),
@@ -148,21 +154,32 @@ pub async fn start_control_runtime_with_client_and_reload(
         .await
         .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
+    let facts_reader = NatsMachineFactsReader::new(client.clone());
+    let intent_reader = NatsIntentReader::new(client.clone());
+    let intent = start_intent_runtime(
+        client.clone(),
+        machine_roster.clone(),
+        namespace_intent,
+        config.nats_authorization.machine_lifecycles_file.clone(),
+        INTENT_PUBLISH_INTERVAL,
+    )
+    .await
+    .map_err(ControlRuntimeError::StartIntent)?;
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update_runtime = MachineUpdateOperationRuntime::new(
         controllers.clone(),
-        core_state.clone(),
         machine_updater,
         machine_update_tasks.clone(),
     );
     let machine_lifecycle_runtime = MachineLifecycleOperationRuntime::new(
+        client.clone(),
         controllers.clone(),
-        core_state.clone(),
+        machine_roster.clone(),
         config.nats_authorization.machine_lifecycles_file.clone(),
         machine_lifecycle_tasks.clone(),
     );
     let operation_api = start_operation_api_service_with_handlers(
-        client,
+        client.clone(),
         OperationApiHandlers::execute_operations(
             controllers,
             deploy_runtime,
@@ -174,8 +191,11 @@ pub async fn start_control_runtime_with_client_and_reload(
                 .first()
                 .cloned()
                 .ok_or(ControlRuntimeError::MissingDeployMachine)?,
-            core_state,
-            observations,
+            client.clone(),
+            machine_roster,
+            facts,
+            facts_reader,
+            intent_reader,
             logs_tailer,
         ),
     )
@@ -183,11 +203,13 @@ pub async fn start_control_runtime_with_client_and_reload(
     .map_err(ControlRuntimeError::StartOperationApi)?;
 
     Ok(RunningControlRuntime {
+        intent,
         operation_api,
         deploy_tasks,
         machine_update_tasks,
         machine_lifecycle_tasks,
         mint_tasks,
+        facts_cache,
         authorization,
     })
 }
@@ -213,12 +235,11 @@ pub enum ControlRuntimeError {
     PlanBootstrap(BootstrapRefusal),
     AssureBootstrap(BootstrapAssuranceError),
     OpenCoreState(CoreStateStoreError),
-    OpenObservations(ObservationStoreError),
+    StartFactsCache(RuntimeFactsCacheError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
-    StartNatsAuthorization(NatsAuthorizationStartError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
-    AdoptMachineLifecycles(ployz_core::ops::FailureMessage),
+    StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
@@ -239,26 +260,14 @@ impl fmt::Display for ControlRuntimeError {
             Self::OpenCoreState(error) => {
                 write!(formatter, "failed to open core state store: {error}")
             }
-            Self::OpenObservations(error) => {
-                write!(formatter, "failed to open observation store: {error}")
+            Self::StartFactsCache(error) => {
+                write!(formatter, "failed to start runtime facts cache: {error}")
             }
             Self::OpenOperationStatus(error) => {
-                write!(
-                    formatter,
-                    "failed to open operation status store: {error:?}"
-                )
-            }
-            Self::StartNatsAuthorization(error) => {
-                write!(formatter, "failed to start NATS authorization: {error}")
+                write!(formatter, "failed to open operation status store: {error}")
             }
             Self::RenderNatsAuthorization(error) => {
                 write!(formatter, "failed to render NATS authorization: {error}")
-            }
-            Self::AdoptMachineLifecycles(message) => {
-                write!(
-                    formatter,
-                    "failed to adopt machine lifecycle evidence: {message}"
-                )
             }
             Self::ResumeMachineAddMints(error) => {
                 write!(
@@ -266,17 +275,17 @@ impl fmt::Display for ControlRuntimeError {
                     "failed to reconcile unfinished machine-add mints: {error}"
                 )
             }
+            Self::StartIntent(error) => {
+                write!(formatter, "failed to start intent service: {error}")
+            }
             Self::StartOperationApi(error) => {
-                write!(
-                    formatter,
-                    "failed to start operation API service: {error:?}"
-                )
+                write!(formatter, "failed to start operation API service: {error}")
             }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")
             }
             Self::ShutdownOperationApi(error) => {
-                write!(formatter, "failed to stop operation API service: {error:?}")
+                write!(formatter, "failed to stop operation API service: {error}")
             }
         }
     }

@@ -7,12 +7,131 @@ use std::time::Duration;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
+use crate::state::MachinePublicIpObservation;
 
-/// How often each machine publishes its own reality (container snapshot,
-/// public ip, role status) into the observation KV. Observability cadence
-/// only — never an eligibility input (ADR 0027).
+/// How often each machine refreshes machine-owned observations. Operation
+/// planning gathers fresh facts by RPC.
 pub const OBSERVATION_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "MachineFactsSnapshotWire",
+    into = "MachineFactsSnapshotWire"
+)]
+pub struct MachineFactsSnapshot {
+    machine_id: MachineId,
+    containers: MachineContainerObservationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_ip: Option<MachinePublicIpObservation>,
+    observed_at_unix_ms: u64,
+}
+
+impl MachineFactsSnapshot {
+    pub fn try_new(
+        machine_id: MachineId,
+        containers: MachineContainerObservationSnapshot,
+        public_ip: Option<MachinePublicIpObservation>,
+        observed_at_unix_ms: u64,
+    ) -> Result<Self, MachineFactsSnapshotError> {
+        if containers.machine_id() != &machine_id {
+            return Err(MachineFactsSnapshotError::ContainerMachineMismatch {
+                expected: machine_id,
+                actual: containers.machine_id().clone(),
+            });
+        }
+        if let Some(public_ip) = &public_ip
+            && public_ip.machine_id != machine_id
+        {
+            return Err(MachineFactsSnapshotError::PublicIpMachineMismatch {
+                expected: machine_id,
+                actual: public_ip.machine_id.clone(),
+            });
+        }
+
+        Ok(Self {
+            machine_id,
+            containers,
+            public_ip,
+            observed_at_unix_ms,
+        })
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub fn containers(&self) -> &MachineContainerObservationSnapshot {
+        &self.containers
+    }
+
+    #[must_use]
+    pub fn public_ip(&self) -> Option<&MachinePublicIpObservation> {
+        self.public_ip.as_ref()
+    }
+
+    #[must_use]
+    pub const fn observed_at_unix_ms(&self) -> u64 {
+        self.observed_at_unix_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsSnapshotError {
+    #[error(
+        "container snapshot belongs to machine {}, not facts machine {}",
+        actual.as_str(),
+        expected.as_str()
+    )]
+    ContainerMachineMismatch {
+        expected: MachineId,
+        actual: MachineId,
+    },
+    #[error(
+        "public ip belongs to machine {}, not facts machine {}",
+        actual.as_str(),
+        expected.as_str()
+    )]
+    PublicIpMachineMismatch {
+        expected: MachineId,
+        actual: MachineId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineFactsSnapshotWire {
+    machine_id: MachineId,
+    containers: MachineContainerObservationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_ip: Option<MachinePublicIpObservation>,
+    observed_at_unix_ms: u64,
+}
+
+impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
+    type Error = MachineFactsSnapshotError;
+
+    fn try_from(value: MachineFactsSnapshotWire) -> Result<Self, Self::Error> {
+        Self::try_new(
+            value.machine_id,
+            value.containers,
+            value.public_ip,
+            value.observed_at_unix_ms,
+        )
+    }
+}
+
+impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
+    fn from(value: MachineFactsSnapshot) -> Self {
+        Self {
+            machine_id: value.machine_id,
+            containers: value.containers,
+            public_ip: value.public_ip,
+            observed_at_unix_ms: value.observed_at_unix_ms,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -85,9 +204,9 @@ impl ContainerRuntimeState {
 /// machine observations, sent in machine run commands, and compared for
 /// cleanup fencing - one struct everywhere, so the copies cannot drift.
 ///
-/// This is persisted in Docker labels and `KV_OBS.containers.*`. Changing this
-/// shape intentionally breaks existing clusters unless paired with container
-/// cleanup and/or KV cleanup.
+/// This is persisted in Docker labels and reported in machine facts. Changing
+/// this shape intentionally breaks existing clusters unless paired with
+/// container cleanup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -118,7 +237,7 @@ impl ManagedContainerIdentity {
     }
 }
 
-/// Persisted `KV_OBS.containers.*` entry payload.
+/// Machine-owned container fact payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]

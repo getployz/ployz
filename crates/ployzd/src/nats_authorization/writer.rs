@@ -1,15 +1,13 @@
-use std::collections::BTreeSet;
 use std::fmt;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::evidence_file::write_file_atomically;
 use ployz_core::nats_config::{
     AuthorizedUsersParseError, NatsAuthorizedUser, parse_authorized_users, render_authorized_users,
 };
 use ployz_nats::connect::{NatsConnectConfig, connect_authenticated};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -98,14 +96,8 @@ impl std::error::Error for RenderFailure {}
 pub enum RenderPrepareFailure {
     /// The single-writer render task is no longer running.
     WriterClosed,
-    /// The KV authority set could not be read.
-    ReadAuthority { message: String },
     /// The current on-disk file could not be read or parsed.
     File { source: AuthorizedUsersFileError },
-    /// The render was refused because it would remove these principals
-    /// from the recovery-evidence file. Shrinking the set returns with an
-    /// explicit machine-remove operation.
-    RefusedShrink { missing: Vec<String> },
     /// The atomic file write failed.
     WriteFile { path: PathBuf, message: String },
 }
@@ -116,18 +108,7 @@ impl fmt::Display for RenderPrepareFailure {
             Self::WriterClosed => {
                 formatter.write_str("authorization render writer task is no longer running")
             }
-            Self::ReadAuthority { message } => {
-                write!(
-                    formatter,
-                    "failed to read authorized principal set: {message}"
-                )
-            }
             Self::File { source } => source.fmt(formatter),
-            Self::RefusedShrink { missing } => write!(
-                formatter,
-                "refused to shrink authorized user set outside machine-remove (missing: {})",
-                missing.join(", ")
-            ),
             Self::WriteFile { path, message } => write!(
                 formatter,
                 "failed to write authorized-users file {}: {message}",
@@ -138,6 +119,7 @@ impl fmt::Display for RenderPrepareFailure {
 }
 
 struct RenderRequest {
+    authorize: Option<NatsAuthorizedUser>,
     verify: Option<NatsConnectConfig>,
     reply: oneshot::Sender<Result<RenderedAuthorization, RenderFailure>>,
 }
@@ -153,9 +135,29 @@ impl NatsAuthorizationHandle {
         &self,
         verify: Option<NatsConnectConfig>,
     ) -> Result<RenderedAuthorization, RenderFailure> {
+        self.submit(None, verify).await
+    }
+
+    pub async fn authorize_and_render(
+        &self,
+        user: NatsAuthorizedUser,
+        verify: Option<NatsConnectConfig>,
+    ) -> Result<RenderedAuthorization, RenderFailure> {
+        self.submit(Some(user), verify).await
+    }
+
+    async fn submit(
+        &self,
+        authorize: Option<NatsAuthorizedUser>,
+        verify: Option<NatsConnectConfig>,
+    ) -> Result<RenderedAuthorization, RenderFailure> {
         let (reply, response) = oneshot::channel();
         self.sender
-            .send(RenderRequest { verify, reply })
+            .send(RenderRequest {
+                authorize,
+                verify,
+                reply,
+            })
             .await
             .map_err(|_| RenderFailure::Prepare {
                 failure: RenderPrepareFailure::WriterClosed,
@@ -172,45 +174,23 @@ pub struct NatsAuthorizationRuntime {
     task: JoinHandle<()>,
 }
 
-#[derive(Debug)]
-pub enum NatsAuthorizationStartError {
-    ReadAuthorizedUsersFile { source: AuthorizedUsersFileError },
-    AdoptAuthority { message: String },
-}
-
-impl fmt::Display for NatsAuthorizationStartError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadAuthorizedUsersFile { source } => source.fmt(formatter),
-            Self::AdoptAuthority { message } => write!(
-                formatter,
-                "failed to adopt authorized users into KV authority: {message}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for NatsAuthorizationStartError {}
-
 impl NatsAuthorizationRuntime {
-    /// Adopts the existing file into KV authority, then spawns the
-    /// single-writer render task.
-    pub async fn start(
-        authorized_users_file: PathBuf,
-        core_state: AsyncNatsCoreStateStore,
-        reload: impl NatsReloadRunner,
-    ) -> Result<Self, NatsAuthorizationStartError> {
-        adopt_authorized_users_from_file(&authorized_users_file, &core_state).await?;
-
+    /// Spawns the single-writer render task that owns the authorized-users
+    /// authority file.
+    pub fn start(authorized_users_file: PathBuf, reload: impl NatsReloadRunner) -> Self {
         let (sender, mut receiver) = mpsc::channel(RENDER_QUEUE_DEPTH);
         let task = tokio::spawn(async move {
             let reload = Arc::new(reload);
             while let Some(request) = receiver.recv().await {
-                let RenderRequest { verify, reply } = request;
+                let RenderRequest {
+                    authorize,
+                    verify,
+                    reply,
+                } = request;
                 let result = handle_render_request(
                     &authorized_users_file,
-                    &core_state,
                     Arc::clone(&reload),
+                    authorize,
                     verify,
                 )
                 .await;
@@ -218,10 +198,10 @@ impl NatsAuthorizationRuntime {
             }
         });
 
-        Ok(Self {
+        Self {
             handle: NatsAuthorizationHandle { sender },
             task,
-        })
+        }
     }
 
     #[must_use]
@@ -233,30 +213,6 @@ impl NatsAuthorizationRuntime {
         drop(self.handle);
         self.task.abort();
     }
-}
-
-async fn adopt_authorized_users_from_file(
-    path: &Path,
-    core_state: &AsyncNatsCoreStateStore,
-) -> Result<(), NatsAuthorizationStartError> {
-    let users = read_authorized_users_file(path)
-        .map_err(|source| NatsAuthorizationStartError::ReadAuthorizedUsersFile { source })?;
-    for user in &users {
-        core_state
-            .adopt_nats_authorized_user_if_absent(user)
-            .await
-            .map_err(|error| NatsAuthorizationStartError::AdoptAuthority {
-                message: error.to_string(),
-            })?;
-    }
-    Ok(())
-}
-
-fn read_authorized_users_file(
-    path: &Path,
-) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersFileError> {
-    let contents = read_authorized_users_contents(path)?;
-    parse_authorized_users_contents(path, contents.as_deref())
 }
 
 fn parse_authorized_users_contents(
@@ -285,46 +241,33 @@ fn read_authorized_users_contents(path: &Path) -> Result<Option<String>, Authori
 
 async fn handle_render_request(
     path: &Path,
-    core_state: &AsyncNatsCoreStateStore,
     reload: Arc<impl NatsReloadRunner>,
+    authorize: Option<NatsAuthorizedUser>,
     verify: Option<NatsConnectConfig>,
 ) -> Result<RenderedAuthorization, RenderFailure> {
     let prepare = |failure: RenderPrepareFailure| RenderFailure::Prepare { failure };
-    let desired = core_state.nats_authorized_users().await.map_err(|error| {
-        prepare(RenderPrepareFailure::ReadAuthority {
-            message: error.to_string(),
-        })
-    })?;
     let current_contents = read_authorized_users_contents(path)
         .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
-    let on_disk = parse_authorized_users_contents(path, current_contents.as_deref())
+    let mut desired = parse_authorized_users_contents(path, current_contents.as_deref())
         .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
-
-    let desired_principals: BTreeSet<String> = desired
-        .iter()
-        .map(NatsAuthorizedUser::authority_record_key)
-        .collect();
-    let missing: Vec<String> = on_disk
-        .iter()
-        .map(NatsAuthorizedUser::authority_record_key)
-        .filter(|key| !desired_principals.contains(key))
-        .collect();
-    if !missing.is_empty() {
-        return Err(prepare(RenderPrepareFailure::RefusedShrink { missing }));
+    if let Some(user) = authorize {
+        replace_authorized_user(&mut desired, user);
     }
 
-    let rendered_on_disk = render_authorized_users(&on_disk);
-    if same_authorized_users(&desired, &on_disk)
-        && current_contents.as_deref() == Some(rendered_on_disk.as_str())
-    {
+    let rendered = render_authorized_users(&desired);
+    if current_contents.as_deref() == Some(rendered.as_str()) {
         return Ok(RenderedAuthorization {
             user_count: desired.len(),
             reload: None,
         });
     }
 
-    let rendered = render_authorized_users(&desired);
-    write_file_atomically(path, &rendered).map_err(prepare)?;
+    write_file_atomically(path, rendered.as_bytes())
+        .map_err(|error| RenderPrepareFailure::WriteFile {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })
+        .map_err(prepare)?;
 
     let reload_outcome = tokio::time::timeout(
         RELOAD_COMMAND_TIMEOUT,
@@ -364,8 +307,16 @@ async fn handle_render_request(
     })
 }
 
-fn same_authorized_users(left: &[NatsAuthorizedUser], right: &[NatsAuthorizedUser]) -> bool {
-    left.len() == right.len() && left.iter().all(|user| right.contains(user))
+fn replace_authorized_user(users: &mut Vec<NatsAuthorizedUser>, user: NatsAuthorizedUser) {
+    let authority_key = user.authority_record_key();
+    if let Some(existing) = users
+        .iter_mut()
+        .find(|existing| existing.authority_record_key() == authority_key)
+    {
+        *existing = user;
+    } else {
+        users.push(user);
+    }
 }
 
 async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailure> {
@@ -385,22 +336,4 @@ async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailu
     Err(RenderFailure::Verify {
         message: last_error,
     })
-}
-
-fn write_file_atomically(path: &Path, contents: &str) -> Result<(), RenderPrepareFailure> {
-    let write_error = |message: String| RenderPrepareFailure::WriteFile {
-        path: path.to_path_buf(),
-        message,
-    };
-    let Some(parent) = path.parent() else {
-        return Err(write_error("path has no parent directory".to_owned()));
-    };
-    let mut file =
-        tempfile::NamedTempFile::new_in(parent).map_err(|error| write_error(error.to_string()))?;
-    file.write_all(contents.as_bytes())
-        .and_then(|()| file.as_file().sync_all())
-        .map_err(|error| write_error(error.to_string()))?;
-    file.persist(path)
-        .map(|_| ())
-        .map_err(|error| write_error(error.error.to_string()))
 }

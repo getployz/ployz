@@ -5,7 +5,6 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::{CoreStateStoreError, RouteBindingStoreError};
 use std::future::Future;
 
 use crate::machine_runtime::protocol::{
@@ -104,14 +103,14 @@ pub trait NamespaceStateCommitter {
 pub enum NamespaceCommitError {
     RouteStore {
         target: RouteTarget,
-        error: RouteBindingStoreError,
+        message: String,
     },
     RouteLockLost {
         target: RouteTarget,
     },
     ServingTargetStore {
         scope: ControlPlaneCommitScope,
-        error: CoreStateStoreError,
+        message: String,
     },
     ServingTargetLockLost {
         scope: ControlPlaneCommitScope,

@@ -176,7 +176,7 @@ export type MachineLifecycleOperationState = { "state": "accepted" } | { "state"
 
 export type MachineLifecycleFailure = { "kind": "no_such_machine", machine_id: MachineId, } | { "kind": "evidence_write_failed", message: FailureMessage, } | { "kind": "state_commit_failed", message: FailureMessage, };
 
-export type MachineUsabilityReason = { "reason": "draining" };
+export type MachineUsabilityReason = { "reason": "draining" } | { "reason": "facts_unavailable" };
 
 export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
 
@@ -252,7 +252,7 @@ export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChalleng
 
 export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
 
-export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, substrate_versions?: MachineSubstrateVersions | null,
+export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId,
 /**
  * Durable operator intent for this machine (Machine Lifecycle in the
  * glossary). Absent in records written before lifecycle existed, so the
@@ -324,7 +324,7 @@ export type RuntimeServiceRelease = { namespace_id: NamespaceId, service_id: Ser
 
 export type RuntimeServiceInstance = { namespace_id: NamespaceId, machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, state: ContainerRuntimeState, };
 
-export type RuntimeProjectionSources = { core_state: RuntimeProjectionSource, observations: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
+export type RuntimeProjectionSources = { intent: RuntimeProjectionSource, facts: RuntimeProjectionSource, revisions: RuntimeDerivedCollectionSource, releases: RuntimeDerivedCollectionSource, instances: RuntimeDerivedCollectionSource, };
 
 export type RuntimeProjectionSource = { read_at_unix_seconds: number, };
 

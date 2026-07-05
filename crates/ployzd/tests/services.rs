@@ -1,7 +1,7 @@
 use ployz_core::subjects::{
     API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_MACHINE_INSPECT,
     API_MACHINE_JOIN_REPORT, API_MACHINE_LIST, API_OPS_STATUS, API_OPS_WATCH, API_SERVICE_INSPECT,
-    API_SERVICE_LIST,
+    API_SERVICE_LIST, INTENT_GET,
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
@@ -22,7 +22,7 @@ fn control_catalog_supports_srv_ping_discovery() {
 
     let pings = catalog.discover(ServiceDiscoveryQuery::All);
 
-    assert_eq!(pings.len(), 1);
+    assert_eq!(pings.len(), 2);
     assert!(
         pings
             .iter()
@@ -37,6 +37,7 @@ fn control_catalog_supports_srv_ping_discovery() {
     assert!(catalog.has_endpoint_subject(API_MACHINE_JOIN_REPORT));
     assert!(catalog.has_endpoint_subject(API_SERVICE_LIST));
     assert!(catalog.has_endpoint_subject(API_SERVICE_INSPECT));
+    assert!(catalog.has_endpoint_subject(INTENT_GET));
     assert!(!catalog.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
 
     let machine_catalog = DaemonServiceCatalog::for_machine(&machine_id);
@@ -51,7 +52,7 @@ fn service_catalogs_keep_control_and_machine_surfaces_separate() {
     let control = DaemonServiceCatalog::for_control();
     let machine = DaemonServiceCatalog::for_machine(&machine_id);
 
-    assert_eq!(service_names(&control), vec!["plz-api"]);
+    assert_eq!(service_names(&control), vec!["plz-api", "plz-intent"]);
     assert_eq!(service_names(&machine), vec!["plz-machine"]);
 
     let pings = machine.discover(ServiceDiscoveryQuery::All);

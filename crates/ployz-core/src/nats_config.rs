@@ -154,8 +154,7 @@ impl NatsAuthorizedUser {
 }
 
 /// The marker comment that precedes each rendered user entry. It names the
-/// entry's principal so the on-disk file works as recovery evidence: after
-/// JetStream loss the authorized principal set is re-adopted from the file.
+/// entry's principal so the on-disk file is durable authorization evidence.
 const PRINCIPAL_MARKER_PREFIX: &str = "# ployz-principal: ";
 
 /// Renders the `authorization { users [...] }` include file from the
@@ -214,10 +213,9 @@ pub fn render_authorized_users(users: &[NatsAuthorizedUser]) -> String {
 }
 
 /// Parses the principal/public-key pairs back out of a rendered
-/// `authorized-users.conf`. This is the recovery-evidence read path: on
-/// control start the existing file is adopted into the KV authority set
-/// before any render, so renders never shrink the user set after
-/// JetStream loss.
+/// `authorized-users.conf`. This is the core-local authority read path:
+/// renders preserve existing principals and refresh their current permission
+/// profile.
 pub fn parse_authorized_users(
     rendered: &str,
 ) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersParseError> {

@@ -10,15 +10,14 @@ use ployz_core::ids::MachineId;
 use ployz_core::nats_config::MintedNatsUser;
 use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::{MachinePublicIpObservation, MachinePublicIpObservationKey};
 use ployz_core::subjects::{
-    API_INIT_FIRST_MACHINE_ACTIVATE, MachineServiceEndpoint, machine_service, machine_service_scope,
+    API_INIT_FIRST_MACHINE_ACTIVATE, MachineServiceEndpoint, gateway_status, machine_facts,
+    machine_service, machine_service_scope,
 };
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
     connect_with_timeout,
 };
-use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployz_test_support::nats::SecuredTestNats;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -163,48 +162,30 @@ async fn machine_can_publish_to_its_own_inbox_without_permission_violation() {
 }
 
 #[tokio::test]
-async fn machine_observation_writes_are_fenced_to_its_own_keys() {
+async fn machine_fact_writes_are_fenced_to_its_own_subjects() {
     let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
     let other_machine_id = MachineId::try_new("machine-b").expect("valid machine id");
     let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
         .await
         .expect("secured fixture");
-    let controller = connect_authenticated(&fixture.controller_config(), CONNECT_TIMEOUT)
-        .await
-        .expect("controller connects");
-    async_nats::jetstream::new(controller)
-        .create_key_value(async_nats::jetstream::kv::Config {
-            bucket: KV_OBS_BUCKET.to_owned(),
-            ..Default::default()
-        })
-        .await
-        .expect("controller creates the observation bucket");
     let Some(config) = fixture.machine_config(&machine_id) else {
         panic!("fixture mints a user for every requested machine");
     };
     let (machine_client, mut events) = connect_with_event_capture(&config).await;
-    let observations = AsyncNatsObservationStore::from_jetstream(&async_nats::jetstream::new(
-        machine_client.clone(),
-    ))
-    .await
-    .expect("machine opens the observation store");
 
-    // Writing this machine's own observation key succeeds.
-    observations
-        .replace_machine_public_ip(&MachinePublicIpObservation {
-            machine_id: machine_id.clone(),
-            public_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1)),
-        })
-        .await
-        .expect("a machine writes its own observation key");
-
-    // Writing another machine's observation key is denied server-side.
-    let other_key = MachinePublicIpObservationKey::from_machine_id(&other_machine_id);
     machine_client
-        .publish(
-            format!("$KV.{KV_OBS_BUCKET}.{}", other_key.as_str()),
-            "evidence".into(),
-        )
+        .publish(machine_facts(&machine_id), "facts".into())
+        .await
+        .expect("machine publishes its own facts");
+    machine_client
+        .publish(gateway_status(&machine_id), "status".into())
+        .await
+        .expect("machine publishes its own gateway status");
+    machine_client.flush().await.expect("flush");
+    assert_no_permission_violation(&mut events).await;
+
+    machine_client
+        .publish(machine_facts(&other_machine_id), "facts".into())
         .await
         .expect("publish is accepted client-side");
     machine_client.flush().await.expect("flush");

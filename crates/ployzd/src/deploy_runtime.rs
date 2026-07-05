@@ -8,16 +8,21 @@ use crate::deploy_worker::{
     execute_deploy_operation, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use crate::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use crate::intent::NatsIntentReader;
+use crate::machine_runtime::client::{
+    MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
+    NatsMachineFactsReader,
+};
+use crate::namespace_intent::NamespaceIntentStore;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
+use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::core_state::{
     AsyncNatsCoreStateStore, CoreStateStoreError, NAMESPACE_LOCK_RENEW_INTERVAL_MS,
     NamespaceLockRenew,
 };
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
@@ -43,12 +48,14 @@ where
     H: DeployHealthChecker,
 {
     let DeployOperationStores {
-        core_state,
-        observations,
+        intent_change_client,
+        namespace_intent,
         controllers,
         namespace_lock_lost,
     } = stores;
     let DeployOperationPorts {
+        facts_reader,
+        intent_reader,
         dataplane,
         machine_runtime,
         health_checker,
@@ -58,8 +65,8 @@ where
     let facts = match load_deploy_execution_facts_from_nats(
         &request,
         machine_scope,
-        &core_state,
-        &observations,
+        intent_reader,
+        facts_reader,
         step_timeout,
     )
     .await
@@ -82,7 +89,11 @@ where
     let command =
         prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
-    let mut namespace_state = LockCheckedCoreState::new(core_state, namespace_lock_lost);
+    let mut namespace_state = LockCheckedNamespaceIntent::new(
+        intent_change_client,
+        namespace_intent,
+        namespace_lock_lost,
+    );
     execute_deploy_operation(
         command,
         DeployExecutionPorts {
@@ -123,27 +134,35 @@ fn fact_load_failure(
 
 #[derive(Debug, Clone)]
 pub struct DeployOperationStores {
-    pub core_state: AsyncNatsCoreStateStore,
-    pub observations: AsyncNatsObservationStore,
+    pub intent_change_client: async_nats::Client,
+    pub namespace_intent: NamespaceIntentStore,
     pub controllers: OperationControllers,
     pub namespace_lock_lost: Arc<AtomicBool>,
 }
 
 pub struct DeployOperationPorts<'a, D, N, H> {
+    pub facts_reader: &'a NatsMachineFactsReader,
+    pub intent_reader: &'a NatsIntentReader,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
 }
 
-struct LockCheckedCoreState {
-    core_state: AsyncNatsCoreStateStore,
+struct LockCheckedNamespaceIntent {
+    intent_change_client: async_nats::Client,
+    namespace_intent: NamespaceIntentStore,
     namespace_lock_lost: Arc<AtomicBool>,
 }
 
-impl LockCheckedCoreState {
-    fn new(core_state: AsyncNatsCoreStateStore, namespace_lock_lost: Arc<AtomicBool>) -> Self {
+impl LockCheckedNamespaceIntent {
+    fn new(
+        intent_change_client: async_nats::Client,
+        namespace_intent: NamespaceIntentStore,
+        namespace_lock_lost: Arc<AtomicBool>,
+    ) -> Self {
         Self {
-            core_state,
+            intent_change_client,
+            namespace_intent,
             namespace_lock_lost,
         }
     }
@@ -159,9 +178,16 @@ impl LockCheckedCoreState {
         }
         Ok(())
     }
+
+    async fn publish_intent_changed(&self) {
+        let _ = self
+            .intent_change_client
+            .publish(INTENT_CHANGED, Vec::new().into())
+            .await;
+    }
 }
 
-impl NamespaceStateCommitter for LockCheckedCoreState {
+impl NamespaceStateCommitter for LockCheckedNamespaceIntent {
     async fn replace_route_binding(
         &mut self,
         state: ployz_core::state::RouteBindingState,
@@ -171,9 +197,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             target: target.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::replace_route_binding(&self.core_state, &state)
+        self.namespace_intent
+            .replace_route_binding(state)
             .await
-            .map_err(|error| NamespaceCommitError::RouteStore { target, error })
+            .map_err(|error| NamespaceCommitError::RouteStore {
+                target,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn remove_route_binding(
@@ -184,9 +216,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             target: target.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::remove_route_binding(&self.core_state, &target)
+        self.namespace_intent
+            .remove_route_binding(&target)
             .await
-            .map_err(|error| NamespaceCommitError::RouteStore { target, error })
+            .map_err(|error| NamespaceCommitError::RouteStore {
+                target,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn replace_serving_target_entry(
@@ -201,9 +239,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             scope: scope.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::replace_serving_target_entry(&self.core_state, &state)
+        self.namespace_intent
+            .replace_serving_target_entry(state)
             .await
-            .map_err(|error| NamespaceCommitError::ServingTargetStore { scope, error })
+            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+                scope,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn remove_serving_target_entry(
@@ -218,13 +262,15 @@ impl NamespaceStateCommitter for LockCheckedCoreState {
             scope: scope.clone(),
         })?;
 
-        AsyncNatsCoreStateStore::remove_serving_target_entry(
-            &self.core_state,
-            &entry.namespace_id,
-            &entry.service_id,
-        )
-        .await
-        .map_err(|error| NamespaceCommitError::ServingTargetStore { scope, error })
+        self.namespace_intent
+            .remove_serving_target_entry(&entry)
+            .await
+            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+                scope,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
     }
 }
 
@@ -253,7 +299,7 @@ impl From<CoreStateStoreError> for DeployOperationRunError {
 pub struct DeployOperationRuntime {
     client: async_nats::Client,
     core_state: AsyncNatsCoreStateStore,
-    observations: AsyncNatsObservationStore,
+    namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
     machine_scope: DeployExecutionMachineScope,
     step_timeout: Duration,
@@ -265,7 +311,7 @@ impl DeployOperationRuntime {
     pub fn new(
         client: async_nats::Client,
         core_state: AsyncNatsCoreStateStore,
-        observations: AsyncNatsObservationStore,
+        namespace_intent: NamespaceIntentStore,
         controllers: OperationControllers,
         machine_scope: DeployExecutionMachineScope,
         step_timeout: Duration,
@@ -274,7 +320,7 @@ impl DeployOperationRuntime {
         Self {
             client,
             core_state,
-            observations,
+            namespace_intent,
             controllers,
             machine_scope,
             step_timeout,
@@ -301,19 +347,22 @@ impl DeployOperationRuntime {
             return Err(DeployOperationRunError::AlreadyStarted);
         }
 
-        let mut dataplane =
-            NatsMachineDataplanePreparer::new(self.client.clone(), self.observations.clone())
-                .with_request_timeout(self.step_timeout);
+        let mut dataplane = NatsMachineDataplanePreparer::new(self.client.clone())
+            .with_request_timeout(self.step_timeout);
         let mut machine_runtime = NatsMachineContainerRuntime::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
+        let facts_reader = NatsMachineFactsReader::new(self.client.clone())
+            .with_request_timeout(self.step_timeout);
         let mut health_checker =
-            ObservationHealthChecker::new(self.observations.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
+            MachineFactsHealthChecker::new(facts_reader.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
+        let intent_reader =
+            NatsIntentReader::new(self.client.clone()).with_request_timeout(self.step_timeout);
 
         let namespace_id = accepted.target.namespace_id.clone();
         let operation_id = accepted.operation_id.clone();
         let lock_lost = Arc::new(AtomicBool::new(false));
         let renew_core_state = self.core_state.clone();
-        let run_core_state = self.core_state.clone();
+        let namespace_intent = self.namespace_intent.clone();
         let renew_task = tokio::spawn(renew_namespace_lock_until_lost(
             renew_core_state,
             namespace_id.clone(),
@@ -324,12 +373,14 @@ impl DeployOperationRuntime {
             accepted,
             self.machine_scope,
             DeployOperationStores {
-                core_state: run_core_state,
-                observations: self.observations,
+                intent_change_client: self.client.clone(),
+                namespace_intent,
                 controllers: self.controllers,
                 namespace_lock_lost: lock_lost,
             },
             DeployOperationPorts {
+                facts_reader: &facts_reader,
+                intent_reader: &intent_reader,
                 dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,
@@ -414,22 +465,22 @@ async fn claim_deploy_execution(
     }
 }
 
-pub struct ObservationHealthChecker {
-    observations: AsyncNatsObservationStore,
+pub struct MachineFactsHealthChecker {
+    facts_reader: NatsMachineFactsReader,
     poll_interval: Duration,
 }
 
-impl ObservationHealthChecker {
+impl MachineFactsHealthChecker {
     #[must_use]
-    pub fn new(observations: AsyncNatsObservationStore, poll_interval: Duration) -> Self {
+    pub fn new(facts_reader: NatsMachineFactsReader, poll_interval: Duration) -> Self {
         Self {
-            observations,
+            facts_reader,
             poll_interval,
         }
     }
 }
 
-impl DeployHealthChecker for ObservationHealthChecker {
+impl DeployHealthChecker for MachineFactsHealthChecker {
     async fn wait_healthy(
         &mut self,
         containers: &[DeployContainer],
@@ -438,24 +489,22 @@ impl DeployHealthChecker for ObservationHealthChecker {
         loop {
             let mut all_running = true;
             for container in containers {
-                match self
-                    .observations
-                    .container(&container.machine_id, &container.container_id)
-                    .await
-                {
-                    Ok(Some(observation)) => match observed_container_health(&observation) {
-                        ObservedContainerHealth::Healthy => {
-                            memory.record_running(container);
-                        }
-                        ObservedContainerHealth::Failed(message) => {
-                            if memory.should_wait_for_fresh_start_observation(container) {
-                                all_running = false;
-                                continue;
+                match self.facts_reader.machine_facts(&container.machine_id).await {
+                    Ok(facts) => match facts.containers().container(&container.container_id) {
+                        Some(observation) => match observed_container_health(observation) {
+                            ObservedContainerHealth::Healthy => {
+                                memory.record_running(container);
                             }
-                            return Err(unhealthy_container(container, message));
-                        }
+                            ObservedContainerHealth::Failed(message) => {
+                                if memory.should_wait_for_fresh_start_observation(container) {
+                                    all_running = false;
+                                    continue;
+                                }
+                                return Err(unhealthy_container(container, message));
+                            }
+                        },
+                        None => all_running = false,
                     },
-                    Ok(None) => all_running = false,
                     Err(error) => {
                         return Err(unhealthy_container(container, health_read_error(error)));
                     }
@@ -536,8 +585,8 @@ fn unhealthy_container(
     }
 }
 
-fn health_read_error(error: ObservationStoreError) -> String {
-    format!("container observation could not be read: {error}")
+fn health_read_error(error: MachineFactsReadRuntimeError) -> String {
+    format!("machine facts could not be read: {error}")
 }
 
 #[cfg(test)]

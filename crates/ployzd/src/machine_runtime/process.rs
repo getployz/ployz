@@ -4,22 +4,15 @@ use crate::config::MachineProcessConfig;
 use crate::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
 use crate::docker::runner::DockerManagedContainerRunner;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::machine_runtime::runner::{
-    ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
-    MachineLogReader,
+use crate::machine_runtime::runner::{MachineContainerRunner, MachineLogReader};
+use crate::machine_runtime::service::{
+    MachineFactsReadError, MachineServiceRuntimeError, current_unix_ms,
+    read_machine_facts_snapshot, start_machine_runtime_service_with_public_ip,
 };
-use crate::machine_runtime::service::{MachineServiceRuntimeError, start_machine_runtime_service};
-use crate::process_support::{
-    BackoffSchedule, LazyHandle, RecordedAttempt, record_attempt, shutdown_signal,
-};
+use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use ployz_core::ids::MachineId;
-use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, ManagedContainerObservation,
-};
-use ployz_core::state::MachinePublicIpObservation;
+use ployz_core::subjects::machine_facts;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::net::IpAddr;
@@ -104,12 +97,13 @@ where
         + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let machine_service = start_machine_runtime_service(
+    let machine_service = start_machine_runtime_service_with_public_ip(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
         preparer,
         log_reader,
+        public_ip,
     )
     .await
     .map_err(MachineProcessRuntimeError::StartMachineService)?;
@@ -214,15 +208,11 @@ fn record_observer_attempt(
 
 struct MachineObservationPublisher {
     client: NatsClient,
-    observations: LazyHandle<AsyncNatsObservationStore>,
 }
 
 impl MachineObservationPublisher {
     fn new(client: NatsClient) -> Self {
-        Self {
-            client,
-            observations: LazyHandle::new(),
-        }
+        Self { client }
     }
 
     async fn publish_with_timeout<R>(
@@ -249,69 +239,25 @@ impl MachineObservationPublisher {
     where
         R: MachineContainerRunner,
     {
-        let client = &self.client;
-        let observations = self
-            .observations
-            .get_or_open(async || {
-                let jetstream = async_nats::jetstream::new(client.clone());
-                AsyncNatsObservationStore::from_jetstream(&jetstream)
-                    .await
-                    .map_err(MachineProcessRuntimeError::OpenObservations)
-            })
-            .await?;
-
-        publish_machine_observation_snapshot(machine_id, runner, observations).await?;
-
-        match public_ip {
-            Some(public_ip) => {
-                observations
-                    .replace_machine_public_ip(&MachinePublicIpObservation {
-                        machine_id: machine_id.clone(),
-                        public_ip,
-                    })
-                    .await
-            }
-            None => observations.clear_machine_public_ip(machine_id).await,
-        }
-        .map_err(MachineProcessRuntimeError::PublishObservation)?;
+        let facts = read_machine_facts_snapshot(machine_id, runner, public_ip, current_unix_ms())
+            .await
+            .map_err(MachineProcessRuntimeError::ReadFacts)?;
+        let payload =
+            serde_json::to_vec(&facts).map_err(MachineProcessRuntimeError::EncodeFacts)?;
+        self.client
+            .publish(machine_facts(machine_id), payload.into())
+            .await
+            .map_err(|error| MachineProcessRuntimeError::PublishFacts {
+                message: error.to_string(),
+            })?;
+        self.client
+            .flush()
+            .await
+            .map_err(|error| MachineProcessRuntimeError::PublishFacts {
+                message: error.to_string(),
+            })?;
 
         Ok(())
-    }
-}
-
-async fn publish_machine_observation_snapshot<R>(
-    machine_id: &MachineId,
-    runner: &R,
-    observations: &AsyncNatsObservationStore,
-) -> Result<(), MachineProcessRuntimeError>
-where
-    R: MachineContainerRunner,
-{
-    let existing = runner
-        .existing_managed_containers()
-        .await
-        .map_err(MachineProcessRuntimeError::ListContainers)?;
-    let containers = existing
-        .into_iter()
-        .map(|container| ManagedContainerObservation {
-            machine_id: machine_id.clone(),
-            container_id: container.container_id,
-            identity: container.identity,
-            state: observation_state(container.state),
-        });
-    let snapshot = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
-        .map_err(MachineProcessRuntimeError::BuildSnapshot)?;
-    observations
-        .replace_machine_containers(&snapshot)
-        .await
-        .map_err(MachineProcessRuntimeError::PublishObservation)
-}
-
-fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
-    match state {
-        ExistingManagedContainerState::Running { ip } => ContainerRuntimeState::Running { ip },
-        ExistingManagedContainerState::StartableStopped
-        | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
     }
 }
 
@@ -332,10 +278,9 @@ pub async fn run_machine_until_shutdown(
 pub enum MachineProcessRuntimeError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
-    OpenObservations(ObservationStoreError),
-    ListContainers(MachineContainerRunnerError),
-    BuildSnapshot(MachineContainerObservationSnapshotError),
-    PublishObservation(ObservationStoreError),
+    ReadFacts(MachineFactsReadError),
+    EncodeFacts(serde_json::Error),
+    PublishFacts { message: String },
     ObservationTimedOut { timeout: Duration },
     StartMachineService(MachineServiceRuntimeError),
     ShutdownSignal(std::io::Error),
@@ -347,20 +292,12 @@ impl fmt::Display for MachineProcessRuntimeError {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
             Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::OpenObservations(error) => {
-                write!(formatter, "failed to open observation store: {error}")
+            Self::ReadFacts(error) => write!(formatter, "failed to read machine facts: {error}"),
+            Self::EncodeFacts(error) => {
+                write!(formatter, "failed to encode machine facts: {error}")
             }
-            Self::ListContainers(error) => {
-                write!(
-                    formatter,
-                    "failed to list managed Docker containers: {error:?}"
-                )
-            }
-            Self::BuildSnapshot(error) => {
-                write!(formatter, "failed to build machine snapshot: {error}")
-            }
-            Self::PublishObservation(error) => {
-                write!(formatter, "failed to publish machine observation: {error}")
+            Self::PublishFacts { message } => {
+                write!(formatter, "failed to publish machine facts: {message}")
             }
             Self::ObservationTimedOut { timeout } => {
                 write!(
@@ -388,16 +325,22 @@ impl std::error::Error for MachineProcessRuntimeError {}
 mod tests {
     use super::*;
     use crate::machine_runtime::runner::{
-        CreateManagedContainer, ExistingManagedContainer, MachineContainerRunner,
-        MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
+        CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
+        MachineContainerRunner, MachineContainerRunnerError, MachineLogReader,
+        MachineLogReaderError, MachineLogTail,
     };
+    use crate::machine_runtime::service::observation_state;
+    use futures_util::StreamExt;
     use ployz_core::dataplane::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
     };
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use ployz_core::machine_runtime::ManagedContainerIdentity;
     use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::machine_runtime::{
+        ContainerRuntimeState, MachineFactsSnapshot, ManagedContainerIdentity,
+    };
+    use ployz_core::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -586,6 +529,11 @@ mod tests {
             identity: identity_for("run_1"),
             state: ExistingManagedContainerState::Running { ip: None },
         }]);
+        let mut facts_sub = nats
+            .client
+            .subscribe(machine_facts(&machine_id("machine_a")))
+            .await
+            .expect("subscribe machine facts");
 
         let mut publisher = MachineObservationPublisher::new(nats.client.clone());
         publisher
@@ -598,12 +546,8 @@ mod tests {
             .await
             .expect("snapshot publishes");
 
-        let snapshot = nats
-            .observations
-            .machine_snapshot(&machine_id("machine_a"))
-            .await
-            .expect("snapshot reads")
-            .expect("snapshot exists");
+        let facts = next_published_facts(&mut facts_sub).await;
+        let snapshot = facts.containers();
         assert_eq!(snapshot.containers().len(), 1);
         assert_eq!(
             snapshot
@@ -618,6 +562,11 @@ mod tests {
     async fn machine_observation_publish_records_configured_public_ip() {
         let nats = TestNats::start_bootstrapped().await;
         let runner = StaticRunner::new([]);
+        let mut facts_sub = nats
+            .client
+            .subscribe(machine_facts(&machine_id("machine_a")))
+            .await
+            .expect("subscribe machine facts");
 
         let mut publisher = MachineObservationPublisher::new(nats.client.clone());
         publisher
@@ -631,10 +580,9 @@ mod tests {
             .expect("snapshot publishes");
 
         assert_eq!(
-            nats.observations
-                .machine_public_ip(&machine_id("machine_a"))
+            next_published_facts(&mut facts_sub)
                 .await
-                .expect("public ip reads")
+                .public_ip()
                 .expect("public ip exists")
                 .public_ip,
             "203.0.113.7".parse::<IpAddr>().expect("valid public ip")
@@ -647,6 +595,11 @@ mod tests {
         let runner = StaticRunner::new([]);
         let mut publisher = MachineObservationPublisher::new(nats.client.clone());
         let machine_id = machine_id("machine_a");
+        let mut facts_sub = nats
+            .client
+            .subscribe(machine_facts(&machine_id))
+            .await
+            .expect("subscribe machine facts");
 
         publisher
             .publish_with_timeout(
@@ -662,13 +615,16 @@ mod tests {
             .await
             .expect("public ip clears");
 
-        assert_eq!(
-            nats.observations
-                .machine_public_ip(&machine_id)
-                .await
-                .expect("public ip reads"),
-            None
-        );
+        let _with_public_ip = next_published_facts(&mut facts_sub).await;
+        assert_eq!(next_published_facts(&mut facts_sub).await.public_ip(), None);
+    }
+
+    async fn next_published_facts(facts_sub: &mut async_nats::Subscriber) -> MachineFactsSnapshot {
+        let message = tokio::time::timeout(Duration::from_secs(1), facts_sub.next())
+            .await
+            .expect("machine facts publish arrives")
+            .expect("machine facts subscription stays open");
+        serde_json::from_slice(&message.payload).expect("machine facts decode")
     }
 
     #[derive(Clone)]
@@ -716,7 +672,6 @@ mod tests {
         _nats: ployz_test_support::nats::TestNats,
         /// Machine principal: the machine process side under test.
         client: async_nats::Client,
-        observations: AsyncNatsObservationStore,
     }
 
     impl TestNats {
@@ -726,15 +681,10 @@ mod tests {
                     .await;
             nats.bootstrap_resources().await;
             let client = nats.machine_client(&machine_id("machine_a")).await;
-            let machine_jetstream = async_nats::jetstream::new(client.clone());
-            let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
-                .await
-                .expect("open observations");
 
             Self {
                 _nats: nats,
                 client,
-                observations,
             }
         }
     }

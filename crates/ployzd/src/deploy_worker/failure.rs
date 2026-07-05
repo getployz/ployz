@@ -357,10 +357,12 @@ impl From<NamespaceCommitError> for DeployExecutionError {
 impl NamespaceCommitError {
     fn deploy_failure(&self, retained_artifacts: Vec<RetainedArtifact>) -> DeployOperationFailure {
         match self {
-            Self::RouteStore { target, error } => DeployOperationFailure::RouteCutoverFailed {
+            Self::RouteStore { target, message } => DeployOperationFailure::RouteCutoverFailed {
                 route: target.clone(),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
-                    message: failure_message(format!("route binding state write failed: {error}")),
+                    message: failure_message(format!(
+                        "route binding state write failed: {message}"
+                    )),
                 },
                 retained_artifacts,
             },
@@ -371,11 +373,11 @@ impl NamespaceCommitError {
                 },
                 retained_artifacts,
             },
-            Self::ServingTargetStore { scope, error } => {
+            Self::ServingTargetStore { scope, message } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: scope.clone(),
                     message: failure_message(format!(
-                        "serving target entry state could not be committed: {error}"
+                        "serving target entry state could not be committed: {message}"
                     )),
                     retained_artifacts,
                 }

@@ -7,7 +7,7 @@ use ployz_core::dataplane::{
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine_runtime::{MachineFactsSnapshot, ManagedContainerIdentity};
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +67,31 @@ impl MachineRpcResponder for MachineEnsureEndpointNetworkRpcOk {
 
 pub type MachineEnsureEndpointNetworkRpcResponse =
     MachineRpcResponse<MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineFactsGetRpcRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineFactsGetRpcOk {
+    pub facts: MachineFactsSnapshot,
+}
+
+impl MachineRpcResponder for MachineFactsGetRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        self.facts.machine_id()
+    }
+}
+
+pub type MachineFactsGetRpcResponse =
+    MachineRpcResponse<MachineFactsGetRpcOk, MachineFactsGetDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineFactsGetDomainError {
+    GatherFailed { message: FailureMessage },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
