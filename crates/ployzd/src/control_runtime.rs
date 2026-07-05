@@ -13,7 +13,7 @@ use crate::machine_runtime::client::{
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
-    NatsAuthorizationStartError, NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
+    NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
 use crate::process_support::shutdown_signal;
@@ -100,15 +100,10 @@ pub async fn start_control_runtime_with_client_and_reload(
         core_state.clone(),
         config.machine_bootstrap.clone(),
     );
-    // Adopt-on-start happens here, before any render: the on-disk
-    // authorized-users file is the authority set's recovery evidence.
     let authorization = NatsAuthorizationRuntime::start(
         config.nats_authorization.authorized_users_file.clone(),
-        core_state.clone(),
         reload,
-    )
-    .await
-    .map_err(ControlRuntimeError::StartNatsAuthorization)?;
+    );
     authorization
         .handle()
         .render(None)
@@ -129,7 +124,6 @@ pub async fn start_control_runtime_with_client_and_reload(
     );
     let machine_mint = MachineCredentialMintRuntime::new(
         controllers.clone(),
-        core_state.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
         config.nats_authorization.machine_seed_file.clone(),
@@ -224,7 +218,6 @@ pub enum ControlRuntimeError {
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
-    StartNatsAuthorization(NatsAuthorizationStartError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
@@ -256,9 +249,6 @@ impl fmt::Display for ControlRuntimeError {
                     formatter,
                     "failed to open operation status store: {error:?}"
                 )
-            }
-            Self::StartNatsAuthorization(error) => {
-                write!(formatter, "failed to start NATS authorization: {error}")
             }
             Self::RenderNatsAuthorization(error) => {
                 write!(formatter, "failed to render NATS authorization: {error}")

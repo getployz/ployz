@@ -2,7 +2,6 @@
 
 mod active_machine;
 mod namespace_lock;
-mod nats_authorized_user;
 mod route_binding;
 mod serving_target_entry;
 

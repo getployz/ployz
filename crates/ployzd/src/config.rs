@@ -280,7 +280,7 @@ pub struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
     pub machine_seed_file: PathBuf,
     /// Recovery evidence for machine lifecycle intent (drained machines);
-    /// adopted into KV on control start.
+    /// overlaid onto the intent snapshot at read time.
     pub machine_lifecycles_file: PathBuf,
 }
 
