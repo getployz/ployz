@@ -295,8 +295,8 @@ mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
     use crate::controllers::SubmitCommandError;
     use crate::operation_log::{
-        OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
-        OperationStatusStoreError, ReplayOperationEventsError, SubmitOperationError,
+        OperationEventLogError, OperationStatusReadError, OperationStatusStoreError,
+        ReplayOperationEventsError, SubmitOperationError,
     };
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(
             ops_watch_error_from_replay_error(
                 operation_id.clone(),
-                ReplayOperationEventsError::ReadEvents(OperationEventReplayReadError::ReadEvent {
+                ReplayOperationEventsError::ReadEvents(OperationEventLogError::ReadEvent {
                     message: "stream unavailable".to_owned(),
                 }),
             ),

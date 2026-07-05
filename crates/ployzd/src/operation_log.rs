@@ -189,8 +189,9 @@ impl OperationRepository {
             });
         }
 
-        let sequence =
-            append_event(&inner.dir, &event).map_err(SubmitOperationError::AppendEvent)?;
+        // A submission is the operation's first event, so its sequence is one.
+        let sequence = EventSequence::try_new(1).expect("first event sequence is one");
+        append_event(&inner.dir, &event).map_err(SubmitOperationError::AppendEvent)?;
         let status = K::accepted_status(operation_id.clone(), &payload, sequence);
         inner.statuses.insert(operation_id.clone(), status);
         drop(inner);
@@ -291,7 +292,9 @@ impl OperationRepository {
             roles: claim.roles,
             join_token: claim.join_token.clone(),
         };
-        let sequence = append_event(&inner.dir, &event).map_err(submit_machine_add_append_event)?;
+        // The submitted event is the operation's first, so its sequence is one.
+        let sequence = EventSequence::try_new(1).expect("first event sequence is one");
+        append_event(&inner.dir, &event).map_err(submit_machine_add_append_event)?;
         let submitted = StoredMachineAddSubmission {
             operation_id: claim.operation_id.clone(),
             idempotency_key: idempotency_key.clone(),
@@ -482,8 +485,10 @@ impl OperationRepository {
                 operation_id: operation_id.clone(),
             });
         };
-        let sequence = next_sequence(&inner.dir, operation_id)
-            .map_err(RecordOperationEventError::AppendEvent)?;
+        // The next sequence is the in-memory status's, not something to
+        // recompute from disk: the statuses map is authoritative and the lock
+        // is held, so the append lands at exactly this sequence.
+        let sequence = current.next_event_sequence();
         let projection = project_operation_event(&current, event.clone(), sequence)
             .map_err(RecordOperationEventError::ProjectStatus)?;
         let OperationProjection::StatusChanged { status } = projection else {
@@ -491,15 +496,11 @@ impl OperationRepository {
                 current_sequence: current.last_event_sequence(),
             });
         };
-        let sequence =
-            append_event(&inner.dir, &event).map_err(RecordOperationEventError::AppendEvent)?;
+        append_event(&inner.dir, &event).map_err(RecordOperationEventError::AppendEvent)?;
         inner.statuses.insert(operation_id.clone(), *status);
         drop(inner);
         publish_progress(&self.progress, event).await;
-        Ok(RecordOperationEventOutcome::Stored {
-            sequence,
-            status_write: OperationStatusWrite::Stored,
-        })
+        Ok(RecordOperationEventOutcome::Stored { sequence })
     }
 
     pub async fn operation_status_snapshot(
@@ -1110,7 +1111,6 @@ enum RecordOperationEventOutcome {
     },
     Stored {
         sequence: EventSequence,
-        status_write: OperationStatusWrite,
     },
 }
 
@@ -1120,7 +1120,7 @@ impl RecordOperationEventOutcome {
             Self::AlreadySatisfied { current_sequence } => {
                 OperationStatusWrite::AlreadySatisfied { current_sequence }
             }
-            Self::Stored { status_write, .. } => status_write,
+            Self::Stored { .. } => OperationStatusWrite::Stored,
         }
     }
 
@@ -1209,19 +1209,6 @@ pub enum OperationEventLogError {
         sequence: u64,
         error: EventSequenceError,
     },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum OperationEventReplayReadError {
-    #[error("decode operation event: {0}")]
-    DecodeEvent(serde_json::Error),
-    #[error("read operation event: {message}")]
-    ReadEvent { message: String },
-    #[error("operation event sequence {sequence} is invalid: {error}")]
-    InvalidEventSequence {
-        sequence: u64,
-        error: EventSequenceError,
-    },
     #[error("operation replay next sequence {sequence} is invalid")]
     InvalidNextReplaySequence { sequence: u64 },
 }
@@ -1229,7 +1216,7 @@ pub enum OperationEventReplayReadError {
 #[derive(Debug)]
 pub enum ReplayOperationEventsError {
     LoadStatus(OperationStatusReadError),
-    ReadEvents(OperationEventReplayReadError),
+    ReadEvents(OperationEventLogError),
     MissingOperation { operation_id: OperationId },
 }
 
@@ -1620,25 +1607,8 @@ fn event_sequence_from_index(index: usize) -> Result<EventSequence, OperationEve
         .map_err(|error| OperationEventLogError::InvalidEventSequence { sequence, error })
 }
 
-fn next_sequence(
-    dir: &Path,
-    operation_id: &OperationId,
-) -> Result<EventSequence, OperationEventLogError> {
-    let path = operation_file(dir, operation_id);
-    let event_count = match read_operation_events(&path) {
-        Ok(events) => events.len(),
-        Err(OperationEventLogError::ReadEvent { .. }) if !path.exists() => 0,
-        Err(error) => return Err(error),
-    };
-    event_sequence_from_index(event_count)
-}
-
-fn append_event(
-    dir: &Path,
-    event: &OperationEvent,
-) -> Result<EventSequence, OperationEventLogError> {
+fn append_event(dir: &Path, event: &OperationEvent) -> Result<(), OperationEventLogError> {
     prepare_event_dir(dir)?;
-    let sequence = next_sequence(dir, event.operation_id())?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -1657,8 +1627,7 @@ fn append_event(
         })?;
     sync_parent_directory(dir).map_err(|error| OperationEventLogError::WriteEvent {
         message: error.to_string(),
-    })?;
-    Ok(sequence)
+    })
 }
 
 fn prepare_event_dir(dir: &Path) -> Result<(), OperationEventLogError> {
@@ -1696,8 +1665,8 @@ fn replay_operation_events_from_file(
     operation_id: &OperationId,
     start_sequence: EventSequence,
     limit: ployz_core::ops::OperationEventReplayLimit,
-) -> Result<OperationEventReplayPage, OperationEventReplayReadError> {
-    let events = read_operation_events_for_replay(&operation_file(dir, operation_id))?;
+) -> Result<OperationEventReplayPage, OperationEventLogError> {
+    let events = read_operation_events(&operation_file(dir, operation_id))?;
     let start = usize::try_from(start_sequence.get().saturating_sub(1)).unwrap_or(usize::MAX);
     let limit = limit.as_usize();
     let page = events
@@ -1711,11 +1680,11 @@ fn replay_operation_events_from_file(
     let next = page
         .last()
         .and_then(|event| event.sequence.get().checked_add(1))
-        .ok_or(OperationEventReplayReadError::InvalidNextReplaySequence { sequence: u64::MAX })?;
+        .ok_or(OperationEventLogError::InvalidNextReplaySequence { sequence: u64::MAX })?;
     Ok(OperationEventReplayPage::more(
         page,
         EventSequence::try_new(next).map_err(|error| {
-            OperationEventReplayReadError::InvalidEventSequence {
+            OperationEventLogError::InvalidEventSequence {
                 sequence: next,
                 error,
             }
@@ -1723,40 +1692,6 @@ fn replay_operation_events_from_file(
     ))
 }
 
-fn read_operation_events_for_replay(
-    path: &Path,
-) -> Result<Vec<ReplayedOperationEvent>, OperationEventReplayReadError> {
-    let file = File::open(path).map_err(|error| OperationEventReplayReadError::ReadEvent {
-        message: error.to_string(),
-    })?;
-    std::io::BufReader::new(file)
-        .lines()
-        .enumerate()
-        .map(|(index, line)| {
-            let payload = line.map_err(|error| OperationEventReplayReadError::ReadEvent {
-                message: error.to_string(),
-            })?;
-            let sequence = replay_sequence_from_index(index)?;
-            let event = serde_json::from_str(&payload)
-                .map_err(OperationEventReplayReadError::DecodeEvent)?;
-            Ok(ReplayedOperationEvent { sequence, event })
-        })
-        .collect()
-}
-
-fn replay_sequence_from_index(
-    index: usize,
-) -> Result<EventSequence, OperationEventReplayReadError> {
-    let sequence = u64::try_from(index)
-        .ok()
-        .and_then(|value| value.checked_add(1))
-        .ok_or(OperationEventReplayReadError::InvalidEventSequence {
-            sequence: u64::MAX,
-            error: EventSequenceError::Zero,
-        })?;
-    EventSequence::try_new(sequence)
-        .map_err(|error| OperationEventReplayReadError::InvalidEventSequence { sequence, error })
-}
 
 fn submitted_payload<K: SubmitKind>(
     dir: &Path,
@@ -1814,7 +1749,32 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
             removed: removed.clone(),
             failed: failed.clone(),
         }),
-        _ => None,
+        // Non-evidence deploy transitions and every other operation kind carry
+        // no deploy evidence. Enumerated so a new event variant forces a
+        // decision here rather than silently falling through.
+        OperationEvent::DeploySubmitted { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
+        | OperationEvent::DeployRunning { .. }
+        | OperationEvent::DeployCompleted { .. }
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertChallengePublished { .. }
+        | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertCompleted { .. }
+        | OperationEvent::CertFailed { .. }
+        | OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCredentialProvisioned { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. }
+        | OperationEvent::MachineUpdateSubmitted { .. }
+        | OperationEvent::MachineUpdateRunning { .. }
+        | OperationEvent::MachineUpdateCompleted { .. }
+        | OperationEvent::MachineUpdateFailed { .. }
+        | OperationEvent::MachineLifecycleSubmitted { .. }
+        | OperationEvent::MachineLifecycleCompleted { .. }
+        | OperationEvent::MachineLifecycleFailed { .. }
+        | OperationEvent::Cancelled { .. } => None,
     }
 }
 
