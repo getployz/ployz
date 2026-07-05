@@ -43,9 +43,8 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
-    event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id,
-    namespace_revision_entry_id, namespace_revision_id, operation_id, route_hostname, route_port,
-    service_id,
+    event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id, operation_id,
+    route_hostname, route_port, service_id,
 };
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
@@ -246,7 +245,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             .expect("serving target entry reads")
             .expect("serving target committed")
             .namespace_revision_entry_id,
-        namespace_revision_entry_id("rev_2")
+        deploy_service_target("svc_api").namespace_revision_entry_id
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
@@ -262,7 +261,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 operation_id: deploy_operation.clone(),
                 plan: plan_namespace_deploy(
                     namespace_id("default"),
-                    namespace_revision_id("rev_2"),
+                    deploy_target("svc_api").namespace_revision_id(),
                     vec![DeployPlanningInput {
                         request: deploy_service_target("svc_api"),
                         eligible_machines: vec![machine_id("machine_a")],
@@ -418,7 +417,11 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         ),
         "expected routed deploy to complete, got {status:?}"
     );
-    assert_eq!(accepted.operation_id, operation_id("op_e2e_route"));
+    assert!(
+        accepted.operation_id.as_str().starts_with("op_deploy_"),
+        "deploy operation ids are server-generated, got {}",
+        accepted.operation_id.as_str()
+    );
     wait_for_gateway_route(&gateway_runtime).await;
 
     assert_smoke_response(
@@ -648,7 +651,11 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
                 containers::observation("machine_a", "ctr_after_control_down")
                     .with(
                         containers::identity("svc_api")
-                            .entry("rev_2")
+                            .entry(
+                                deploy_service_target("svc_api")
+                                    .namespace_revision_entry_id
+                                    .as_str(),
+                            )
                             .operation("op_e2e_control_down_route")
                             .step("step_after_control_down"),
                     )
