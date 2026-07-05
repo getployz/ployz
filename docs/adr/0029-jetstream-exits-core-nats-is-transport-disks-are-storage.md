@@ -30,6 +30,14 @@ The replacement for each tenant:
   directories as `0600` files, are written atomically with fsync, exclude
   secret values, redact credentials, tokens, and cert material, and are
   removed by the same retention deletion that removes archived evidence.
+  One scoped exception: the sequencer's mutable working index may hold an
+  in-flight operation's own secret material — a join token, a minted seed —
+  in cleartext at `0600` for exactly as long as idempotent resume needs it,
+  and scrubs it when the operation reaches a terminal state. This is the
+  minimum window that keeps resume working without a key-management
+  dependency; the durable, shareable append-only event log never carries a
+  secret. Restricting (`0600`) is the boundary for this transient index;
+  exclude/redact remains the rule for the durable log.
 - **KV locks and terminal-event dedup** → the core sequencer's in-process
   mutexes and its own write-once records. Distributed locks existed for
   independent writers sharing no process; after ADR 0028 there are none.

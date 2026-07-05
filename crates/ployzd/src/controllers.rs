@@ -121,6 +121,12 @@ impl MachineAddBootstrapConfig {
 #[derive(Debug, Clone)]
 pub struct OperationControllers {
     repository: OperationRepository,
+    /// The namespace fence is an in-process map, not a durable cross-process
+    /// lock, and that is intentional: the core is the single sequencer, so a
+    /// process-local mutex is the whole cluster's mutual exclusion. It is
+    /// deliberately not persisted — a restart interrupts any in-flight deploy,
+    /// and the resubmit converges from observed reality rather than resuming a
+    /// half-held lock. Do not reintroduce a durable lock here.
     namespace_locks: Arc<Mutex<BTreeMap<NamespaceId, OperationId>>>,
     machine_bootstrap: MachineAddBootstrapConfig,
 }
