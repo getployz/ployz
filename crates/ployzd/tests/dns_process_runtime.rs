@@ -11,6 +11,7 @@ use ployzd::dns_process_runtime::{
     DnsProcessAttempt, DnsProcessRuntimeError, RunningDnsProcessRuntime,
     start_dns_process_runtime_with_client,
 };
+use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -24,16 +25,14 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
         panic!("dns runtime should fail before buckets exist");
     };
 
-    assert!(matches!(
-        error,
-        DnsProcessRuntimeError::OpenCoreState(_) | DnsProcessRuntimeError::OpenObservations(_)
-    ));
+    assert!(matches!(error, DnsProcessRuntimeError::OpenObservations(_)));
 }
 
 #[tokio::test]
 async fn dns_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_buckets().await;
+    let _intent = nats.start_intent().await;
     let runtime =
         start_dns_process_runtime_with_client(nats.dns_client.clone(), Duration::from_millis(10))
             .await
@@ -93,6 +92,19 @@ impl TestNats {
 
     async fn create_buckets(&self) {
         self.connected.bootstrap_resources().await;
+    }
+
+    async fn start_intent(&self) -> RunningIntentRuntime {
+        let core_state = AsyncNatsCoreStateStore::from_jetstream(&self.connected.jetstream)
+            .await
+            .expect("open core state store");
+        start_intent_runtime(
+            self.connected.controller.clone(),
+            core_state,
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("intent runtime starts")
     }
 
     /// Commits an route binding as the controller principal.

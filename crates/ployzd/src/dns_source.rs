@@ -3,18 +3,18 @@
 use crate::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
+use crate::intent::{IntentReadError, NatsIntentReader};
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, RouteBindingStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub async fn load_dns_projection_update_from_nats(
-    core_state: &AsyncNatsCoreStateStore,
+    intent_reader: &NatsIntentReader,
     observations: &AsyncNatsObservationStore,
 ) -> DnsProjectionUpdate {
-    match load_dns_projection_input_from_nats(core_state, observations).await {
+    match load_dns_projection_input_from_nats(intent_reader, observations).await {
         Ok(input) => DnsProjectionUpdate::SourceAvailable(input),
         Err(DnsSourceError::Invalid { message }) => {
             DnsProjectionUpdate::SourceInvalid(DnsProjectionError::InvalidSource { message })
@@ -24,15 +24,10 @@ pub async fn load_dns_projection_update_from_nats(
 }
 
 pub async fn load_dns_projection_input_from_nats(
-    core_state: &AsyncNatsCoreStateStore,
+    intent_reader: &NatsIntentReader,
     observations: &AsyncNatsObservationStore,
 ) -> Result<DnsProjectionInput, DnsSourceError> {
-    let routes = async {
-        core_state
-            .route_bindings()
-            .await
-            .map_err(DnsSourceError::from)
-    };
+    let intent = async { intent_reader.intent().await.map_err(DnsSourceError::from) };
     let gateway_statuses = async {
         observations
             .gateway_statuses()
@@ -45,8 +40,8 @@ pub async fn load_dns_projection_input_from_nats(
             .await
             .map_err(DnsSourceError::from)
     };
-    let (routes, gateway_statuses, public_ips) =
-        tokio::try_join!(routes, gateway_statuses, public_ips)?;
+    let (intent, gateway_statuses, public_ips) =
+        tokio::try_join!(intent, gateway_statuses, public_ips)?;
 
     let gateway_machine_ids = gateway_statuses
         .into_iter()
@@ -63,7 +58,10 @@ pub async fn load_dns_projection_input_from_nats(
         .filter(|observation| gateway_machine_ids.contains(&observation.machine_id))
         .collect::<Vec<_>>();
 
-    Ok(dns_projection_input_from_state(routes, gateway_answers))
+    Ok(dns_projection_input_from_state(
+        intent.route_bindings,
+        gateway_answers,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,39 +75,6 @@ impl fmt::Display for DnsSourceError {
         match self {
             Self::Invalid { message } => write!(formatter, "invalid DNS source: {message}"),
             Self::Unavailable { message } => write!(formatter, "DNS source unavailable: {message}"),
-        }
-    }
-}
-
-impl From<RouteBindingStoreError> for DnsSourceError {
-    fn from(error: RouteBindingStoreError) -> Self {
-        match error {
-            RouteBindingStoreError::Decode(error) => Self::Invalid {
-                message: format!("decode route binding state: {error}"),
-            },
-            RouteBindingStoreError::CorruptRouteBindingState {
-                key,
-                expected_target,
-                actual_target,
-            } => Self::Invalid {
-                message: format!(
-                    "route binding state at {key} belongs to {actual_target:?}, not {expected_target:?}"
-                ),
-            },
-            RouteBindingStoreError::CorruptKey { key, actual_key } => Self::Invalid {
-                message: format!(
-                    "route binding state key {key} does not match encoded target key {actual_key}"
-                ),
-            },
-            error @ (RouteBindingStoreError::Encode(_)
-            | RouteBindingStoreError::Put { .. }
-            | RouteBindingStoreError::Delete { .. }
-            | RouteBindingStoreError::ListKeys { .. }
-            | RouteBindingStoreError::Watch { .. }
-            | RouteBindingStoreError::Get { .. }
-            | RouteBindingStoreError::Timeout { .. }) => Self::Unavailable {
-                message: error.to_string(),
-            },
         }
     }
 }
@@ -135,6 +100,14 @@ impl From<ObservationStoreError> for DnsSourceError {
             | ObservationStoreError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),
             },
+        }
+    }
+}
+
+impl From<IntentReadError> for DnsSourceError {
+    fn from(error: IntentReadError) -> Self {
+        Self::Unavailable {
+            message: error.to_string(),
         }
     }
 }

@@ -72,6 +72,17 @@ pub struct ActiveMachineState {
     pub lifecycle: MachineLifecycle,
 }
 
+/// Full operator intent visible to readers. Authorized users stay private to
+/// the core authorization renderer and are intentionally absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct IntentSnapshot {
+    pub active_machines: Vec<ActiveMachineState>,
+    pub route_bindings: Vec<RouteBindingState>,
+    pub serving_target_entries: Vec<ServingTargetEntry>,
+}
+
 /// The durable operator-intent state of a current machine identity. Controls
 /// placement policy; runtime readiness comes from observations, never from
 /// lifecycle.

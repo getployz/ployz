@@ -2,6 +2,7 @@
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
 use crate::controllers::OperationControllers;
+use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
     MachineLogsTailRuntimeError, NatsMachineFactsReader, NatsMachineLogsTailer,
 };
@@ -17,7 +18,6 @@ use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
     LogsTailError, LogsTailRequest, LogsTailResult, MachineInspectError, MachineListError,
@@ -37,14 +37,14 @@ const MAX_CONCURRENT_FACT_READS: usize = 16;
 
 #[derive(Clone)]
 pub struct MachineQueryRuntime {
-    core_state: AsyncNatsCoreStateStore,
+    intent_reader: NatsIntentReader,
     observations: AsyncNatsObservationStore,
     facts_reader: NatsMachineFactsReader,
 }
 
 #[derive(Clone)]
 pub struct ServiceQueryRuntime {
-    core_state: AsyncNatsCoreStateStore,
+    intent_reader: NatsIntentReader,
 }
 
 #[derive(Clone)]
@@ -55,7 +55,7 @@ pub struct LogsQueryRuntime {
 
 #[derive(Clone)]
 pub struct RuntimeSnapshotQueryRuntime {
-    core_state: AsyncNatsCoreStateStore,
+    intent_reader: NatsIntentReader,
     observations: AsyncNatsObservationStore,
     facts_reader: NatsMachineFactsReader,
 }
@@ -63,12 +63,12 @@ pub struct RuntimeSnapshotQueryRuntime {
 impl RuntimeSnapshotQueryRuntime {
     #[must_use]
     pub(crate) const fn new(
-        core_state: AsyncNatsCoreStateStore,
+        intent_reader: NatsIntentReader,
         observations: AsyncNatsObservationStore,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
-            core_state,
+            intent_reader,
             observations,
             facts_reader,
         }
@@ -76,12 +76,17 @@ impl RuntimeSnapshotQueryRuntime {
 
     pub(crate) async fn snapshot(&self) -> Result<RuntimeSnapshotResult, RuntimeSnapshotError> {
         let read_at_unix_seconds = current_unix_seconds();
+        let intent = self.intent_reader.intent().await.map_err(|error| {
+            RuntimeSnapshotError::Unavailable {
+                message: error.to_string(),
+            }
+        })?;
         let machine_query = MachineQueryRuntime::new(
-            self.core_state.clone(),
+            self.intent_reader.clone(),
             self.observations.clone(),
             self.facts_reader.clone(),
         );
-        let service_query = ServiceQueryRuntime::new(self.core_state.clone());
+        let service_query = ServiceQueryRuntime::new(self.intent_reader.clone());
         let machines = machine_query
             .list()
             .await
@@ -96,11 +101,7 @@ impl RuntimeSnapshotQueryRuntime {
                 RuntimeSnapshotError::Unavailable { message }
             })?
             .services;
-        let routes = self.core_state.route_bindings().await.map_err(|error| {
-            RuntimeSnapshotError::Unavailable {
-                message: error.to_string(),
-            }
-        })?;
+        let routes = intent.route_bindings;
         let facts = load_machine_facts(&self.facts_reader, &machines).await;
         let containers = facts
             .into_iter()
@@ -247,18 +248,20 @@ impl LogsQueryRuntime {
 
 impl ServiceQueryRuntime {
     #[must_use]
-    pub(crate) const fn new(core_state: AsyncNatsCoreStateStore) -> Self {
-        Self { core_state }
+    pub(crate) const fn new(intent_reader: NatsIntentReader) -> Self {
+        Self { intent_reader }
     }
 
     pub(crate) async fn list(&self) -> Result<ServiceListResult, ServiceListError> {
-        let services = self
-            .core_state
-            .serving_target_entries()
-            .await
-            .map_err(|error| ServiceListError::Unavailable {
-                message: error.to_string(),
-            })?
+        let intent =
+            self.intent_reader
+                .intent()
+                .await
+                .map_err(|error| ServiceListError::Unavailable {
+                    message: error.to_string(),
+                })?;
+        let services = intent
+            .serving_target_entries
             .into_iter()
             .map(service_snapshot)
             .collect();
@@ -270,13 +273,15 @@ impl ServiceQueryRuntime {
         namespace_id: &ployz_core::ids::NamespaceId,
         service_id: &ployz_core::ids::ServiceId,
     ) -> Result<ServiceSnapshot, ServiceInspectError> {
-        let Some(active) = self
-            .core_state
-            .serving_target_entry(namespace_id, service_id)
-            .await
-            .map_err(|error| ServiceInspectError::Unavailable {
+        let intent = self.intent_reader.intent().await.map_err(|error| {
+            ServiceInspectError::Unavailable {
                 message: error.to_string(),
-            })?
+            }
+        })?;
+        let Some(active) = intent
+            .serving_target_entries
+            .into_iter()
+            .find(|entry| entry.namespace_id == *namespace_id && entry.service_id == *service_id)
         else {
             return Err(ServiceInspectError::NoSuchService {
                 service_id: service_id.clone(),
@@ -478,23 +483,26 @@ async fn load_machine_facts(
 impl MachineQueryRuntime {
     #[must_use]
     pub(crate) fn new(
-        core_state: AsyncNatsCoreStateStore,
+        intent_reader: NatsIntentReader,
         observations: AsyncNatsObservationStore,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
-            core_state,
+            intent_reader,
             observations,
             facts_reader,
         }
     }
 
     pub(crate) async fn list(&self) -> Result<MachineListResult, MachineListError> {
-        let machines = self.core_state.active_machines().await.map_err(|error| {
-            MachineListError::Unavailable {
-                message: error.to_string(),
-            }
-        })?;
+        let intent =
+            self.intent_reader
+                .intent()
+                .await
+                .map_err(|error| MachineListError::Unavailable {
+                    message: error.to_string(),
+                })?;
+        let machines = intent.active_machines;
         let facts = load_machine_facts_for_active(&self.facts_reader, &machines).await;
         let public_ips = facts
             .values()
@@ -544,13 +552,15 @@ impl MachineQueryRuntime {
         &self,
         machine_id: &MachineId,
     ) -> Result<MachineSnapshot, MachineInspectError> {
-        let Some(machine) = self
-            .core_state
-            .active_machine(machine_id)
-            .await
-            .map_err(|error| MachineInspectError::Unavailable {
+        let intent = self.intent_reader.intent().await.map_err(|error| {
+            MachineInspectError::Unavailable {
                 message: error.to_string(),
-            })?
+            }
+        })?;
+        let Some(machine) = intent
+            .active_machines
+            .into_iter()
+            .find(|machine| machine.machine_id == *machine_id)
         else {
             return Err(MachineInspectError::NoSuchMachine {
                 machine_id: machine_id.clone(),

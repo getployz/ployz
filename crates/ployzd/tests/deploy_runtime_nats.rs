@@ -30,6 +30,7 @@ use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::deploy_worker::DeployExecutionMachineScope;
+use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
@@ -45,6 +46,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .expect("open core state store");
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(&nats.jetstream).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
@@ -65,6 +67,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
@@ -116,6 +119,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         .expect("open core state store");
     let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(&nats.jetstream).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
@@ -136,6 +140,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
@@ -179,6 +184,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         .await
         .expect("open core state store");
     let facts_reader = facts_reader(&nats.client, Duration::from_millis(200));
+    let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
     let controllers = operation_controllers(&nats.jetstream).await;
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request(1)))
@@ -199,6 +205,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
@@ -252,6 +259,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         .await
         .expect("open core state store");
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(&nats.jetstream).await;
     let accepted = controllers
         .submit_deploy(deploy_submit_command(deploy_request(1)))
@@ -272,6 +280,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
@@ -330,6 +339,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         .await
         .expect("deploy operation accepted");
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     nats.jetstream
         .delete_key_value(KV_CORE_BUCKET)
         .await
@@ -348,6 +358,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         },
         DeployOperationPorts {
             facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
@@ -456,6 +467,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
 
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
+    _intent: RunningIntentRuntime,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -476,9 +488,16 @@ async fn test_nats() -> TestNats {
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
     let jetstream = nats.jetstream.clone();
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    let intent = start_intent_runtime(client.clone(), core_state, Duration::from_secs(30))
+        .await
+        .expect("intent runtime starts");
 
     TestNats {
         _nats: nats,
+        _intent: intent,
         client,
         machine_a,
         machine_slow,
@@ -537,6 +556,10 @@ async fn start_facts_subscription(
 
 fn facts_reader(client: &async_nats::Client, timeout: Duration) -> NatsMachineFactsReader {
     NatsMachineFactsReader::new(client.clone()).with_request_timeout(timeout)
+}
+
+fn intent_reader(client: &async_nats::Client, timeout: Duration) -> NatsIntentReader {
+    NatsIntentReader::new(client.clone()).with_request_timeout(timeout)
 }
 
 fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsSnapshot {

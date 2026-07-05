@@ -7,6 +7,8 @@ pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
 
 pub const API_SERVICE_SCOPE: &str = "plz.v1.svc.api.>";
 pub const MACHINE_SERVICE_SCOPE: &str = "plz.v1.svc.machine.>";
+pub const INTENT_GET: &str = "plz.v1.svc.intent.get";
+pub const INTENT_CHANGED: &str = "plz.v1.intent.changed";
 
 pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
 pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";

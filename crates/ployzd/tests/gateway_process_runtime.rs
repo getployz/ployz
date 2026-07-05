@@ -16,6 +16,7 @@ use ployzd::gateway_process_runtime::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
     start_gateway_process_runtime_with_client,
 };
+use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -74,6 +75,7 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
 async fn gateway_process_serves_http_from_nats_projection() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
+    let _intent = nats.start_intent().await;
     let upstream = TestUpstream::start().await;
     let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
@@ -149,6 +151,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
 async fn gateway_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
+    let _intent = nats.start_intent().await;
     let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
@@ -207,6 +210,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
 async fn gateway_process_records_http_proxy_failures() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
+    let _intent = nats.start_intent().await;
     let runtime = start_gateway_process_runtime_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
@@ -318,6 +322,15 @@ impl TestNats {
 
     async fn create_gateway_buckets(&self) {
         self.connected.bootstrap_resources().await;
+    }
+
+    async fn start_intent(&self) -> RunningIntentRuntime {
+        let core_state = AsyncNatsCoreStateStore::from_jetstream(&self.connected.jetstream)
+            .await
+            .expect("open core state store");
+        start_intent_runtime(self.client.clone(), core_state, Duration::from_millis(10))
+            .await
+            .expect("intent runtime starts")
     }
 }
 

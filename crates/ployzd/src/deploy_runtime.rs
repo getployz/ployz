@@ -8,6 +8,7 @@ use crate::deploy_worker::{
     execute_deploy_operation, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
+use crate::intent::NatsIntentReader;
 use crate::machine_runtime::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
 };
@@ -51,6 +52,7 @@ where
     } = stores;
     let DeployOperationPorts {
         facts_reader,
+        intent_reader,
         dataplane,
         machine_runtime,
         health_checker,
@@ -60,7 +62,7 @@ where
     let facts = match load_deploy_execution_facts_from_nats(
         &request,
         machine_scope,
-        &core_state,
+        intent_reader,
         facts_reader,
         step_timeout,
     )
@@ -132,6 +134,7 @@ pub struct DeployOperationStores {
 
 pub struct DeployOperationPorts<'a, D, N, H> {
     pub facts_reader: &'a NatsMachineFactsReader,
+    pub intent_reader: &'a NatsIntentReader,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
@@ -312,6 +315,8 @@ impl DeployOperationRuntime {
             ObservationHealthChecker::new(self.observations.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
         let facts_reader = NatsMachineFactsReader::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
+        let intent_reader =
+            NatsIntentReader::new(self.client.clone()).with_request_timeout(self.step_timeout);
 
         let namespace_id = accepted.target.namespace_id.clone();
         let operation_id = accepted.operation_id.clone();
@@ -334,6 +339,7 @@ impl DeployOperationRuntime {
             },
             DeployOperationPorts {
                 facts_reader: &facts_reader,
+                intent_reader: &intent_reader,
                 dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,

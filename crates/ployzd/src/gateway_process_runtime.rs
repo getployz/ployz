@@ -8,6 +8,7 @@ use crate::gateway_pingora::{
 };
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
+use crate::intent::NatsIntentReader;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
@@ -19,8 +20,8 @@ use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
@@ -289,7 +290,7 @@ impl GatewayProcessSource {
     async fn load_update(&mut self) -> Result<GatewayProjectionUpdate, GatewayProcessRuntimeError> {
         let stores = self.stores().await?;
         Ok(
-            load_gateway_projection_update_from_nats(&stores.core_state, &stores.observations)
+            load_gateway_projection_update_from_nats(&stores.intent_reader, &stores.observations)
                 .await,
         )
     }
@@ -315,28 +316,23 @@ impl GatewayProcessSource {
 }
 
 struct GatewayProcessStores {
-    core_state: AsyncNatsCoreStateStore,
+    intent_reader: NatsIntentReader,
     observations: AsyncNatsObservationStore,
 }
 
 async fn open_gateway_process_stores(
     client: NatsClient,
 ) -> Result<GatewayProcessStores, GatewayProcessRuntimeError> {
-    let jetstream = async_nats::jetstream::new(client);
-    let open_core_state = async {
-        AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-            .await
-            .map_err(GatewayProcessRuntimeError::OpenCoreState)
-    };
+    let jetstream = async_nats::jetstream::new(client.clone());
     let open_observations = async {
         AsyncNatsObservationStore::from_jetstream(&jetstream)
             .await
             .map_err(GatewayProcessRuntimeError::OpenObservations)
     };
-    let (core_state, observations) = tokio::try_join!(open_core_state, open_observations)?;
+    let observations = open_observations.await?;
 
     Ok(GatewayProcessStores {
-        core_state,
+        intent_reader: NatsIntentReader::new(client),
         observations,
     })
 }
@@ -375,19 +371,19 @@ async fn wake_gateway_refresh_on_nats_changes(
 }
 
 struct GatewayChangeWatchers {
-    routes: async_nats::jetstream::kv::Watch,
+    intent: async_nats::Subscriber,
     observations: async_nats::jetstream::kv::Watch,
 }
 
 async fn open_gateway_change_watchers(
     client: NatsClient,
 ) -> Result<GatewayChangeWatchers, GatewayProcessRuntimeError> {
+    let intent = client.subscribe(INTENT_CHANGED).await.map_err(|error| {
+        GatewayProcessRuntimeError::WatchIntent {
+            message: error.to_string(),
+        }
+    })?;
     let stores = open_gateway_process_stores(client).await?;
-    let routes = stores
-        .core_state
-        .watch_route_binding_changes()
-        .await
-        .map_err(GatewayProcessRuntimeError::WatchRoutes)?;
     let observations = stores
         .observations
         .watch_machine_container_snapshot_changes()
@@ -395,7 +391,7 @@ async fn open_gateway_change_watchers(
         .map_err(GatewayProcessRuntimeError::WatchObservations)?;
 
     Ok(GatewayChangeWatchers {
-        routes,
+        intent,
         observations,
     })
 }
@@ -408,8 +404,8 @@ async fn watch_gateway_changes(
 ) -> GatewayWatchLoopEnd {
     loop {
         tokio::select! {
-            route = watchers.routes.next() => {
-                match watch_event_change("routes", route) {
+            intent = watchers.intent.next() => {
+                match watch_intent_change(intent) {
                     GatewayWatchEvent::Changed => {
                         record_gateway_watch_success(health);
                         let _ = refresh_wake.try_send(());
@@ -434,6 +430,13 @@ async fn watch_gateway_changes(
             }
             _ = shutdown.recv() => return GatewayWatchLoopEnd::Shutdown,
         }
+    }
+}
+
+fn watch_intent_change(event: Option<async_nats::Message>) -> GatewayWatchEvent {
+    match event {
+        Some(_) => GatewayWatchEvent::Changed,
+        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended { source: "intent" }),
     }
 }
 
@@ -714,11 +717,12 @@ pub enum GatewayProcessRuntimeError {
         addr: SocketAddr,
         timeout: Duration,
     },
-    OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     WriteObservations(ObservationStoreError),
     UpdatePingoraRoutes(PingoraRouteRegistryError),
-    WatchRoutes(ployz_nats::core_state::RouteBindingStoreError),
+    WatchIntent {
+        message: String,
+    },
     WatchObservations(ObservationStoreError),
     RefreshTimedOut {
         timeout: Duration,
@@ -750,9 +754,6 @@ impl fmt::Display for GatewayProcessRuntimeError {
                     timeout.as_secs()
                 )
             }
-            Self::OpenCoreState(error) => {
-                write!(formatter, "failed to open core state store: {error}")
-            }
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")
             }
@@ -765,7 +766,7 @@ impl fmt::Display for GatewayProcessRuntimeError {
                     "failed to update Pingora gateway routes: {error}"
                 )
             }
-            Self::WatchRoutes(error) => write!(formatter, "failed to watch routes: {error}"),
+            Self::WatchIntent { message } => write!(formatter, "failed to watch intent: {message}"),
             Self::WatchObservations(error) => {
                 write!(formatter, "failed to watch observations: {error}")
             }

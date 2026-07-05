@@ -23,6 +23,7 @@ use ployzd::deploy_worker::{
     DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
+use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_runtime::client::NatsMachineFactsReader;
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -39,6 +40,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let nats = test_nats().await;
     let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
 
     core_state
         .replace_serving_target_entry(&ServingTargetEntry {
@@ -89,7 +91,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
             machine_id("machine_b"),
             machine_id("machine_missing"),
         ]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -126,6 +128,7 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let nats = test_nats().await;
     let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -146,7 +149,7 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         operation_id("op_123"),
         deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -168,6 +171,7 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     let nats = test_nats().await;
     let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -189,7 +193,7 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
         operation_id("op_123"),
         deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -210,6 +214,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let nats = test_nats().await;
     let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -221,7 +226,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
         operation_id("op_123"),
         routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -234,8 +239,8 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 #[tokio::test]
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     let _core_1 = nats
         .serve_machine_facts(machine_snapshot("core_1", []))
         .await;
@@ -243,7 +248,7 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
         operation_id("op_123"),
         routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -258,6 +263,7 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let nats = test_nats().await;
     let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -270,7 +276,7 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
         operation_id("op_123"),
         routed_deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -282,8 +288,8 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
 #[tokio::test]
 async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     let _machine_a = nats
         .serve_machine_facts(machine_snapshot("machine_a", []))
         .await;
@@ -292,7 +298,7 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
         operation_id("op_123"),
         deploy_request(),
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -304,8 +310,8 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 #[tokio::test]
 async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     let key = ServingTargetEntryKey::from_namespace_service(
         &namespace_id("default"),
         &service_id("svc_api"),
@@ -332,7 +338,7 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let error = load_deploy_execution_facts_from_nats(
         &request,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -343,7 +349,7 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
     // (omitted-service reconciliation loads every entry in the namespace).
     assert!(matches!(
         error,
-        DeployFactLoadError::ServingTargetEntriesRead { ref message }
+        DeployFactLoadError::IntentRead { ref message }
             if message.contains(key.as_str())
                 && message.contains("does not match canonical key")
     ));
@@ -352,8 +358,8 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
 #[tokio::test]
 async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
-    let core_state = nats.core_state();
     let facts_reader = nats.facts_reader();
+    let intent_reader = nats.intent_reader();
     let request = deploy_request();
     let key = ServingTargetEntryKey::from_namespace_service(
         &namespace_id("default"),
@@ -372,7 +378,7 @@ async fn nats_preparation_preserves_decode_failure_message() {
     let error = load_deploy_execution_facts_from_nats(
         &request,
         DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
-        &core_state,
+        &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
@@ -381,7 +387,7 @@ async fn nats_preparation_preserves_decode_failure_message() {
 
     assert!(matches!(
         error,
-        DeployFactLoadError::ServingTargetEntriesRead { ref message }
+        DeployFactLoadError::IntentRead { ref message }
             if message.contains("decode serving target entry state")
     ));
 }
@@ -390,14 +396,14 @@ async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
     machine_scope: DeployExecutionMachineScope,
-    core_state: &AsyncNatsCoreStateStore,
+    intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::deploy_worker::DeployExecutionCommand {
     let facts = load_deploy_execution_facts_from_nats(
         &request,
         machine_scope,
-        core_state,
+        intent_reader,
         facts_reader,
         step_timeout,
     )
@@ -410,6 +416,7 @@ struct TestNats {
     connected: ployz_test_support::nats::TestNats,
     jetstream: jetstream::Context,
     core_state: AsyncNatsCoreStateStore,
+    _intent: RunningIntentRuntime,
 }
 
 impl TestNats {
@@ -419,6 +426,11 @@ impl TestNats {
 
     fn facts_reader(&self) -> NatsMachineFactsReader {
         NatsMachineFactsReader::new(self.connected.controller.clone())
+            .with_request_timeout(Duration::from_secs(1))
+    }
+
+    fn intent_reader(&self) -> NatsIntentReader {
+        NatsIntentReader::new(self.connected.controller.clone())
             .with_request_timeout(Duration::from_secs(1))
     }
 
@@ -586,11 +598,19 @@ async fn test_nats() -> TestNats {
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
+    let intent = start_intent_runtime(
+        connected.controller.clone(),
+        core_state.clone(),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("intent runtime starts");
 
     TestNats {
         connected,
         jetstream,
         core_state,
+        _intent: intent,
     }
 }
 

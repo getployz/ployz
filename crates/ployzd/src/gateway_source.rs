@@ -4,19 +4,17 @@ use crate::gateway::{
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
     GatewayServingEntry,
 };
+use crate::intent::{IntentReadError, NatsIntentReader};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_nats::core_state::{
-    AsyncNatsCoreStateStore, CoreStateStoreError, RouteBindingStoreError,
-};
 use ployz_nats::observations::{
     AsyncNatsObservationStore, MachineContainerObservationRecord, ObservationStoreError,
 };
 use std::fmt;
 pub async fn load_gateway_projection_update_from_nats(
-    core_state: &AsyncNatsCoreStateStore,
+    intent_reader: &NatsIntentReader,
     observations: &AsyncNatsObservationStore,
 ) -> GatewayProjectionUpdate {
-    match load_gateway_projection_input_from_nats(core_state, observations).await {
+    match load_gateway_projection_input_from_nats(intent_reader, observations).await {
         Ok(input) => GatewayProjectionUpdate::SourceAvailable(input),
         Err(GatewaySourceError::Invalid { message }) => {
             GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource {
@@ -32,18 +30,12 @@ pub async fn load_gateway_projection_update_from_nats(
 }
 
 pub async fn load_gateway_projection_input_from_nats(
-    core_state: &AsyncNatsCoreStateStore,
+    intent_reader: &NatsIntentReader,
     observations: &AsyncNatsObservationStore,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
-    let routes = async {
-        core_state
-            .route_bindings()
-            .await
-            .map_err(GatewaySourceError::from)
-    };
-    let serving = async {
-        core_state
-            .serving_target_entries()
+    let intent = async {
+        intent_reader
+            .intent()
             .await
             .map_err(GatewaySourceError::from)
     };
@@ -53,12 +45,11 @@ pub async fn load_gateway_projection_input_from_nats(
             .await
             .map_err(GatewaySourceError::from)
     };
-    let (routes, serving, observed_machines) =
-        tokio::try_join!(routes, serving, observed_machines)?;
+    let (intent, observed_machines) = tokio::try_join!(intent, observed_machines)?;
 
     Ok(gateway_projection_input_from_state(
-        routes,
-        serving,
+        intent.route_bindings,
+        intent.serving_target_entries,
         observed_machines,
     ))
 }
@@ -76,39 +67,6 @@ impl fmt::Display for GatewaySourceError {
             Self::Unavailable { message } => {
                 write!(formatter, "gateway source unavailable: {message}")
             }
-        }
-    }
-}
-
-impl From<RouteBindingStoreError> for GatewaySourceError {
-    fn from(error: RouteBindingStoreError) -> Self {
-        match error {
-            RouteBindingStoreError::Decode(error) => Self::Invalid {
-                message: format!("decode route binding state: {error}"),
-            },
-            RouteBindingStoreError::CorruptRouteBindingState {
-                key,
-                expected_target,
-                actual_target,
-            } => Self::Invalid {
-                message: format!(
-                    "route binding state at {key} belongs to {actual_target:?}, not {expected_target:?}"
-                ),
-            },
-            RouteBindingStoreError::CorruptKey { key, actual_key } => Self::Invalid {
-                message: format!(
-                    "route binding state key {key} does not match encoded target key {actual_key}"
-                ),
-            },
-            error @ (RouteBindingStoreError::Encode(_)
-            | RouteBindingStoreError::Put { .. }
-            | RouteBindingStoreError::Delete { .. }
-            | RouteBindingStoreError::ListKeys { .. }
-            | RouteBindingStoreError::Watch { .. }
-            | RouteBindingStoreError::Get { .. }
-            | RouteBindingStoreError::Timeout { .. }) => Self::Unavailable {
-                message: error.to_string(),
-            },
         }
     }
 }
@@ -134,6 +92,14 @@ impl From<ObservationStoreError> for GatewaySourceError {
             | ObservationStoreError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),
             },
+        }
+    }
+}
+
+impl From<IntentReadError> for GatewaySourceError {
+    fn from(error: IntentReadError) -> Self {
+        Self::Unavailable {
+            message: error.to_string(),
         }
     }
 }
@@ -166,40 +132,5 @@ fn gateway_route_from_state(state: RouteBindingState) -> GatewayRoute {
         endpoint_port: state.endpoint_port,
         namespace_id: state.namespace_id,
         service_id: state.service_id,
-    }
-}
-
-impl From<CoreStateStoreError> for GatewaySourceError {
-    fn from(error: CoreStateStoreError) -> Self {
-        match error {
-            CoreStateStoreError::Decode(error) => Self::Invalid {
-                message: format!("decode serving target entry state: {error}"),
-            },
-            CoreStateStoreError::CorruptServingTargetEntry {
-                key,
-                expected_service_id,
-                actual_service_id,
-            } => Self::Invalid {
-                message: format!(
-                    "serving target entry state at {key} belongs to {actual_service_id:?}, not {expected_service_id:?}"
-                ),
-            },
-            CoreStateStoreError::CorruptKey { key, actual_key } => Self::Invalid {
-                message: format!(
-                    "serving target entry state key {key} does not match encoded key {actual_key}"
-                ),
-            },
-            error @ (CoreStateStoreError::OpenBucket { .. }
-            | CoreStateStoreError::Encode(_)
-            | CoreStateStoreError::Put { .. }
-            | CoreStateStoreError::CasConflict { .. }
-            | CoreStateStoreError::Get { .. }
-            | CoreStateStoreError::Delete { .. }
-            | CoreStateStoreError::ListKeys { .. }
-            | CoreStateStoreError::CorruptNamespaceLock { .. }
-            | CoreStateStoreError::Timeout { .. }) => Self::Unavailable {
-                message: error.to_string(),
-            },
-        }
     }
 }
