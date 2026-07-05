@@ -4,7 +4,7 @@ use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_wit
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
-use crate::deploy_worker::DeployExecutionMachineScope;
+use crate::deploy_worker::DeployMachineCandidates;
 use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
 use crate::machine_roster::MachineRosterStore;
@@ -116,7 +116,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         client.clone(),
         namespace_intent.clone(),
         controllers.clone(),
-        DeployExecutionMachineScope::same_machines(config.deploy_machines.clone()),
+        DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );

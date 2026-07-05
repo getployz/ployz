@@ -17,12 +17,12 @@ use ployz_test_support::ids::{
     service_id,
 };
 use ployzd::deploy_worker::{
-    DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
+    DeployFactLoadError, DeployMachineCandidates, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
-use ployzd::machine_runtime::client::NatsMachineFactsReader;
+use ployzd::machine_runtime::client::{NatsMachineFactsReader, NatsMachinePlacementBidder};
 use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -39,6 +39,7 @@ use std::time::Duration;
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
 
     nats.namespace_intent
@@ -85,13 +86,14 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![
+        DeployMachineCandidates::same_machines(vec![
             machine_id("machine_a"),
             machine_id("machine_b"),
             machine_id("machine_missing"),
         ]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -127,6 +129,7 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let nats = test_nats().await;
     let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     machine_roster
         .replace_active_machine(&active_machine("edge_2"))
@@ -147,9 +150,10 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -170,6 +174,7 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     let nats = test_nats().await;
     let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     machine_roster
         .replace_active_machine(&active_machine("edge_2"))
@@ -191,9 +196,10 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -213,6 +219,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let nats = test_nats().await;
     let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     machine_roster
         .replace_active_machine(&active_machine("edge_2"))
@@ -224,9 +231,10 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -239,6 +247,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     let _core_1 = nats
         .serve_machine_facts(machine_snapshot("core_1", []))
@@ -246,9 +255,10 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -262,6 +272,7 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let nats = test_nats().await;
     let machine_roster = nats.machine_roster();
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     machine_roster
         .replace_active_machine(&active_machine("edge_2"))
@@ -274,9 +285,10 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -288,6 +300,7 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
 async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     let _machine_a = nats
         .serve_machine_facts(machine_snapshot("machine_a", []))
@@ -296,9 +309,10 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await;
@@ -310,6 +324,7 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 async fn nats_preparation_preserves_unknown_intent_field_failure() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     std::fs::write(
         &nats.namespace_intent_file,
@@ -320,9 +335,10 @@ async fn nats_preparation_preserves_unknown_intent_field_failure() {
     let request = deploy_request();
     let error = load_deploy_execution_facts_from_nats(
         &request,
-        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await
@@ -339,6 +355,7 @@ async fn nats_preparation_preserves_unknown_intent_field_failure() {
 async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
+    let placement_bidder = nats.placement_bidder();
     let intent_reader = nats.intent_reader();
     let request = deploy_request();
     std::fs::write(&nats.namespace_intent_file, br#"{"route_bindings":["#)
@@ -346,9 +363,10 @@ async fn nats_preparation_preserves_decode_failure_message() {
 
     let error = load_deploy_execution_facts_from_nats(
         &request,
-        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
+        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         &intent_reader,
         &facts_reader,
+        &placement_bidder,
         Duration::from_secs(7),
     )
     .await
@@ -364,9 +382,10 @@ async fn nats_preparation_preserves_decode_failure_message() {
 async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
-    machine_scope: DeployExecutionMachineScope,
+    machine_scope: DeployMachineCandidates,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
+    placement_bidder: &NatsMachinePlacementBidder,
     step_timeout: Duration,
 ) -> ployzd::deploy_worker::DeployExecutionCommand {
     let facts = load_deploy_execution_facts_from_nats(
@@ -374,6 +393,7 @@ async fn prepare_command_from_nats(
         machine_scope,
         intent_reader,
         facts_reader,
+        placement_bidder,
         step_timeout,
     )
     .await
@@ -397,6 +417,11 @@ impl TestNats {
 
     fn facts_reader(&self) -> NatsMachineFactsReader {
         NatsMachineFactsReader::new(self.connected.controller.clone())
+            .with_request_timeout(Duration::from_secs(1))
+    }
+
+    fn placement_bidder(&self) -> NatsMachinePlacementBidder {
+        NatsMachinePlacementBidder::new(self.connected.controller.clone())
             .with_request_timeout(Duration::from_secs(1))
     }
 
