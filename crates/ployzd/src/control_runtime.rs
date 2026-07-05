@@ -8,7 +8,9 @@ use crate::deploy_worker::DeployExecutionMachineScope;
 use crate::machine_lifecycle_runtime::{
     MachineLifecycleOperationRuntime, adopt_machine_lifecycles_from_file,
 };
-use crate::machine_runtime::client::{NatsMachineLogsTailer, NatsMachineSubstrateUpdater};
+use crate::machine_runtime::client::{
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
+};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
@@ -148,6 +150,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         .await
         .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
+    let facts_reader = NatsMachineFactsReader::new(client.clone());
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update_runtime = MachineUpdateOperationRuntime::new(
         controllers.clone(),
@@ -176,6 +179,7 @@ pub async fn start_control_runtime_with_client_and_reload(
                 .ok_or(ControlRuntimeError::MissingDeployMachine)?,
             core_state,
             observations,
+            facts_reader,
             logs_tailer,
         ),
     )

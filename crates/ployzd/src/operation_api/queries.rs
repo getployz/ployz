@@ -2,12 +2,17 @@
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
 use crate::controllers::OperationControllers;
-use crate::machine_runtime::client::{MachineLogsTailRuntimeError, NatsMachineLogsTailer};
+use crate::machine_runtime::client::{
+    MachineLogsTailRuntimeError, NatsMachineFactsReader, NatsMachineLogsTailer,
+};
 use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
+use futures_util::{StreamExt, stream};
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
-use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::machine_runtime::{
+    MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
+};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
@@ -28,10 +33,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::error_map::ops_watch_error_from_replay_error;
 
+const MAX_CONCURRENT_FACT_READS: usize = 16;
+
 #[derive(Clone)]
 pub struct MachineQueryRuntime {
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
+    facts_reader: NatsMachineFactsReader,
 }
 
 #[derive(Clone)]
@@ -49,6 +57,7 @@ pub struct LogsQueryRuntime {
 pub struct RuntimeSnapshotQueryRuntime {
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
+    facts_reader: NatsMachineFactsReader,
 }
 
 impl RuntimeSnapshotQueryRuntime {
@@ -56,17 +65,22 @@ impl RuntimeSnapshotQueryRuntime {
     pub(crate) const fn new(
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
+        facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
             core_state,
             observations,
+            facts_reader,
         }
     }
 
     pub(crate) async fn snapshot(&self) -> Result<RuntimeSnapshotResult, RuntimeSnapshotError> {
         let read_at_unix_seconds = current_unix_seconds();
-        let machine_query =
-            MachineQueryRuntime::new(self.core_state.clone(), self.observations.clone());
+        let machine_query = MachineQueryRuntime::new(
+            self.core_state.clone(),
+            self.observations.clone(),
+            self.facts_reader.clone(),
+        );
         let service_query = ServiceQueryRuntime::new(self.core_state.clone());
         let machines = machine_query
             .list()
@@ -87,15 +101,10 @@ impl RuntimeSnapshotQueryRuntime {
                 message: error.to_string(),
             }
         })?;
-        let containers = self
-            .observations
-            .machine_snapshot_records()
-            .await
-            .map_err(|error| RuntimeSnapshotError::Unavailable {
-                message: error.to_string(),
-            })?
+        let facts = load_machine_facts(&self.facts_reader, &machines).await;
+        let containers = facts
             .into_iter()
-            .flat_map(|record| record.snapshot.containers().to_vec())
+            .flat_map(|facts| facts.containers().containers().to_vec())
             .collect::<Vec<_>>();
         let revisions = derive_runtime_revisions(&services, &containers);
         let releases = derive_runtime_releases(&services, &routes);
@@ -446,8 +455,24 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
-fn unix_seconds_from_nanos(unix_nanos: i128) -> u64 {
-    u64::try_from(unix_nanos.max(0) / 1_000_000_000).unwrap_or(u64::MAX)
+async fn load_machine_facts(
+    facts_reader: &NatsMachineFactsReader,
+    machines: &[MachineSnapshot],
+) -> Vec<MachineFactsSnapshot> {
+    let machine_ids = machines
+        .iter()
+        .map(|machine| machine.active.machine_id.clone())
+        .collect::<Vec<_>>();
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move { facts_reader.machine_facts(&machine_id).await.ok() })
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+
+    let mut facts = Vec::new();
+    while let Some(Some(snapshot)) = reads.next().await {
+        facts.push(snapshot);
+    }
+    facts.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts
 }
 
 impl MachineQueryRuntime {
@@ -455,10 +480,12 @@ impl MachineQueryRuntime {
     pub(crate) fn new(
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
+        facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
             core_state,
             observations,
+            facts_reader,
         }
     }
 
@@ -468,15 +495,14 @@ impl MachineQueryRuntime {
                 message: error.to_string(),
             }
         })?;
-        let public_ips = self
-            .observations
-            .machine_public_ips()
-            .await
-            .map_err(|error| MachineListError::Unavailable {
-                message: error.to_string(),
-            })?
-            .into_iter()
-            .map(|observation| (observation.machine_id.clone(), observation))
+        let facts = load_machine_facts_for_active(&self.facts_reader, &machines).await;
+        let public_ips = facts
+            .values()
+            .filter_map(|facts| {
+                facts
+                    .public_ip()
+                    .map(|public_ip| (facts.machine_id().clone(), public_ip.clone()))
+            })
             .collect::<BTreeMap<_, _>>();
         let gateway_statuses = self
             .observations
@@ -488,21 +514,13 @@ impl MachineQueryRuntime {
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
-        let container_observations = self
-            .observations
-            .machine_snapshot_records()
-            .await
-            .map_err(|error| MachineListError::Unavailable {
-                message: error.to_string(),
-            })?
-            .into_iter()
-            .map(|record| {
+        let container_observations = facts
+            .values()
+            .map(|facts| {
+                let container_count = facts.containers().containers().len();
                 (
-                    record.snapshot.machine_id().clone(),
-                    (
-                        record.snapshot.containers().len(),
-                        record.observed_at_unix_nanos,
-                    ),
+                    facts.machine_id().clone(),
+                    (container_count, facts.observed_at_unix_ms() / 1_000),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -513,8 +531,7 @@ impl MachineQueryRuntime {
                 public_ip: public_ips.get(&machine.machine_id).cloned(),
                 gateway: gateway_statuses.get(&machine.machine_id).cloned(),
                 observed_container_count: observation.map(|(count, _)| count).unwrap_or_default(),
-                last_observed_at_unix_seconds: observation
-                    .map(|(_, observed_at)| unix_seconds_from_nanos(observed_at)),
+                last_observed_at_unix_seconds: observation.map(|(_, observed_at)| observed_at),
                 active: machine,
             });
         }
@@ -546,19 +563,15 @@ impl MachineQueryRuntime {
     }
 
     async fn snapshot(&self, active: ActiveMachineState) -> Result<MachineSnapshot, String> {
-        let public_ip = self
-            .observations
-            .machine_public_ip(&active.machine_id)
+        let facts = self
+            .facts_reader
+            .machine_facts(&active.machine_id)
             .await
-            .map_err(|error| error.to_string())?;
+            .ok();
+        let public_ip = facts.as_ref().and_then(|facts| facts.public_ip().cloned());
         let gateway = self
             .observations
             .gateway_status(&active.machine_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let observation = self
-            .observations
-            .machine_snapshot_record(&active.machine_id)
             .await
             .map_err(|error| error.to_string())?;
 
@@ -566,14 +579,32 @@ impl MachineQueryRuntime {
             active,
             public_ip,
             gateway,
-            observed_container_count: observation
+            observed_container_count: facts
                 .as_ref()
-                .map(|record| record.snapshot.containers().len())
+                .map(|facts| facts.containers().containers().len())
                 .unwrap_or_default(),
-            last_observed_at_unix_seconds: observation
-                .map(|record| unix_seconds_from_nanos(record.observed_at_unix_nanos)),
+            last_observed_at_unix_seconds: facts.map(|facts| facts.observed_at_unix_ms() / 1_000),
         })
     }
+}
+
+async fn load_machine_facts_for_active(
+    facts_reader: &NatsMachineFactsReader,
+    machines: &[ActiveMachineState],
+) -> BTreeMap<MachineId, MachineFactsSnapshot> {
+    let machine_ids = machines
+        .iter()
+        .map(|machine| machine.machine_id.clone())
+        .collect::<Vec<_>>();
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move { facts_reader.machine_facts(&machine_id).await.ok() })
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
+
+    let mut facts = BTreeMap::new();
+    while let Some(Some(snapshot)) = reads.next().await {
+        facts.insert(snapshot.machine_id().clone(), snapshot);
+    }
+    facts
 }
 
 fn logs_tail_machine_error(error: MachineLogsTailRuntimeError) -> LogsTailError {

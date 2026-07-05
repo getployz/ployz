@@ -1,20 +1,20 @@
-//! Load deploy execution facts from current-state stores.
+//! Load deploy execution facts from core state and fresh machine facts RPCs.
 
+use crate::machine_runtime::client::NatsMachineFactsReader;
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::state::placement_rejection;
 use ployz_core::ops::UnusableMachine;
+use ployz_core::state::{MachineUsabilityReason, placement_rejection};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
 use super::preparation::namespace_cleanup_candidates;
 
-const MAX_CONCURRENT_OBSERVATION_READS: usize = 16;
+const MAX_CONCURRENT_FACT_READS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionMachineScope {
@@ -36,7 +36,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     request: &DeployRequest,
     machine_scope: DeployExecutionMachineScope,
     core_state: &AsyncNatsCoreStateStore,
-    observations: &AsyncNatsObservationStore,
+    facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let route_bindings = async {
@@ -55,7 +55,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         })
     };
     let machine_scope = load_active_machine_scope(core_state, machine_scope);
-    let (route_bindings, serving_entries, (machine_scope, unusable_machines)) =
+    let (route_bindings, serving_entries, (mut machine_scope, mut unusable_machines)) =
         tokio::try_join!(route_bindings, serving_entries, machine_scope)?;
     let namespace_route_bindings = route_bindings
         .into_iter()
@@ -65,10 +65,25 @@ pub async fn load_deploy_execution_facts_from_nats(
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let observed_machines =
-        load_machine_snapshots(observations, &machine_scope.observed_machine_ids).await?;
-    let dataplane_machines =
-        routed_dataplane_machines(request, machine_scope.observed_machine_ids.clone());
+    let (observed_machines, facts_unavailable) =
+        load_machine_snapshots(facts_reader, &machine_scope.observed_machine_ids).await;
+    let answering_machines = sorted_unique_machines(
+        observed_machines
+            .iter()
+            .map(MachineContainerObservationSnapshot::machine_id),
+    );
+    machine_scope
+        .eligible_machines
+        .retain(|machine_id| answering_machines.contains(machine_id));
+    unusable_machines.extend(
+        facts_unavailable
+            .into_iter()
+            .map(|machine_id| UnusableMachine {
+                machine_id,
+                reason: MachineUsabilityReason::FactsUnavailable,
+            }),
+    );
+    let dataplane_machines = routed_dataplane_machines(request, answering_machines);
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
@@ -98,12 +113,9 @@ fn routed_dataplane_machines(
     sorted_unique_machines(fallback_machines.iter())
 }
 
-/// Placement excludes machines by durable operator intent only: draining
-/// machines take no new work, with the rejection carried as typed evidence.
-/// Liveness is not consulted — a dead machine answers at the point of use
-/// (ADR 0027). The pre-cluster fallback scope (no machine records yet) is
-/// used unfiltered. This control-side gate is interim: with bid-based
-/// placement the draining machine declines its own bids.
+/// Durable operator intent builds the candidate scope first. Fresh
+/// machine-facts RPCs later decide which candidates have usable operation-time
+/// runtime evidence.
 async fn load_active_machine_scope(
     core_state: &AsyncNatsCoreStateStore,
     fallback: DeployExecutionMachineScope,
@@ -141,29 +153,31 @@ async fn load_active_machine_scope(
 }
 
 async fn load_machine_snapshots(
-    observations: &AsyncNatsObservationStore,
+    facts_reader: &NatsMachineFactsReader,
     machine_ids: &[MachineId],
-) -> Result<Vec<MachineContainerObservationSnapshot>, DeployFactLoadError> {
+) -> (Vec<MachineContainerObservationSnapshot>, Vec<MachineId>) {
     let mut snapshots = Vec::new();
+    let mut facts_unavailable = Vec::new();
     let mut reads = stream::iter(machine_ids.iter().cloned())
         .map(|machine_id| async move {
-            observations
-                .machine_snapshot(&machine_id)
+            facts_reader
+                .machine_facts(&machine_id)
                 .await
-                .map_err(|source| DeployFactLoadError::MachineObservationRead {
-                    machine_id,
-                    message: source.to_string(),
-                })
+                .map(|facts| facts.containers().clone())
+                .map_err(|_| machine_id)
         })
-        .buffer_unordered(MAX_CONCURRENT_OBSERVATION_READS);
+        .buffer_unordered(MAX_CONCURRENT_FACT_READS);
 
     while let Some(snapshot) = reads.next().await {
-        if let Some(snapshot) = snapshot? {
-            snapshots.push(snapshot);
+        match snapshot {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(machine_id) => facts_unavailable.push(machine_id),
         }
     }
 
-    Ok(snapshots)
+    snapshots.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts_unavailable.sort();
+    (snapshots, facts_unavailable)
 }
 
 fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>) -> Vec<MachineId> {
@@ -179,19 +193,9 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
 /// carries the rendered store-error message as failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
-    RouteBindingsRead {
-        message: String,
-    },
-    ServingTargetEntriesRead {
-        message: String,
-    },
-    ActiveMachineRead {
-        message: String,
-    },
-    MachineObservationRead {
-        machine_id: MachineId,
-        message: String,
-    },
+    RouteBindingsRead { message: String },
+    ServingTargetEntriesRead { message: String },
+    ActiveMachineRead { message: String },
 }
 
 impl fmt::Display for DeployFactLoadError {
@@ -210,15 +214,6 @@ impl fmt::Display for DeployFactLoadError {
             Self::ActiveMachineRead { message } => {
                 write!(formatter, "active machines could not be read: {message}")
             }
-            Self::MachineObservationRead {
-                machine_id,
-                message,
-            } => write!(
-                formatter,
-                "machine observations for {} could not be read: {}",
-                machine_id.as_str(),
-                message
-            ),
         }
     }
 }

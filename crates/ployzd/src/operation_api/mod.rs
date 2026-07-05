@@ -19,7 +19,7 @@ pub use submit::{
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
-use crate::machine_runtime::client::NatsMachineLogsTailer;
+use crate::machine_runtime::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::nats_authorization::MachineCredentialMintRuntime;
 use ployz_core::ids::MachineId;
@@ -56,12 +56,20 @@ impl OperationApiHandlers {
         local_machine_id: MachineId,
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
+        facts_reader: NatsMachineFactsReader,
         logs_tailer: NatsMachineLogsTailer,
     ) -> Self {
-        let machine_query = MachineQueryRuntime::new(core_state.clone(), observations.clone());
+        let machine_query = MachineQueryRuntime::new(
+            core_state.clone(),
+            observations.clone(),
+            facts_reader.clone(),
+        );
         let service_query = ServiceQueryRuntime::new(core_state.clone());
-        let runtime_snapshot_query =
-            RuntimeSnapshotQueryRuntime::new(core_state.clone(), observations.clone());
+        let runtime_snapshot_query = RuntimeSnapshotQueryRuntime::new(
+            core_state.clone(),
+            observations.clone(),
+            facts_reader,
+        );
         let logs_query = LogsQueryRuntime::new(observations, logs_tailer);
         Self {
             controllers,

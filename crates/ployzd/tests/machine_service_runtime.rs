@@ -6,7 +6,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerIdentity};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::service_runtime::request_json;
@@ -18,7 +18,9 @@ use ployzd::deploy_worker::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
     MachineRuntimeUnavailableReason,
 };
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use ployzd::machine_runtime::client::{
+    NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
+};
 use ployzd::machine_runtime::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
@@ -37,6 +39,7 @@ use ployzd::machine_runtime::runner::{
 };
 use ployzd::machine_runtime::service::{
     MachinePloyzNativeMeshPreparer as LocalWireGuardEbpfPreparer, start_machine_runtime_service,
+    start_machine_runtime_service_with_public_ip,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -110,6 +113,53 @@ async fn machine_runtime_service_reports_unknown_substrate_without_evidence() {
     assert_eq!(ok.machine_id, machine_id("machine_a"));
     assert_eq!(ok.reported.ployzd, None);
     assert_eq!(ok.reported.keeper, None);
+}
+
+#[tokio::test]
+async fn machine_runtime_service_gets_fresh_facts_without_observation_tick() {
+    let nats = test_nats().await;
+    let _service = start_machine_runtime_service_with_public_ip(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_existing(existing_container("ctr_existing", managed_identity())),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+        Some("203.0.113.7".parse().expect("valid public ip")),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let facts = NatsMachineFactsReader::new(nats.client)
+        .with_request_timeout(Duration::from_secs(1))
+        .machine_facts(&machine_id("machine_a"))
+        .await
+        .expect("facts get succeeds");
+
+    assert_eq!(facts.machine_id(), &machine_id("machine_a"));
+    assert_eq!(
+        facts
+            .public_ip()
+            .expect("public ip is configured")
+            .public_ip,
+        "203.0.113.7"
+            .parse::<std::net::IpAddr>()
+            .expect("valid public ip")
+    );
+    let observed = facts.containers();
+    assert_eq!(observed.containers().len(), 1);
+    assert_eq!(
+        observed
+            .container(&container_id("ctr_existing"))
+            .expect("container exists")
+            .state,
+        ContainerRuntimeState::running_unroutable()
+    );
+    assert!(facts.observed_at_unix_ms() > 0);
 }
 
 #[tokio::test]

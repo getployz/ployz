@@ -8,13 +8,15 @@ use crate::machine_runtime::protocol::{
     MachineContainerRunDomainError, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
+    MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest,
 };
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::machine_runtime::MachineFactsSnapshot;
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -39,6 +41,12 @@ pub struct NatsMachineDataplanePreparer {
     pub(super) client: async_nats::Client,
     pub(super) observations: AsyncNatsObservationStore,
     pub(super) request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineFactsReader {
+    client: async_nats::Client,
+    request_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +82,18 @@ pub enum MachineLogsTailRuntimeError {
     ReadFailed {
         machine_id: MachineId,
         container_id: ployz_core::ids::ContainerId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineFactsReadRuntimeError {
+    GatherFailed {
+        machine_id: MachineId,
         message: ployz_core::ops::FailureMessage,
     },
     Unavailable {
@@ -156,6 +176,44 @@ impl NatsMachineLogsTailer {
         .map(|ok| ok.value)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => MachineLogsTailRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+}
+
+impl NatsMachineFactsReader {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn machine_facts(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineFactsSnapshot, MachineFactsReadRuntimeError> {
+        call_machine::<MachineFactsGetRpcOk, MachineFactsGetDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::FactsGet,
+            &MachineFactsGetRpcRequest {},
+        )
+        .await
+        .map(|ok| ok.facts)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineFactsReadRuntimeError::Unavailable {
                 machine_id: machine_id.clone(),
                 reason,
             },
@@ -479,6 +537,17 @@ impl MachineEnsureEndpointNetworkDomainError {
                 reason: MachineRuntimeUnavailableReason::ServiceUnavailable {
                     message: message.as_str().to_owned(),
                 },
+            },
+        }
+    }
+}
+
+impl MachineFactsGetDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineFactsReadRuntimeError {
+        match self {
+            Self::GatherFailed { message } => MachineFactsReadRuntimeError::GatherFailed {
+                machine_id,
+                message,
             },
         }
     }
