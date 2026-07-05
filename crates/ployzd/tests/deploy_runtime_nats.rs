@@ -104,8 +104,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         controllers
             .repository()
             .get(&operation_id("op_123"))
-            .await
-            .expect("operation status reads"),
+            .await,
         Some(OperationStatus::Deploy {
             state: DeployOperationState::Completed {
                 outcome: DeployCompletionOutcome::Completed,
@@ -220,8 +219,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     assert!(matches!(
         controllers
             .repository().get(&operation_id("op_123"))
-            .await
-            .expect("operation status reads"),
+            .await,
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -282,8 +280,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     assert!(matches!(
         controllers
             .repository().get(&operation_id("op_123"))
-            .await
-            .expect("operation status reads"),
+            .await,
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -354,8 +351,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let status = controllers
         .repository()
         .get(&operation_id("op_123"))
-        .await
-        .expect("operation status reads");
+        .await;
     assert!(
         matches!(
             status,
@@ -426,8 +422,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     assert!(matches!(
         controllers
             .repository().get(&operation_id("op_123"))
-            .await
-            .expect("operation status reads"),
+            .await,
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -479,7 +474,6 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             .repository()
             .get(&operation_id("op_second"))
             .await
-            .expect("operation status reads")
             .is_none()
     );
 }

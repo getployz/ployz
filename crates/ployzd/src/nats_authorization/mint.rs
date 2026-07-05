@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::operation_log::{
-    OperationStatusReadError, OperationStatusStoreError, StoredMachineAddMintClaim,
+    OperationStatusStoreError, StoredMachineAddMintClaim,
     StoredMachineAddSecretDelivery,
 };
 use ployz_core::ids::{MachineId, OperationId};
@@ -74,7 +74,6 @@ pub enum MintOutcome {
 pub enum MintResumeError {
     ListSubmissions(OperationStatusStoreError),
     ReadSecretDelivery(OperationStatusStoreError),
-    ReadStatus(OperationStatusReadError),
 }
 
 impl fmt::Display for MintResumeError {
@@ -91,9 +90,6 @@ impl fmt::Display for MintResumeError {
                     formatter,
                     "failed to read minted material record: {error:?}"
                 )
-            }
-            Self::ReadStatus(error) => {
-                write!(formatter, "failed to read machine-add status: {error:?}")
             }
         }
     }
@@ -171,7 +167,6 @@ impl MachineCredentialMintRuntime {
                 .repository()
                 .get(&submission.operation_id)
                 .await
-                .map_err(MintResumeError::ReadStatus)?
             else {
                 continue;
             };

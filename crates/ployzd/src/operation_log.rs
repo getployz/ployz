@@ -506,20 +506,18 @@ impl OperationRepository {
     pub async fn operation_status_snapshot(
         &self,
         operation_id: &OperationId,
-    ) -> Result<Option<OperationStatusSnapshot>, OperationStatusReadError> {
+    ) -> Option<OperationStatusSnapshot> {
         let inner = self.inner.lock().await;
-        Ok(inner
+        inner
             .statuses
             .get(operation_id)
             .cloned()
-            .map(OperationStatusSnapshot::new))
+            .map(OperationStatusSnapshot::new)
     }
 
-    pub async fn operation_statuses(
-        &self,
-    ) -> Result<Vec<OperationStatus>, OperationStatusReadError> {
+    pub async fn operation_statuses(&self) -> Vec<OperationStatus> {
         let inner = self.inner.lock().await;
-        Ok(inner.statuses.values().cloned().collect())
+        inner.statuses.values().cloned().collect()
     }
 
     pub async fn replay_operation_events(
@@ -630,11 +628,7 @@ impl OperationRepository {
             .await
             .map_err(RedeemMachineJoinTokenError::StoreStatus)?
             .ok_or(RedeemMachineJoinTokenError::UnknownJoinToken)?;
-        let Some(status) = self
-            .get(&submission.operation_id)
-            .await
-            .map_err(RedeemMachineJoinTokenError::LoadStatus)?
-        else {
+        let Some(status) = self.get(&submission.operation_id).await else {
             return Err(RedeemMachineJoinTokenError::MissingOperation {
                 operation_id: submission.operation_id,
             });
@@ -674,10 +668,7 @@ impl OperationRepository {
                         let Some(OperationStatus::MachineAdd {
                             last_event_sequence,
                             ..
-                        }) = self
-                            .get(&id)
-                            .await
-                            .map_err(RedeemMachineJoinTokenError::LoadStatus)?
+                        }) = self.get(&id).await
                         else {
                             return Err(RedeemMachineJoinTokenError::MissingOperation {
                                 operation_id: id,
@@ -820,12 +811,9 @@ impl OperationRepository {
         Ok(Some(submission))
     }
 
-    pub async fn get(
-        &self,
-        operation_id: &OperationId,
-    ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
+    pub async fn get(&self, operation_id: &OperationId) -> Option<OperationStatus> {
         let inner = self.inner.lock().await;
-        Ok(inner.statuses.get(operation_id).cloned())
+        inner.statuses.get(operation_id).cloned()
     }
 }
 
@@ -1150,8 +1138,6 @@ pub enum SubmitMachineAddError {
 #[derive(Debug, thiserror::Error)]
 pub enum RecordOperationEventError {
     #[error("{0}")]
-    LoadStatus(OperationStatusReadError),
-    #[error("{0}")]
     StoreStatus(OperationStatusStoreError),
     #[error("operation record corrupt: missing operation {}", .operation_id.as_str())]
     MissingOperation { operation_id: OperationId },
@@ -1174,12 +1160,6 @@ pub enum OperationStatusStoreError {
     CorruptRecord { message: String },
     #[error("operation working records: {message}")]
     Index { message: String },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum OperationStatusReadError {
-    #[error("operation status read failed: {message}")]
-    Read { message: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1215,7 +1195,6 @@ pub enum OperationEventLogError {
 
 #[derive(Debug)]
 pub enum ReplayOperationEventsError {
-    LoadStatus(OperationStatusReadError),
     ReadEvents(OperationEventLogError),
     MissingOperation { operation_id: OperationId },
 }
@@ -1258,7 +1237,6 @@ pub enum RedeemMachineJoinTokenError {
     },
     InvalidJoinToken,
     UnknownJoinToken,
-    LoadStatus(OperationStatusReadError),
     StoreStatus(OperationStatusStoreError),
     RecordMachineAddEvent(RecordMachineAddEventError),
     MissingOperation {
