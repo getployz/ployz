@@ -1,6 +1,10 @@
 {
   "name": "@ployz/sdk",
   "version": "0.0.2-alpha.28",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getployz/ployz"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
