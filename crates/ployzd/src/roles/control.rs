@@ -100,7 +100,11 @@ pub async fn start_control_process_with_client_and_reload(
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
 ) -> Result<RunningControlProcess, ControlProcessError> {
-    if config.machine_bootstrap.join_material.is_none() {
+    // A normal core needs a machine-add join template to admit new machines, so
+    // fail fast if it is missing. A promoted core (one seeding from a mirror) is
+    // allowed to start without one: recovery restores service first, and machine-add
+    // rejects gracefully (admission.rs) until a template is configured.
+    if config.seed_from_mirror.is_none() && config.machine_bootstrap.join_material.is_none() {
         return Err(ControlProcessError::MissingMachineJoinTemplate);
     }
 

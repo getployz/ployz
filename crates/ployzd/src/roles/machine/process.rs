@@ -169,17 +169,40 @@ impl RunningTask {
 /// endpoint from the mirror. The seed is never dropped by a reachability change —
 /// only a reconfigure replaces it — so a transient core outage can't cut the
 /// machine off from a still-alive core.
-fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
-    let mut pool = vec![seed.as_str().to_owned()];
+fn reachable_machine_urls(snapshot: &IntentSnapshot) -> Vec<String> {
+    let mut urls = Vec::new();
     for machine in &snapshot.active_machines {
         if let Some(endpoint) = machine.public_endpoint {
             // SocketAddr's Display brackets IPv6 (`[::1]:4222`); a bare interpolation
             // would emit an invalid `tls://::1:4222`.
             let url = format!("tls://{}", SocketAddr::new(endpoint, CORE_NATS_PORT));
-            if !pool.contains(&url) {
-                pool.push(url);
+            if !urls.contains(&url) {
+                urls.push(url);
             }
         }
+    }
+    urls
+}
+
+fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
+    let mut pool = vec![seed.as_str().to_owned()];
+    for url in reachable_machine_urls(snapshot) {
+        if !pool.contains(&url) {
+            pool.push(url);
+        }
+    }
+    pool
+}
+
+/// Like [`candidate_server_pool`] but with the configured seed deprioritized to
+/// last, used when that seed is a stale (lower-epoch) core we want to reconnect
+/// away from: `retain_servers_order` then tries every Reachable Machine (the
+/// promoted core among them) before falling back to the stale seed.
+fn candidate_server_pool_seed_last(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
+    let mut pool = reachable_machine_urls(snapshot);
+    let seed = seed.as_str().to_owned();
+    if !pool.contains(&seed) {
+        pool.push(seed);
     }
     pool
 }
@@ -240,13 +263,24 @@ fn start_intent_mirror(
                                 }
                                 // Rejected as stale: this drumbeat arrived on a
                                 // connection to a healed old core advertising a lower
-                                // epoch than one already seen. Rotate away onto a
-                                // higher-epoch candidate already in the pool, rate-
-                                // limited so a persistent stale core can't cause a
+                                // epoch than one already seen. Deprioritize that stale
+                                // seed to last in the pool (rebuilding from the
+                                // highest-epoch snapshot we've stored, which carries
+                                // the promoted core as a Reachable Machine) so
+                                // retain_servers_order does not just reconnect us
+                                // straight back onto it, then force the reconnect.
+                                // Rate-limited so a persistent stale core can't cause a
                                 // reconnect storm.
                                 Ok(false) => {
                                     if last_enforced.elapsed() >= EPOCH_ENFORCE_INTERVAL {
                                         last_enforced = Instant::now();
+                                        if let Some(best) = mirror.load() {
+                                            let _ = client
+                                                .set_server_pool(candidate_server_pool_seed_last(
+                                                    &best, &seed,
+                                                ))
+                                                .await;
+                                        }
                                         let _ = client.force_reconnect().await;
                                     }
                                 }
