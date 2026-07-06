@@ -174,18 +174,9 @@ pub async fn connect_authenticated(
     config: &NatsConnectConfig,
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
-    let options = authenticated_connect_options(config);
-    match tokio::time::timeout(timeout, options.connect(config.url.as_str())).await {
-        Ok(Ok(client)) => Ok(client),
-        Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: config.url.as_str().to_owned(),
-            message: error.to_string(),
-        }),
-        Err(_) => Err(NatsConnectError::Timeout {
-            url: config.url.as_str().to_owned(),
-            timeout,
-        }),
-    }
+    // A single-URL pool: the shared path handles the connect, timeout, and error
+    // shape (a one-element `join(",")` is just that URL).
+    connect_authenticated_pool(config, &[config.url.as_str().to_owned()], timeout).await
 }
 
 /// Connect authenticated to a whole failover pool (the configured core plus
