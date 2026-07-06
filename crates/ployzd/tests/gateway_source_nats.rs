@@ -96,9 +96,8 @@ async fn test_nats() -> TestNats {
     );
     let intent = start_intent_runtime(
         nats.controller.clone(),
-        MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json")),
+        MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store")),
         namespace_intent.clone(),
-        lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await

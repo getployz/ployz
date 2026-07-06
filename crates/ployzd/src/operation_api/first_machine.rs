@@ -131,6 +131,7 @@ async fn first_machine_active_machine(
     handlers
         .machine_roster
         .active_machine(machine_id)
+        .await
         .map_err(|error| InitFirstMachineActivateError::Unavailable {
             message: error.to_string(),
         })

@@ -12,7 +12,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    let machine_roster = temp_machine_roster();
+    let machine_roster = temp_machine_roster().await;
     machine_roster
         .replace_active_machine(&ActiveMachineState {
             machine_id: machine_id("machine_a"),
@@ -32,10 +32,6 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
         nats.controller.clone(),
         machine_roster,
         temp_namespace_intent().await,
-        tempfile::tempdir()
-            .expect("lifecycle dir")
-            .path()
-            .join("machine-lifecycles.json"),
         Duration::from_millis(10),
     )
     .await
@@ -60,12 +56,8 @@ async fn intent_reader_gets_current_intent() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
-        temp_machine_roster(),
+        temp_machine_roster().await,
         temp_namespace_intent().await,
-        tempfile::tempdir()
-            .expect("lifecycle dir")
-            .path()
-            .join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await
@@ -85,26 +77,21 @@ async fn intent_reader_gets_current_intent() {
 #[tokio::test]
 async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    let machine_roster = temp_machine_roster();
+    let machine_roster = temp_machine_roster().await;
     machine_roster
         .replace_active_machine(&ActiveMachineState {
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
-            lifecycle: MachineLifecycle::Active,
+            lifecycle: MachineLifecycle::Draining,
         })
         .await
         .expect("active machine stores");
-    let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
-    let lifecycle_file = lifecycle_dir.path().join("machine-lifecycles.json");
-    std::fs::write(&lifecycle_file, r#"{"draining":["machine_a"]}"#)
-        .expect("write lifecycle evidence");
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
         machine_roster,
         temp_namespace_intent().await,
-        lifecycle_file,
         Duration::from_secs(30),
     )
     .await
@@ -145,12 +132,8 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         .expect("route binding stores");
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
-        temp_machine_roster(),
+        temp_machine_roster().await,
         namespace_intent,
-        tempfile::tempdir()
-            .expect("lifecycle dir")
-            .path()
-            .join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await
@@ -174,12 +157,11 @@ async fn temp_namespace_intent() -> NamespaceIntentStore {
     )
 }
 
-fn temp_machine_roster() -> MachineRosterStore {
+async fn temp_machine_roster() -> MachineRosterStore {
     MachineRosterStore::new(
-        tempfile::tempdir()
-            .expect("machine roster dir")
-            .path()
-            .join("machine-roster.json"),
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
     )
 }
 
