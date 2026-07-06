@@ -1,4 +1,4 @@
-//! Runtime wiring for the machine role.
+//! Process wiring for the machine role.
 
 use crate::config::MachineProcessConfig;
 use crate::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
@@ -6,8 +6,8 @@ use crate::adapters::docker::runner::DockerManagedContainerRunner;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineFactsReadError, MachineServiceRuntimeError, current_unix_ms,
-    read_machine_facts_snapshot, start_machine_runtime_service_with_public_ip,
+    MachineFactsReadError, MachineServiceError, current_unix_ms,
+    read_machine_facts_snapshot, start_machine_role_service_with_public_ip,
 };
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use ployz_core::ids::MachineId;
@@ -26,21 +26,21 @@ const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct RunningMachineProcessRuntime {
+pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
-    observer: RunningMachineObserverRuntime,
+    observer: RunningMachineObserver,
 }
 
-impl RunningMachineProcessRuntime {
+impl RunningMachineProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.observer.shutdown().await;
         self.machine_service.shutdown().await
     }
 }
 
-pub async fn start_machine_process_runtime(
+pub async fn start_machine_process(
     config: &MachineProcessConfig,
-) -> Result<RunningMachineProcessRuntime, MachineProcessRuntimeError> {
+) -> Result<RunningMachineProcess, MachineProcessError> {
     // The machine credential may not exist yet (first machine before
     // activate-first-machine): awaiting it is a typed bounded-retry state,
     // not a crash loop.
@@ -50,10 +50,10 @@ pub async fn start_machine_process_runtime(
         &SeedFileRetryPolicy::default_policy(),
     )
     .await
-    .map_err(MachineProcessRuntimeError::AwaitCredentials)?;
+    .map_err(MachineProcessError::AwaitCredentials)?;
     let client = connect_authenticated(&connect, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
-        .map_err(MachineProcessRuntimeError::ConnectNats)?;
+        .map_err(MachineProcessError::ConnectNats)?;
     let runner = DockerManagedContainerRunner::lazy_local_defaults(
         config.ployz_native_mesh.endpoint_subnet.clone(),
         config.ployz_native_mesh.bridge_ifname.clone(),
@@ -67,7 +67,7 @@ pub async fn start_machine_process_runtime(
             config.ployz_native_mesh.wg_ifname.clone(),
         ));
 
-    start_machine_process_runtime_with_ports(
+    start_machine_process_with_ports(
         client,
         config.machine_id.clone(),
         runner.clone(),
@@ -79,7 +79,7 @@ pub async fn start_machine_process_runtime(
     .await
 }
 
-pub async fn start_machine_process_runtime_with_ports<R, P, L>(
+pub async fn start_machine_process_with_ports<R, P, L>(
     client: NatsClient,
     machine_id: MachineId,
     runner: R,
@@ -87,7 +87,7 @@ pub async fn start_machine_process_runtime_with_ports<R, P, L>(
     log_reader: L,
     public_ip: Option<IpAddr>,
     observation_interval: Duration,
-) -> Result<RunningMachineProcessRuntime, MachineProcessRuntimeError>
+) -> Result<RunningMachineProcess, MachineProcessError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
     P: Clone
@@ -97,7 +97,7 @@ where
         + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let machine_service = start_machine_runtime_service_with_public_ip(
+    let machine_service = start_machine_role_service_with_public_ip(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
@@ -106,11 +106,11 @@ where
         public_ip,
     )
     .await
-    .map_err(MachineProcessRuntimeError::StartMachineService)?;
+    .map_err(MachineProcessError::StartMachineService)?;
     let observer =
-        start_machine_observer_runtime(machine_id, runner, client, public_ip, observation_interval);
+        start_machine_observer(machine_id, runner, client, public_ip, observation_interval);
 
-    Ok(RunningMachineProcessRuntime {
+    Ok(RunningMachineProcess {
         machine_service,
         observer,
     })
@@ -128,25 +128,25 @@ pub enum MachineObserverAttempt {
     Failed { message: String },
 }
 
-struct RunningMachineObserverRuntime {
+struct RunningMachineObserver {
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<()>,
 }
 
-impl RunningMachineObserverRuntime {
+impl RunningMachineObserver {
     async fn shutdown(self) {
         let _ = self.shutdown.send(());
         let _ = self.task.await;
     }
 }
 
-fn start_machine_observer_runtime<R>(
+fn start_machine_observer<R>(
     machine_id: MachineId,
     runner: R,
     client: NatsClient,
     public_ip: Option<IpAddr>,
     interval: Duration,
-) -> RunningMachineObserverRuntime
+) -> RunningMachineObserver
 where
     R: MachineContainerRunner + Send + Sync + 'static,
 {
@@ -171,12 +171,12 @@ where
         }
     });
 
-    RunningMachineObserverRuntime { shutdown, task }
+    RunningMachineObserver { shutdown, task }
 }
 
 fn record_observer_attempt(
     health: &Mutex<MachineObserverHealth>,
-    attempt: Result<(), MachineProcessRuntimeError>,
+    attempt: Result<(), MachineProcessError>,
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
@@ -221,13 +221,13 @@ impl MachineObservationPublisher {
         runner: &R,
         public_ip: Option<IpAddr>,
         timeout: Duration,
-    ) -> Result<(), MachineProcessRuntimeError>
+    ) -> Result<(), MachineProcessError>
     where
         R: MachineContainerRunner,
     {
         tokio::time::timeout(timeout, self.publish(machine_id, runner, public_ip))
             .await
-            .map_err(|_| MachineProcessRuntimeError::ObservationTimedOut { timeout })?
+            .map_err(|_| MachineProcessError::ObservationTimedOut { timeout })?
     }
 
     async fn publish<R>(
@@ -235,25 +235,25 @@ impl MachineObservationPublisher {
         machine_id: &MachineId,
         runner: &R,
         public_ip: Option<IpAddr>,
-    ) -> Result<(), MachineProcessRuntimeError>
+    ) -> Result<(), MachineProcessError>
     where
         R: MachineContainerRunner,
     {
         let facts = read_machine_facts_snapshot(machine_id, runner, public_ip, current_unix_ms())
             .await
-            .map_err(MachineProcessRuntimeError::ReadFacts)?;
+            .map_err(MachineProcessError::ReadFacts)?;
         let payload =
-            serde_json::to_vec(&facts).map_err(MachineProcessRuntimeError::EncodeFacts)?;
+            serde_json::to_vec(&facts).map_err(MachineProcessError::EncodeFacts)?;
         self.client
             .publish(machine_facts(machine_id), payload.into())
             .await
-            .map_err(|error| MachineProcessRuntimeError::PublishFacts {
+            .map_err(|error| MachineProcessError::PublishFacts {
                 message: error.to_string(),
             })?;
         self.client
             .flush()
             .await
-            .map_err(|error| MachineProcessRuntimeError::PublishFacts {
+            .map_err(|error| MachineProcessError::PublishFacts {
                 message: error.to_string(),
             })?;
 
@@ -263,31 +263,31 @@ impl MachineObservationPublisher {
 
 pub async fn run_machine_until_shutdown(
     config: &MachineProcessConfig,
-) -> Result<(), MachineProcessRuntimeError> {
-    let runtime = start_machine_process_runtime(config).await?;
+) -> Result<(), MachineProcessError> {
+    let runtime = start_machine_process(config).await?;
     shutdown_signal()
         .await
-        .map_err(MachineProcessRuntimeError::ShutdownSignal)?;
+        .map_err(MachineProcessError::ShutdownSignal)?;
     runtime
         .shutdown()
         .await
-        .map_err(MachineProcessRuntimeError::ShutdownMachineService)
+        .map_err(MachineProcessError::ShutdownMachineService)
 }
 
 #[derive(Debug)]
-pub enum MachineProcessRuntimeError {
+pub enum MachineProcessError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
     ReadFacts(MachineFactsReadError),
     EncodeFacts(serde_json::Error),
     PublishFacts { message: String },
     ObservationTimedOut { timeout: Duration },
-    StartMachineService(MachineServiceRuntimeError),
+    StartMachineService(MachineServiceError),
     ShutdownSignal(std::io::Error),
     ShutdownMachineService(NatsServiceShutdownError),
 }
 
-impl fmt::Display for MachineProcessRuntimeError {
+impl fmt::Display for MachineProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
@@ -319,7 +319,7 @@ impl fmt::Display for MachineProcessRuntimeError {
     }
 }
 
-impl std::error::Error for MachineProcessRuntimeError {}
+impl std::error::Error for MachineProcessError {}
 
 #[cfg(test)]
 mod tests {
@@ -362,7 +362,7 @@ mod tests {
         let nats = TestNats::start_bootstrapped().await;
         let runner = FailingListRunner;
 
-        let runtime = start_machine_process_runtime_with_ports(
+        let runtime = start_machine_process_with_ports(
             nats.client.clone(),
             machine_id("machine_a"),
             runner.clone(),

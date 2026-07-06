@@ -66,7 +66,7 @@ pub struct NatsMachineSubstrateUpdater {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineSubstrateUpdateRuntimeError {
+pub enum MachineSubstrateUpdateError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
@@ -78,7 +78,7 @@ pub enum MachineSubstrateUpdateRuntimeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineLogsTailRuntimeError {
+pub enum MachineLogsTailError {
     NotFound {
         machine_id: MachineId,
         container_id: ployz_core::ids::ContainerId,
@@ -95,7 +95,7 @@ pub enum MachineLogsTailRuntimeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineFactsReadRuntimeError {
+pub enum MachineFactsReadError {
     GatherFailed {
         machine_id: MachineId,
         message: ployz_core::ops::FailureMessage,
@@ -168,7 +168,7 @@ impl NatsMachineLogsTailer {
         &self,
         machine_id: &MachineId,
         request: MachineLogsTailRpcRequest,
-    ) -> Result<MachineLogsTailResult, MachineLogsTailRuntimeError> {
+    ) -> Result<MachineLogsTailResult, MachineLogsTailError> {
         call_machine::<MachineLogsTailRpcOk, MachineLogsTailDomainError>(
             &self.client,
             self.request_timeout,
@@ -179,7 +179,7 @@ impl NatsMachineLogsTailer {
         .await
         .map(|ok| ok.value)
         .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => MachineLogsTailRuntimeError::Unavailable {
+            MachineCallError::Unavailable(reason) => MachineLogsTailError::Unavailable {
                 machine_id: machine_id.clone(),
                 reason,
             },
@@ -206,7 +206,7 @@ impl NatsMachineFactsReader {
     pub async fn machine_facts(
         &self,
         machine_id: &MachineId,
-    ) -> Result<MachineFactsSnapshot, MachineFactsReadRuntimeError> {
+    ) -> Result<MachineFactsSnapshot, MachineFactsReadError> {
         call_machine::<MachineFactsGetRpcOk, MachineFactsGetDomainError>(
             &self.client,
             self.request_timeout,
@@ -217,7 +217,7 @@ impl NatsMachineFactsReader {
         .await
         .map(|ok| ok.facts)
         .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => MachineFactsReadRuntimeError::Unavailable {
+            MachineCallError::Unavailable(reason) => MachineFactsReadError::Unavailable {
                 machine_id: machine_id.clone(),
                 reason,
             },
@@ -306,7 +306,7 @@ impl NatsMachineSubstrateUpdater {
         &self,
         machine_id: &MachineId,
         request: MachineSubstrateUpdateRpcRequest,
-    ) -> Result<(), MachineSubstrateUpdateRuntimeError> {
+    ) -> Result<(), MachineSubstrateUpdateError> {
         call_machine::<MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateDomainError>(
             &self.client,
             self.request_timeout,
@@ -318,7 +318,7 @@ impl NatsMachineSubstrateUpdater {
         .map(|_| ())
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => {
-                MachineSubstrateUpdateRuntimeError::Unavailable {
+                MachineSubstrateUpdateError::Unavailable {
                     machine_id: machine_id.clone(),
                     reason,
                 }
@@ -331,7 +331,7 @@ impl NatsMachineSubstrateUpdater {
         &self,
         machine_id: &MachineId,
         operation_id: &OperationId,
-    ) -> Result<MachineSubstrateVersions, MachineSubstrateUpdateRuntimeError> {
+    ) -> Result<MachineSubstrateVersions, MachineSubstrateUpdateError> {
         call_machine::<MachineSubstrateReportRpcOk, MachineSubstrateUpdateDomainError>(
             &self.client,
             self.request_timeout,
@@ -345,7 +345,7 @@ impl NatsMachineSubstrateUpdater {
         .map(|ok| ok.reported)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => {
-                MachineSubstrateUpdateRuntimeError::Unavailable {
+                MachineSubstrateUpdateError::Unavailable {
                     machine_id: machine_id.clone(),
                     reason,
                 }
@@ -355,7 +355,7 @@ impl NatsMachineSubstrateUpdater {
     }
 }
 
-impl MachineSubstrateUpdateRuntimeError {
+impl MachineSubstrateUpdateError {
     #[must_use]
     pub fn into_operation_failure(self) -> MachineUpdateFailure {
         match self {
@@ -393,7 +393,7 @@ impl NatsMachineDataplanePreparer {
     }
 }
 
-impl fmt::Display for MachineFactsReadRuntimeError {
+impl fmt::Display for MachineFactsReadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GatherFailed {
@@ -532,16 +532,16 @@ fn container_runtime_unavailable(
 }
 
 impl MachineLogsTailDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineLogsTailRuntimeError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineLogsTailError {
         match self {
-            Self::NotFound { container_id } => MachineLogsTailRuntimeError::NotFound {
+            Self::NotFound { container_id } => MachineLogsTailError::NotFound {
                 machine_id,
                 container_id,
             },
             Self::ReadFailed {
                 container_id,
                 message,
-            } => MachineLogsTailRuntimeError::ReadFailed {
+            } => MachineLogsTailError::ReadFailed {
                 machine_id,
                 container_id,
                 message,
@@ -551,9 +551,9 @@ impl MachineLogsTailDomainError {
 }
 
 impl MachineSubstrateUpdateDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineSubstrateUpdateRuntimeError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineSubstrateUpdateError {
         match self {
-            Self::UpdateFailed { message } => MachineSubstrateUpdateRuntimeError::UpdateFailed {
+            Self::UpdateFailed { message } => MachineSubstrateUpdateError::UpdateFailed {
                 machine_id,
                 message,
             },
@@ -632,9 +632,9 @@ impl MachineEnsureEndpointNetworkDomainError {
 }
 
 impl MachineFactsGetDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineFactsReadRuntimeError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineFactsReadError {
         match self {
-            Self::GatherFailed { message } => MachineFactsReadRuntimeError::GatherFailed {
+            Self::GatherFailed { message } => MachineFactsReadError::GatherFailed {
                 machine_id,
                 message,
             },

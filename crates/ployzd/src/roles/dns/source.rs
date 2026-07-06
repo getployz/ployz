@@ -4,7 +4,7 @@ use crate::roles::dns::projection::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use crate::intent::service::{IntentReadError, NatsIntentReader};
-use crate::fact_cache::RuntimeFactsCache;
+use crate::fact_cache::FactCache;
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,7 +12,7 @@ use std::fmt;
 
 pub async fn load_dns_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &RuntimeFactsCache,
+    facts: &FactCache,
 ) -> DnsProjectionUpdate {
     match load_dns_projection_input_from_nats(intent_reader, facts).await {
         Ok(input) => DnsProjectionUpdate::SourceAvailable(input),
@@ -25,7 +25,7 @@ pub async fn load_dns_projection_update_from_nats(
 
 pub async fn load_dns_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &RuntimeFactsCache,
+    facts: &FactCache,
 ) -> Result<DnsProjectionInput, DnsSourceError> {
     let intent = async { intent_reader.intent().await.map_err(DnsSourceError::from) };
     let intent = intent.await?;

@@ -10,7 +10,7 @@ use crate::operations::deploy::{
 };
 use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{
-    MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
+    MachineFactsReadError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
     NatsMachineFactsReader,
 };
 use crate::intent::namespace_intent::NamespaceIntentStore;
@@ -243,7 +243,7 @@ pub enum DeployOperationRunError {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeployOperationRuntime {
+pub struct DeployOperationDriver {
     client: async_nats::Client,
     namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
@@ -252,7 +252,7 @@ pub struct DeployOperationRuntime {
     task_registry: TaskRegistry,
 }
 
-impl DeployOperationRuntime {
+impl DeployOperationDriver {
     #[must_use]
     pub fn new(
         client: async_nats::Client,
@@ -470,7 +470,7 @@ fn unhealthy_container(
     }
 }
 
-fn health_read_error(error: MachineFactsReadRuntimeError) -> String {
+fn health_read_error(error: MachineFactsReadError) -> String {
     format!("machine facts could not be read: {error}")
 }
 

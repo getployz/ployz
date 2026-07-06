@@ -1,4 +1,4 @@
-//! Gateway projection runtime.
+//! Gateway projection read-model.
 
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;

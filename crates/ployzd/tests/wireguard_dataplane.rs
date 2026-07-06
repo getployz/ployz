@@ -12,7 +12,7 @@ use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDat
 use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use ployzd::roles::machine::runner::MachineContainerRunner;
 use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
-use ployzd::roles::machine::service::start_machine_runtime_service;
+use ployzd::roles::machine::service::start_machine_role_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -111,7 +111,7 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
             DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
         ))
         .with_command_timeout(Duration::from_secs(20));
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id.clone(),
         runner.clone(),

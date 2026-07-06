@@ -27,7 +27,7 @@ async fn run() -> Result<(), MainError> {
 enum MainError {
     Role(ployzd::role_cli::DaemonRoleParseError),
     Config(ployzd::config::DaemonProcessConfigError),
-    Runtime(ployzd::dispatch::DaemonRuntimeError),
+    Runtime(ployzd::dispatch::DaemonError),
 }
 
 impl MainError {

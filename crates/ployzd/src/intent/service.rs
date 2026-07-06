@@ -20,12 +20,12 @@ use tokio::task::JoinHandle;
 pub struct IntentGetRequest {}
 
 #[derive(Debug)]
-pub struct RunningIntentRuntime {
+pub struct RunningIntentService {
     service: RunningNatsService,
     publisher: JoinHandle<()>,
 }
 
-impl RunningIntentRuntime {
+impl RunningIntentService {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.publisher.abort();
         self.service.shutdown().await
@@ -86,12 +86,12 @@ impl From<NatsJsonServiceRequestError> for IntentReadError {
     }
 }
 
-pub async fn start_intent_runtime(
+pub async fn start_intent_service(
     client: async_nats::Client,
     machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
     publish_interval: Duration,
-) -> Result<RunningIntentRuntime, NatsServiceRuntimeError> {
+) -> Result<RunningIntentService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
@@ -117,7 +117,7 @@ pub async fn start_intent_runtime(
         }
     });
 
-    Ok(RunningIntentRuntime { service, publisher })
+    Ok(RunningIntentService { service, publisher })
 }
 
 async fn intent_get_response(

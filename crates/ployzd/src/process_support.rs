@@ -1,4 +1,4 @@
-//! Shared scaffolding for the role process runtimes: shutdown signal,
+//! Shared scaffolding for the role processes: shutdown signal,
 //! failure backoff, attempt recording, and lazily opened handles.
 
 use std::time::Duration;

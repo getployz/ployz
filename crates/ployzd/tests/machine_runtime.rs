@@ -11,7 +11,7 @@ use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDat
 use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineRunContainerOutcome,
 };
-use ployzd::roles::machine::service::start_machine_runtime_service;
+use ployzd::roles::machine::service::start_machine_role_service;
 
 mod support;
 
@@ -21,7 +21,7 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 async fn machine_runtime_serves_container_run_and_observes_created_container() {
     let nats = TestNats::start_bootstrapped().await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_runtime_service(
+    let runtime = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -61,7 +61,7 @@ async fn machine_runtime_serves_container_run_and_observes_created_container() {
 async fn machine_runtime_serves_container_remove_and_updates_observations() {
     let nats = TestNats::start_bootstrapped().await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_runtime_service(
+    let runtime = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -103,7 +103,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
 async fn machine_runtime_serves_wireguard_ebpf_prepare() {
     let nats = TestNats::start_bootstrapped().await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_runtime_service(
+    let runtime = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),

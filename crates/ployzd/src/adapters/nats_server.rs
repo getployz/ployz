@@ -7,12 +7,12 @@ pub use ployz_core::nats_config::{NatsServerConfig, NatsServerConfigError};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NatsServerRuntime {
+pub enum NatsServerLaunch {
     Supervised(PreparedNatsServerService),
     External(NatsClientUrl),
 }
 
-impl NatsServerRuntime {
+impl NatsServerLaunch {
     #[must_use]
     pub fn client_url(&self) -> NatsClientUrl {
         match self {

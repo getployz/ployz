@@ -1,17 +1,17 @@
-//! Runtime wiring for the DNS role.
+//! Process wiring for the DNS role.
 //!
 //! `ployzd dns` is a supervised watcher process: it consumes route binding
 //! state and gateway observations from NATS, keeps a last-known-good answer
 //! table, and exposes typed health. It owns no command surface.
 
 use crate::config::DnsProcessConfig;
-use crate::roles::dns::projection::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
+use crate::roles::dns::projection::{DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState};
 use crate::roles::dns::source::load_dns_projection_update_from_nats;
 use crate::intent::service::NatsIntentReader;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use crate::fact_cache::{
-    RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
+    RunningFactCache, FactCache, FactCacheError, start_fact_cache,
 };
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::NatsClient;
@@ -25,15 +25,15 @@ const DNS_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DNS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct RunningDnsProcessRuntime {
-    runtime: Arc<Mutex<DnsRuntime>>,
+pub struct RunningDnsProcess {
+    runtime: Arc<Mutex<DnsProjector>>,
     health: Arc<Mutex<DnsProcessHealth>>,
     shutdown: broadcast::Sender<()>,
-    facts_cache: RunningRuntimeFactsCache,
+    facts_cache: RunningFactCache,
     tasks: Vec<JoinHandle<()>>,
 }
 
-impl RunningDnsProcessRuntime {
+impl RunningDnsProcess {
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
         for task in self.tasks {
@@ -62,33 +62,33 @@ impl RunningDnsProcessRuntime {
     }
 }
 
-pub async fn start_dns_process_runtime(
+pub async fn start_dns_process(
     config: &DnsProcessConfig,
-) -> Result<RunningDnsProcessRuntime, DnsProcessRuntimeError> {
+) -> Result<RunningDnsProcess, DnsProcessError> {
     // DNS authenticates as the machine's Machine user (no DNS principal in
     // v1) and awaits the seed file like the machine and gateway roles do.
     let connect =
         await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
             .await
-            .map_err(DnsProcessRuntimeError::AwaitCredentials)?;
+            .map_err(DnsProcessError::AwaitCredentials)?;
     let client = connect_authenticated(&connect, DNS_NATS_CONNECT_TIMEOUT)
         .await
-        .map_err(DnsProcessRuntimeError::ConnectNats)?;
-    start_dns_process_runtime_with_client(client, DNS_REFRESH_INTERVAL).await
+        .map_err(DnsProcessError::ConnectNats)?;
+    start_dns_process_with_client(client, DNS_REFRESH_INTERVAL).await
 }
 
-pub async fn start_dns_process_runtime_with_client(
+pub async fn start_dns_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
-) -> Result<RunningDnsProcessRuntime, DnsProcessRuntimeError> {
-    let runtime = Arc::new(Mutex::new(DnsRuntime::new()));
+) -> Result<RunningDnsProcess, DnsProcessError> {
+    let runtime = Arc::new(Mutex::new(DnsProjector::new()));
     let health = Arc::new(Mutex::new(DnsProcessHealth {
         last_attempt: None,
         consecutive_failures: 0,
     }));
-    let facts_cache = start_runtime_facts_cache(client.clone())
+    let facts_cache = start_fact_cache(client.clone())
         .await
-        .map_err(DnsProcessRuntimeError::StartFactsCache)?;
+        .map_err(DnsProcessError::StartFactsCache)?;
     let stores = open_dns_process_stores(client, facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let task_runtime = Arc::clone(&runtime);
@@ -109,7 +109,7 @@ pub async fn start_dns_process_runtime_with_client(
         }
     });
 
-    Ok(RunningDnsProcessRuntime {
+    Ok(RunningDnsProcess {
         runtime,
         health,
         shutdown,
@@ -149,19 +149,19 @@ impl DnsProcessSource {
 
     async fn refresh_with_timeout(
         &self,
-        runtime: &Mutex<DnsRuntime>,
-    ) -> Result<DnsRuntimeTick, DnsProcessRuntimeError> {
+        runtime: &Mutex<DnsProjector>,
+    ) -> Result<DnsProjectorTick, DnsProcessError> {
         tokio::time::timeout(DNS_REFRESH_TIMEOUT, self.refresh(runtime))
             .await
-            .map_err(|_| DnsProcessRuntimeError::RefreshTimedOut {
+            .map_err(|_| DnsProcessError::RefreshTimedOut {
                 timeout: DNS_REFRESH_TIMEOUT,
             })?
     }
 
     async fn refresh(
         &self,
-        runtime: &Mutex<DnsRuntime>,
-    ) -> Result<DnsRuntimeTick, DnsProcessRuntimeError> {
+        runtime: &Mutex<DnsProjector>,
+    ) -> Result<DnsProjectorTick, DnsProcessError> {
         let update =
             load_dns_projection_update_from_nats(&self.stores.intent_reader, &self.stores.facts)
                 .await;
@@ -173,10 +173,10 @@ impl DnsProcessSource {
 
 struct DnsProcessStores {
     intent_reader: NatsIntentReader,
-    facts: RuntimeFactsCache,
+    facts: FactCache,
 }
 
-fn open_dns_process_stores(client: NatsClient, facts: RuntimeFactsCache) -> DnsProcessStores {
+fn open_dns_process_stores(client: NatsClient, facts: FactCache) -> DnsProcessStores {
     DnsProcessStores {
         intent_reader: NatsIntentReader::new(client),
         facts,
@@ -185,7 +185,7 @@ fn open_dns_process_stores(client: NatsClient, facts: RuntimeFactsCache) -> DnsP
 
 fn record_dns_attempt(
     health: &Mutex<DnsProcessHealth>,
-    attempt: Result<DnsRuntimeTick, DnsProcessRuntimeError>,
+    attempt: Result<DnsProjectorTick, DnsProcessError>,
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
@@ -223,7 +223,7 @@ fn record_dns_attempt(
     )
 }
 
-fn dns_attempt_from_tick(tick: DnsRuntimeTick) -> DnsProcessAttempt {
+fn dns_attempt_from_tick(tick: DnsProjectorTick) -> DnsProcessAttempt {
     match tick.serving {
         DnsServingState::Current { record_count } => DnsProcessAttempt::Current { record_count },
         DnsServingState::LastKnownGood {
@@ -243,25 +243,25 @@ fn dns_attempt_from_tick(tick: DnsRuntimeTick) -> DnsProcessAttempt {
 
 pub async fn run_dns_until_shutdown(
     config: &DnsProcessConfig,
-) -> Result<(), DnsProcessRuntimeError> {
-    let runtime = start_dns_process_runtime(config).await?;
+) -> Result<(), DnsProcessError> {
+    let runtime = start_dns_process(config).await?;
     shutdown_signal()
         .await
-        .map_err(DnsProcessRuntimeError::ShutdownSignal)?;
+        .map_err(DnsProcessError::ShutdownSignal)?;
     runtime.shutdown().await;
     Ok(())
 }
 
 #[derive(Debug)]
-pub enum DnsProcessRuntimeError {
+pub enum DnsProcessError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
-    StartFactsCache(RuntimeFactsCacheError),
+    StartFactsCache(FactCacheError),
     RefreshTimedOut { timeout: Duration },
     ShutdownSignal(std::io::Error),
 }
 
-impl fmt::Display for DnsProcessRuntimeError {
+impl fmt::Display for DnsProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
@@ -283,7 +283,7 @@ impl fmt::Display for DnsProcessRuntimeError {
     }
 }
 
-impl std::error::Error for DnsProcessRuntimeError {}
+impl std::error::Error for DnsProcessError {}
 
 #[cfg(test)]
 mod tests {
@@ -300,7 +300,7 @@ mod tests {
 
         let next = record_dns_attempt(
             &health,
-            Ok(DnsRuntimeTick {
+            Ok(DnsProjectorTick {
                 state: DnsProjectionState::unavailable(),
                 served: None,
                 serving: DnsServingState::LastKnownGood {
@@ -336,7 +336,7 @@ mod tests {
 
         let next = record_dns_attempt(
             &health,
-            Err(DnsProcessRuntimeError::RefreshTimedOut {
+            Err(DnsProcessError::RefreshTimedOut {
                 timeout: Duration::from_secs(5),
             }),
             Duration::from_secs(1),

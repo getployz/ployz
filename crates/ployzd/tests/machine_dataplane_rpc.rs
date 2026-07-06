@@ -18,7 +18,7 @@ use ployzd::roles::machine::protocol::{
     MachineFactsGetRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };
-use ployzd::service_catalog::machine_runtime_service;
+use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
@@ -402,7 +402,7 @@ async fn start_wireguard_ebpf_prepare_raw_service(
     machine_id: MachineId,
     handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()

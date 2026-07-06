@@ -12,10 +12,10 @@ use ployz_test_support::ids::{
 };
 use ployzd::roles::gateway::projection::GatewayUpstream;
 use ployzd::roles::gateway::process::{
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
-    start_gateway_process_runtime_with_client,
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessError,
+    start_gateway_process_with_client,
 };
-use ployzd::intent::service::{RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::time::{Duration, Instant};
@@ -32,7 +32,7 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
         .local_addr()
         .expect("read occupied listener address");
 
-    let result = start_gateway_process_runtime_with_client(
+    let result = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         occupied_addr,
@@ -45,7 +45,7 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
     };
     assert!(matches!(
         error,
-        GatewayProcessRuntimeError::BindHttp { addr, .. } if addr == occupied_addr
+        GatewayProcessError::BindHttp { addr, .. } if addr == occupied_addr
     ));
 }
 
@@ -54,7 +54,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let upstream = TestUpstream::start().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
@@ -119,7 +119,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
 async fn gateway_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
@@ -173,7 +173,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
 async fn gateway_process_records_http_proxy_failures() {
     let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
@@ -231,7 +231,7 @@ async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscrib
 }
 
 fn gateway_serves_route(
-    runtime: &ployzd::roles::gateway::process::RunningGatewayProcessRuntime,
+    runtime: &ployzd::roles::gateway::process::RunningGatewayProcess,
     endpoint_ip: &str,
     endpoint_port: u16,
 ) -> bool {
@@ -281,8 +281,8 @@ impl TestNats {
         }
     }
 
-    async fn start_intent(&self) -> RunningIntentRuntime {
-        start_intent_runtime(
+    async fn start_intent(&self) -> RunningIntentService {
+        start_intent_service(
             self.client.clone(),
             MachineRosterStore::new(
                 ployzd::core_store::CoreStore::open_in_memory()

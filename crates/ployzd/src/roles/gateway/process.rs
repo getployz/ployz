@@ -1,4 +1,4 @@
-//! Runtime wiring for the gateway role.
+//! Process wiring for the gateway role.
 
 use crate::config::GatewayProcessConfig;
 use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
@@ -6,7 +6,7 @@ use crate::roles::gateway::pingora::{
     GatewayPingoraFailureRecorder, PingoraRouteRegistry, PingoraRouteRegistryError,
     PloyzGatewayProxy,
 };
-use crate::roles::gateway::route_table::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
+use crate::roles::gateway::route_table::{GatewayProjector, GatewayProjectorTick, GatewayServingState};
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
 use crate::intent::service::NatsIntentReader;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
@@ -15,7 +15,7 @@ use crate::process_support::{
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
 use crate::fact_cache::{
-    RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
+    RunningFactCache, FactCache, FactCacheError, start_fact_cache,
 };
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
@@ -42,17 +42,17 @@ const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
 
-pub struct RunningGatewayProcessRuntime {
-    runtime: Arc<Mutex<GatewayRuntime>>,
+pub struct RunningGatewayProcess {
+    runtime: Arc<Mutex<GatewayProjector>>,
     health: Arc<Mutex<GatewayProcessHealth>>,
     listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
-    facts_cache: RunningRuntimeFactsCache,
+    facts_cache: RunningFactCache,
     tasks: Vec<JoinHandle<()>>,
 }
 
-impl RunningGatewayProcessRuntime {
+impl RunningGatewayProcess {
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
         let _ = self.pingora_shutdown.send(true);
@@ -86,9 +86,9 @@ impl RunningGatewayProcessRuntime {
     }
 }
 
-pub async fn start_gateway_process_runtime(
+pub async fn start_gateway_process(
     config: &GatewayProcessConfig,
-) -> Result<RunningGatewayProcessRuntime, GatewayProcessRuntimeError> {
+) -> Result<RunningGatewayProcess, GatewayProcessError> {
     // Gateway authenticates as the machine's Machine user (no Gateway
     // principal in v1) and awaits the seed file like the machine role does.
     let connect = await_role_credentials(
@@ -97,11 +97,11 @@ pub async fn start_gateway_process_runtime(
         &SeedFileRetryPolicy::default_policy(),
     )
     .await
-    .map_err(GatewayProcessRuntimeError::AwaitCredentials)?;
+    .map_err(GatewayProcessError::AwaitCredentials)?;
     let client = connect_authenticated(&connect, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
-        .map_err(GatewayProcessRuntimeError::ConnectNats)?;
-    start_gateway_process_runtime_with_client(
+        .map_err(GatewayProcessError::ConnectNats)?;
+    start_gateway_process_with_client(
         client,
         GATEWAY_REFRESH_INTERVAL,
         config.listen_addr,
@@ -110,20 +110,20 @@ pub async fn start_gateway_process_runtime(
     .await
 }
 
-pub async fn start_gateway_process_runtime_with_client(
+pub async fn start_gateway_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
     listen_addr: SocketAddr,
     machine_id: MachineId,
-) -> Result<RunningGatewayProcessRuntime, GatewayProcessRuntimeError> {
+) -> Result<RunningGatewayProcess, GatewayProcessError> {
     let listen_addr = resolve_gateway_listen_addr(listen_addr).await?;
     let listener_port =
         RoutePort::try_new(listen_addr.port()).expect("bound TCP listener port is non-zero");
-    let runtime = Arc::new(Mutex::new(GatewayRuntime::new()));
+    let runtime = Arc::new(Mutex::new(GatewayProjector::new()));
     let registry = PingoraRouteRegistry::new();
-    let facts_cache = start_runtime_facts_cache(client.clone())
+    let facts_cache = start_fact_cache(client.clone())
         .await
-        .map_err(GatewayProcessRuntimeError::StartFactsCache)?;
+        .map_err(GatewayProcessError::StartFactsCache)?;
     let facts = facts_cache.cache();
     let health = Arc::new(Mutex::new(GatewayProcessHealth {
         last_attempt: None,
@@ -203,7 +203,7 @@ pub async fn start_gateway_process_runtime_with_client(
         run_gateway_health_checks(health_registry, &mut health_shutdown).await;
     });
 
-    Ok(RunningGatewayProcessRuntime {
+    Ok(RunningGatewayProcess {
         runtime,
         health,
         listen_addr,
@@ -253,12 +253,12 @@ pub enum GatewayStatusPublishFailure {
 
 struct GatewayProcessSource {
     client: NatsClient,
-    facts: RuntimeFactsCache,
+    facts: FactCache,
     stores: LazyHandle<GatewayProcessStores>,
 }
 
 impl GatewayProcessSource {
-    fn new(client: NatsClient, facts: RuntimeFactsCache) -> Self {
+    fn new(client: NatsClient, facts: FactCache) -> Self {
         Self {
             client,
             facts,
@@ -268,21 +268,21 @@ impl GatewayProcessSource {
 
     async fn refresh_with_timeout(
         &mut self,
-        runtime: &Mutex<GatewayRuntime>,
+        runtime: &Mutex<GatewayProjector>,
         registry: &PingoraRouteRegistry,
-    ) -> Result<GatewayRuntimeTick, GatewayProcessRuntimeError> {
+    ) -> Result<GatewayProjectorTick, GatewayProcessError> {
         tokio::time::timeout(GATEWAY_REFRESH_TIMEOUT, self.refresh(runtime, registry))
             .await
-            .map_err(|_| GatewayProcessRuntimeError::RefreshTimedOut {
+            .map_err(|_| GatewayProcessError::RefreshTimedOut {
                 timeout: GATEWAY_REFRESH_TIMEOUT,
             })?
     }
 
     async fn refresh(
         &mut self,
-        runtime: &Mutex<GatewayRuntime>,
+        runtime: &Mutex<GatewayProjector>,
         registry: &PingoraRouteRegistry,
-    ) -> Result<GatewayRuntimeTick, GatewayProcessRuntimeError> {
+    ) -> Result<GatewayProjectorTick, GatewayProcessError> {
         let update = self.load_update().await?;
         let tick = {
             let mut runtime = runtime
@@ -293,13 +293,13 @@ impl GatewayProcessSource {
         if let Some(projection) = tick.served.as_ref() {
             registry
                 .replace_projection(projection)
-                .map_err(GatewayProcessRuntimeError::UpdatePingoraRoutes)?;
+                .map_err(GatewayProcessError::UpdatePingoraRoutes)?;
         }
 
         Ok(tick)
     }
 
-    async fn load_update(&mut self) -> Result<GatewayProjectionUpdate, GatewayProcessRuntimeError> {
+    async fn load_update(&mut self) -> Result<GatewayProjectionUpdate, GatewayProcessError> {
         let facts = self.facts.clone();
         let stores = self.stores().await?;
         Ok(load_gateway_projection_update_from_nats(&stores.intent_reader, &facts).await)
@@ -308,17 +308,17 @@ impl GatewayProcessSource {
     async fn replace_gateway_status(
         &mut self,
         status: &GatewayStatusObservation,
-    ) -> Result<(), GatewayProcessRuntimeError> {
+    ) -> Result<(), GatewayProcessError> {
         let payload =
-            serde_json::to_vec(status).map_err(GatewayProcessRuntimeError::EncodeGatewayStatus)?;
+            serde_json::to_vec(status).map_err(GatewayProcessError::EncodeGatewayStatus)?;
         self.client
             .publish(gateway_status(&status.machine_id), payload.into())
             .await
-            .map_err(|error| GatewayProcessRuntimeError::PublishGatewayStatus {
+            .map_err(|error| GatewayProcessError::PublishGatewayStatus {
                 message: error.to_string(),
             })?;
         self.client.flush().await.map_err(|error| {
-            GatewayProcessRuntimeError::PublishGatewayStatus {
+            GatewayProcessError::PublishGatewayStatus {
                 message: error.to_string(),
             }
         })?;
@@ -326,7 +326,7 @@ impl GatewayProcessSource {
         Ok(())
     }
 
-    async fn stores(&mut self) -> Result<&GatewayProcessStores, GatewayProcessRuntimeError> {
+    async fn stores(&mut self) -> Result<&GatewayProcessStores, GatewayProcessError> {
         let client = &self.client;
         self.stores
             .get_or_open(async || open_gateway_process_stores(client.clone()).await)
@@ -340,7 +340,7 @@ struct GatewayProcessStores {
 
 async fn open_gateway_process_stores(
     client: NatsClient,
-) -> Result<GatewayProcessStores, GatewayProcessRuntimeError> {
+) -> Result<GatewayProcessStores, GatewayProcessError> {
     Ok(GatewayProcessStores {
         intent_reader: NatsIntentReader::new(client),
     })
@@ -387,15 +387,15 @@ struct GatewayChangeWatchers {
 
 async fn open_gateway_change_watchers(
     client: NatsClient,
-) -> Result<GatewayChangeWatchers, GatewayProcessRuntimeError> {
+) -> Result<GatewayChangeWatchers, GatewayProcessError> {
     let intent = client.subscribe(INTENT_CHANGED).await.map_err(|error| {
-        GatewayProcessRuntimeError::WatchIntent {
+        GatewayProcessError::WatchIntent {
             message: error.to_string(),
         }
     })?;
     let subject = machine_facts_scope();
     let machine_facts = client.subscribe(subject.clone()).await.map_err(|error| {
-        GatewayProcessRuntimeError::WatchFacts {
+        GatewayProcessError::WatchFacts {
             subject,
             message: error.to_string(),
         }
@@ -486,7 +486,7 @@ fn record_gateway_watch_failure(
 
 fn record_gateway_status_publish_result(
     health: &Mutex<GatewayProcessHealth>,
-    result: Result<(), GatewayProcessRuntimeError>,
+    result: Result<(), GatewayProcessError>,
 ) {
     let mut health = health.lock().expect("gateway health lock is not poisoned");
     match result {
@@ -505,7 +505,7 @@ fn record_gateway_status_publish_result(
 
 fn record_gateway_attempt(
     health: &Mutex<GatewayProcessHealth>,
-    attempt: Result<GatewayRuntimeTick, GatewayProcessRuntimeError>,
+    attempt: Result<GatewayProjectorTick, GatewayProcessError>,
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
@@ -543,7 +543,7 @@ fn record_gateway_attempt(
     )
 }
 
-fn gateway_attempt_from_tick(tick: GatewayRuntimeTick) -> GatewayProcessAttempt {
+fn gateway_attempt_from_tick(tick: GatewayProjectorTick) -> GatewayProcessAttempt {
     match tick.serving {
         GatewayServingState::Current { route_count } => {
             GatewayProcessAttempt::Current { route_count }
@@ -565,7 +565,7 @@ fn gateway_attempt_from_tick(tick: GatewayRuntimeTick) -> GatewayProcessAttempt 
 fn gateway_observation_from_attempt(
     machine_id: &MachineId,
     listen_addr: SocketAddr,
-    attempt: &Result<GatewayRuntimeTick, GatewayProcessRuntimeError>,
+    attempt: &Result<GatewayProjectorTick, GatewayProcessError>,
 ) -> GatewayStatusObservation {
     match attempt {
         Ok(tick) => match &tick.serving {
@@ -605,16 +605,16 @@ fn record_gateway_http_failure(health: &Mutex<GatewayProcessHealth>, failure: Ga
 
 async fn resolve_gateway_listen_addr(
     listen_addr: SocketAddr,
-) -> Result<SocketAddr, GatewayProcessRuntimeError> {
+) -> Result<SocketAddr, GatewayProcessError> {
     let listener = TcpListener::bind(listen_addr).await.map_err(|source| {
-        GatewayProcessRuntimeError::BindHttp {
+        GatewayProcessError::BindHttp {
             addr: listen_addr,
             source,
         }
     })?;
     let resolved = listener
         .local_addr()
-        .map_err(GatewayProcessRuntimeError::ReadHttpListenerAddr)?;
+        .map_err(GatewayProcessError::ReadHttpListenerAddr)?;
     drop(listener);
     Ok(resolved)
 }
@@ -622,7 +622,7 @@ async fn resolve_gateway_listen_addr(
 async fn wait_for_gateway_listener_ready(
     listen_addr: SocketAddr,
     http_task: &JoinHandle<()>,
-) -> Result<(), GatewayProcessRuntimeError> {
+) -> Result<(), GatewayProcessError> {
     let deadline = tokio::time::Instant::now() + GATEWAY_LISTENER_READY_TIMEOUT;
     loop {
         if tokio::time::timeout(GATEWAY_LISTENER_READY_POLL, TcpStream::connect(listen_addr))
@@ -632,7 +632,7 @@ async fn wait_for_gateway_listener_ready(
             return Ok(());
         }
         if http_task.is_finished() || tokio::time::Instant::now() >= deadline {
-            return Err(GatewayProcessRuntimeError::HttpListenerNotReady {
+            return Err(GatewayProcessError::HttpListenerNotReady {
                 addr: listen_addr,
                 timeout: GATEWAY_LISTENER_READY_TIMEOUT,
             });
@@ -700,17 +700,17 @@ async fn run_gateway_health_checks(
 
 pub async fn run_gateway_until_shutdown(
     config: &GatewayProcessConfig,
-) -> Result<(), GatewayProcessRuntimeError> {
-    let runtime = start_gateway_process_runtime(config).await?;
+) -> Result<(), GatewayProcessError> {
+    let runtime = start_gateway_process(config).await?;
     shutdown_signal()
         .await
-        .map_err(GatewayProcessRuntimeError::ShutdownSignal)?;
+        .map_err(GatewayProcessError::ShutdownSignal)?;
     runtime.shutdown().await;
     Ok(())
 }
 
 #[derive(Debug)]
-pub enum GatewayProcessRuntimeError {
+pub enum GatewayProcessError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
     BindHttp {
@@ -722,7 +722,7 @@ pub enum GatewayProcessRuntimeError {
         addr: SocketAddr,
         timeout: Duration,
     },
-    StartFactsCache(RuntimeFactsCacheError),
+    StartFactsCache(FactCacheError),
     EncodeGatewayStatus(serde_json::Error),
     PublishGatewayStatus {
         message: String,
@@ -741,7 +741,7 @@ pub enum GatewayProcessRuntimeError {
     ShutdownSignal(std::io::Error),
 }
 
-impl fmt::Display for GatewayProcessRuntimeError {
+impl fmt::Display for GatewayProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
@@ -798,7 +798,7 @@ impl fmt::Display for GatewayProcessRuntimeError {
     }
 }
 
-impl std::error::Error for GatewayProcessRuntimeError {}
+impl std::error::Error for GatewayProcessError {}
 
 #[cfg(test)]
 mod tests {
@@ -822,7 +822,7 @@ mod tests {
 
         let next = record_gateway_attempt(
             &health,
-            Ok(GatewayRuntimeTick {
+            Ok(GatewayProjectorTick {
                 state: crate::roles::gateway::projection::GatewayProjectionState {
                     last_good: None,
                     last_error: Some(GatewayProjectionError::SourceUnavailable {
@@ -869,7 +869,7 @@ mod tests {
 
         let next = record_gateway_attempt(
             &health,
-            Err(GatewayProcessRuntimeError::RefreshTimedOut {
+            Err(GatewayProcessError::RefreshTimedOut {
                 timeout: Duration::from_secs(5),
             }),
             Duration::from_secs(1),

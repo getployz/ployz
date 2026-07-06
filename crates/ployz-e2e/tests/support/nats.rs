@@ -4,7 +4,7 @@
 
 use ployz_core::ids::MachineId;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::adapters::nats_server::NatsServerRuntime;
+use ployzd::adapters::nats_server::NatsServerLaunch;
 
 pub struct TestNats {
     connected: ployz_test_support::nats::TestNats,
@@ -47,7 +47,7 @@ impl TestNats {
     #[must_use]
     pub fn control_config(&self, core_machine_id: MachineId) -> ControlProcessConfig {
         ControlProcessConfig::new(
-            NatsServerRuntime::External(self.connected.server.client_url().clone()),
+            NatsServerLaunch::External(self.connected.server.client_url().clone()),
             core_machine_id,
             self.connected.server.controller_config(),
         )

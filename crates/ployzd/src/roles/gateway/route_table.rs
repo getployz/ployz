@@ -1,4 +1,4 @@
-//! Gateway runtime state.
+//! Gateway serving route-table state.
 
 use crate::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionState,
@@ -7,12 +7,12 @@ use crate::roles::gateway::projection::{
 use ployz_core::ops::RouteTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayRuntime {
+pub struct GatewayProjector {
     state: GatewayProjectionState,
     route_table: GatewayRouteTable,
 }
 
-impl GatewayRuntime {
+impl GatewayProjector {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -31,7 +31,7 @@ impl GatewayRuntime {
         &self.route_table
     }
 
-    pub fn apply_source_update(&mut self, update: GatewayProjectionUpdate) -> GatewayRuntimeTick {
+    pub fn apply_source_update(&mut self, update: GatewayProjectionUpdate) -> GatewayProjectorTick {
         let previous = std::mem::replace(&mut self.state, GatewayProjectionState::unavailable());
         self.state = apply_gateway_update(previous, update);
 
@@ -39,7 +39,7 @@ impl GatewayRuntime {
             self.route_table.replace(projection.clone());
         }
 
-        GatewayRuntimeTick {
+        GatewayProjectorTick {
             state: self.state.clone(),
             served: self.route_table.current().cloned(),
             serving: serving_state_from_projection_state(&self.state),
@@ -47,14 +47,14 @@ impl GatewayRuntime {
     }
 }
 
-impl Default for GatewayRuntime {
+impl Default for GatewayProjector {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayRuntimeTick {
+pub struct GatewayProjectorTick {
     pub state: GatewayProjectionState,
     pub served: Option<GatewayProjection>,
     pub serving: GatewayServingState,

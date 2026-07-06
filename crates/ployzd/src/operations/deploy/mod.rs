@@ -1,4 +1,4 @@
-//! Deploy operation execution over explicit runtime ports.
+//! Deploy operation execution over explicit ports.
 
 mod facts;
 mod failure;

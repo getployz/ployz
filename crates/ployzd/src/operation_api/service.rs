@@ -1,4 +1,4 @@
-//! NATS Service API runtime wiring for daemon commands.
+//! NATS Service API wiring for daemon commands.
 
 use crate::operation_api::{
     OperationApiHandlers, deploy_submit, init_first_machine_activate, machine_add, machine_drain,
@@ -27,14 +27,14 @@ use std::sync::Arc;
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
     handlers: OperationApiHandlers,
-) -> Result<RunningNatsService, ApiServiceRuntimeError> {
+) -> Result<RunningNatsService, ApiServiceError> {
     if !handlers.controllers().has_machine_join_template() {
-        return Err(ApiServiceRuntimeError::MissingMachineJoinTemplate);
+        return Err(ApiServiceError::MissingMachineJoinTemplate);
     }
     let spec = api_service();
     let mut runtime = start_nats_service(client, &spec)
         .await
-        .map_err(ApiServiceRuntimeError::Nats)?;
+        .map_err(ApiServiceError::Nats)?;
     let handlers = Arc::new(handlers);
 
     for endpoint in IMPLEMENTED_OPERATION_API_ENDPOINTS.iter().copied() {
@@ -48,7 +48,7 @@ async fn bind_operation_endpoint(
     runtime: &mut RunningNatsService,
     handlers: Arc<OperationApiHandlers>,
     endpoint: OperationApiEndpoint,
-) -> Result<(), ApiServiceRuntimeError> {
+) -> Result<(), ApiServiceError> {
     match endpoint {
         OperationApiEndpoint::DeploySubmit => {
             bind_operation_contract::<DeploySubmitApi, _, _>(
@@ -208,7 +208,7 @@ async fn bind_operation_contract<C, H, F>(
     runtime: &mut RunningNatsService,
     handlers: Arc<OperationApiHandlers>,
     handler: H,
-) -> Result<(), ApiServiceRuntimeError>
+) -> Result<(), ApiServiceError>
 where
     C: OperationApiContract + 'static,
     C::Request: DeserializeOwned + 'static,
@@ -228,7 +228,7 @@ where
             })
         })
         .await
-        .map_err(ApiServiceRuntimeError::Nats)
+        .map_err(ApiServiceError::Nats)
 }
 
 async fn operation_api_response<C, H, Fut>(
@@ -263,12 +263,12 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApiServiceRuntimeError {
+pub enum ApiServiceError {
     MissingMachineJoinTemplate,
     Nats(NatsServiceRuntimeError),
 }
 
-impl std::fmt::Display for ApiServiceRuntimeError {
+impl std::fmt::Display for ApiServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingMachineJoinTemplate => {

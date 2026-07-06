@@ -103,7 +103,7 @@ impl std::error::Error for MintResumeError {}
 /// Bounded operation work that mints per-machine credentials after a
 /// machine-add submission is accepted.
 #[derive(Clone)]
-pub struct MachineCredentialMintRuntime {
+pub struct MachineCredentialMint {
     controllers: OperationControllers,
     authorization: NatsAuthorizationHandle,
     verify: MintVerifyEndpoint,
@@ -111,7 +111,7 @@ pub struct MachineCredentialMintRuntime {
     tasks: TaskRegistry,
 }
 
-impl MachineCredentialMintRuntime {
+impl MachineCredentialMint {
     #[must_use]
     pub fn new(
         controllers: OperationControllers,

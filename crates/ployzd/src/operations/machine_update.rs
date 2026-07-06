@@ -1,4 +1,4 @@
-//! Runtime for operation-owned machine substrate updates.
+//! Operation-owned machine substrate updates.
 
 use crate::operation_api::admission::OperationControllers;
 use crate::roles::machine::client::NatsMachineSubstrateUpdater;
@@ -15,13 +15,13 @@ const UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
-pub struct MachineUpdateOperationRuntime {
+pub struct MachineUpdateOperation {
     controllers: OperationControllers,
     updater: NatsMachineSubstrateUpdater,
     task_registry: TaskRegistry,
 }
 
-impl MachineUpdateOperationRuntime {
+impl MachineUpdateOperation {
     #[must_use]
     pub const fn new(
         controllers: OperationControllers,

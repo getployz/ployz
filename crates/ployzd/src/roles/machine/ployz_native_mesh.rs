@@ -2,7 +2,7 @@
 
 use crate::operations::deploy::DataplanePreparer;
 use crate::roles::machine::client::{
-    MachineCallError, MachineFactsReadRuntimeError, NatsMachineDataplanePreparer, call_machine,
+    MachineCallError, MachineFactsReadError, NatsMachineDataplanePreparer, call_machine,
 };
 use crate::roles::machine::protocol::{
     MachineDataplanePrepareRpcRequest, MachinePloyzNativeMeshPrepareDomainError,
@@ -122,7 +122,7 @@ async fn load_wireguard_peer_endpoint(
 
 fn public_ip_fact_unavailable(
     machine_id: &MachineId,
-    error: MachineFactsReadRuntimeError,
+    error: MachineFactsReadError,
 ) -> WireGuardEbpfPrepareError {
     ployz_native_mesh_unavailable(
         machine_id,

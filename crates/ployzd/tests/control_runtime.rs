@@ -38,16 +38,16 @@ use ployz_sdk_types::{
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
-use ployzd::roles::gateway::process::start_gateway_process_runtime_with_client;
+use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcResponse,
 };
-use ployzd::roles::machine::service::start_machine_runtime_service;
+use ployzd::roles::machine::service::start_machine_role_service;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::service_catalog::machine_runtime_service;
+use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
@@ -380,7 +380,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
 #[tokio::test]
 async fn control_runtime_refuses_machine_add_without_join_template() {
     let nats = TestNats::start().await;
-    let result = ployzd::roles::control::start_control_runtime_with_client_and_reload(
+    let result = ployzd::roles::control::start_control_process_with_client_and_reload(
         nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
@@ -389,7 +389,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 
     assert!(matches!(
         result,
-        Err(ployzd::roles::control::ControlRuntimeError::MissingMachineJoinTemplate)
+        Err(ployzd::roles::control::ControlProcessError::MissingMachineJoinTemplate)
     ));
 }
 
@@ -409,7 +409,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_runtime_service(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -587,7 +587,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_runtime_service(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -597,7 +597,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     .await
     .expect("machine runtime starts");
     let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
-    let gateway = start_gateway_process_runtime_with_client(
+    let gateway = start_gateway_process_with_client(
         gateway_client,
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -774,7 +774,7 @@ async fn start_substrate_update_service(
     machine_id: &MachineId,
     reported_ployzd: InstallArtifactVersion,
 ) -> RunningNatsService {
-    let spec = machine_runtime_service(machine_id);
+    let spec = machine_role_service(machine_id);
     let update_endpoint = spec
         .endpoints
         .iter()

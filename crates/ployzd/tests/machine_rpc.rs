@@ -17,7 +17,7 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
 };
-use ployzd::service_catalog::machine_runtime_service;
+use ployzd::service_catalog::machine_role_service;
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -331,7 +331,7 @@ async fn start_container_run_raw_service(
     machine_id: MachineId,
     handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()
@@ -384,7 +384,7 @@ async fn start_container_remove_raw_service(
     machine_id: MachineId,
     handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()
@@ -413,7 +413,7 @@ async fn start_substrate_report_service(
     machine_id: &MachineId,
 ) -> ployz_nats::service_runtime::RunningNatsService {
     let machine_id = machine_id.clone();
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()

@@ -17,13 +17,13 @@ mod writer;
 
 pub use machine_seed::{MachineSeedWriteError, write_machine_seed_file};
 pub use mint::{
-    MachineCredentialMintRuntime, MintOutcome, MintRequest, MintResumeError, MintVerifyEndpoint,
+    MachineCredentialMint, MintOutcome, MintRequest, MintResumeError, MintVerifyEndpoint,
 };
 pub use reload::{
     NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
     SignalNatsReloadRunner, SystemctlNatsReloadRunner,
 };
 pub use writer::{
-    AuthorizedUsersFileError, NatsAuthorizationHandle, NatsAuthorizationRuntime, RenderFailure,
+    AuthorizedUsersFileError, NatsAuthorizationHandle, NatsAuthorizationWriter, RenderFailure,
     RenderPrepareFailure, RenderedAuthorization,
 };

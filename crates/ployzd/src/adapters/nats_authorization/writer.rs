@@ -169,12 +169,12 @@ impl NatsAuthorizationHandle {
 }
 
 /// The running single-writer that owns `authorized-users.conf`.
-pub struct NatsAuthorizationRuntime {
+pub struct NatsAuthorizationWriter {
     handle: NatsAuthorizationHandle,
     task: JoinHandle<()>,
 }
 
-impl NatsAuthorizationRuntime {
+impl NatsAuthorizationWriter {
     /// Spawns the single-writer render task that owns the authorized-users
     /// authority file.
     pub fn start(authorized_users_file: PathBuf, reload: impl NatsReloadRunner) -> Self {

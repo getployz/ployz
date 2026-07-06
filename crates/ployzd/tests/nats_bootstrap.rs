@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ployz_core::nats_config::{NatsListener, NatsServerTlsFiles};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
 use ployz_test_support::ids::machine_id;
-use ployzd::adapters::nats_server::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
+use ployzd::adapters::nats_server::{NatsServerConfig, NatsServerLaunch, PreparedNatsServerService};
 
 #[test]
 fn single_machine_config_enables_tls_and_disables_jetstream_on_loopback() {
@@ -28,7 +28,7 @@ fn supervised_runtime_uses_prepared_config_endpoint() {
         config,
     )
     .expect("valid supervised service");
-    let runtime = NatsServerRuntime::Supervised(service);
+    let runtime = NatsServerLaunch::Supervised(service);
 
     assert_eq!(runtime.client_url(), NatsClientUrl::loopback(4222));
 }
@@ -72,7 +72,7 @@ fn prepared_server_keeps_rendered_config_with_endpoint() {
 #[test]
 fn external_runtime_keeps_the_supplied_endpoint() {
     let url = NatsClientUrl::try_new("nats://10.0.0.12:4222").expect("valid NATS URL");
-    let runtime = NatsServerRuntime::External(url.clone());
+    let runtime = NatsServerLaunch::External(url.clone());
 
     assert_eq!(runtime.client_url(), url);
 }
