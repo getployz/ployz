@@ -234,6 +234,7 @@ pub fn active_machine_from_completed_add(
         machine_id,
         name,
         activated_by: operation_id,
+        public_endpoint: None,
     })
 }
 

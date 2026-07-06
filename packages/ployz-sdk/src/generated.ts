@@ -258,7 +258,15 @@ export type ActiveMachineState = { machine_id: MachineId, name: MachineName, act
  * glossary). Absent in records written before lifecycle existed, so the
  * default is active.
  */
-lifecycle: MachineLifecycle, };
+lifecycle: MachineLifecycle,
+/**
+ * The machine's advertised reachable public endpoint, recorded by the core
+ * from the machine's own public-IP testimony (ADR 0030). Selects promotion
+ * candidates and rides intent to every mirror. `None` until the machine has
+ * advertised one; never cleared on a transient disconnect — reachability is
+ * a durable address property, not live liveness.
+ */
+public_endpoint: string | null, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 

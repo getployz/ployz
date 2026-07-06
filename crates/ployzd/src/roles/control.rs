@@ -6,7 +6,7 @@ use crate::adapters::nats_authorization::{
 };
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
-use crate::fact_cache::{FactCacheError, RunningFactCache, start_fact_cache};
+use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
@@ -30,6 +30,7 @@ use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
+const REACHABILITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct RunningControlProcess {
     intent: RunningIntentService,
@@ -38,6 +39,7 @@ pub struct RunningControlProcess {
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
+    reachability_tasks: TaskRegistry,
     facts_cache: RunningFactCache,
     authorization: NatsAuthorizationWriter,
 }
@@ -50,9 +52,27 @@ impl RunningControlProcess {
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
+        self.reachability_tasks.abort_all();
         self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
+    }
+}
+
+/// Record each machine's advertised public endpoint onto the roster from the
+/// public-IP testimony in the fact cache (ADR 0030). Runs on a slow tick; only
+/// writes on change, never clears on a machine's silence — reachability is a
+/// durable address property — and relies on the intent drumbeat to propagate the
+/// update to every mirror.
+async fn reconcile_reachability_loop(facts: FactCache, roster: MachineRosterStore) {
+    let mut interval = tokio::time::interval(REACHABILITY_RECONCILE_INTERVAL);
+    loop {
+        interval.tick().await;
+        for observation in facts.machine_public_ips() {
+            let _ = roster
+                .set_public_endpoint(&observation.machine_id, observation.public_ip)
+                .await;
+        }
     }
 }
 
@@ -110,6 +130,11 @@ pub async fn start_control_process_with_client_and_reload(
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
+    let reachability_tasks = TaskRegistry::default();
+    reachability_tasks.spawn(reconcile_reachability_loop(
+        facts.clone(),
+        machine_roster.clone(),
+    ));
     let deploy_driver = DeployOperationDriver::new(
         client.clone(),
         namespace_intent.clone(),
@@ -190,6 +215,7 @@ pub async fn start_control_process_with_client_and_reload(
         machine_update_tasks,
         machine_lifecycle_tasks,
         mint_tasks,
+        reachability_tasks,
         facts_cache,
         authorization,
     })

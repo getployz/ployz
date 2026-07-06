@@ -9,6 +9,7 @@ use crate::core_store::{CoreStore, CoreStoreError, query_json, query_json_list, 
 use ployz_core::ids::MachineId;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use rusqlite::{Connection, params};
+use std::net::IpAddr;
 
 #[derive(Debug, Clone)]
 pub struct MachineRosterStore {
@@ -73,6 +74,22 @@ impl MachineRosterStore {
             .await
             .map_err(store_error)
     }
+
+    /// Record a machine's advertised reachable public endpoint (ADR 0030). The
+    /// read-modify-write runs in one transaction. Returns whether the row
+    /// changed, so the caller rebroadcasts intent only on a real change; a
+    /// machine absent from the roster is a no-op.
+    pub async fn set_public_endpoint(
+        &self,
+        machine_id: &MachineId,
+        public_endpoint: IpAddr,
+    ) -> Result<bool, MachineRosterStoreError> {
+        let machine_id = machine_id.clone();
+        self.store
+            .call(move |conn| set_public_endpoint_txn(conn, &machine_id, public_endpoint))
+            .await
+            .map_err(store_error)
+    }
 }
 
 fn get_machine(
@@ -113,6 +130,24 @@ fn set_lifecycle_txn(
     Ok(MachineLifecycleUpdate::Changed)
 }
 
+fn set_public_endpoint_txn(
+    conn: &mut Connection,
+    machine_id: &MachineId,
+    public_endpoint: IpAddr,
+) -> Result<bool, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    let Some(mut state) = get_machine(&transaction, machine_id)? else {
+        return Ok(false);
+    };
+    if state.public_endpoint == Some(public_endpoint) {
+        return Ok(false);
+    }
+    state.public_endpoint = Some(public_endpoint);
+    put_machine(&transaction, &state)?;
+    transaction.commit()?;
+    Ok(true)
+}
+
 #[derive(Debug)]
 pub struct MachineRosterStoreError {
     message: String,
@@ -131,3 +166,67 @@ impl std::fmt::Display for MachineRosterStoreError {
 }
 
 impl std::error::Error for MachineRosterStoreError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::machine::MachineName;
+    use ployz_test_support::ids::{machine_id, operation_id};
+    use std::net::Ipv4Addr;
+
+    async fn seeded_roster(machine: &str) -> (MachineRosterStore, MachineId) {
+        let roster = MachineRosterStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let id = machine_id(machine);
+        roster
+            .replace_active_machine(&ActiveMachineState {
+                machine_id: id.clone(),
+                name: MachineName::try_new(machine).expect("name"),
+                activated_by: operation_id("op_activate"),
+                lifecycle: MachineLifecycle::Active,
+                public_endpoint: None,
+            })
+            .await
+            .expect("seed machine");
+        (roster, id)
+    }
+
+    #[tokio::test]
+    async fn set_public_endpoint_records_on_change_and_is_idempotent() {
+        let (roster, id) = seeded_roster("machine_a").await;
+        let endpoint = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5));
+
+        assert!(
+            roster
+                .set_public_endpoint(&id, endpoint)
+                .await
+                .expect("set")
+        );
+        // The same endpoint is not a change, so nothing rebroadcasts.
+        assert!(
+            !roster
+                .set_public_endpoint(&id, endpoint)
+                .await
+                .expect("set again")
+        );
+        assert_eq!(
+            roster
+                .active_machine(&id)
+                .await
+                .expect("read")
+                .expect("machine present")
+                .public_endpoint,
+            Some(endpoint)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_public_endpoint_on_unknown_machine_is_a_noop() {
+        let roster = MachineRosterStore::new(CoreStore::open_in_memory().await.expect("store"));
+        assert!(
+            !roster
+                .set_public_endpoint(&machine_id("ghost"), IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .await
+                .expect("set")
+        );
+    }
+}

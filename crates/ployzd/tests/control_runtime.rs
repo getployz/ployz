@@ -707,6 +707,7 @@ async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> Machin
 
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
+        public_endpoint: None,
         lifecycle: MachineLifecycle::Active,
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
