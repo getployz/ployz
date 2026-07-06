@@ -16,7 +16,7 @@ use ployz_core::ops::{
 use ployz_e2e::dind::DindMachine;
 use ployz_nats::connect::{NatsConnectConfig, authenticated_connect_options};
 use ployz_sdk_types::{MachineInspectRequest, MachineSnapshot, OpsStatusRequest};
-use ployzd::docker::labels::MANAGED_LABEL;
+use ployzd::adapters::docker::labels::MANAGED_LABEL;
 
 use super::formation::CoreContext;
 use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id};

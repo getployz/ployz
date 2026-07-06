@@ -4,7 +4,7 @@
 
 use ployz_core::ids::MachineId;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::nats_process::NatsServerRuntime;
+use ployzd::adapters::nats_server::NatsServerRuntime;
 
 pub struct TestNats {
     connected: ployz_test_support::nats::TestNats,
