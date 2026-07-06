@@ -22,10 +22,13 @@ use crate::process_support::shutdown_signal;
 use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
+use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -97,13 +100,20 @@ pub async fn start_control_process_with_client_and_reload(
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
 ) -> Result<RunningControlProcess, ControlProcessError> {
-    if config.machine_bootstrap.join_material.is_none() {
+    // A normal core needs a machine-add join template to admit new machines, so
+    // fail fast if it is missing. A promoted core (one seeding from a mirror) is
+    // allowed to start without one: recovery restores service first, and machine-add
+    // rejects gracefully (admission.rs) until a template is configured.
+    if config.seed_from_mirror.is_none() && config.machine_bootstrap.join_material.is_none() {
         return Err(ControlProcessError::MissingMachineJoinTemplate);
     }
 
     let core_store = CoreStore::open(config.core_db_path.clone())
         .await
         .map_err(ControlProcessError::OpenCoreStore)?;
+    if let Some(mirror_path) = &config.seed_from_mirror {
+        seed_core_from_mirror(&core_store, mirror_path).await?;
+    }
     let repository = OperationRepository::open(core_store.clone(), client.clone());
     let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
     let authorization = NatsAuthorizationWriter::start(
@@ -234,12 +244,43 @@ pub async fn run_control_until_shutdown(
         .map_err(ControlProcessError::ShutdownOperationApi)
 }
 
+/// Seed a fresh core store from the machine's local intent mirror at promotion
+/// (ADR 0031). Idempotent — the seed's own fresh-store guard makes a control
+/// restart a no-op once the store has served as a core; a missing mirror is a
+/// hard error (there is nothing to promote from).
+async fn seed_core_from_mirror(
+    core_store: &CoreStore,
+    mirror_path: &Path,
+) -> Result<(), ControlProcessError> {
+    // Once the store has been promoted it is authoritative; skip the mirror entirely
+    // so a later restart neither re-reads it nor bricks on a since-deleted mirror.
+    // Only a fresh store needs seeding (seed_core_from_snapshot's own guard would
+    // no-op an already-seeded store, but only *after* a load the mirror must survive).
+    if core_store
+        .control_plane_epoch_if_present()
+        .await
+        .map_err(|error| ControlProcessError::SeedCore(SeedCoreError::Epoch(error)))?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let snapshot = MachineIntentMirror::new(mirror_path.to_path_buf())
+        .load()
+        .ok_or_else(|| ControlProcessError::SeedMirrorMissing(mirror_path.to_path_buf()))?;
+    seed_core_from_snapshot(core_store, &snapshot)
+        .await
+        .map_err(ControlProcessError::SeedCore)?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum ControlProcessError {
     MissingMachineJoinTemplate,
     MissingDeployMachine,
     ConnectNats(NatsConnectError),
     OpenCoreStore(CoreStoreError),
+    SeedMirrorMissing(PathBuf),
+    SeedCore(SeedCoreError),
     StartFactsCache(FactCacheError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
@@ -261,6 +302,16 @@ impl fmt::Display for ControlProcessError {
             Self::ConnectNats(error) => write!(formatter, "{error}"),
             Self::OpenCoreStore(error) => {
                 write!(formatter, "failed to open core state store: {error}")
+            }
+            Self::SeedMirrorMissing(path) => {
+                write!(
+                    formatter,
+                    "core-promote seed mirror is missing or unreadable: {}",
+                    path.display()
+                )
+            }
+            Self::SeedCore(error) => {
+                write!(formatter, "failed to seed core store from mirror: {error}")
             }
             Self::StartFactsCache(error) => {
                 write!(formatter, "failed to start runtime facts cache: {error}")
@@ -291,3 +342,43 @@ impl fmt::Display for ControlProcessError {
 }
 
 impl std::error::Error for ControlProcessError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
+
+    fn empty_snapshot(epoch: ControlPlaneEpoch) -> IntentSnapshot {
+        IntentSnapshot {
+            epoch,
+            active_machines: Vec::new(),
+            route_bindings: Vec::new(),
+            serving_target_entries: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn seeds_a_fresh_store_from_the_mirror() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror_path = dir.path().join("intent-mirror.json");
+        MachineIntentMirror::new(mirror_path.clone())
+            .store(&empty_snapshot(ControlPlaneEpoch::initial().next().next()))
+            .expect("write mirror");
+
+        let store = CoreStore::open_in_memory().await.expect("store");
+        seed_core_from_mirror(&store, &mirror_path)
+            .await
+            .expect("seed succeeds");
+        // Fence lands at max(mirror=3, fresh=1).next() = 4, above the succeeded core.
+        assert_eq!(store.control_plane_epoch().await.expect("epoch").get(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_configured_but_missing_mirror_is_an_error() {
+        let store = CoreStore::open_in_memory().await.expect("store");
+        let error = seed_core_from_mirror(&store, Path::new("/no/such/intent-mirror.json"))
+            .await
+            .expect_err("missing mirror errors");
+        assert!(matches!(error, ControlProcessError::SeedMirrorMissing(_)));
+    }
+}

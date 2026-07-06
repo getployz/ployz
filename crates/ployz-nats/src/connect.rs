@@ -161,6 +161,12 @@ pub fn authenticated_connect_options(config: &NatsConnectConfig) -> async_nats::
     };
     options
         .require_tls(true)
+        // The failover server pool is operator-controlled (the configured core
+        // plus Reachable Machines from mirrored intent); don't merge servers the
+        // NATS server advertises, which would pollute the recovery candidate set,
+        // and keep the pool's order so the configured core stays tried first.
+        .ignore_discovered_servers()
+        .retain_servers_order()
         .custom_inbox_prefix(inbox_prefix(principal))
 }
 
@@ -168,15 +174,35 @@ pub async fn connect_authenticated(
     config: &NatsConnectConfig,
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
+    // A single-URL pool: the shared path handles the connect, timeout, and error
+    // shape (a one-element `join(",")` is just that URL).
+    connect_authenticated_pool(config, &[config.url.as_str().to_owned()], timeout).await
+}
+
+/// Connect authenticated to a whole failover pool (the configured core plus
+/// Reachable Machines from the cached mirror), tried in order. Used at machine
+/// startup so a reboot *during* a core outage still reaches a promoted core
+/// rather than timing out on a dead seed. `servers` must be non-empty and lead
+/// with the configured core.
+pub async fn connect_authenticated_pool(
+    config: &NatsConnectConfig,
+    servers: &[String],
+    timeout: Duration,
+) -> Result<async_nats::Client, NatsConnectError> {
     let options = authenticated_connect_options(config);
-    match tokio::time::timeout(timeout, options.connect(config.url.as_str())).await {
+    // async-nats tries each server in order, each under its own connection timeout.
+    // `timeout` is the per-server budget; scale the total by the pool size so a
+    // black-holed seed can't burn the whole budget before a live candidate is tried.
+    let factor = u32::try_from(servers.len()).unwrap_or(1).max(1);
+    let total = timeout.saturating_mul(factor);
+    match tokio::time::timeout(total, options.connect(servers.to_vec())).await {
         Ok(Ok(client)) => Ok(client),
         Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: config.url.as_str().to_owned(),
+            url: servers.join(","),
             message: error.to_string(),
         }),
         Err(_) => Err(NatsConnectError::Timeout {
-            url: config.url.as_str().to_owned(),
+            url: servers.join(","),
             timeout,
         }),
     }

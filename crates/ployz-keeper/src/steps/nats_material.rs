@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::MachineId;
-use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey};
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
     NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
@@ -188,14 +188,20 @@ impl NatsServerConfigTarget {
 pub struct NatsTlsMaterialTarget {
     material: NatsMachineMaterialPaths,
     identity: ClusterNatsIdentity,
+    recovery_key_wrapped: WrappedCaKey,
 }
 
 impl NatsTlsMaterialTarget {
     #[must_use]
-    pub fn new(material: NatsMachineMaterialPaths, identity: &ClusterNatsIdentity) -> Self {
+    pub fn new(
+        material: NatsMachineMaterialPaths,
+        identity: &ClusterNatsIdentity,
+        recovery_key_wrapped: WrappedCaKey,
+    ) -> Self {
         Self {
             material,
             identity: identity.clone(),
+            recovery_key_wrapped,
         }
     }
 
@@ -223,6 +229,11 @@ impl NatsTlsMaterialTarget {
     pub fn server_key_pem(&self) -> &NatsServerKeyPem {
         &self.identity.server_cert.key_pem
     }
+
+    #[must_use]
+    pub fn recovery_key_wrapped(&self) -> &WrappedCaKey {
+        &self.recovery_key_wrapped
+    }
 }
 
 /// Writes the initial `authorized-users.conf` next to the server config.
@@ -236,6 +247,25 @@ pub struct NatsAuthorizedUsersTarget {
     rendered: String,
 }
 
+/// The new core's own control-plane principals, the base of every rendered
+/// authorized-users set (first-machine install and promotion alike).
+fn core_principal_users(identity: &ClusterNatsIdentity) -> Vec<NatsAuthorizedUser> {
+    vec![
+        NatsAuthorizedUser {
+            principal: NatsPrincipal::Controller,
+            nkey_public: identity.controller.public.clone(),
+        },
+        NatsAuthorizedUser {
+            principal: NatsPrincipal::User,
+            nkey_public: identity.operator.public.clone(),
+        },
+        NatsAuthorizedUser {
+            principal: NatsPrincipal::Join,
+            nkey_public: identity.join.public.clone(),
+        },
+    ]
+}
+
 impl NatsAuthorizedUsersTarget {
     /// The install-time user set: Controller, operator User, and Join.
     /// Machine users are minted later by `ployzd` control.
@@ -245,20 +275,7 @@ impl NatsAuthorizedUsersTarget {
         identity: &ClusterNatsIdentity,
         additional_user_public_keys: &[NatsUserPublicKey],
     ) -> Self {
-        let mut users = vec![
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Controller,
-                nkey_public: identity.controller.public.clone(),
-            },
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::User,
-                nkey_public: identity.operator.public.clone(),
-            },
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Join,
-                nkey_public: identity.join.public.clone(),
-            },
-        ];
+        let mut users = core_principal_users(identity);
         users.extend(
             additional_user_public_keys
                 .iter()
@@ -268,6 +285,31 @@ impl NatsAuthorizedUsersTarget {
                     nkey_public,
                 }),
         );
+        Self {
+            config_dir,
+            file_name: AUTHORIZED_USERS_FILE_NAME.to_owned(),
+            rendered: render_authorized_users(&users),
+        }
+    }
+
+    /// The full authorized-user set for a promoted core (ADR 0031): the new core's
+    /// freshly-minted Controller/operator/Join principals, plus one Machine grant
+    /// per mirrored active machine that carries an nkey public. Unlike the control
+    /// writer's incremental disk-merge, this renders from scratch off the roster,
+    /// so a promotion needs no prior authorized-users file.
+    #[must_use]
+    pub fn for_promotion(
+        config_dir: PathBuf,
+        identity: &ClusterNatsIdentity,
+        machines: &[(MachineId, NatsUserPublicKey)],
+    ) -> Self {
+        let mut users = core_principal_users(identity);
+        users.extend(machines.iter().cloned().map(|(machine_id, nkey_public)| {
+            NatsAuthorizedUser {
+                principal: NatsPrincipal::Machine { machine_id },
+                nkey_public,
+            }
+        }));
         Self {
             config_dir,
             file_name: AUTHORIZED_USERS_FILE_NAME.to_owned(),

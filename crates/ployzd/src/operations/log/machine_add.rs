@@ -211,6 +211,20 @@ impl OperationRepository {
             .map_err(|error| index_error(&error))
     }
 
+    /// The minted nkey for a completed machine-add, looked up by the operation
+    /// that minted it. Used at activation to stamp the machine's nkey public onto
+    /// the roster so a promoted core can regenerate authorized-users.
+    pub async fn machine_add_mint_claim_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
+        let operation_id = operation_id.clone();
+        self.store
+            .call(move |conn| select_machine_add_mint_claim_by_operation_id(conn, &operation_id))
+            .await
+            .map_err(|error| index_error(&error))
+    }
+
     pub async fn redeem_machine_join_token(
         &self,
         token: &RawJoinToken,
@@ -784,6 +798,17 @@ fn select_machine_add_mint_claim(
         conn,
         "SELECT mint_claim_json FROM machine_add_mint_claims WHERE idempotency_key = ?1",
         idempotency_key.as_str(),
+    )
+}
+
+fn select_machine_add_mint_claim_by_operation_id(
+    conn: &Connection,
+    operation_id: &OperationId,
+) -> Result<Option<StoredMachineAddMintClaim>, rusqlite::Error> {
+    query_json(
+        conn,
+        "SELECT mint_claim_json FROM machine_add_mint_claims WHERE operation_id = ?1",
+        operation_id.as_str(),
     )
 }
 

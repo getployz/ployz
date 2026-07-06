@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
+use crate::nats_config::NatsUserPublicKey;
 use crate::ops::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
 
@@ -48,6 +49,12 @@ pub struct ActiveMachineState {
     /// a durable address property, not live liveness.
     #[serde(default)]
     pub public_endpoint: Option<IpAddr>,
+    /// The machine's NATS nkey public, minted at machine-add. Rides intent to
+    /// every mirror so a promoted core can regenerate `authorized-users.conf`
+    /// from the roster alone (ADR 0031). `None` for machines activated before
+    /// this field existed — they must re-join to become promotable auth entries.
+    #[serde(default)]
+    pub nkey_public: Option<NatsUserPublicKey>,
 }
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a
@@ -71,6 +78,14 @@ impl ControlPlaneEpoch {
     pub const fn get(self) -> u64 {
         self.0
     }
+
+    /// The next generation, minted by a promotion to fence the core it succeeds
+    /// (ADR 0031). `#[must_use]` because a bump only matters once persisted as the
+    /// new epoch.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
 /// Full operator intent visible to readers, stamped with the epoch it reflects.
@@ -84,6 +99,33 @@ pub struct IntentSnapshot {
     pub active_machines: Vec<ActiveMachineState>,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
+}
+
+impl IntentSnapshot {
+    /// The `(machine, nkey public)` grants a promoted core re-renders
+    /// authorized-users from (ADR 0031). Machines with no recorded public are
+    /// skipped — there is nothing to authorize until they re-join.
+    #[must_use]
+    pub fn authorized_machine_publics(&self) -> Vec<(MachineId, NatsUserPublicKey)> {
+        self.active_machines
+            .iter()
+            .filter_map(|machine| {
+                machine
+                    .nkey_public
+                    .clone()
+                    .map(|public| (machine.machine_id.clone(), public))
+            })
+            .collect()
+    }
+
+    /// A specific machine's advertised public endpoint, if the core recorded one.
+    #[must_use]
+    pub fn public_endpoint_of(&self, machine_id: &MachineId) -> Option<IpAddr> {
+        self.active_machines
+            .iter()
+            .find(|machine| &machine.machine_id == machine_id)
+            .and_then(|machine| machine.public_endpoint)
+    }
 }
 
 /// The durable operator-intent state of a current machine identity. Controls

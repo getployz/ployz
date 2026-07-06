@@ -171,11 +171,35 @@ async fn activate_reported_machine(
     machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
+    let minted_public = handlers
+        .controllers
+        .repository()
+        .machine_add_mint_claim_by_operation_id(operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+        .map(|claim| claim.nkey_public);
+    // A retried join report finds the mint claim already scrubbed by the first
+    // success; keep the public that first activation recorded so re-activation
+    // does not blank the roster's nkey (which a promoted core needs for auth).
+    let nkey_public = match minted_public {
+        Some(public) => Some(public),
+        None => handlers
+            .machine_roster
+            .active_machine(machine_id)
+            .await
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: error.to_string(),
+            })?
+            .and_then(|machine| machine.nkey_public),
+    };
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
         ployz_core::ops::MachineAddOperationState::Completed,
+        nkey_public,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
         message: corrupt("completed machine-add did not produce active machine"),

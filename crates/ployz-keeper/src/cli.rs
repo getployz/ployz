@@ -12,6 +12,7 @@ use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
     NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
 };
+use crate::recovery_secret::{self, RecoverySecretError};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use crate::steps::{FirstMachineInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
@@ -19,7 +20,7 @@ use clap::{Parser, Subcommand};
 use ployz_core::ids::OperationId;
 use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
-    NatsServerInstallSpec,
+    NatsServerInstallSpec, WrappedCaKey,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,7 @@ pub enum KeeperCommand {
     Start(KeeperStartup),
     Bootstrap(KeeperBootstrap),
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
+    CorePromote(KeeperCorePromote),
     SubstrateUpdate(KeeperSubstrateUpdate),
 }
 
@@ -130,6 +132,16 @@ pub struct KeeperSubstrateUpdate {
     pub version: ExactPloyzVersion,
 }
 
+/// `core-promote` reads everything from the machine's own state (its id + public
+/// IP, the CA + wrapped recovery key, the fleet's machine publics). The only
+/// external input is which release to pull the core `nats-server` from, and that
+/// defaults to this keeper binary's own version — which, on a joined machine, is
+/// the cluster's release. `version` overrides it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperCorePromote {
+    pub version: Option<ExactPloyzVersion>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupJoinToken {
     pub token: JoinToken,
@@ -154,6 +166,9 @@ pub fn load_command(
             Ok(KeeperCommand::FirstMachineInstall(Box::new(
                 first_machine_install_target_from_spec(spec)?,
             )))
+        }
+        Some(KeeperSubcommand::CorePromote { version }) => {
+            Ok(KeeperCommand::CorePromote(KeeperCorePromote { version }))
         }
         Some(KeeperSubcommand::SubstrateUpdate {
             operation_id,
@@ -201,6 +216,10 @@ enum KeeperSubcommand {
     FirstMachineInstall {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
+    },
+    CorePromote {
+        #[arg(long, value_name = "version")]
+        version: Option<ExactPloyzVersion>,
     },
     SubstrateUpdate {
         #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
@@ -314,6 +333,11 @@ pub fn first_machine_install_target_from_spec(
     )?;
     let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
+    let recovery_secret = resolve_recovery_secret();
+    let recovery_key_wrapped = WrappedCaKey::new(
+        recovery_secret::wrap(&recovery_secret, nats_identity.ca_key.secret().as_bytes())
+            .map_err(KeeperCliError::RecoverySecret)?,
+    );
 
     let mut target = FirstMachineInstallTarget::new(
         machine_id,
@@ -322,6 +346,7 @@ pub fn first_machine_install_target_from_spec(
         nats_server_artifact,
         roles,
         nats_identity,
+        recovery_key_wrapped,
     )
     .with_nats_server_unit(nats_server_unit);
     if let Some(url) = machine_bootstrap_url {
@@ -337,6 +362,22 @@ pub fn first_machine_install_target_from_spec(
         target = target.with_machine_public_ip(public_ip);
     }
     Ok(target)
+}
+
+/// The operator's cluster recovery secret: `PLOYZ_RECOVERY_SECRET` if set, else
+/// generated and shown once (ADR 0031). It wraps the CA key and is required later
+/// to `core-promote`; it is never itself persisted.
+fn resolve_recovery_secret() -> String {
+    match std::env::var("PLOYZ_RECOVERY_SECRET") {
+        Ok(secret) if !secret.is_empty() => secret,
+        _ => {
+            let generated = recovery_secret::generate_recovery_secret();
+            eprintln!(
+                "cluster recovery secret (save this — required to promote a new core):\n    {generated}"
+            );
+            generated
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -356,6 +397,7 @@ pub enum KeeperCliError {
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
     NatsIdentity(NatsIdentityError),
+    RecoverySecret(RecoverySecretError),
 }
 
 impl KeeperCliError {
@@ -420,6 +462,7 @@ impl fmt::Display for KeeperCliError {
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
             Self::NatsIdentity(error) => write!(formatter, "{error}"),
+            Self::RecoverySecret(error) => write!(formatter, "{error}"),
         }
     }
 }

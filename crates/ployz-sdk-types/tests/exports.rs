@@ -691,6 +691,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
+            recovery_key_wrapped: None,
             ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",

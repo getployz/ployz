@@ -198,6 +198,7 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
             public_endpoint: None,
+            nkey_public: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),
@@ -231,6 +232,7 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 )
                 .expect("valid CA pem"),
             },
+            recovery_key_wrapped: None,
             ployzd: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployzd"),

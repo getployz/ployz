@@ -139,6 +139,7 @@ async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str)
         machine_id(machine),
         ployz_core::machine::MachineName::try_new(machine).expect("valid machine name"),
         ployz_core::ops::MachineAddOperationState::Completed,
+        None,
     )
     .expect("completed add activates");
     machine_roster

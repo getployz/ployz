@@ -589,6 +589,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
+            recovery_key_wrapped: None,
             ployzd: InstallArtifactSpec {
                 version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
                     .expect("valid version"),
@@ -645,6 +646,7 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
             public_endpoint: None,
+            nkey_public: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),

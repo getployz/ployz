@@ -4,7 +4,7 @@ use std::io::Read;
 use clap::Args;
 use ployz_core::install::{
     MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
+    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats, WrappedCaKey,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 
@@ -36,6 +36,7 @@ pub(crate) fn machine_join_template_command(
     parsed: MachineJoinTemplateCli,
 ) -> Result<MachineJoinTemplateCommand, PloyzctlCliError> {
     let trusted_nats_ca = read_trusted_nats_ca(parsed.trusted_nats_ca_file)?;
+    let recovery_key_wrapped = read_recovery_key(parsed.recovery_key_file)?;
     let artifacts = read_artifact_spec(parsed.artifact_spec)?;
 
     Ok(MachineJoinTemplateCommand {
@@ -48,6 +49,7 @@ pub(crate) fn machine_join_template_command(
                 trusted_nats: MachineJoinTrustedNats {
                     ca_pem: trusted_nats_ca,
                 },
+                recovery_key_wrapped,
                 ployzd: artifacts.ployzd,
                 ebpf_bytecode: artifacts.ebpf_bytecode,
                 ebpf_ctl: artifacts.ebpf_ctl,
@@ -64,8 +66,23 @@ pub(crate) struct MachineJoinTemplateCli {
     runtime_nats_url: String,
     #[arg(long)]
     trusted_nats_ca_file: String,
+    /// The wrapped CA recovery key emitted at init (`ca-recovery.key`), delivered
+    /// to joiners so they can be core-promoted. Omit for a template without it.
+    #[arg(long)]
+    recovery_key_file: Option<String>,
     #[arg(long)]
     artifact_spec: String,
+}
+
+fn read_recovery_key(path: Option<String>) -> Result<Option<WrappedCaKey>, PloyzctlCliError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let bytes = fs::read(&path).map_err(|error| PloyzctlCliError::InvalidValue {
+        flag: "--recovery-key-file",
+        message: format!("cannot read {path}: {error}"),
+    })?;
+    Ok(Some(WrappedCaKey::new(bytes)))
 }
 
 fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCliError> {

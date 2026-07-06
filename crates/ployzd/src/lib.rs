@@ -44,5 +44,6 @@ pub mod intent;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;
+pub mod seed;
 pub mod service_catalog;
 pub mod tasks;

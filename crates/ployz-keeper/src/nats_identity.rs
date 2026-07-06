@@ -19,10 +19,36 @@ const LOOPBACK_SAN: &str = "127.0.0.1";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterNatsIdentity {
     pub ca: NatsCaCertificatePem,
+    /// The CA signing key. Secret: wrapped with the operator recovery secret
+    /// before it is persisted or mirrored (ADR 0031), so a promoted core can
+    /// reconstruct the issuer and self-issue its own server certificate.
+    pub ca_key: NatsCaKeyPem,
     pub server_cert: NatsServerCertificate,
     pub controller: MintedNatsUser,
     pub operator: MintedNatsUser,
     pub join: MintedNatsUser,
+}
+
+/// The cluster CA private key in PEM form. Secret material: `Debug` is redacted.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NatsCaKeyPem(String);
+
+impl NatsCaKeyPem {
+    #[must_use]
+    pub fn new(pem: String) -> Self {
+        Self(pem)
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for NatsCaKeyPem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NatsCaKeyPem([redacted])")
+    }
 }
 
 /// The server's TLS certificate plus its private key.
@@ -99,12 +125,7 @@ pub fn generate_cluster_nats_identity(
     sans: &ServerCertificateSans,
 ) -> Result<ClusterNatsIdentity, NatsIdentityError> {
     let ca_key = rcgen::KeyPair::generate().map_err(certificate_error)?;
-    let mut ca_params =
-        rcgen::CertificateParams::new(Vec::<String>::new()).map_err(certificate_error)?;
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, CA_COMMON_NAME);
+    let ca_params = ca_certificate_params()?;
     let ca_certificate = ca_params
         .clone()
         .self_signed(&ca_key)
@@ -112,21 +133,82 @@ pub fn generate_cluster_nats_identity(
     let ca = NatsCaCertificatePem::try_new(ca_certificate.pem())
         .map_err(NatsIdentityError::InvalidGeneratedMaterial)?;
 
-    let server_key = rcgen::KeyPair::generate().map_err(certificate_error)?;
-    let server_params =
-        rcgen::CertificateParams::new(sans.subject_alt_names()).map_err(certificate_error)?;
+    // Capture the CA key PEM before it moves into the issuer; it is persisted
+    // (wrapped with the recovery secret) so a future promotion can rebuild the
+    // issuer and self-issue its own server certificate (ADR 0031).
+    let ca_key_pem = ca_key.serialize_pem();
     let issuer = rcgen::Issuer::new(ca_params, ca_key);
-    let server_certificate = server_params
-        .signed_by(&server_key, &issuer)
-        .map_err(certificate_error)?;
+    let server_cert = sign_server_certificate(&issuer, sans)?;
 
     Ok(ClusterNatsIdentity {
         ca,
-        server_cert: NatsServerCertificate {
-            cert_pem: NatsServerCertificatePem::try_new(server_certificate.pem())
-                .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
-            key_pem: NatsServerKeyPem(server_key.serialize_pem()),
-        },
+        ca_key: NatsCaKeyPem::new(ca_key_pem),
+        server_cert,
+        controller: mint_nkey_user()?,
+        operator: mint_nkey_user()?,
+        join: mint_nkey_user()?,
+    })
+}
+
+/// Re-issue a server certificate from the persisted CA key (a promotion
+/// self-issuing for its own address). The CA key PEM comes from unwrapping the
+/// mirrored recovery material; the CA's issuer parameters are the fixed
+/// [`ca_certificate_params`], so the reconstructed issuer signs under the same
+/// CN the existing CA cert carries — no cert parsing needed.
+pub fn issue_server_certificate(
+    ca_key_pem: &str,
+    sans: &ServerCertificateSans,
+) -> Result<NatsServerCertificate, NatsIdentityError> {
+    let ca_key = rcgen::KeyPair::from_pem(ca_key_pem).map_err(certificate_error)?;
+    let issuer = rcgen::Issuer::new(ca_certificate_params()?, ca_key);
+    sign_server_certificate(&issuer, sans)
+}
+
+/// The cluster CA's certificate parameters — an unconstrained CA under a fixed
+/// common name. Shared by first-machine generation and promotion re-issue so the
+/// reconstructed issuer always matches the CA cert the fleet already trusts.
+fn ca_certificate_params() -> Result<rcgen::CertificateParams, NatsIdentityError> {
+    let mut params =
+        rcgen::CertificateParams::new(Vec::<String>::new()).map_err(certificate_error)?;
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, CA_COMMON_NAME);
+    Ok(params)
+}
+
+fn sign_server_certificate<S: rcgen::SigningKey>(
+    issuer: &rcgen::Issuer<'_, S>,
+    sans: &ServerCertificateSans,
+) -> Result<NatsServerCertificate, NatsIdentityError> {
+    let server_key = rcgen::KeyPair::generate().map_err(certificate_error)?;
+    let server_params =
+        rcgen::CertificateParams::new(sans.subject_alt_names()).map_err(certificate_error)?;
+    let server_certificate = server_params
+        .signed_by(&server_key, issuer)
+        .map_err(certificate_error)?;
+    Ok(NatsServerCertificate {
+        cert_pem: NatsServerCertificatePem::try_new(server_certificate.pem())
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
+        key_pem: NatsServerKeyPem(server_key.serialize_pem()),
+    })
+}
+
+/// Reconstruct the cluster identity for a promotion (ADR 0031): keep the fleet's
+/// existing CA (cert + the unwrapped signing key), self-issue a fresh server cert
+/// for this core's own address, and mint fresh control-plane principals. Machines
+/// keep trusting the same CA and re-authenticate under the re-rendered
+/// authorized-users; only the core principals rotate.
+pub fn promoted_core_identity(
+    ca: NatsCaCertificatePem,
+    ca_key_pem: String,
+    sans: &ServerCertificateSans,
+) -> Result<ClusterNatsIdentity, NatsIdentityError> {
+    let server_cert = issue_server_certificate(&ca_key_pem, sans)?;
+    Ok(ClusterNatsIdentity {
+        ca,
+        ca_key: NatsCaKeyPem::new(ca_key_pem),
+        server_cert,
         controller: mint_nkey_user()?,
         operator: mint_nkey_user()?,
         join: mint_nkey_user()?,
@@ -157,7 +239,7 @@ pub enum NatsIdentityError {
 mod tests {
     use super::{
         ClusterNatsIdentity, NatsIdentityError, ServerCertificateSans,
-        generate_cluster_nats_identity,
+        generate_cluster_nats_identity, issue_server_certificate, promoted_core_identity,
     };
 
     #[test]
@@ -206,6 +288,7 @@ mod tests {
         let identity = generate_cluster_nats_identity(&sans).expect("identity generates");
         let ClusterNatsIdentity {
             ca,
+            ca_key,
             server_cert,
             controller,
             operator,
@@ -216,6 +299,12 @@ mod tests {
             ca.as_str()
                 .trim_start()
                 .starts_with("-----BEGIN CERTIFICATE-----")
+        );
+        assert!(
+            ca_key
+                .secret()
+                .trim_start()
+                .starts_with("-----BEGIN PRIVATE KEY-----")
         );
         assert!(
             server_cert
@@ -241,5 +330,66 @@ mod tests {
             format!("{:?}", server_cert.key_pem),
             "NatsServerKeyPem([redacted])"
         );
+    }
+
+    #[test]
+    fn issue_server_certificate_reissues_from_the_persisted_ca_key() {
+        let identity = generate_cluster_nats_identity(
+            &ServerCertificateSans::try_new(None, None).expect("sans"),
+        )
+        .expect("identity generates");
+
+        // A promoted core self-issues a cert for its own address from the CA key.
+        let reissued = issue_server_certificate(
+            identity.ca_key.secret(),
+            &ServerCertificateSans::try_new(Some("203.0.113.99".parse().expect("ip")), None)
+                .expect("sans"),
+        )
+        .expect("reissue succeeds");
+
+        assert!(
+            reissued
+                .cert_pem
+                .as_str()
+                .trim_start()
+                .starts_with("-----BEGIN CERTIFICATE-----")
+        );
+        // A fresh server key each time, distinct from the first-machine cert's.
+        assert_ne!(
+            reissued.key_pem.secret(),
+            identity.server_cert.key_pem.secret()
+        );
+    }
+
+    #[test]
+    fn promoted_core_identity_keeps_the_ca_and_rotates_principals() {
+        let original = generate_cluster_nats_identity(
+            &ServerCertificateSans::try_new(None, None).expect("sans"),
+        )
+        .expect("original identity");
+
+        let promoted = promoted_core_identity(
+            original.ca.clone(),
+            original.ca_key.secret().to_owned(),
+            &ServerCertificateSans::try_new(Some("203.0.113.50".parse().expect("ip")), None)
+                .expect("sans"),
+        )
+        .expect("promoted identity");
+
+        // The fleet's trust anchor (CA cert) is unchanged.
+        assert_eq!(promoted.ca, original.ca);
+        // A fresh server cert is issued for the new address.
+        assert!(
+            promoted
+                .server_cert
+                .cert_pem
+                .as_str()
+                .trim_start()
+                .starts_with("-----BEGIN CERTIFICATE-----")
+        );
+        // The control-plane principals rotate.
+        assert_ne!(promoted.controller.public, original.controller.public);
+        assert_ne!(promoted.operator.public, original.operator.public);
+        assert_ne!(promoted.join.public, original.join.public);
     }
 }

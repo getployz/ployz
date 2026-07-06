@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -10,26 +12,34 @@ use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::plan_joined_machine_process_set;
 use ployz_core::security::NatsPrincipal;
-use ployz_keeper::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
+use ployz_keeper::artifacts::{
+    ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target,
+};
 use ployz_keeper::cli::{
-    KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperSubstrateUpdate, load_command,
+    KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperCorePromote, KeeperSubstrateUpdate,
+    load_command,
 };
 use ployz_keeper::cloud_client::get_text_url;
 use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::fsx::{FileMode, write_durable_file};
-use ployz_keeper::join::JOIN_MATERIAL_DIR;
+use ployz_keeper::join::{
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE,
+    parse_machine_id_from_join_material,
+};
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
     execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
-use ployz_keeper::release_manifest::{ReleaseManifest, release_manifest_url};
+use ployz_keeper::release_manifest::{
+    ReleaseManifest, default_release_manifest_url, release_manifest_url,
+};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
-    FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
-    KeeperStep, KeeperStepPlan, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
-    first_machine_install_plan,
+    CorePromoteTarget, FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial,
+    KeeperJoinTarget, KeeperStep, KeeperStepPlan, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
+    RoleNatsCredentials, core_promote_plan, first_machine_install_plan,
 };
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
@@ -57,6 +67,8 @@ const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
 const SUBSTRATE_VERSION_FILE: &str = "substrate-version.json";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
+const CORE_PROMOTE_RESULT_BEGIN: &str = "ployz-core-promote-result begin";
+const CORE_PROMOTE_RESULT_END: &str = "ployz-core-promote-result end";
 const CLOUD_BOOTSTRAP_MAX_POLLS: u16 = 900;
 
 fn main() -> ExitCode {
@@ -111,6 +123,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(KeeperCommand::CorePromote(promote)) => run_core_promote_command(promote),
         Err(error) if error.is_help_requested() => {
             print!("{error}");
             ExitCode::SUCCESS
@@ -471,6 +484,213 @@ fn run_first_machine_install(
         SystemKeeperCommandRunner::default(),
     );
     execute_keeper_plan(&plan, &mut effects, recorder)
+}
+
+fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
+    // The release supplies the core nats-server + ployzd binaries; it defaults to
+    // this keeper binary's own version (the cluster release on a joined machine),
+    // with --version as an override. Everything else is read from machine state.
+    let manifest_url = match &promote.version {
+        Some(version) => release_manifest_url(version),
+        None => default_release_manifest_url(),
+    };
+    let manifest = match load_versioned_release_manifest(&manifest_url) {
+        Ok(manifest) => manifest,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let artifacts = match manifest.install_artifacts() {
+        Ok(artifacts) => artifacts,
+        Err(message) => {
+            eprintln!("release manifest is invalid: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let nats_server_artifact = match artifact_target(
+        ArtifactKind::NatsServer,
+        &ployz_core::install::InstallArtifactSpec {
+            version: artifacts.nats_server.version,
+            source: artifacts.nats_server.source,
+            sha256: artifacts.nats_server.sha256,
+            install_path: artifacts.nats_server.binary,
+        },
+    ) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest NATS artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let ployzd_artifact = match artifact_target(ArtifactKind::Ployzd, &artifacts.ployzd) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest ployzd artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (target, access) = match resolve_core_promote_target(nats_server_artifact, ployzd_artifact)
+    {
+        Ok(resolved) => resolved,
+        Err(message) => {
+            eprintln!("ployz-keeper core-promote: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let stdout = std::io::stdout();
+    let mut recorder = KeeperTextRecorder::new(stdout.lock());
+    let plan = core_promote_plan(target);
+    let mut effects = KeeperLocalEffects::new(
+        KeeperLocalConfig {
+            systemd_dir: "/etc/systemd/system".into(),
+            state_dir: KEEPER_STATE_DIR.into(),
+        },
+        SystemKeeperCommandRunner::default(),
+    );
+    match execute_keeper_plan(&plan, &mut effects, &mut recorder).terminal {
+        KeeperPlanTerminal::Completed => {
+            drop(recorder);
+            print_core_promote_result(&access);
+            ExitCode::SUCCESS
+        }
+        KeeperPlanTerminal::Failed(failure) => {
+            eprintln!(
+                "ployz-keeper core-promote failed: {}",
+                failure_summary(&failure)
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Read the promotion inputs from this machine's own state: the CA + wrapped
+/// recovery key from join material (decrypted with `PLOYZ_RECOVERY_SECRET`), and
+/// this machine's public IP + the fleet's machine publics from the local mirror.
+fn resolve_core_promote_target(
+    nats_server_artifact: ArtifactTarget,
+    ployzd_artifact: ArtifactTarget,
+) -> Result<(CorePromoteTarget, PromotedCoreAccess), String> {
+    let join_dir = PathBuf::from(KEEPER_STATE_DIR).join(JOIN_MATERIAL_DIR);
+    let machine_id = parse_machine_id_from_join_material(&read_promote_file(
+        &join_dir.join(JOIN_MATERIAL_FILE),
+    )?)
+    .ok_or("join material carries no machine id — is this a joined machine?")?;
+    let ca = ployz_core::nats_config::NatsCaCertificatePem::try_new(read_promote_file(
+        &join_dir.join(JOIN_TRUSTED_CA_FILE),
+    )?)
+    .map_err(|error| format!("invalid trusted CA in join material: {error}"))?;
+    let wrapped = std::fs::read(join_dir.join(JOIN_RECOVERY_KEY_FILE)).map_err(|error| {
+        format!("cannot read the wrapped CA key (was this machine joined with recovery material?): {error}")
+    })?;
+    let secret = read_recovery_secret()?;
+    let ca_key_pem = String::from_utf8(
+        ployz_keeper::recovery_secret::unwrap(&secret, &wrapped).map_err(|error| {
+            format!("cannot decrypt the CA key (wrong recovery secret?): {error}")
+        })?,
+    )
+    .map_err(|_| "decrypted CA key is not valid UTF-8".to_owned())?;
+
+    // The machine persists its mirror beside its seed file; on a joined machine
+    // that seed lives in the join-material directory (nats.creds), so the mirror is
+    // there too — not the first-machine `/var/lib/ployz/nats` layout.
+    let mirror_path = join_dir.join("intent-mirror.json");
+    let snapshot: ployz_core::state::IntentSnapshot =
+        serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
+            format!(
+                "cannot parse intent mirror {}: {error}",
+                mirror_path.display()
+            )
+        })?;
+    // A promoted core must serve on a fleet-dialable address: without an advertised
+    // public endpoint the listener + cert would be loopback-only and every other
+    // machine's failover pool could never reach it. Require one.
+    let machine_public_ip = snapshot.public_endpoint_of(&machine_id).ok_or_else(|| {
+        "this machine has no advertised public endpoint in the mirror — the core \
+         never recorded its reachability, so it cannot be promoted to a core the \
+         fleet can dial"
+            .to_owned()
+    })?;
+    let machine_authorized_publics = snapshot.authorized_machine_publics();
+
+    let hostname = gethostname::gethostname().into_string().ok();
+    let sans = ployz_keeper::nats_identity::ServerCertificateSans::try_new(
+        Some(machine_public_ip),
+        hostname,
+    )
+    .map_err(|error| format!("{error}"))?;
+    let nats_identity = ployz_keeper::nats_identity::promoted_core_identity(ca, ca_key_pem, &sans)
+        .map_err(|error| format!("{error}"))?;
+
+    // The operator's existing ployzctl context authenticates with the old core's
+    // operator seed, which the promoted core no longer authorizes (its principals
+    // rotate on promotion). Capture the fresh operator credential + the new core's
+    // address so the caller can surface them for the operator to reconnect.
+    let access = PromotedCoreAccess {
+        operator_seed: nats_identity.operator.seed.secret().to_owned(),
+        ca_pem: nats_identity.ca.as_str().to_owned(),
+        nats_url: format!("tls://{}", SocketAddr::new(machine_public_ip, 4222)),
+    };
+
+    let target = CorePromoteTarget::assemble(
+        machine_id,
+        nats_server_artifact,
+        ployzd_artifact,
+        nats_identity,
+        ployz_core::install::WrappedCaKey::new(wrapped),
+        machine_authorized_publics,
+        Some(machine_public_ip),
+        mirror_path,
+    );
+    Ok((target, access))
+}
+
+/// What an operator needs to point their `ployzctl` context at a freshly promoted
+/// core: the rotated operator seed and the new core's TLS address (the CA is
+/// unchanged, but printed so a fresh context can be built from this block alone).
+struct PromotedCoreAccess {
+    operator_seed: String,
+    ca_pem: String,
+    nats_url: String,
+}
+
+fn print_core_promote_result(access: &PromotedCoreAccess) {
+    let result = serde_json::json!({
+        "nats_url": access.nats_url,
+        "operator_seed": access.operator_seed.trim(),
+        "ca_pem": access.ca_pem,
+    });
+    println!("{CORE_PROMOTE_RESULT_BEGIN}");
+    println!(
+        "{}",
+        serde_json::to_string(&result).expect("core-promote result json serializes")
+    );
+    println!("{CORE_PROMOTE_RESULT_END}");
+}
+
+fn read_promote_file(path: &std::path::Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+/// The cluster recovery secret: `PLOYZ_RECOVERY_SECRET` when set (automation and
+/// Cloud SSH forced commands), otherwise prompted (hidden) from an interactive
+/// terminal. Never on argv or in shell history either way.
+fn read_recovery_secret() -> Result<String, String> {
+    if let Some(secret) = std::env::var("PLOYZ_RECOVERY_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(secret);
+    }
+    if std::io::stdin().is_terminal() {
+        rpassword::prompt_password("Cluster recovery secret: ")
+            .map_err(|error| format!("failed to read recovery secret: {error}"))
+    } else {
+        Err("set PLOYZ_RECOVERY_SECRET, or run interactively to be prompted for it".to_owned())
+    }
 }
 
 fn failure_summary(failure: &KeeperPlanFailure) -> &str {
@@ -932,6 +1152,7 @@ mod tests {
                     )
                     .expect("valid ca pem"),
                 },
+                recovery_key_wrapped: None,
                 ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
                 ebpf_bytecode: join_artifact(
                     "/tmp/ployz-ebpf-tc",
