@@ -8,18 +8,18 @@
 //! `core-promote` is safe.
 
 use crate::core_store::{CoreStore, CoreStoreError};
-use crate::intent::machine_roster::MachineRosterStore;
-use crate::intent::namespace_intent::NamespaceIntentStore;
+use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
+use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
 use ployz_core::state::IntentSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SeedCoreError {
     #[error("seeding machine roster: {0}")]
-    Roster(String),
+    Roster(#[from] MachineRosterStoreError),
     #[error("seeding namespace intent: {0}")]
-    Namespace(String),
+    Namespace(#[from] NamespaceIntentStoreError),
     #[error("seeding control-plane epoch: {0}")]
-    Epoch(CoreStoreError),
+    Epoch(#[from] CoreStoreError),
 }
 
 /// Replay `snapshot` into `core_store` and bump the epoch past the succeeded core.
@@ -31,35 +31,22 @@ pub async fn seed_core_from_snapshot(
     let namespace = NamespaceIntentStore::new(core_store.clone());
 
     for machine in &snapshot.active_machines {
-        roster
-            .replace_active_machine(machine)
-            .await
-            .map_err(|error| SeedCoreError::Roster(error.to_string()))?;
+        roster.replace_active_machine(machine).await?;
     }
     for binding in &snapshot.route_bindings {
-        namespace
-            .replace_route_binding(binding.clone())
-            .await
-            .map_err(|error| SeedCoreError::Namespace(error.to_string()))?;
+        namespace.replace_route_binding(binding.clone()).await?;
     }
     for entry in &snapshot.serving_target_entries {
         namespace
             .replace_serving_target_entry(entry.clone())
-            .await
-            .map_err(|error| SeedCoreError::Namespace(error.to_string()))?;
+            .await?;
     }
 
-    // Fence the succeeded core: advertise strictly above both the mirror's epoch
-    // and any epoch this machine already held (a re-promotion).
-    let existing = core_store
-        .control_plane_epoch()
-        .await
-        .map_err(SeedCoreError::Epoch)?;
-    let bumped = snapshot.epoch.max(existing).next();
+    // Fence the succeeded core in one atomic step (strictly above the mirror's
+    // epoch and any epoch this machine already held, e.g. a re-promotion).
     core_store
-        .set_control_plane_epoch(bumped)
-        .await
-        .map_err(SeedCoreError::Epoch)?;
+        .fence_control_plane_epoch_above(snapshot.epoch)
+        .await?;
     Ok(())
 }
 

@@ -196,19 +196,31 @@ impl CoreStore {
         .await
     }
 
-    /// Overwrite the control-plane epoch. Promotion sets it to a strictly higher
-    /// value than the core it succeeds, which is what fences the old core.
-    pub async fn set_control_plane_epoch(
+    /// Atomically raise the control-plane epoch above both `mirror` and this
+    /// store's current value, returning the new epoch. Promotion fences the core
+    /// it succeeds with this — the read-max-bump-write happens in one transaction,
+    /// so there is no interleaving window, and re-running only ever advances.
+    pub async fn fence_control_plane_epoch_above(
         &self,
-        epoch: ControlPlaneEpoch,
-    ) -> Result<(), CoreStoreError> {
+        mirror: ControlPlaneEpoch,
+    ) -> Result<ControlPlaneEpoch, CoreStoreError> {
         self.call(move |conn| {
+            let existing: Option<String> = conn
+                .query_row("SELECT json FROM control_plane WHERE id = 0", [], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            let current = match existing {
+                Some(json) => from_json(&json)?,
+                None => ControlPlaneEpoch::initial(),
+            };
+            let bumped = mirror.max(current).next();
             conn.execute(
                 "INSERT INTO control_plane (id, json) VALUES (0, ?1)
                  ON CONFLICT(id) DO UPDATE SET json = excluded.json",
-                [to_json(&epoch)?],
+                [to_json(&bumped)?],
             )?;
-            Ok(())
+            Ok(bumped)
         })
         .await
     }

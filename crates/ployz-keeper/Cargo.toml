@@ -17,6 +17,7 @@ gethostname = "1"
 ployz-core.workspace = true
 rand = "0.8"
 rcgen = "0.14"
+zeroize = "1"
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 serde.workspace = true

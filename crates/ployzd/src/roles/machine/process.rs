@@ -185,6 +185,14 @@ fn start_intent_mirror(
 ) -> RunningTask {
     let (shutdown, mut shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
+        // Boot-seed the failover pool from the last snapshot on disk, so a machine
+        // that reboots *during* a core outage can fail over immediately from its
+        // cached roster rather than waiting for a live drumbeat it may never get.
+        if let Some(snapshot) = mirror.load() {
+            let _ = client
+                .set_server_pool(candidate_server_pool(&snapshot, &seed))
+                .await;
+        }
         loop {
             let mut changed = match client.subscribe(INTENT_CHANGED).await {
                 Ok(subscription) => subscription,
