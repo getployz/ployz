@@ -5,10 +5,10 @@
 //! lives in exactly one place, read straight from the roster with no separate
 //! overlay.
 
-use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
+use crate::core_store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 
 #[derive(Debug, Clone)]
 pub struct MachineRosterStore {
@@ -79,14 +79,11 @@ fn get_machine(
     conn: &Connection,
     machine_id: &MachineId,
 ) -> Result<Option<ActiveMachineState>, rusqlite::Error> {
-    conn.query_row(
+    query_json(
+        conn,
         "SELECT json FROM machines WHERE machine_id = ?1",
-        [machine_id.as_str()],
-        |row| row.get::<_, String>(0),
+        machine_id.as_str(),
     )
-    .optional()?
-    .map(|json| from_json(&json))
-    .transpose()
 }
 
 fn put_machine(conn: &Connection, state: &ActiveMachineState) -> Result<(), rusqlite::Error> {
