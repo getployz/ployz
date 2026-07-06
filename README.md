@@ -1,5 +1,6 @@
 <div align="center">
-  <h1>Ployz</h1>
+  <img src="assets/logo-wordmark.svg#gh-light-mode-only" alt="Ployz" height="72"/>
+  <img src="assets/logo-wordmark-dark.svg#gh-dark-mode-only" alt="Ployz" height="72"/>
   <p><strong>Run a small cluster through explicit operations — every change owned, watchable, and safe to retry.</strong></p>
 </div>
 
@@ -68,12 +69,6 @@ whether that's on a $5 VPS, a spare Mac mini, or a rack of bare metal.
    curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap
    ```
 
-   Or drive it from your workstation over SSH:
-
-   ```bash
-   ployzctl machine init root@your-server-ip
-   ```
-
 2. **Add more machines** to the cluster whenever you need them:
 
    ```bash
@@ -134,12 +129,5 @@ runtime truth.
 ## Project status
 
 Ployz is pre-1.0 and under active development, so expect breaking changes between releases. Bootstrap resolves the
-`alpha` channel to an exact GitHub release, verifies its SHA-256, and installs only `ployz-keeper`; pin an exact
-version when reproducibility matters:
-
-```bash
-curl -fsSL https://ployz.sh | sh -s -- --version v0.0.1-alpha.1 && sudo ployz-keeper bootstrap
-```
-
-Ployz does not use GitHub `latest`. Release publishing and channel promotion are documented in
-[`docs/operations/release.md`](docs/operations/release.md).
+`alpha` channel to an exact, SHA-256-verified GitHub release and installs only `ployz-keeper`. Ployz never tracks
+GitHub `latest`.
