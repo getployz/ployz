@@ -252,6 +252,18 @@ async fn seed_core_from_mirror(
     core_store: &CoreStore,
     mirror_path: &Path,
 ) -> Result<(), ControlProcessError> {
+    // Once the store has been promoted it is authoritative; skip the mirror entirely
+    // so a later restart neither re-reads it nor bricks on a since-deleted mirror.
+    // Only a fresh store needs seeding (seed_core_from_snapshot's own guard would
+    // no-op an already-seeded store, but only *after* a load the mirror must survive).
+    if core_store
+        .control_plane_epoch_if_present()
+        .await
+        .map_err(|error| ControlProcessError::SeedCore(SeedCoreError::Epoch(error)))?
+        .is_some()
+    {
+        return Ok(());
+    }
     let snapshot = MachineIntentMirror::new(mirror_path.to_path_buf())
         .load()
         .ok_or_else(|| ControlProcessError::SeedMirrorMissing(mirror_path.to_path_buf()))?;

@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -66,6 +67,8 @@ const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
 const SUBSTRATE_VERSION_FILE: &str = "substrate-version.json";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
+const CORE_PROMOTE_RESULT_BEGIN: &str = "ployz-core-promote-result begin";
+const CORE_PROMOTE_RESULT_END: &str = "ployz-core-promote-result end";
 const CLOUD_BOOTSTRAP_MAX_POLLS: u16 = 900;
 
 fn main() -> ExitCode {
@@ -528,8 +531,9 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
         }
     };
 
-    let target = match resolve_core_promote_target(nats_server_artifact, ployzd_artifact) {
-        Ok(target) => target,
+    let (target, access) = match resolve_core_promote_target(nats_server_artifact, ployzd_artifact)
+    {
+        Ok(resolved) => resolved,
         Err(message) => {
             eprintln!("ployz-keeper core-promote: {message}");
             return ExitCode::FAILURE;
@@ -547,7 +551,11 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
         SystemKeeperCommandRunner::default(),
     );
     match execute_keeper_plan(&plan, &mut effects, &mut recorder).terminal {
-        KeeperPlanTerminal::Completed => ExitCode::SUCCESS,
+        KeeperPlanTerminal::Completed => {
+            drop(recorder);
+            print_core_promote_result(&access);
+            ExitCode::SUCCESS
+        }
         KeeperPlanTerminal::Failed(failure) => {
             eprintln!(
                 "ployz-keeper core-promote failed: {}",
@@ -564,7 +572,7 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
 fn resolve_core_promote_target(
     nats_server_artifact: ArtifactTarget,
     ployzd_artifact: ArtifactTarget,
-) -> Result<CorePromoteTarget, String> {
+) -> Result<(CorePromoteTarget, PromotedCoreAccess), String> {
     let join_dir = PathBuf::from(KEEPER_STATE_DIR).join(JOIN_MATERIAL_DIR);
     let machine_id = parse_machine_id_from_join_material(&read_promote_file(
         &join_dir.join(JOIN_MATERIAL_FILE),
@@ -616,7 +624,17 @@ fn resolve_core_promote_target(
     let nats_identity = ployz_keeper::nats_identity::promoted_core_identity(ca, ca_key_pem, &sans)
         .map_err(|error| format!("{error}"))?;
 
-    Ok(CorePromoteTarget::assemble(
+    // The operator's existing ployzctl context authenticates with the old core's
+    // operator seed, which the promoted core no longer authorizes (its principals
+    // rotate on promotion). Capture the fresh operator credential + the new core's
+    // address so the caller can surface them for the operator to reconnect.
+    let access = PromotedCoreAccess {
+        operator_seed: nats_identity.operator.seed.secret().to_owned(),
+        ca_pem: nats_identity.ca.as_str().to_owned(),
+        nats_url: format!("tls://{}", SocketAddr::new(machine_public_ip, 4222)),
+    };
+
+    let target = CorePromoteTarget::assemble(
         machine_id,
         nats_server_artifact,
         ployzd_artifact,
@@ -625,7 +643,31 @@ fn resolve_core_promote_target(
         machine_authorized_publics,
         Some(machine_public_ip),
         mirror_path,
-    ))
+    );
+    Ok((target, access))
+}
+
+/// What an operator needs to point their `ployzctl` context at a freshly promoted
+/// core: the rotated operator seed and the new core's TLS address (the CA is
+/// unchanged, but printed so a fresh context can be built from this block alone).
+struct PromotedCoreAccess {
+    operator_seed: String,
+    ca_pem: String,
+    nats_url: String,
+}
+
+fn print_core_promote_result(access: &PromotedCoreAccess) {
+    let result = serde_json::json!({
+        "nats_url": access.nats_url,
+        "operator_seed": access.operator_seed.trim(),
+        "ca_pem": access.ca_pem,
+    });
+    println!("{CORE_PROMOTE_RESULT_BEGIN}");
+    println!(
+        "{}",
+        serde_json::to_string(&result).expect("core-promote result json serializes")
+    );
+    println!("{CORE_PROMOTE_RESULT_END}");
 }
 
 fn read_promote_file(path: &std::path::Path) -> Result<String, String> {
