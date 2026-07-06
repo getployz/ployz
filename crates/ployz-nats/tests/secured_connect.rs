@@ -60,10 +60,12 @@ async fn wrong_seed_is_rejected() {
 #[tokio::test]
 async fn extra_cloud_user_public_key_can_connect_as_user() {
     let cloud_user = MintedNatsUser::generate().expect("cloud nkey mints");
-    let fixture =
-        SecuredTestNats::start_with_machines_and_extra_users(&[], &[cloud_user.public.clone()])
-            .await
-            .expect("secured fixture");
+    let fixture = SecuredTestNats::start_with_machines_and_extra_users(
+        &[],
+        std::slice::from_ref(&cloud_user.public),
+    )
+    .await
+    .expect("secured fixture");
 
     let client = connect_authenticated(
         &fixture.config_with_seed(NatsPrincipal::User, cloud_user.seed),
@@ -440,9 +442,7 @@ async fn assert_no_permission_violation(
 ) {
     let observed = tokio::time::timeout(NO_DELIVERY_WINDOW, async {
         loop {
-            let Some(event) = events.recv().await else {
-                return None;
-            };
+            let event = events.recv().await?;
             if let async_nats::Event::ServerError(async_nats::ServerError::Other(message)) = event
                 && message
                     .to_ascii_lowercase()

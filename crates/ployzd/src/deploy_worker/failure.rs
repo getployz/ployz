@@ -418,7 +418,7 @@ pub enum MachineContainerRuntimeError {
         machine_id: MachineId,
         container_id: ContainerId,
         expected: ManagedContainerIdentity,
-        actual: ManagedContainerIdentity,
+        actual: Box<ManagedContainerIdentity>,
     },
     OperationStepAmbiguous {
         machine_id: MachineId,

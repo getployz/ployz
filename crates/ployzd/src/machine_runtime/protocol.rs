@@ -131,7 +131,7 @@ pub enum MachineContainerRunDomainError {
     OperationStepConflict {
         container_id: ContainerId,
         expected: ManagedContainerIdentity,
-        actual: ManagedContainerIdentity,
+        actual: Box<ManagedContainerIdentity>,
     },
     OperationStepAmbiguous {
         operation_id: OperationId,

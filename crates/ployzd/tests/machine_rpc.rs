@@ -146,10 +146,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
     let conflict = MachineContainerRunDomainError::OperationStepConflict {
         container_id: container_id("ctr_existing"),
         expected: managed_identity(),
-        actual: ManagedContainerIdentity {
+        actual: Box::new(ManagedContainerIdentity {
             namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
             ..managed_identity()
-        },
+        }),
     };
     let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
         let conflict = conflict.clone();
@@ -171,10 +171,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_existing"),
             expected: managed_identity(),
-            actual: ManagedContainerIdentity {
+            actual: Box::new(ManagedContainerIdentity {
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
                 ..managed_identity()
-            },
+            }),
         }
     );
 }

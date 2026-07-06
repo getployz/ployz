@@ -377,7 +377,7 @@ async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_conflict"),
             expected: managed_identity(),
-            actual: conflicting_labels,
+            actual: Box::new(conflicting_labels),
         }
     );
     assert_eq!(service.health().domain_failures, 1);

@@ -46,7 +46,11 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
 
     assert_eq!(intent.active_machines.len(), 1);
     assert_eq!(
-        intent.active_machines[0].machine_id,
+        intent
+            .active_machines
+            .first()
+            .expect("one active machine")
+            .machine_id,
         machine_id("machine_a")
     );
 }
@@ -104,7 +108,11 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
         .expect("intent reads");
 
     assert_eq!(
-        intent.active_machines[0].lifecycle,
+        intent
+            .active_machines
+            .first()
+            .expect("one active machine")
+            .lifecycle,
         MachineLifecycle::Draining
     );
 }

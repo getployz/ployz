@@ -295,8 +295,8 @@ impl OperationRepository {
                             roles,
                             join_bundle: submission.join_bundle,
                             secret_delivery,
-                            joined_at: joined_at.clone(),
-                            last_event_sequence: last_event_sequence.clone(),
+                            joined_at: *joined_at,
+                            last_event_sequence: *last_event_sequence,
                         };
                         if already_satisfied {
                             Ok(MachineJoinRedemption::AlreadyJoined(joined))
