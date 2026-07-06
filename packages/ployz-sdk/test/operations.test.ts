@@ -925,7 +925,7 @@ function defaultFixture(): OperationFixture {
       instances: [],
       projection_sources: {
         intent: { read_at_unix_seconds: 1 },
-        observations: { read_at_unix_seconds: 1 },
+        facts: { read_at_unix_seconds: 1 },
         revisions: { status: "complete", source_count: 1, missing_link_count: 0 },
         releases: { status: "complete", source_count: 1, missing_link_count: 0 },
         instances: { status: "complete", source_count: 0, missing_link_count: 0 },

@@ -10,7 +10,7 @@
     "generate:types": "cargo run -p ployz-sdk-types --bin export-typescript > src/generated.ts",
     "generate:fixture": "cargo run -p ployz-sdk-types --bin export-operation-contract > test/fixtures/operation-contract.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
