@@ -763,10 +763,10 @@ fn cloud_joiner_failed_terminal_callback(
     failure: &KeeperPlanFailure,
     installed_success_callback: Option<CloudBootstrapCallbackRequest>,
 ) -> CloudBootstrapCallbackRequest {
-    if is_join_report_failure(failure) {
-        if let Some(callback) = installed_success_callback {
-            return callback;
-        }
+    if is_join_report_failure(failure)
+        && let Some(callback) = installed_success_callback
+    {
+        return callback;
     }
     failed_callback(
         envelope,
