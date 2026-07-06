@@ -9,7 +9,8 @@ use crate::install::InstallArtifactVersion;
 
 use super::events::{OperationEvent, OperationSubjectRef};
 use super::projection::{
-    OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
+    OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
+    verify_subject,
 };
 use super::text::{CancellationReason, FailureMessage};
 use super::{EventSequence, OperationKind, OperationStatus};
@@ -193,33 +194,21 @@ pub(super) fn project_state(
     attempted: MachineUpdateOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if state == &attempted {
-        return Ok(OperationProjection::AlreadySatisfied);
-    }
-    if state.is_terminal() {
-        return Err(StatusProjectionError::TerminalState {
-            operation_id: id.clone(),
-            current: Box::new(ProjectionOperationState::MachineUpdate(state.clone())),
-            attempted: Box::new(ProjectionOperationState::MachineUpdate(attempted)),
-        });
-    }
-    if !transition_allowed(state, &attempted) {
-        return Err(StatusProjectionError::InvalidTransition {
-            operation_id: id.clone(),
-            current: Box::new(ProjectionOperationState::MachineUpdate(state.clone())),
-            attempted: Box::new(ProjectionOperationState::MachineUpdate(attempted)),
-        });
-    }
-
-    Ok(OperationProjection::StatusChanged {
-        status: Box::new(OperationStatus::MachineUpdate {
+    project_transition(
+        id,
+        state,
+        attempted,
+        MachineUpdateOperationState::is_terminal,
+        transition_allowed,
+        ProjectionOperationState::MachineUpdate,
+        |state| OperationStatus::MachineUpdate {
             id: id.clone(),
             machine_id: machine_id.clone(),
             target_version: target_version.clone(),
-            state: attempted,
+            state,
             last_event_sequence: event_sequence,
-        }),
-    })
+        },
+    )
 }
 
 fn transition_allowed(

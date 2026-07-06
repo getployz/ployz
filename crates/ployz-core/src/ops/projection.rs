@@ -154,6 +154,43 @@ pub(super) fn verify_subject<Subject: Clone + PartialEq>(
     })
 }
 
+/// The transition skeleton every kind shares: an idempotent re-record is
+/// `AlreadySatisfied`, a transition out of a terminal state or across a
+/// disallowed edge is a typed error, and an allowed edge advances the status.
+/// A kind supplies only its terminal check, its adjacency table, the wrapper
+/// that boxes its state into `ProjectionOperationState`, and the status it
+/// becomes — everything else lives here once.
+pub(super) fn project_transition<S: Clone + PartialEq>(
+    operation_id: &OperationId,
+    current: &S,
+    attempted: S,
+    is_terminal: impl Fn(&S) -> bool,
+    allowed: impl Fn(&S, &S) -> bool,
+    wrap: impl Fn(S) -> ProjectionOperationState,
+    build_status: impl FnOnce(S) -> OperationStatus,
+) -> Result<OperationProjection, StatusProjectionError> {
+    if current == &attempted {
+        return Ok(OperationProjection::AlreadySatisfied);
+    }
+    if is_terminal(current) {
+        return Err(StatusProjectionError::TerminalState {
+            operation_id: operation_id.clone(),
+            current: Box::new(wrap(current.clone())),
+            attempted: Box::new(wrap(attempted)),
+        });
+    }
+    if !allowed(current, &attempted) {
+        return Err(StatusProjectionError::InvalidTransition {
+            operation_id: operation_id.clone(),
+            current: Box::new(wrap(current.clone())),
+            attempted: Box::new(wrap(attempted)),
+        });
+    }
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(build_status(attempted)),
+    })
+}
+
 pub fn project_operation_event(
     current: &OperationStatus,
     event: OperationEvent,
