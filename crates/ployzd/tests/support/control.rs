@@ -81,13 +81,9 @@ impl TestNats {
             machine_id("core_1"),
             self.server().controller_config(),
         )
-        .with_operation_evidence_dir(self.work_dir.path().join("operations"))
         .with_core_db_path(self.work_dir.path().join("ployz-core.db"))
         .with_nats_authorization(ControlNatsAuthorizationConfig {
             authorized_users_file: self.server().authorized_users_path().to_path_buf(),
-            machine_roster_file: self.work_dir.path().join("machine-roster.json"),
-            machine_lifecycles_file: self.work_dir.path().join("machine-lifecycles.json"),
-            namespace_intent_file: self.work_dir.path().join("namespace-intent.json"),
             machine_seed_file: self.work_dir.path().join("machine.seed"),
         })
     }
