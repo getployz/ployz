@@ -22,7 +22,7 @@ use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningN
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -31,6 +31,10 @@ const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
+/// Minimum spacing between forced reconnects when a machine detects it is pinned
+/// to a lower-epoch (healed old) core — enough to rotate onto a higher-epoch
+/// candidate without a reconnect storm.
+const EPOCH_ENFORCE_INTERVAL: Duration = Duration::from_secs(5);
 /// The port a promoted core's `nats-server` listens on (keeper's
 /// `DEFAULT_NATS_PORT`), used to build failover candidate URLs.
 const CORE_NATS_PORT: u16 = 4222;
@@ -194,6 +198,11 @@ fn start_intent_mirror(
 ) -> RunningTask {
     let (shutdown, mut shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
+        // Allow the first stale-connection detection to enforce immediately, then
+        // rate-limit to avoid a reconnect storm.
+        let mut last_enforced = Instant::now()
+            .checked_sub(EPOCH_ENFORCE_INTERVAL)
+            .unwrap_or_else(Instant::now);
         loop {
             let mut changed = match client.subscribe(INTENT_CHANGED).await {
                 Ok(subscription) => subscription,
@@ -218,16 +227,30 @@ fn start_intent_mirror(
                         if let Ok(snapshot) =
                             serde_json::from_slice::<IntentSnapshot>(&message.payload)
                         {
-                            // Only refresh the pool from intent the mirror *accepted*
-                            // (Ok(true)): a healed old core's lower-epoch snapshot is
-                            // refused by the store's epoch gate, and must not drop the
-                            // promoted-core candidates from the live pool. Updates the
-                            // pool used on the *next* reconnect; never forces one, so
-                            // the live core connection stays undisturbed.
-                            if let Ok(true) = mirror.store(&snapshot) {
-                                let _ = client
-                                    .set_server_pool(candidate_server_pool(&snapshot, &seed))
-                                    .await;
+                            match mirror.store(&snapshot) {
+                                // Accepted (current or higher epoch): refresh the
+                                // failover pool with the configured core plus each
+                                // Reachable Machine. Updates the pool used on the
+                                // *next* reconnect; never forces one, so the live
+                                // core connection stays undisturbed.
+                                Ok(true) => {
+                                    let _ = client
+                                        .set_server_pool(candidate_server_pool(&snapshot, &seed))
+                                        .await;
+                                }
+                                // Rejected as stale: this drumbeat arrived on a
+                                // connection to a healed old core advertising a lower
+                                // epoch than one already seen. Rotate away onto a
+                                // higher-epoch candidate already in the pool, rate-
+                                // limited so a persistent stale core can't cause a
+                                // reconnect storm.
+                                Ok(false) => {
+                                    if last_enforced.elapsed() >= EPOCH_ENFORCE_INTERVAL {
+                                        last_enforced = Instant::now();
+                                        let _ = client.force_reconnect().await;
+                                    }
+                                }
+                                Err(_) => {}
                             }
                         }
                     }
