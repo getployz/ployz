@@ -4,15 +4,15 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_test_support::ids::{machine_id, operation_id};
+use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
+use ployzd::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
-use ployzd::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
-use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
-use ployzd::docker::runner::DockerManagedContainerRunner;
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
-use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
-use ployzd::machine_runtime::runner::MachineContainerRunner;
-use ployzd::machine_runtime::service::MachinePloyzNativeMeshPreparer;
-use ployzd::machine_runtime::service::start_machine_runtime_service;
+use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
+use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;
+use ployzd::roles::machine::runner::MachineContainerRunner;
+use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
+use ployzd::roles::machine::service::start_machine_role_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -111,7 +111,7 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
             DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
         ))
         .with_command_timeout(Duration::from_secs(20));
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id.clone(),
         runner.clone(),
@@ -330,7 +330,6 @@ struct TestNats {
 async fn test_nats() -> TestNats {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("core_1")]).await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_client = nats.machine_client(&machine_id("core_1")).await;
 

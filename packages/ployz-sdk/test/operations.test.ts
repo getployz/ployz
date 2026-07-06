@@ -653,8 +653,13 @@ test("sdk helpers enforce public primitive boundaries", () => {
   assert.equal(eventSequence(12n), "12");
   assert.throws(() => eventSequence(Number.MAX_SAFE_INTEGER + 1));
   assert.throws(() => eventSequence("18446744073709551616"));
-  assert.equal(certBundleRef("obj://PLZ_CERTS/cert_api/rev_1"), "obj://PLZ_CERTS/cert_api/rev_1");
-  assert.throws(() => certBundleRef("obj://PLZ_CERTS//rev_1"));
+  assert.equal(
+    certBundleRef(
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem",
+    ),
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem",
+  );
+  assert.throws(() => certBundleRef("obj://PLZ_CERTS/cert_api/rev_1"));
   assert.equal(machineBootstrapUrl("https://get.ployz.sh"), "https://get.ployz.sh");
   assert.throws(() => machineBootstrapUrl("http://get.ployz.sh"));
   assert.equal(machineJoinToken("join_once_123"), "join_once_123");
@@ -920,7 +925,7 @@ function defaultFixture(): OperationFixture {
       instances: [],
       projection_sources: {
         intent: { read_at_unix_seconds: 1 },
-        observations: { read_at_unix_seconds: 1 },
+        facts: { read_at_unix_seconds: 1 },
         revisions: { status: "complete", source_count: 1, missing_link_count: 0 },
         releases: { status: "complete", source_count: 1, missing_link_count: 0 },
         instances: { status: "complete", source_count: 0, missing_link_count: 0 },

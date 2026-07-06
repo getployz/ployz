@@ -1,14 +1,14 @@
-//! Read-only query runtimes behind the operation API: machine, service,
+//! Read-only query services behind the operation API: machine, service,
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
-use crate::controllers::OperationControllers;
-use crate::intent::NatsIntentReader;
-use crate::machine_runtime::client::{
-    MachineLogsTailRuntimeError, NatsMachineFactsReader, NatsMachineLogsTailer,
+use crate::fact_cache::FactCache;
+use crate::intent::service::NatsIntentReader;
+use crate::operation_api::admission::OperationControllers;
+use crate::roles::machine::client::{
+    MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
-use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
-use crate::runtime_facts::RuntimeFactsCache;
+use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
@@ -32,36 +32,36 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::error_map::ops_watch_error_from_replay_error;
 
 #[derive(Clone)]
-pub struct MachineQueryRuntime {
+pub struct MachineQueryService {
     intent_reader: NatsIntentReader,
-    facts: RuntimeFactsCache,
+    facts: FactCache,
     facts_reader: NatsMachineFactsReader,
 }
 
 #[derive(Clone)]
-pub struct ServiceQueryRuntime {
+pub struct ServiceQueryService {
     intent_reader: NatsIntentReader,
 }
 
 #[derive(Clone)]
-pub struct LogsQueryRuntime {
+pub struct LogsQueryService {
     intent_reader: NatsIntentReader,
     facts_reader: NatsMachineFactsReader,
     tailer: NatsMachineLogsTailer,
 }
 
 #[derive(Clone)]
-pub struct RuntimeSnapshotQueryRuntime {
+pub struct RuntimeSnapshotQueryService {
     intent_reader: NatsIntentReader,
-    facts: RuntimeFactsCache,
+    facts: FactCache,
     facts_reader: NatsMachineFactsReader,
 }
 
-impl RuntimeSnapshotQueryRuntime {
+impl RuntimeSnapshotQueryService {
     #[must_use]
     pub(crate) const fn new(
         intent_reader: NatsIntentReader,
-        facts: RuntimeFactsCache,
+        facts: FactCache,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
@@ -78,12 +78,12 @@ impl RuntimeSnapshotQueryRuntime {
                 message: error.to_string(),
             }
         })?;
-        let machine_query = MachineQueryRuntime::new(
+        let machine_query = MachineQueryService::new(
             self.intent_reader.clone(),
             self.facts.clone(),
             self.facts_reader.clone(),
         );
-        let service_query = ServiceQueryRuntime::new(self.intent_reader.clone());
+        let service_query = ServiceQueryService::new(self.intent_reader.clone());
         let machines = machine_query
             .list()
             .await
@@ -139,7 +139,7 @@ impl RuntimeSnapshotQueryRuntime {
     }
 }
 
-impl LogsQueryRuntime {
+impl LogsQueryService {
     #[must_use]
     pub(crate) fn new(
         intent_reader: NatsIntentReader,
@@ -251,7 +251,7 @@ impl LogsQueryRuntime {
     }
 }
 
-impl ServiceQueryRuntime {
+impl ServiceQueryService {
     #[must_use]
     pub(crate) const fn new(intent_reader: NatsIntentReader) -> Self {
         Self { intent_reader }
@@ -465,11 +465,11 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
-impl MachineQueryRuntime {
+impl MachineQueryService {
     #[must_use]
     pub(crate) fn new(
         intent_reader: NatsIntentReader,
-        facts: RuntimeFactsCache,
+        facts: FactCache,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {
@@ -579,12 +579,12 @@ impl MachineQueryRuntime {
     }
 }
 
-fn logs_tail_machine_error(error: MachineLogsTailRuntimeError) -> LogsTailError {
+fn logs_tail_machine_error(error: MachineLogsTailError) -> LogsTailError {
     match error {
-        MachineLogsTailRuntimeError::NotFound { container_id, .. } => {
+        MachineLogsTailError::NotFound { container_id, .. } => {
             LogsTailError::NoSuchContainer { container_id }
         }
-        MachineLogsTailRuntimeError::ReadFailed {
+        MachineLogsTailError::ReadFailed {
             machine_id,
             container_id,
             message,
@@ -593,12 +593,10 @@ fn logs_tail_machine_error(error: MachineLogsTailRuntimeError) -> LogsTailError 
             container_id,
             message,
         },
-        MachineLogsTailRuntimeError::Unavailable { machine_id, reason } => {
-            LogsTailError::Unavailable {
-                message: reason.failure_message().as_str().to_owned(),
-                machine_id: Some(machine_id),
-            }
-        }
+        MachineLogsTailError::Unavailable { machine_id, reason } => LogsTailError::Unavailable {
+            message: reason.failure_message().as_str().to_owned(),
+            machine_id: Some(machine_id),
+        },
     }
 }
 
@@ -613,13 +611,15 @@ pub async fn ops_status(
     controllers: &OperationControllers,
     operation_id: OperationId,
 ) -> Result<OperationStatusSnapshot, OpsStatusError> {
-    match controllers.operation_status_snapshot(&operation_id).await {
-        Ok(Some(snapshot)) => Ok(snapshot),
-        Ok(None) => Err(ops_status_missing(&operation_id)),
-        Err(error) => Err(OpsStatusError::Unavailable {
-            operation_id,
+    match controllers
+        .operation_status_snapshot(&operation_id)
+        .await
+        .map_err(|error| OpsStatusError::Unavailable {
+            operation_id: operation_id.clone(),
             message: error.to_string(),
-        }),
+        })? {
+        Some(snapshot) => Ok(snapshot),
+        None => Err(ops_status_missing(&operation_id)),
     }
 }
 

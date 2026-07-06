@@ -4,16 +4,15 @@ use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::dns::{
-    DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, project_dns,
+use ployzd::fact_cache::FactCache;
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::roles::dns::projection::{
+    DnsAnswer, DnsProjectionUpdate, DnsProjector, DnsRecordSet, DnsServingState, project_dns,
 };
-use ployzd::dns_source::load_dns_projection_update_from_nats;
-use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::runtime_facts::RuntimeFactsCache;
+use ployzd::roles::dns::source::load_dns_projection_update_from_nats;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
@@ -80,19 +79,9 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
 }
 
 #[tokio::test]
-async fn dns_source_reports_unreadable_intent_as_unavailable() {
-    let nats = test_nats().await;
-    std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
-
-    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
-
-    assert_eq!(update, DnsProjectionUpdate::SourceUnavailable);
-}
-
-#[tokio::test]
 async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let nats = test_nats().await;
-    let mut runtime = DnsRuntime::new();
+    let mut runtime = DnsProjector::new();
     let hostname = route_hostname("api.example.com");
 
     nats.namespace_intent
@@ -138,11 +127,10 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     intent_reader: NatsIntentReader,
-    facts: RuntimeFactsCache,
-    _intent: RunningIntentRuntime,
+    facts: FactCache,
+    _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
-    namespace_intent_file: PathBuf,
 }
 
 async fn test_nats() -> TestNats {
@@ -155,16 +143,21 @@ async fn test_nats() -> TestNats {
         machine_id("edge_4"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let machine_client = nats.machine_client(&dns_machine).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
-    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
-    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
-    let intent = start_intent_runtime(
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
+    let intent = start_intent_service(
         nats.controller.clone(),
-        MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json")),
+        MachineRosterStore::new(
+            ployzd::core_store::CoreStore::open_in_memory()
+                .await
+                .expect("open core store"),
+        ),
         namespace_intent.clone(),
-        lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await
@@ -174,11 +167,10 @@ async fn test_nats() -> TestNats {
         _nats: nats,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
-        facts: RuntimeFactsCache::default(),
+        facts: FactCache::default(),
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
-        namespace_intent_file,
     }
 }
 

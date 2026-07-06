@@ -2,15 +2,15 @@
 //! errors. Actionable states stay typed; storage and transport plumbing renders
 //! as evidence text.
 
-use crate::controllers::{MachineAddSubmitCommandError, SubmitCommandError};
-use ployz_core::ids::OperationId;
-use ployz_core::ops::{
-    EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
-};
-use ployz_nats::operations::{
+use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
+use crate::operations::log::{
     RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
+};
+use ployz_core::ids::OperationId;
+use ployz_core::ops::{
+    EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_sdk_types::{
     DeploySubmitError, MachineAddError, MachineJoinRedeemError, MachineJoinReportError,
@@ -49,16 +49,8 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
             namespace_id,
             owner,
         },
-        SubmitCommandError::NamespaceLock(source) => SubmitFailure::Unavailable {
-            message: source.to_string(),
-        },
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget
-        }
-        SubmitCommandError::Submit(SubmitOperationError::AppendEvent(source)) => {
-            SubmitFailure::Unavailable {
-                message: source.to_string(),
-            }
         }
         SubmitCommandError::Submit(SubmitOperationError::StoreStatus(source)) => {
             SubmitFailure::Unavailable {
@@ -235,11 +227,6 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
                 message: format!("clock: {message}"),
             }
         }
-        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => {
-            MachineJoinRedeemError::Unavailable {
-                message: source.to_string(),
-            }
-        }
         RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => {
             MachineJoinRedeemError::Unavailable {
                 message: source.to_string(),
@@ -282,10 +269,6 @@ pub(super) fn ops_watch_error_from_replay_error(
         ReplayOperationEventsError::MissingOperation { operation_id } => {
             OpsWatchError::NoSuchOperation { operation_id }
         }
-        ReplayOperationEventsError::LoadStatus(source) => OpsWatchError::Unavailable {
-            operation_id,
-            message: source.to_string(),
-        },
         ReplayOperationEventsError::ReadEvents(source) => OpsWatchError::Unavailable {
             operation_id,
             message: source.to_string(),
@@ -296,13 +279,13 @@ pub(super) fn ops_watch_error_from_replay_error(
 #[cfg(test)]
 mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
-    use crate::controllers::SubmitCommandError;
+    use crate::operation_api::admission::SubmitCommandError;
+    use crate::operations::log::{
+        OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
+        SubmitOperationError,
+    };
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
-    use ployz_nats::operations::{
-        OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
-        OperationStatusStoreError, ReplayOperationEventsError, SubmitOperationError,
-    };
     use ployz_sdk_types::{DeploySubmitError, OpsWatchError};
 
     #[test]
@@ -320,27 +303,28 @@ mod tests {
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                message: "operation status CAS conflict: contended".to_owned(),
+                message: "operation working-record conflict: contended".to_owned(),
             }
         );
     }
 
     #[test]
-    fn deploy_submit_renders_event_log_failure_to_message() {
+    fn deploy_submit_renders_store_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
             deploy_submit_error_from_submit_error(
                 operation_id.clone(),
-                SubmitCommandError::Submit(SubmitOperationError::AppendEvent(
-                    OperationEventLogError::PublishRequest {
-                        message: "publish unavailable".to_owned(),
+                SubmitCommandError::Submit(SubmitOperationError::StoreStatus(
+                    OperationStatusStoreError::Index {
+                        message: "core database query: disk I/O error".to_owned(),
                     },
                 )),
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                message: "publish operation event: publish unavailable".to_owned(),
+                message: "operation working records: core database query: disk I/O error"
+                    .to_owned(),
             }
         );
     }
@@ -401,31 +385,13 @@ mod tests {
     }
 
     #[test]
-    fn ops_watch_renders_status_store_failure_to_message() {
-        let operation_id = operation_id("op_123");
-
-        assert_eq!(
-            ops_watch_error_from_replay_error(
-                operation_id.clone(),
-                ReplayOperationEventsError::LoadStatus(OperationStatusReadError::GetStatus {
-                    message: "kv unavailable".to_owned(),
-                }),
-            ),
-            OpsWatchError::Unavailable {
-                operation_id,
-                message: "get operation status: kv unavailable".to_owned(),
-            }
-        );
-    }
-
-    #[test]
     fn ops_watch_renders_event_log_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
             ops_watch_error_from_replay_error(
                 operation_id.clone(),
-                ReplayOperationEventsError::ReadEvents(OperationEventReplayReadError::ReadEvent {
+                ReplayOperationEventsError::ReadEvents(OperationEventLogError::ReadEvent {
                     message: "stream unavailable".to_owned(),
                 }),
             ),

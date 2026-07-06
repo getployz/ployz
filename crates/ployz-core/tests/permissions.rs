@@ -2,7 +2,6 @@ use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::CoreStateKeyFamily;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
     INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status,
@@ -41,7 +40,7 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
 }
 
 #[test]
-fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
+fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
     let profile = NatsPermissionProfile::render(NatsPrincipal::Controller);
 
     assert_eq!(
@@ -53,10 +52,6 @@ fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
             OPS_STREAM_SUBJECT.to_owned(),
             ployz_core::subjects::INTENT_GET.to_owned(),
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
-            "$JS.API.>".to_owned(),
-            "$JS.ACK.>".to_owned(),
-            "$KV.KV_CORE.namespace_locks.*".to_owned(),
-            "$KV.KV_OPS.>".to_owned(),
         ]
     );
     assert_eq!(
@@ -186,50 +181,4 @@ fn inbox_prefixes_are_distinct_per_principal() {
         }),
         "_INBOX_machine_machine_7"
     );
-}
-
-/// `*` matches exactly one token, `>` matches one or more trailing tokens —
-/// the NATS subject rules the server applies to these grants.
-fn subject_matches(pattern: &str, subject: &str) -> bool {
-    let mut pattern_tokens = pattern.split('.');
-    let mut subject_tokens = subject.split('.');
-    loop {
-        match (pattern_tokens.next(), subject_tokens.next()) {
-            (None, None) => return true,
-            (Some(">"), Some(_)) => return true,
-            (Some("*"), Some(_)) => {}
-            (Some(token), Some(subject_token)) if token == subject_token => {}
-            _ => return false,
-        }
-    }
-}
-
-#[test]
-fn every_state_key_family_pattern_spans_its_rendered_keys() {
-    use ployz_core::ids::NamespaceId;
-    use ployz_core::state::NamespaceLockStateKey;
-
-    // One sample key per family, produced by the REAL production
-    // constructor, matched against the family's own pattern. Driven by
-    // CoreStateKeyFamily::ALL and an exhaustive match, so a new family
-    // cannot compile without a sample and cannot ship unspanned.
-    fn sample_key(family: CoreStateKeyFamily) -> String {
-        let namespace = NamespaceId::try_new("team-a").expect("valid namespace id");
-        match family {
-            CoreStateKeyFamily::NamespaceLock => {
-                NamespaceLockStateKey::from_namespace_id(&namespace)
-                    .as_str()
-                    .to_owned()
-            }
-        }
-    }
-
-    for family in CoreStateKeyFamily::ALL {
-        let key = sample_key(family);
-        assert!(
-            subject_matches(&family.wildcard_pattern(), &key),
-            "key {key} escapes its family pattern {}",
-            family.wildcard_pattern()
-        );
-    }
 }

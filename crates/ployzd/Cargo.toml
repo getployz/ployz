@@ -9,13 +9,14 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "service"] }
+async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 clap.workspace = true
 futures-util.workspace = true
 ipnet = "2"
 async-trait = "0.1"
 pingora = { version = "0.8.1", features = ["lb", "proxy"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 ployz-core.workspace = true
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
 ployz-nats.workspace = true

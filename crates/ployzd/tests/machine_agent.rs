@@ -1,7 +1,7 @@
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, namespace_revision_entry_id, operation_id, step_id};
-use ployzd::machine_runtime::runner::{
+use ployzd::roles::machine::runner::{
     ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunConflict,
     MachineContainerRunDecision, decide_container_run,
 };

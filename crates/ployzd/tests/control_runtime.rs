@@ -5,8 +5,6 @@
 //! Machine-add credential minting has its own suite in
 //! `machine_add_mint.rs`; the shared fixture lives in `support::control`.
 
-use async_nats::jetstream;
-use async_nats::jetstream::stream::StorageType;
 use futures_util::StreamExt;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
@@ -39,17 +37,17 @@ use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
-use ployzd::controllers::MachineAddBootstrapConfig;
-use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::machine_runtime::protocol::{
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::operation_api::admission::MachineAddBootstrapConfig;
+use ployzd::roles::gateway::process::start_gateway_process_with_client;
+use ployzd::roles::machine::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcResponse,
 };
-use ployzd::machine_runtime::service::start_machine_runtime_service;
-use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::services::machine_runtime_service;
+use ployzd::roles::machine::service::start_machine_role_service;
+use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
@@ -82,28 +80,6 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 
     assert!(accepted.operation_id.as_str().starts_with("op_deploy_"));
     assert_eq!(accepted.start_sequence, event_sequence(1));
-    nats.connected
-        .jetstream
-        .get_key_value("KV_CORE")
-        .await
-        .expect("control runtime created KV_CORE");
-    nats.connected
-        .jetstream
-        .get_key_value("KV_OPS")
-        .await
-        .expect("control runtime created KV_OPS");
-    nats.connected
-        .jetstream
-        .get_stream("PLZ_OPS")
-        .await
-        .expect("control runtime created PLZ_OPS");
-    assert!(
-        nats.connected
-            .jetstream
-            .get_object_store("PLZ_BACKUPS")
-            .await
-            .is_err()
-    );
 
     runtime
         .shutdown()
@@ -115,12 +91,13 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 async fn control_runtime_does_not_mutate_machine_state_on_startup() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
-    let machine_roster = machine_roster(&config);
+    let machine_roster = machine_roster(&config).await;
     let runtime = nats.start_control(&config).await;
 
     assert!(
         machine_roster
             .active_machines()
+            .await
             .expect("active machines read")
             .is_empty()
     );
@@ -269,8 +246,11 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
 async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
-    let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
     let runtime = nats.start_control(&config).await;
     namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {
@@ -318,9 +298,12 @@ async fn control_runtime_serves_active_service_queries() {
 async fn control_runtime_serves_runtime_snapshot_projection() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats.control_config();
-    let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
-    let machine_roster = machine_roster(&config);
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
+    let machine_roster = machine_roster(&config).await;
     let runtime = nats.start_control(&config).await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     machine_roster
@@ -397,7 +380,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
 #[tokio::test]
 async fn control_runtime_refuses_machine_add_without_join_template() {
     let nats = TestNats::start().await;
-    let result = ployzd::control_runtime::start_control_runtime_with_client_and_reload(
+    let result = ployzd::roles::control::start_control_process_with_client_and_reload(
         nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
@@ -406,7 +389,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 
     assert!(matches!(
         result,
-        Err(ployzd::control_runtime::ControlRuntimeError::MissingMachineJoinTemplate)
+        Err(ployzd::roles::control::ControlProcessError::MissingMachineJoinTemplate)
     ));
 }
 
@@ -418,7 +401,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
-    let machine_roster = machine_roster(&config);
+    let machine_roster = machine_roster(&config).await;
     let runtime = nats.start_control(&config).await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     machine_roster
@@ -426,7 +409,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_runtime_service(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -460,11 +443,15 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         ),
         "expected deploy to complete, got {status:?}"
     );
-    let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
     assert_eq!(
         namespace_intent
             .load()
+            .await
             .expect("namespace intent reads")
             .serving_target_entries
             .into_iter()
@@ -529,7 +516,7 @@ async fn control_runtime_rejects_current_machine_update() {
 async fn control_runtime_records_machine_update_without_mutating_roster_intent() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats.control_config();
-    let machine_roster = machine_roster(&config);
+    let machine_roster = machine_roster(&config).await;
     let runtime = nats.start_control(&config).await;
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
@@ -566,6 +553,7 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
     assert_eq!(
         machine_roster
             .active_machine(&machine_id("machine_a"))
+            .await
             .expect("active machine reads")
             .expect("machine remains active"),
         active_machine("machine_a"),
@@ -591,7 +579,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
-    let machine_roster = machine_roster(&config);
+    let machine_roster = machine_roster(&config).await;
     let runtime = nats.start_control(&config).await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     machine_roster
@@ -599,7 +587,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_runtime_service(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -609,7 +597,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     .await
     .expect("machine runtime starts");
     let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
-    let gateway = start_gateway_process_runtime_with_client(
+    let gateway = start_gateway_process_with_client(
         gateway_client,
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -701,43 +689,6 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .expect("control runtime shuts down");
 }
 
-#[tokio::test]
-async fn control_runtime_refuses_bootstrap_resource_drift() {
-    let nats = TestNats::start().await;
-    nats.connected
-        .jetstream
-        .create_stream(jetstream::stream::Config {
-            name: "PLZ_OPS".to_owned(),
-            subjects: vec!["wrong.>".to_owned()],
-            storage: StorageType::File,
-            ..Default::default()
-        })
-        .await
-        .expect("create drifted PLZ_OPS stream");
-
-    let config = nats.control_config();
-    let error = match ployzd::control_runtime::start_control_runtime_with_client_and_reload(
-        nats.connected.controller.clone(),
-        &config,
-        nats.reload_runner(),
-    )
-    .await
-    {
-        Ok(runtime) => {
-            runtime.shutdown().await.expect("unexpected runtime stops");
-            panic!("control runtime should refuse drift");
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        ployzd::control_runtime::ControlRuntimeError::AssureBootstrap(
-            ployz_nats::bootstrap::BootstrapAssuranceError::RefuseResource { .. }
-        )
-    ));
-}
-
 fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image reference")
 }
@@ -746,8 +697,12 @@ fn replicas(value: u16) -> ReplicaCount {
     ReplicaCount::try_new(value).expect("valid replica count")
 }
 
-fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> MachineRosterStore {
-    MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone())
+async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> MachineRosterStore {
+    MachineRosterStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    )
 }
 
 fn active_machine(value: &str) -> ActiveMachineState {
@@ -819,7 +774,7 @@ async fn start_substrate_update_service(
     machine_id: &MachineId,
     reported_ployzd: InstallArtifactVersion,
 ) -> RunningNatsService {
-    let spec = machine_runtime_service(machine_id);
+    let spec = machine_role_service(machine_id);
     let update_endpoint = spec
         .endpoints
         .iter()

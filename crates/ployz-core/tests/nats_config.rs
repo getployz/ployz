@@ -11,8 +11,8 @@ use ployz_test_support::ids::machine_id;
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
 #[test]
-fn single_machine_nats_config_renders_loopback_tls_jetstream_and_include() {
-    let config = loopback_config(PathBuf::from("/var/lib/ployz/nats"));
+fn single_machine_nats_config_renders_loopback_tls_disabled_jetstream_and_include() {
+    let config = loopback_config();
 
     assert_eq!(config.client_host(), "127.0.0.1");
     assert_eq!(config.port(), 4222);
@@ -22,7 +22,7 @@ fn single_machine_nats_config_renders_loopback_tls_jetstream_and_include() {
          host: 127.0.0.1\n\
          port: 4222\n\
          tls {\n  cert_file: \"/var/lib/ployz/nats/server.crt\"\n  key_file: \"/var/lib/ployz/nats/server.key\"\n}\n\
-         jetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n\
+         jetstream: disabled\n\
          include \"authorized-users.conf\"\n"
     );
 }
@@ -31,7 +31,6 @@ fn single_machine_nats_config_renders_loopback_tls_jetstream_and_include() {
 fn external_listener_binds_all_interfaces_and_advertises_the_public_host() {
     let config = NatsServerConfig::single_machine(
         machine_id("core_1"),
-        PathBuf::from("/var/lib/ployz/nats"),
         NatsListener::External {
             advertise_host: NatsAdvertisedHost::try_new("203.0.113.10")
                 .expect("valid advertised host"),
@@ -60,39 +59,10 @@ fn advertised_host_accepts_hostname_ipv4_and_bracketed_ipv6_only() {
 }
 
 #[test]
-fn single_machine_nats_config_escapes_store_dir() {
-    let config = loopback_config(PathBuf::from("/var/lib/ployz/nats \"quoted\" \\ path"));
-
-    assert!(
-        config
-            .render()
-            .contains("store_dir: \"/var/lib/ployz/nats \\\"quoted\\\" \\\\ path\"")
-    );
-}
-
-#[test]
-fn single_machine_nats_config_requires_absolute_store_dir() {
-    assert_eq!(
-        NatsServerConfig::single_machine(
-            machine_id("core_1"),
-            PathBuf::from("relative/nats"),
-            NatsListener::Loopback,
-            tls_files(),
-            PathBuf::from("authorized-users.conf"),
-        ),
-        Err(NatsServerConfigError::InvalidPath {
-            field: "jetstream_store_dir",
-            value: PathBuf::from("relative/nats"),
-        })
-    );
-}
-
-#[test]
 fn single_machine_nats_config_requires_absolute_tls_paths() {
     assert_eq!(
         NatsServerConfig::single_machine(
             machine_id("core_1"),
-            PathBuf::from("/var/lib/ployz/nats"),
             NatsListener::Loopback,
             NatsServerTlsFiles {
                 cert_file: PathBuf::from("relative/server.crt"),
@@ -209,10 +179,9 @@ fn server_certificate_pem_requires_a_certificate_block() {
     assert_eq!(pem.as_str(), CA_PEM);
 }
 
-fn loopback_config(store_dir: PathBuf) -> NatsServerConfig {
+fn loopback_config() -> NatsServerConfig {
     NatsServerConfig::single_machine(
         machine_id("core_1"),
-        store_dir,
         NatsListener::Loopback,
         tls_files(),
         PathBuf::from("authorized-users.conf"),

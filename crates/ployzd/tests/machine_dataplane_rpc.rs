@@ -11,14 +11,14 @@ use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
-use ployzd::deploy_worker::DataplanePreparer;
-use ployzd::machine_runtime::client::NatsMachineDataplanePreparer;
-use ployzd::machine_runtime::protocol::{
+use ployzd::operations::deploy::DataplanePreparer;
+use ployzd::roles::machine::client::NatsMachineDataplanePreparer;
+use ployzd::roles::machine::protocol::{
     MachineDataplanePrepareRpcRequest, MachineDataplanePrepareRpcResponse, MachineFactsGetRpcOk,
     MachineFactsGetRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };
-use ployzd::services::machine_runtime_service;
+use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
@@ -402,7 +402,7 @@ async fn start_wireguard_ebpf_prepare_raw_service(
     machine_id: MachineId,
     handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()
@@ -547,7 +547,6 @@ async fn test_nats() -> TestNats {
         machine_id("machine_b"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_b = nats.machine_client(&machine_id("machine_b")).await;

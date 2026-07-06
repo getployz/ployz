@@ -148,14 +148,15 @@ pub enum CloudClientError {
 
 impl CloudClientError {
     fn from_ureq(error: ureq::Error) -> Self {
-        match error {
-            ureq::Error::StatusCode(status) => Self::Http {
-                status: Some(status),
+        if let ureq::Error::StatusCode(status) = &error {
+            Self::Http {
+                status: Some(*status),
                 message: error.to_string(),
-            },
-            error => Self::Request {
+            }
+        } else {
+            Self::Request {
                 message: error.to_string(),
-            },
+            }
         }
     }
 }

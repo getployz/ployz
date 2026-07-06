@@ -149,7 +149,6 @@ impl NatsServerConfigTarget {
             config_file_name,
             rendered_config: NatsServerConfig::single_machine(
                 machine_id,
-                material.state_dir().to_path_buf(),
                 listener,
                 NatsServerTlsFiles {
                     cert_file: material.server_cert_file(),

@@ -11,7 +11,7 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
-use ployzd::deploy_worker::{DeployExecutionFacts, prepare_deploy_execution_command};
+use ployzd::operations::deploy::{DeployExecutionFacts, prepare_deploy_execution_command};
 use std::time::Duration;
 
 #[tokio::test]
@@ -136,7 +136,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![omitted_container.clone()],
-        namespace_cleanup_candidates: ployzd::deploy_worker::namespace_cleanup_candidates(
+        namespace_cleanup_candidates: ployzd::operations::deploy::namespace_cleanup_candidates(
             &namespace_id("default"),
             &[omitted_container],
         ),

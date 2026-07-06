@@ -38,10 +38,10 @@ pub enum OperationSubject {
     MachineUpdate { machine_id: MachineId },
 }
 
-/// Persisted `PLZ_OPS` stream payload.
+/// Local operation evidence event and plain NATS progress payload.
 ///
 /// Changing this shape intentionally breaks operation replay/history unless
-/// paired with stream cleanup or migration.
+/// paired with evidence cleanup or migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
@@ -257,91 +257,6 @@ impl OperationEvent {
             Self::Cancelled { .. } => "cancelled".to_owned(),
         };
         crate::subjects::op_event_subject(self.operation_id(), &suffix)
-    }
-
-    /// The idempotent JetStream message id for this event. Message ids are a
-    /// persisted dedup contract: renderings must never change for an existing
-    /// variant. Every terminal event of one operation kind shares one id, so
-    /// stream dedup enforces "terminal states are final" - a retried terminal
-    /// write after a different terminal landed is dropped by the stream, not
-    /// by application code.
-    #[must_use]
-    pub fn message_id(&self) -> String {
-        let operation_id = self.operation_id().as_str();
-        match self {
-            Self::DeploySubmitted { .. }
-            | Self::CertRenewalSubmitted { .. }
-            | Self::MachineAddSubmitted { .. }
-            | Self::MachineUpdateSubmitted { .. }
-            | Self::MachineLifecycleSubmitted { .. } => {
-                format!("operation.submit.{operation_id}")
-            }
-            Self::DeployPlanningStarted { .. } => {
-                format!("deploy.event.{operation_id}.planning.started")
-            }
-            Self::DeployRunning { stage, .. } => {
-                format!("deploy.event.{operation_id}.running.{}", stage.as_subject())
-            }
-            Self::DeployPlanCreated { .. } => format!("deploy.plan.created.{operation_id}"),
-            Self::DeployDataplanePrepared { .. } => {
-                format!("deploy.dataplane.prepared.{operation_id}")
-            }
-            Self::DeployContainerStarted {
-                machine_id,
-                container_id,
-                ..
-            } => format!(
-                "deploy.container.started.{operation_id}.{}.{}",
-                machine_id.as_str(),
-                container_id.as_str()
-            ),
-            Self::DeployHealthCheckStarted { .. } => {
-                format!("deploy.health_check.started.{operation_id}")
-            }
-            Self::DeployCleanupFinished { .. } => {
-                format!("deploy.cleanup.finished.{operation_id}")
-            }
-            Self::DeployCompleted { .. } | Self::DeployFailed { .. } => {
-                format!("deploy.terminal.{operation_id}")
-            }
-            // A cancel shares the terminal id of its operation kind, so a
-            // cancel racing another terminal write dedups at the stream.
-            Self::Cancelled { kind, .. } => match kind {
-                OperationKind::Deploy => format!("deploy.terminal.{operation_id}"),
-                OperationKind::Cert => format!("cert.terminal.{operation_id}"),
-                OperationKind::MachineAdd => format!("machine.add.terminal.{operation_id}"),
-                OperationKind::MachineUpdate => {
-                    format!("machine.update.terminal.{operation_id}")
-                }
-                OperationKind::MachineLifecycle => {
-                    format!("machine.lifecycle.terminal.{operation_id}")
-                }
-            },
-            Self::CertChallengePublished { .. } => {
-                format!("cert.challenge.published.{operation_id}")
-            }
-            Self::CertValidationStarted { .. } => {
-                format!("cert.validation.started.{operation_id}")
-            }
-            Self::CertCompleted { .. } | Self::CertFailed { .. } => {
-                format!("cert.terminal.{operation_id}")
-            }
-            Self::MachineAddJoined { .. } => format!("machine.add.joined.{operation_id}"),
-            Self::MachineAddCredentialProvisioned { step, .. } => format!(
-                "machine.add.credential.{}.{operation_id}",
-                step.as_subject_token()
-            ),
-            Self::MachineAddCompleted { .. } | Self::MachineAddFailed { .. } => {
-                format!("machine.add.terminal.{operation_id}")
-            }
-            Self::MachineUpdateRunning { .. } => format!("machine.update.running.{operation_id}"),
-            Self::MachineUpdateCompleted { .. } | Self::MachineUpdateFailed { .. } => {
-                format!("machine.update.terminal.{operation_id}")
-            }
-            Self::MachineLifecycleCompleted { .. } | Self::MachineLifecycleFailed { .. } => {
-                format!("machine.lifecycle.terminal.{operation_id}")
-            }
-        }
     }
 }
 

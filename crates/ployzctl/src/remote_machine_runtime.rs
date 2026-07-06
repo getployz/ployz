@@ -390,7 +390,7 @@ pub(crate) async fn execute_machine_add_remote(
         &api,
         OperationEventReplayRequest {
             operation_id: operation_id.clone(),
-            start_sequence: EventSequence::try_new(1).expect("one is a valid event sequence"),
+            start_sequence: EventSequence::first(),
             limit: OperationEventReplayLimit::try_new(MAX_OPERATION_EVENT_REPLAY_LIMIT)
                 .expect("max replay limit is valid"),
         },

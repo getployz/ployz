@@ -1,4 +1,4 @@
-//! Owned background task registry, aborted on runtime shutdown.
+//! Owned background task registry, aborted on daemon shutdown.
 
 use std::sync::{Arc, Mutex};
 

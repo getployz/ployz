@@ -11,12 +11,12 @@ use ployz_sdk_types::{
 use ployz_test_support::fixtures::machine_join_material;
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
-use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::controllers::MachineAddBootstrapConfig;
-use ployzd::nats_authorization::{
+use ployzd::adapters::nats_authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };
-use ployzd::nats_process::NatsServerRuntime;
+use ployzd::adapters::nats_server::NatsServerLaunch;
+use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
+use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -77,15 +77,13 @@ impl TestNats {
 
     pub fn control_config_without_join_template(&self) -> ControlProcessConfig {
         ControlProcessConfig::new(
-            NatsServerRuntime::External(self.server().client_url().clone()),
+            NatsServerLaunch::External(self.server().client_url().clone()),
             machine_id("core_1"),
             self.server().controller_config(),
         )
+        .with_core_db_path(self.work_dir.path().join("ployz-core.db"))
         .with_nats_authorization(ControlNatsAuthorizationConfig {
             authorized_users_file: self.server().authorized_users_path().to_path_buf(),
-            machine_roster_file: self.work_dir.path().join("machine-roster.json"),
-            machine_lifecycles_file: self.work_dir.path().join("machine-lifecycles.json"),
-            namespace_intent_file: self.work_dir.path().join("namespace-intent.json"),
             machine_seed_file: self.work_dir.path().join("machine.seed"),
         })
     }
@@ -93,7 +91,7 @@ impl TestNats {
     pub async fn start_control(
         &self,
         config: &ControlProcessConfig,
-    ) -> ployzd::control_runtime::RunningControlRuntime {
+    ) -> ployzd::roles::control::RunningControlProcess {
         self.start_control_with_reload(config, self.reload_runner())
             .await
     }
@@ -102,8 +100,8 @@ impl TestNats {
         &self,
         config: &ControlProcessConfig,
         reload: RecordingReload,
-    ) -> ployzd::control_runtime::RunningControlRuntime {
-        ployzd::control_runtime::start_control_runtime_with_client_and_reload(
+    ) -> ployzd::roles::control::RunningControlProcess {
+        ployzd::roles::control::start_control_process_with_client_and_reload(
             self.connected.controller.clone(),
             config,
             reload,

@@ -7,7 +7,7 @@ use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzd::operation_api::{ops_status_missing, owned_operation};
-use ployzd::services::DaemonServiceCatalog;
+use ployzd::service_catalog::DaemonServiceCatalog;
 
 #[test]
 fn control_catalog_supports_srv_ping_discovery() {
