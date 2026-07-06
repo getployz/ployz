@@ -158,6 +158,7 @@ impl ReleaseManifest {
     }
 }
 
+#[must_use]
 pub fn release_manifest_url(version: &ExactPloyzVersion) -> String {
     format!(
         "https://github.com/getployz/ployz/releases/download/{}/ployz-release-{}.env",
@@ -171,6 +172,7 @@ pub fn persisted_release_manifest_url(path: &std::path::Path) -> Result<String, 
     manifest_value(&contents, "PLOYZ_RELEASE_MANIFEST_URL")
 }
 
+#[must_use]
 pub fn default_release_manifest_url() -> String {
     format!(
         "https://github.com/getployz/ployz/releases/download/v{}/ployz-release-{}.env",

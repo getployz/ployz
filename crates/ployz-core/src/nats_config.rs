@@ -139,7 +139,10 @@ impl NatsAuthorizedUser {
             NatsPrincipal::User => {
                 format!("user.{}", self.nkey_public.as_str())
             }
-            _ => self.principal.authority_key(),
+            NatsPrincipal::Machine { .. }
+            | NatsPrincipal::Controller
+            | NatsPrincipal::Join
+            | NatsPrincipal::System => self.principal.authority_key(),
         }
     }
 }
