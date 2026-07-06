@@ -30,11 +30,12 @@ const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
+const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 
 pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
-    observer: RunningMachineObserver,
-    intent_mirror: RunningIntentMirror,
+    observer: RunningTask,
+    intent_mirror: RunningTask,
 }
 
 impl RunningMachineProcess {
@@ -132,12 +133,14 @@ where
     })
 }
 
-struct RunningIntentMirror {
+/// A background task owned by the machine process: a shutdown signal and its
+/// join handle. Shared by the observer and the intent mirror.
+struct RunningTask {
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<()>,
 }
 
-impl RunningIntentMirror {
+impl RunningTask {
     async fn shutdown(self) {
         let _ = self.shutdown.send(());
         let _ = self.task.await;
@@ -147,31 +150,46 @@ impl RunningIntentMirror {
 /// Mirror core intent to the machine-local store off the drumbeat, so a future
 /// promotion can seed a new core without a backup restore (ADR 0031). The
 /// epoch-gating that drops a stale core's intent lives in the store.
-fn start_intent_mirror(client: NatsClient, mirror: MachineIntentMirror) -> RunningIntentMirror {
+///
+/// The task re-subscribes on a failed or ended subscription rather than dying:
+/// a mirror that quietly stops updating is the one failure this seam must make
+/// impossible, since the mirror is what makes promotion instant.
+fn start_intent_mirror(client: NatsClient, mirror: MachineIntentMirror) -> RunningTask {
     let (shutdown, mut shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
-        let Ok(mut changed) = client.subscribe(INTENT_CHANGED).await else {
-            return;
-        };
         loop {
-            tokio::select! {
-                message = changed.next() => {
-                    let Some(message) = message else { break };
-                    // Empty pings only say "something changed"; the periodic
-                    // drumbeat carries the full snapshot the mirror persists.
-                    if message.payload.is_empty() {
-                        continue;
-                    }
-                    if let Ok(snapshot) = serde_json::from_slice::<IntentSnapshot>(&message.payload)
-                    {
-                        let _ = mirror.store(&snapshot);
+            let mut changed = match client.subscribe(INTENT_CHANGED).await {
+                Ok(subscription) => subscription,
+                // Not connected yet, or a transient failure: back off and retry.
+                Err(_) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(INTENT_MIRROR_RESUBSCRIBE_DELAY) => continue,
+                        _ = &mut shutdown_rx => return,
                     }
                 }
-                _ = &mut shutdown_rx => break,
+            };
+            loop {
+                tokio::select! {
+                    message = changed.next() => {
+                        // Stream ended (a hard disconnect): re-subscribe.
+                        let Some(message) = message else { break };
+                        // Empty pings only say "something changed"; the periodic
+                        // drumbeat carries the full snapshot the mirror persists.
+                        if message.payload.is_empty() {
+                            continue;
+                        }
+                        if let Ok(snapshot) =
+                            serde_json::from_slice::<IntentSnapshot>(&message.payload)
+                        {
+                            let _ = mirror.store(&snapshot);
+                        }
+                    }
+                    _ = &mut shutdown_rx => return,
+                }
             }
         }
     });
-    RunningIntentMirror { shutdown, task }
+    RunningTask { shutdown, task }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,25 +204,13 @@ pub enum MachineObserverAttempt {
     Failed { message: String },
 }
 
-struct RunningMachineObserver {
-    shutdown: oneshot::Sender<()>,
-    task: JoinHandle<()>,
-}
-
-impl RunningMachineObserver {
-    async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.task.await;
-    }
-}
-
 fn start_machine_observer<R>(
     machine_id: MachineId,
     runner: R,
     client: NatsClient,
     public_ip: Option<IpAddr>,
     interval: Duration,
-) -> RunningMachineObserver
+) -> RunningTask
 where
     R: MachineContainerRunner + Send + Sync + 'static,
 {
@@ -229,7 +235,7 @@ where
         }
     });
 
-    RunningMachineObserver { shutdown, task }
+    RunningTask { shutdown, task }
 }
 
 fn record_observer_attempt(
