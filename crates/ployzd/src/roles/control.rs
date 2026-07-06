@@ -6,14 +6,14 @@ use crate::controllers::OperationControllers;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::operations::deploy::driver::DeployOperationRuntime;
 use crate::operations::deploy::DeployMachineCandidates;
-use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use crate::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use crate::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
-use crate::machine_roster::MachineRosterStore;
+use crate::intent::machine_roster::MachineRosterStore;
 use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::operations::machine_update::MachineUpdateOperationRuntime;
-use crate::namespace_intent::NamespaceIntentStore;
+use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::adapters::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,

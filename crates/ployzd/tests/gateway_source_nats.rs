@@ -12,9 +12,9 @@ use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
 use ployzd::roles::gateway::source::load_gateway_projection_update_from_nats;
-use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::fact_cache::RuntimeFactsCache;
 use std::time::Duration;
 

@@ -20,8 +20,8 @@ use ployzd::operations::deploy::{
     DeployMachineCandidates, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::client::NatsMachineFactsReader;
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -31,7 +31,7 @@ use ployzd::roles::machine::runner::{
 use ployzd::roles::machine::service::{
     MachinePloyzNativeMeshPreparer, start_machine_runtime_service,
 };
-use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::time::Duration;
 
 #[tokio::test]

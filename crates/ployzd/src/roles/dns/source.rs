@@ -3,7 +3,7 @@
 use crate::roles::dns::projection::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
-use crate::intent::{IntentReadError, NatsIntentReader};
+use crate::intent::service::{IntentReadError, NatsIntentReader};
 use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};

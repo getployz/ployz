@@ -9,7 +9,7 @@ use ployzd::controllers::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
 use ployzd::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
-use ployzd::machine_roster::MachineRosterStore;
+use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operations::log::OperationRepository;
 use ployzd::tasks::TaskRegistry;
 

@@ -4,9 +4,9 @@ use ployz_core::state::{
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_test_support::ids::{machine_id, namespace_revision_entry_id, operation_id, service_id};
-use ployzd::intent::{NatsIntentReader, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, start_intent_runtime};
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::time::Duration;
 
 #[tokio::test]

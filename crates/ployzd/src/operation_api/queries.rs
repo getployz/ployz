@@ -2,7 +2,7 @@
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
 use crate::controllers::OperationControllers;
-use crate::intent::NatsIntentReader;
+use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{
     MachineLogsTailRuntimeError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,

@@ -4,7 +4,7 @@ use crate::roles::gateway::projection::{
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
     GatewayServingEntry,
 };
-use crate::intent::{IntentReadError, NatsIntentReader};
+use crate::intent::service::{IntentReadError, NatsIntentReader};
 use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};

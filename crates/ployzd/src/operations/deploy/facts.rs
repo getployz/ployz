@@ -1,6 +1,6 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
-use crate::intent::NatsIntentReader;
+use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
