@@ -44,7 +44,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm test
-          npm publish --dry-run --access public
+          npm publish --dry-run --access public --tag alpha
 
   package-linux:
     if: github.event_name == 'push'
