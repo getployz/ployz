@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
 use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::{INTENT_CHANGED, machine_facts};
-use ployz_nats::connect::{NatsConnectError, connect_authenticated};
+use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::net::IpAddr;
@@ -31,6 +31,9 @@ const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
+/// The port a promoted core's `nats-server` listens on (keeper's
+/// `DEFAULT_NATS_PORT`), used to build failover candidate URLs.
+const CORE_NATS_PORT: u16 = 4222;
 
 pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
@@ -77,6 +80,7 @@ pub async fn start_machine_process(
 
     let intent_mirror =
         MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json"));
+    let seed = connect.url.clone();
     start_machine_process_with_ports(
         client,
         config.machine_id.clone(),
@@ -85,6 +89,7 @@ pub async fn start_machine_process(
         runner,
         config.public_ip,
         intent_mirror,
+        seed,
         MACHINE_OBSERVATION_INTERVAL,
     )
     .await
@@ -101,6 +106,7 @@ pub async fn start_machine_process_with_ports<R, P, L>(
     log_reader: L,
     public_ip: Option<IpAddr>,
     intent_mirror: MachineIntentMirror,
+    seed: NatsClientUrl,
     observation_interval: Duration,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
@@ -122,7 +128,7 @@ where
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
-    let intent_mirror = start_intent_mirror(client.clone(), intent_mirror);
+    let intent_mirror = start_intent_mirror(client.clone(), intent_mirror, seed);
     let observer =
         start_machine_observer(machine_id, runner, client, public_ip, observation_interval);
 
@@ -147,6 +153,24 @@ impl RunningTask {
     }
 }
 
+/// The NATS failover pool a machine cycles on core loss: its configured core
+/// (the `seed`, always first and always retained) plus every Reachable Machine's
+/// endpoint from the mirror. The seed is never dropped by a reachability change —
+/// only a reconfigure replaces it — so a transient core outage can't cut the
+/// machine off from a still-alive core.
+fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
+    let mut pool = vec![seed.as_str().to_owned()];
+    for machine in &snapshot.active_machines {
+        if let Some(endpoint) = machine.public_endpoint {
+            let url = format!("tls://{endpoint}:{CORE_NATS_PORT}");
+            if !pool.contains(&url) {
+                pool.push(url);
+            }
+        }
+    }
+    pool
+}
+
 /// Mirror core intent to the machine-local store off the drumbeat, so a future
 /// promotion can seed a new core without a backup restore (ADR 0031). The
 /// epoch-gating that drops a stale core's intent lives in the store.
@@ -154,7 +178,11 @@ impl RunningTask {
 /// The task re-subscribes on a failed or ended subscription rather than dying:
 /// a mirror that quietly stops updating is the one failure this seam must make
 /// impossible, since the mirror is what makes promotion instant.
-fn start_intent_mirror(client: NatsClient, mirror: MachineIntentMirror) -> RunningTask {
+fn start_intent_mirror(
+    client: NatsClient,
+    mirror: MachineIntentMirror,
+    seed: NatsClientUrl,
+) -> RunningTask {
     let (shutdown, mut shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
         loop {
@@ -182,6 +210,13 @@ fn start_intent_mirror(client: NatsClient, mirror: MachineIntentMirror) -> Runni
                             serde_json::from_slice::<IntentSnapshot>(&message.payload)
                         {
                             let _ = mirror.store(&snapshot);
+                            // Keep the failover pool current: the configured core
+                            // (always) plus each Reachable Machine. This updates the
+                            // pool used on the *next* reconnect; it never forces one,
+                            // so the live core connection stays undisturbed.
+                            let _ = client
+                                .set_server_pool(candidate_server_pool(&snapshot, &seed))
+                                .await;
                         }
                     }
                     _ = &mut shutdown_rx => return,
@@ -403,6 +438,7 @@ mod tests {
     use ployz_core::machine_runtime::{
         ContainerRuntimeState, MachineFactsSnapshot, ManagedContainerIdentity,
     };
+    use ployz_core::state::ActiveMachineState;
     use ployz_core::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
 
@@ -420,6 +456,61 @@ mod tests {
         );
     }
 
+    fn active_machine_with(id: &str, endpoint: Option<&str>) -> ActiveMachineState {
+        ActiveMachineState {
+            machine_id: machine_id(id),
+            name: ployz_core::machine::MachineName::try_new(id).expect("machine name"),
+            activated_by: ployz_test_support::ids::operation_id("op_activate"),
+            lifecycle: ployz_core::state::MachineLifecycle::Active,
+            public_endpoint: endpoint.map(|ip| ip.parse().expect("ip")),
+        }
+    }
+
+    fn snapshot_with(machines: Vec<ActiveMachineState>) -> IntentSnapshot {
+        IntentSnapshot {
+            epoch: ployz_core::state::ControlPlaneEpoch::initial(),
+            active_machines: machines,
+            route_bindings: Vec::new(),
+            serving_target_entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn candidate_server_pool_keeps_the_seed_first_and_adds_reachable_machines() {
+        let seed = NatsClientUrl::try_new("tls://10.0.0.1:4222").expect("seed url");
+        let snapshot = snapshot_with(vec![
+            active_machine_with("machine_a", Some("203.0.113.5")),
+            active_machine_with("machine_b", None),
+            active_machine_with("machine_c", Some("203.0.113.9")),
+        ]);
+        assert_eq!(
+            candidate_server_pool(&snapshot, &seed),
+            vec![
+                "tls://10.0.0.1:4222".to_owned(),
+                "tls://203.0.113.5:4222".to_owned(),
+                "tls://203.0.113.9:4222".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_server_pool_always_retains_the_seed_when_no_machine_is_reachable() {
+        let seed = NatsClientUrl::try_new("tls://10.0.0.1:4222").expect("seed url");
+        // The configured core must never be dropped: not for an empty roster, and
+        // not when the only machines have advertised no endpoint yet.
+        assert_eq!(
+            candidate_server_pool(&snapshot_with(Vec::new()), &seed),
+            vec!["tls://10.0.0.1:4222".to_owned()]
+        );
+        assert_eq!(
+            candidate_server_pool(
+                &snapshot_with(vec![active_machine_with("machine_a", None)]),
+                &seed
+            ),
+            vec!["tls://10.0.0.1:4222".to_owned()]
+        );
+    }
+
     #[tokio::test]
     async fn machine_process_runtime_starts_service_before_observations_are_ready() {
         let nats = TestNats::start_bootstrapped().await;
@@ -434,6 +525,7 @@ mod tests {
             runner,
             None,
             MachineIntentMirror::new(mirror_dir.path().join("intent-mirror.json")),
+            NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
             Duration::from_secs(60),
         )
         .await

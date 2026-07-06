@@ -161,6 +161,10 @@ pub fn authenticated_connect_options(config: &NatsConnectConfig) -> async_nats::
     };
     options
         .require_tls(true)
+        // The failover server pool is operator-controlled (the configured core
+        // plus Reachable Machines from mirrored intent); don't merge servers the
+        // NATS server advertises, which would pollute the recovery candidate set.
+        .ignore_discovered_servers()
         .custom_inbox_prefix(inbox_prefix(principal))
 }
 
