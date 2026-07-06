@@ -9,7 +9,8 @@ use crate::state::MachineLifecycle;
 
 use super::events::{OperationEvent, OperationSubjectRef};
 use super::projection::{
-    OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
+    OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
+    verify_subject,
 };
 use super::text::{CancellationReason, FailureMessage};
 use super::{EventSequence, OperationStatus};
@@ -153,33 +154,21 @@ pub(super) fn project_state(
     attempted: MachineLifecycleOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    if state == &attempted {
-        return Ok(OperationProjection::AlreadySatisfied);
-    }
-    if state.is_terminal() {
-        return Err(StatusProjectionError::TerminalState {
-            operation_id: id.clone(),
-            current: Box::new(ProjectionOperationState::MachineLifecycle(state.clone())),
-            attempted: Box::new(ProjectionOperationState::MachineLifecycle(attempted)),
-        });
-    }
-    if !transition_allowed(state, &attempted) {
-        return Err(StatusProjectionError::InvalidTransition {
-            operation_id: id.clone(),
-            current: Box::new(ProjectionOperationState::MachineLifecycle(state.clone())),
-            attempted: Box::new(ProjectionOperationState::MachineLifecycle(attempted)),
-        });
-    }
-
-    Ok(OperationProjection::StatusChanged {
-        status: Box::new(OperationStatus::MachineLifecycle {
+    project_transition(
+        id,
+        state,
+        attempted,
+        MachineLifecycleOperationState::is_terminal,
+        transition_allowed,
+        ProjectionOperationState::MachineLifecycle,
+        |state| OperationStatus::MachineLifecycle {
             id: id.clone(),
             machine_id: machine_id.clone(),
             target,
-            state: attempted,
+            state,
             last_event_sequence: event_sequence,
-        }),
-    })
+        },
+    )
 }
 
 fn transition_allowed(

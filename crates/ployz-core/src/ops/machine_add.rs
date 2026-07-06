@@ -11,7 +11,8 @@ use crate::roles::InstallRolePolicy;
 
 use super::events::OperationSubjectRef;
 use super::projection::{
-    OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
+    OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
+    verify_subject,
 };
 use super::text::CancellationReason;
 use super::{EventSequence, OperationStatus};
@@ -186,6 +187,8 @@ pub(super) fn project_state(
     attempted: MachineAddOperationState,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
+    // A repeated join is idempotent regardless of the recorded joined_at, so a
+    // racing second redeem adopts the existing Joining state rather than erroring.
     if matches!(
         (fields.state, &attempted),
         (
@@ -195,27 +198,15 @@ pub(super) fn project_state(
     ) {
         return Ok(OperationProjection::AlreadySatisfied);
     }
-    if fields.state == &attempted {
-        return Ok(OperationProjection::AlreadySatisfied);
-    }
-    if fields.state.is_terminal() {
-        return Err(StatusProjectionError::TerminalState {
-            operation_id: fields.id.clone(),
-            current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
-            attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
-        });
-    }
-    if !transition_allowed(fields.state, &attempted) {
-        return Err(StatusProjectionError::InvalidTransition {
-            operation_id: fields.id.clone(),
-            current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
-            attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
-        });
-    }
-
-    Ok(OperationProjection::StatusChanged {
-        status: Box::new(fields.status_with(attempted, event_sequence)),
-    })
+    project_transition(
+        fields.id,
+        fields.state,
+        attempted,
+        MachineAddOperationState::is_terminal,
+        transition_allowed,
+        ProjectionOperationState::MachineAdd,
+        |attempted| fields.status_with(attempted, event_sequence),
+    )
 }
 
 fn transition_allowed(
