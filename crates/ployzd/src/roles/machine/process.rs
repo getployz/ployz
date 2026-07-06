@@ -199,11 +199,16 @@ fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec
 /// away from: `retain_servers_order` then tries every Reachable Machine (the
 /// promoted core among them) before falling back to the stale seed.
 fn candidate_server_pool_seed_last(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
-    let mut pool = reachable_machine_urls(snapshot);
     let seed = seed.as_str().to_owned();
-    if !pool.contains(&seed) {
-        pool.push(seed);
-    }
+    // The stale seed is usually also in the roster (its old core is still an active
+    // machine until the operator removes it), so it must be filtered out of its
+    // roster position first — otherwise it stays ahead of the promoted core and
+    // retain_servers_order reconnects straight back onto it.
+    let mut pool: Vec<String> = reachable_machine_urls(snapshot)
+        .into_iter()
+        .filter(|url| url != &seed)
+        .collect();
+    pool.push(seed);
     pool
 }
 
@@ -559,6 +564,25 @@ mod tests {
                 "tls://10.0.0.1:4222".to_owned(),
                 "tls://203.0.113.5:4222".to_owned(),
                 "tls://203.0.113.9:4222".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_server_pool_seed_last_moves_a_rostered_stale_seed_to_the_end() {
+        // The stale seed's old core is still an active machine in the roster, so its
+        // URL is among the reachable machines. seed_last must drop it from that slot
+        // and place it strictly last, behind the promoted core.
+        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
+        let snapshot = snapshot_with(vec![
+            active_machine_with("old_core", Some("203.0.113.5")),
+            active_machine_with("promoted_core", Some("203.0.113.9")),
+        ]);
+        assert_eq!(
+            candidate_server_pool_seed_last(&snapshot, &seed),
+            vec![
+                "tls://203.0.113.9:4222".to_owned(),
+                "tls://203.0.113.5:4222".to_owned(),
             ]
         );
     }
