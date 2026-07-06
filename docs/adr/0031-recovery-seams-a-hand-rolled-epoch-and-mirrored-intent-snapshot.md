@@ -1,0 +1,91 @@
+# Recovery Seams: A Hand-Rolled Control-Plane Epoch And A Mirrored Intent Snapshot
+
+ADR 0030 decided *how the fleet finds a new core* — operator-promoted, epoch-gated,
+pull-reconnecting, with intent mirrored off the drumbeat. It did not pin the
+mechanisms, and the obvious question when building them is: **we run hard on
+NATS — what does NATS give us, and what do we build ourselves?** This ADR answers
+that, fixes the concrete seams, and orders them, because the dependencies between
+them are load-bearing (the candidate list is useless before the mirror exists).
+
+The decision, seam by seam:
+
+- **The Control-Plane Epoch is a hand-rolled monotonic `u64` carried on the intent
+  drumbeat — not a NATS primitive.** The core persists it and advertises it on
+  `intent.changed` (and echoes it in the `intent.get` reply); a machine persists
+  the highest epoch it has seen and rejects a lower one, which is what fences a
+  healed old core. NATS's only epoch-shaped primitives — JetStream KV revision,
+  stream sequence, the meta-group's Raft term — all live in the JetStream we
+  exited (ADR 0029), and leaning on them re-imports the exact consensus the
+  disposable-core model exists to avoid (ADR 0030). So the epoch is ours: a
+  counter on a plain subject, which is already the fanout model. NATS carries the
+  value; it does not define it.
+
+- **Intent is mirrored as the existing `IntentSnapshot`, persisted machine-side.**
+  The payload is `IntentSnapshot { active_machines, route_bindings,
+  serving_target_entries }` — already the `intent.get` reply and the gateway/DNS
+  fold input, so no new wire type. Reachable Machines subscribe to
+  `intent.changed`, pull the snapshot, and persist it to a small local mirror
+  store, distinct from the core's evidence log. This is what makes promotion
+  instant.
+
+- **A promoted core seeds intent from its mirror and starts evidence fresh — the
+  core database is never copied.** This is why the single `core-store.db` mixing
+  adoptable intent and mortal evidence needs *no* partition: promotion does not
+  adopt the dead core's file, it reconstructs intent from the mirror and opens a
+  new, empty evidence log (evidence is mortal with the core, ADR 0029). The
+  storage "boundary" is the mirror, not a second database.
+
+- **The machine's NATS client takes a candidate list, via native `async-nats`
+  multi-server.** `NatsConnectConfig.url` becomes a list of addresses; `connect`
+  passes them all and the client's own reconnect logic cycles them — no custom
+  failover loop. The list is populated from the Reachable Machines in the mirrored
+  roster. **This seam is blocked on the mirror:** until intent is mirrored, the
+  list has exactly one entry, so it lands *after* the mirror, not before.
+
+- **Reachability is observed, then written onto the machine intent record.** The
+  core learns a machine's public reachability from its inbound control
+  connection's source address (NATS `$SYS` connection events), and records it as a
+  field on that machine's intent — so it mirrors with everything else and drives
+  the candidate set. No install-time stability flag (ADR 0030).
+
+- **Promotion is `ployz core-promote`: local, idempotent, operator-triggered.** It
+  seeds the intent store from the local mirror, bumps and persists a higher epoch,
+  and starts serving as core. Nothing auto-elects (ADR 0019/0030); the operator
+  runs it over an SSH forced command or by hand.
+
+Build order, because each earns the next:
+
+1. **Epoch** — independent; the fence every later seam relies on.
+2. **Intent mirror** — machine-side persistence of `IntentSnapshot` off the drumbeat.
+3. **Reachability** — the observed fact that populates the candidate set.
+4. **Candidate-list connect** — needs 2 + 3 to carry more than one address.
+5. **`core-promote`** — needs all of the above.
+
+This rejects:
+
+- **JetStream KV / stream sequence / Raft term as the epoch.** Exited in ADR 0029;
+  adopting one re-imports the consensus machinery ADR 0030 rejects. The native
+  option is the wrong option here precisely because of our own NATS decisions.
+- **Splitting `core-store.db` into separate intent and evidence databases to
+  "enable promotion."** Promotion rebuilds intent from the mirror and starts fresh
+  evidence, so the file is never copied and never needs cutting along that line.
+- **Shipping the candidate list before the mirror.** It would be a length-one list
+  that reads as done but recovers nothing — worse than absent, because it looks
+  finished.
+
+Consequences, stated plainly:
+
+- A cluster still needs **at least two Reachable Machines** to have any failover
+  target (restating ADR 0030's topology truth).
+- The epoch is monotonic only as far as the core persists it **and** the operator
+  does not promote two candidates at once. That single-promoter assumption is
+  ADR 0030's "deliberate operator act," not a new fence — there is no distributed
+  agreement backstopping it.
+- The mirror is eventually-consistent off the drumbeat, so a machine promoted with
+  a slightly stale mirror serves slightly stale intent until the next operator
+  action converges it. Acceptable: facts re-gather live at the point of use
+  (ADR 0027), and intent is operator truth that the next mutation refreshes.
+- Every Reachable Machine now holds a durable copy of cluster intent — a new small
+  on-disk artifact per machine, and the authorized-user set rides the same
+  reachability scoping (ADR 0030), so mirror scope is a sensitivity boundary, not
+  just an optimization.
