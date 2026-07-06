@@ -30,6 +30,15 @@ use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTaile
 use ployz_core::ids::MachineId;
 use std::sync::Arc;
 
+/// The operation drivers, bundled so a new kind adds a field here instead of
+/// another positional parameter threaded through `execute_operations`.
+pub struct OperationWorkers {
+    pub deploy: DeployOperationDriver,
+    pub machine_update: MachineUpdateOperation,
+    pub machine_lifecycle: MachineLifecycleOperation,
+    pub machine_mint: MachineCredentialMint,
+}
+
 #[derive(Clone)]
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
@@ -51,10 +60,7 @@ impl OperationApiHandlers {
     #[allow(clippy::too_many_arguments)]
     pub fn execute_operations(
         controllers: OperationControllers,
-        deploy_driver: DeployOperationDriver,
-        machine_update: MachineUpdateOperation,
-        machine_lifecycle: MachineLifecycleOperation,
-        machine_mint: MachineCredentialMint,
+        workers: OperationWorkers,
         local_machine_id: MachineId,
         intent_change_client: async_nats::Client,
         machine_roster: MachineRosterStore,
@@ -63,6 +69,12 @@ impl OperationApiHandlers {
         intent_reader: NatsIntentReader,
         logs_tailer: NatsMachineLogsTailer,
     ) -> Self {
+        let OperationWorkers {
+            deploy: deploy_driver,
+            machine_update,
+            machine_lifecycle,
+            machine_mint,
+        } = workers;
         let machine_query =
             MachineQueryService::new(intent_reader.clone(), facts.clone(), facts_reader.clone());
         let service_query = ServiceQueryService::new(intent_reader.clone());

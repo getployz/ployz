@@ -12,9 +12,9 @@ use crate::core_store::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
-    DeployEvidence, EventSequence, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayPage, OperationProjection, OperationStatus,
-    StatusProjectionError, project_operation_event, validate_fresh_deploy_evidence,
+    EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
+    project_operation_event, validate_fresh_deploy_evidence,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
@@ -123,7 +123,7 @@ fn record_operation_event_txn(
     // the transaction holds the write, so the insert lands at this sequence.
     let sequence = current.next_event_sequence();
     // Deploy evidence recorded after a terminal deploy must be fresh.
-    if let Some(evidence) = deploy_evidence_from_event(&event)
+    if let Some(evidence) = event.deploy_evidence()
         && current.is_terminal()
         && let Err(error) = validate_fresh_deploy_evidence(&current, &evidence)
     {
@@ -146,7 +146,7 @@ fn record_operation_event_txn(
         });
     };
     let status = *status;
-    let subject = singleton_event_subject(&event);
+    let subject = event.singleton_subject();
     if let Err(error) = insert_event(&transaction, &event, sequence) {
         if is_unique_constraint(&error)
             && singleton_event_exists(&transaction, event.operation_id(), subject)?
@@ -364,7 +364,7 @@ fn insert_event(
         params![
             event.operation_id().as_str(),
             sequence.get(),
-            singleton_event_subject(event),
+            event.singleton_subject(),
             to_json(event)?
         ],
     )?;
@@ -480,93 +480,6 @@ fn read_event_error(error: &CoreStoreError) -> OperationEventLogError {
 
 fn store_status(error: CoreStoreError) -> SubmitOperationError {
     SubmitOperationError::StoreStatus(index_error(&error))
-}
-
-fn singleton_event_subject(event: &OperationEvent) -> Option<&'static str> {
-    match event {
-        OperationEvent::DeployPlanCreated { .. } => Some("deploy.plan.created"),
-        OperationEvent::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
-        OperationEvent::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
-        OperationEvent::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
-        OperationEvent::DeploySubmitted { .. }
-        | OperationEvent::DeployPlanningStarted { .. }
-        | OperationEvent::DeployContainerStarted { .. }
-        | OperationEvent::DeployRunning { .. }
-        | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::DeployFailed { .. }
-        | OperationEvent::CertRenewalSubmitted { .. }
-        | OperationEvent::CertChallengePublished { .. }
-        | OperationEvent::CertValidationStarted { .. }
-        | OperationEvent::CertCompleted { .. }
-        | OperationEvent::CertFailed { .. }
-        | OperationEvent::MachineAddSubmitted { .. }
-        | OperationEvent::MachineAddJoined { .. }
-        | OperationEvent::MachineAddCredentialProvisioned { .. }
-        | OperationEvent::MachineAddCompleted { .. }
-        | OperationEvent::MachineAddFailed { .. }
-        | OperationEvent::MachineUpdateSubmitted { .. }
-        | OperationEvent::MachineUpdateRunning { .. }
-        | OperationEvent::MachineUpdateCompleted { .. }
-        | OperationEvent::MachineUpdateFailed { .. }
-        | OperationEvent::MachineLifecycleSubmitted { .. }
-        | OperationEvent::MachineLifecycleCompleted { .. }
-        | OperationEvent::MachineLifecycleFailed { .. }
-        | OperationEvent::Cancelled { .. } => None,
-    }
-}
-
-fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> {
-    match event {
-        OperationEvent::DeployPlanCreated { plan, .. } => {
-            Some(DeployEvidence::PlanCreated { plan: plan.clone() })
-        }
-        OperationEvent::DeployDataplanePrepared { report, .. } => {
-            Some(DeployEvidence::DataplanePrepared {
-                report: report.clone(),
-            })
-        }
-        OperationEvent::DeployContainerStarted {
-            machine_id,
-            container_id,
-            ..
-        } => Some(DeployEvidence::ContainerStarted {
-            machine_id: machine_id.clone(),
-            container_id: container_id.clone(),
-        }),
-        OperationEvent::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),
-        OperationEvent::DeployCleanupFinished {
-            removed, failed, ..
-        } => Some(DeployEvidence::CleanupFinished {
-            removed: removed.clone(),
-            failed: failed.clone(),
-        }),
-        // Non-evidence deploy transitions and every other operation kind carry
-        // no deploy evidence. Enumerated so a new event variant forces a
-        // decision here rather than silently falling through.
-        OperationEvent::DeploySubmitted { .. }
-        | OperationEvent::DeployPlanningStarted { .. }
-        | OperationEvent::DeployRunning { .. }
-        | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::DeployFailed { .. }
-        | OperationEvent::CertRenewalSubmitted { .. }
-        | OperationEvent::CertChallengePublished { .. }
-        | OperationEvent::CertValidationStarted { .. }
-        | OperationEvent::CertCompleted { .. }
-        | OperationEvent::CertFailed { .. }
-        | OperationEvent::MachineAddSubmitted { .. }
-        | OperationEvent::MachineAddJoined { .. }
-        | OperationEvent::MachineAddCredentialProvisioned { .. }
-        | OperationEvent::MachineAddCompleted { .. }
-        | OperationEvent::MachineAddFailed { .. }
-        | OperationEvent::MachineUpdateSubmitted { .. }
-        | OperationEvent::MachineUpdateRunning { .. }
-        | OperationEvent::MachineUpdateCompleted { .. }
-        | OperationEvent::MachineUpdateFailed { .. }
-        | OperationEvent::MachineLifecycleSubmitted { .. }
-        | OperationEvent::MachineLifecycleCompleted { .. }
-        | OperationEvent::MachineLifecycleFailed { .. }
-        | OperationEvent::Cancelled { .. } => None,
-    }
 }
 
 async fn publish_progress(client: &async_nats::Client, event: OperationEvent) {

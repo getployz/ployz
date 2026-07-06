@@ -25,25 +25,18 @@ impl OperationRepository {
         &self,
         submission: MachineAddOperationSubmission,
     ) -> Result<AcceptedMachineAddSubmission, SubmitMachineAddError> {
-        validate_machine_add_join_material(&submission.raw_join_token, &submission.join_token)?;
+        validate_machine_add_join_material(
+            &submission.identity.raw_join_token,
+            &submission.identity.join_token,
+        )?;
         let MachineAddOperationSubmission {
             operation_id,
-            machine_id,
-            name,
-            roles,
-            join_bundle,
-            join_token,
-            raw_join_token,
+            identity,
             idempotency_key,
         } = submission;
         let claim = StoredMachineAddClaim {
             operation_id: operation_id.clone(),
-            machine_id,
-            name,
-            roles,
-            join_bundle,
-            join_token,
-            raw_join_token,
+            identity,
         };
         let outcome = self
             .store
@@ -71,12 +64,7 @@ impl OperationRepository {
                 Ok(AcceptedMachineAddSubmission {
                     operation_id: submitted.operation_id,
                     start_sequence: submitted.start_sequence,
-                    machine_id: submitted.machine_id,
-                    name: submitted.name,
-                    roles: submitted.roles,
-                    join_bundle: submitted.join_bundle,
-                    join_token: submitted.join_token,
-                    raw_join_token: submitted.raw_join_token,
+                    identity: submitted.identity,
                 })
             }
         }
@@ -293,7 +281,7 @@ impl OperationRepository {
                             machine_id,
                             name,
                             roles,
-                            join_bundle: submission.join_bundle,
+                            join_bundle: submission.identity.join_bundle,
                             secret_delivery,
                             joined_at: *joined_at,
                             last_event_sequence: *last_event_sequence,
@@ -329,7 +317,7 @@ impl OperationRepository {
                     machine_id,
                     name,
                     roles,
-                    join_bundle: submission.join_bundle,
+                    join_bundle: submission.identity.join_bundle,
                     secret_delivery,
                     joined_at,
                     last_event_sequence,
@@ -401,7 +389,7 @@ impl OperationRepository {
             .ok_or(RecordMachineJoinReportError::UnknownJoinToken)?;
         Ok(MachineJoinReportTarget {
             operation_id: submission.operation_id,
-            machine_id: submission.machine_id,
+            machine_id: submission.identity.machine_id,
         })
     }
 
@@ -480,10 +468,10 @@ fn submit_machine_add_txn(
     if claim.operation_id != operation_id {
         return Ok(MachineAddTxn::DuplicateIdempotencyKey);
     }
-    let Ok(fingerprint) = claim.raw_join_token.fingerprint() else {
+    let Ok(fingerprint) = claim.identity.raw_join_token.fingerprint() else {
         return Ok(MachineAddTxn::JoinTokenMismatch);
     };
-    if !claim.join_token.matches(&fingerprint) {
+    if !claim.identity.join_token.matches(&fingerprint) {
         return Ok(MachineAddTxn::JoinTokenMismatch);
     }
     if let AdoptResult::Conflict(message) = create_or_adopt_machine_add_join_token(
@@ -500,21 +488,16 @@ fn submit_machine_add_txn(
     let sequence = EventSequence::first();
     let event = OperationEvent::MachineAddSubmitted {
         operation_id: claim.operation_id.clone(),
-        machine_id: claim.machine_id.clone(),
-        name: claim.name.clone(),
-        roles: claim.roles,
-        join_token: claim.join_token.clone(),
+        machine_id: claim.identity.machine_id.clone(),
+        name: claim.identity.name.clone(),
+        roles: claim.identity.roles,
+        join_token: claim.identity.join_token.clone(),
     };
     let submitted = StoredMachineAddSubmission {
         operation_id: claim.operation_id.clone(),
         idempotency_key: idempotency_key.clone(),
         start_sequence: sequence,
-        machine_id: claim.machine_id.clone(),
-        name: claim.name.clone(),
-        roles: claim.roles,
-        join_bundle: claim.join_bundle.clone(),
-        join_token: claim.join_token.clone(),
-        raw_join_token: claim.raw_join_token.clone(),
+        identity: claim.identity.clone(),
     };
     if let AdoptResult::Conflict(message) =
         create_or_adopt_machine_add_submission(&transaction, &idempotency_key, &submitted)?
@@ -523,10 +506,10 @@ fn submit_machine_add_txn(
     }
     let status = OperationStatus::machine_add_pending(
         submitted.operation_id.clone(),
-        submitted.machine_id.clone(),
-        submitted.name.clone(),
-        submitted.roles,
-        submitted.join_token.clone(),
+        submitted.identity.machine_id.clone(),
+        submitted.identity.name.clone(),
+        submitted.identity.roles,
+        submitted.identity.join_token.clone(),
         sequence,
     );
     insert_event(&transaction, &event, sequence)?;
@@ -568,8 +551,8 @@ fn submission_for_token_txn(
         return Ok(TokenSubmission::None);
     };
     if submission.operation_id != index.operation_id
-        || submission.raw_join_token != *token
-        || !submission.join_token.matches(fingerprint)
+        || submission.identity.raw_join_token != *token
+        || !submission.identity.join_token.matches(fingerprint)
     {
         return Ok(TokenSubmission::Corrupt);
     }
@@ -624,8 +607,8 @@ fn create_or_adopt_machine_add_claim(
         params![
             idempotency_key.as_str(),
             claim.operation_id.as_str(),
-            claim.machine_id.as_str(),
-            claim.raw_join_token.as_str(),
+            claim.identity.machine_id.as_str(),
+            claim.identity.raw_join_token.as_str(),
             to_json(claim)?,
         ],
     )?;
@@ -707,8 +690,8 @@ fn create_or_adopt_machine_add_submission(
         params![
             idempotency_key.as_str(),
             submission.operation_id.as_str(),
-            submission.machine_id.as_str(),
-            submission.raw_join_token.as_str(),
+            submission.identity.machine_id.as_str(),
+            submission.identity.raw_join_token.as_str(),
             to_json(submission)?,
         ],
     )?;

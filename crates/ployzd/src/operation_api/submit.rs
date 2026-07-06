@@ -107,23 +107,24 @@ pub async fn machine_add(
         .submit_machine_add(command)
         .await
         .map_err(|error| machine_add_error_from_submit_error(operation_id.clone(), error))?;
-    let raw_token = MachineJoinToken::try_new(accepted.raw_join_token.as_str()).map_err(|_| {
-        MachineAddError::Unavailable {
-            operation_id: operation_id.clone(),
-            message: "machine-add accepted raw join token is invalid".to_owned(),
-        }
-    })?;
+    let raw_token =
+        MachineJoinToken::try_new(accepted.identity.raw_join_token.as_str()).map_err(|_| {
+            MachineAddError::Unavailable {
+                operation_id: operation_id.clone(),
+                message: "machine-add accepted raw join token is invalid".to_owned(),
+            }
+        })?;
     handlers.machine_mint.start(MintRequest {
         operation_id: accepted.operation_id.clone(),
-        machine_id: accepted.machine_id.clone(),
+        machine_id: accepted.identity.machine_id.clone(),
         idempotency_key,
     });
 
     Ok(MachineAddAccepted {
         accepted: owned_operation(accepted.operation_id, accepted.start_sequence),
-        machine_id: accepted.machine_id,
+        machine_id: accepted.identity.machine_id,
         bootstrap_url: material.bootstrap_url,
-        join_bundle: accepted.join_bundle,
+        join_bundle: accepted.identity.join_bundle,
         join_token: raw_token,
         join_secret_delivery: material.join_secret_delivery,
     })

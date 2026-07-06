@@ -18,6 +18,20 @@ pub(super) struct SubmittedOperation<P> {
     pub(super) should_start_execution: bool,
 }
 
+/// The machine-join credential set that travels together through every stage
+/// of a machine-add: submission, claim, acceptance. Named once so a new
+/// credential field is added in one place, not copied across every struct.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinIdentity {
+    pub machine_id: MachineId,
+    pub name: MachineName,
+    pub roles: InstallRolePolicy,
+    pub join_bundle: MachineJoinBundle,
+    pub join_token: IssuedJoinToken,
+    pub raw_join_token: RawJoinToken,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredDeployClaim {
@@ -31,24 +45,14 @@ pub struct StoredMachineAddSubmission {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
     pub start_sequence: EventSequence,
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub roles: InstallRolePolicy,
-    pub join_bundle: MachineJoinBundle,
-    pub join_token: IssuedJoinToken,
-    pub raw_join_token: RawJoinToken,
+    pub identity: MachineJoinIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddClaim {
     pub operation_id: OperationId,
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub roles: InstallRolePolicy,
-    pub join_bundle: MachineJoinBundle,
-    pub join_token: IssuedJoinToken,
-    pub raw_join_token: RawJoinToken,
+    pub identity: MachineJoinIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -83,12 +87,7 @@ pub struct DeployOperationSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddOperationSubmission {
     pub operation_id: OperationId,
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub roles: InstallRolePolicy,
-    pub join_bundle: MachineJoinBundle,
-    pub join_token: IssuedJoinToken,
-    pub raw_join_token: RawJoinToken,
+    pub identity: MachineJoinIdentity,
     pub idempotency_key: OperationIdempotencyKey,
 }
 
@@ -130,12 +129,7 @@ pub struct AcceptedDeploySubmission {
 pub struct AcceptedMachineAddSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
-    pub machine_id: MachineId,
-    pub name: MachineName,
-    pub roles: InstallRolePolicy,
-    pub join_bundle: MachineJoinBundle,
-    pub join_token: IssuedJoinToken,
-    pub raw_join_token: RawJoinToken,
+    pub identity: MachineJoinIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
