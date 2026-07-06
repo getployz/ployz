@@ -144,6 +144,7 @@ pub async fn machine_update(
     let target_machine = handlers
         .machine_roster
         .active_machine(&request.machine_id)
+        .await
         .map_err(|error| MachineUpdateError::Unavailable {
             operation_id: operation_id.clone(),
             message: error.to_string(),
@@ -220,6 +221,7 @@ async fn machine_lifecycle(
     let target_machine = handlers
         .machine_roster
         .active_machine(&machine_id)
+        .await
         .map_err(|error| MachineLifecycleError::Unavailable {
             operation_id: operation_id.clone(),
             message: error.to_string(),

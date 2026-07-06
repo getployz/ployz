@@ -257,7 +257,6 @@ struct TestNats {
     /// Machine principal: the gateway process side (gateway runs as the
     /// machine's Machine user in v1) and fact writes.
     machine_client: async_nats::Client,
-    intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
 }
 
@@ -268,7 +267,6 @@ impl TestNats {
                 .await;
         let client = connected.controller.clone();
         let machine_client = connected.machine_client(&machine_id("machine_7")).await;
-        let intent_dir = tempfile::tempdir().expect("intent dir");
         let namespace_intent =
             NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open_in_memory()
@@ -280,7 +278,6 @@ impl TestNats {
             _connected: connected,
             client,
             machine_client,
-            intent_dir,
             namespace_intent,
         }
     }
@@ -288,9 +285,8 @@ impl TestNats {
     async fn start_intent(&self) -> RunningIntentRuntime {
         start_intent_runtime(
             self.client.clone(),
-            MachineRosterStore::new(self.intent_dir.path().join("machine-roster.json")),
+            MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store")),
             self.namespace_intent.clone(),
-            self.intent_dir.path().join("machine-lifecycles.json"),
             Duration::from_millis(10),
         )
         .await

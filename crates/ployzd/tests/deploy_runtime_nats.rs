@@ -471,12 +471,11 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let machine_roster = MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json"));
+    let machine_roster = MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store"));
     let intent = start_intent_runtime(
         client.clone(),
         machine_roster,
         namespace_intent.clone(),
-        lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await

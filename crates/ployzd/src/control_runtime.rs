@@ -111,8 +111,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
-    let machine_roster =
-        MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone());
+    let machine_roster = MachineRosterStore::new(core_store.clone());
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         namespace_intent.clone(),
@@ -143,7 +142,6 @@ pub async fn start_control_runtime_with_client_and_reload(
         client.clone(),
         machine_roster.clone(),
         namespace_intent,
-        config.nats_authorization.machine_lifecycles_file.clone(),
         INTENT_PUBLISH_INTERVAL,
     )
     .await
@@ -158,7 +156,6 @@ pub async fn start_control_runtime_with_client_and_reload(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        config.nats_authorization.machine_lifecycles_file.clone(),
         machine_lifecycle_tasks.clone(),
     );
     let operation_api = start_operation_api_service_with_handlers(

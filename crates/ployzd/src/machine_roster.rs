@@ -1,106 +1,136 @@
-//! Core-local active-machine roster evidence.
+//! Core-local machine roster, stored in SQLite.
+//!
+//! One `machines` row per active machine holds the whole `ActiveMachineState`,
+//! lifecycle included — so a machine's lifecycle (drain/resume operator intent)
+//! lives in exactly one place, read straight from the roster with no separate
+//! overlay.
 
-use crate::evidence_file::{EvidenceFileError, read_json_or_default, write_json};
+use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
 use ployz_core::ids::MachineId;
-use ployz_core::state::ActiveMachineState;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use ployz_core::state::{ActiveMachineState, MachineLifecycle};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone)]
 pub struct MachineRosterStore {
-    path: PathBuf,
-    lock: Arc<Mutex<()>>,
+    store: CoreStore,
+}
+
+/// Outcome of a lifecycle transition: the machine may not exist, the intent may
+/// already hold, or the row changed.
+pub enum MachineLifecycleUpdate {
+    NoSuchMachine,
+    Unchanged,
+    Changed,
 }
 
 impl MachineRosterStore {
     #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            lock: Arc::new(Mutex::new(())),
-        }
+    pub fn new(store: CoreStore) -> Self {
+        Self { store }
     }
 
     pub async fn replace_active_machine(
         &self,
         state: &ActiveMachineState,
     ) -> Result<(), MachineRosterStoreError> {
-        let _guard = self.lock.lock().await;
-        let mut evidence: MachineRosterEvidence = read_json_or_default(&self.path)?;
-        evidence
-            .active_machines
-            .retain(|active| active.machine_id != state.machine_id);
-        evidence.active_machines.push(state.clone());
-        evidence
-            .active_machines
-            .sort_by(|left, right| left.machine_id.as_str().cmp(right.machine_id.as_str()));
-        write_evidence(&self.path, &evidence)
+        let state = state.clone();
+        self.store
+            .call(move |conn| put_machine(conn, &state))
+            .await
+            .map_err(store_error)
     }
 
-    pub fn active_machine(
+    pub async fn active_machine(
         &self,
         machine_id: &MachineId,
     ) -> Result<Option<ActiveMachineState>, MachineRosterStoreError> {
-        Ok(read_json_or_default::<MachineRosterEvidence>(&self.path)?
-            .active_machines
-            .into_iter()
-            .find(|active| &active.machine_id == machine_id))
+        let machine_id = machine_id.clone();
+        self.store
+            .call(move |conn| get_machine(conn, &machine_id))
+            .await
+            .map_err(store_error)
     }
 
-    pub fn active_machines(&self) -> Result<Vec<ActiveMachineState>, MachineRosterStoreError> {
-        Ok(read_json_or_default::<MachineRosterEvidence>(&self.path)?.active_machines)
+    pub async fn active_machines(
+        &self,
+    ) -> Result<Vec<ActiveMachineState>, MachineRosterStoreError> {
+        self.store
+            .call(|conn| query_json_list(conn, "SELECT json FROM machines ORDER BY machine_id"))
+            .await
+            .map_err(store_error)
+    }
+
+    /// Commit a machine's lifecycle intent. The read-modify-write runs in one
+    /// transaction, so lifecycle stays consistent with the rest of the record.
+    pub async fn set_lifecycle(
+        &self,
+        machine_id: &MachineId,
+        lifecycle: MachineLifecycle,
+    ) -> Result<MachineLifecycleUpdate, MachineRosterStoreError> {
+        let machine_id = machine_id.clone();
+        self.store
+            .call(move |conn| set_lifecycle_txn(conn, &machine_id, lifecycle))
+            .await
+            .map_err(store_error)
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineRosterEvidence {
-    pub active_machines: Vec<ActiveMachineState>,
+fn get_machine(
+    conn: &Connection,
+    machine_id: &MachineId,
+) -> Result<Option<ActiveMachineState>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT json FROM machines WHERE machine_id = ?1",
+        [machine_id.as_str()],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|json| from_json(&json))
+    .transpose()
+}
+
+fn put_machine(conn: &Connection, state: &ActiveMachineState) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO machines (machine_id, json) VALUES (?1, ?2)
+         ON CONFLICT(machine_id) DO UPDATE SET json = excluded.json",
+        params![state.machine_id.as_str(), to_json(state)?],
+    )?;
+    Ok(())
+}
+
+fn set_lifecycle_txn(
+    conn: &mut Connection,
+    machine_id: &MachineId,
+    lifecycle: MachineLifecycle,
+) -> Result<MachineLifecycleUpdate, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    let Some(mut state) = get_machine(&transaction, machine_id)? else {
+        return Ok(MachineLifecycleUpdate::NoSuchMachine);
+    };
+    if state.lifecycle == lifecycle {
+        return Ok(MachineLifecycleUpdate::Unchanged);
+    }
+    state.lifecycle = lifecycle;
+    put_machine(&transaction, &state)?;
+    transaction.commit()?;
+    Ok(MachineLifecycleUpdate::Changed)
 }
 
 #[derive(Debug)]
-pub enum MachineRosterStoreError {
-    Read { message: String },
-    Decode { message: String },
-    Encode { message: String },
-    Write { message: String },
+pub struct MachineRosterStoreError {
+    message: String,
+}
+
+fn store_error(error: CoreStoreError) -> MachineRosterStoreError {
+    MachineRosterStoreError {
+        message: error.to_string(),
+    }
 }
 
 impl std::fmt::Display for MachineRosterStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Read { message } => write!(formatter, "read machine roster evidence: {message}"),
-            Self::Decode { message } => {
-                write!(formatter, "decode machine roster evidence: {message}")
-            }
-            Self::Encode { message } => {
-                write!(formatter, "encode machine roster evidence: {message}")
-            }
-            Self::Write { message } => {
-                write!(formatter, "write machine roster evidence: {message}")
-            }
-        }
+        write!(formatter, "machine roster store: {}", self.message)
     }
 }
 
 impl std::error::Error for MachineRosterStoreError {}
-
-fn write_evidence(
-    path: &std::path::Path,
-    evidence: &MachineRosterEvidence,
-) -> Result<(), MachineRosterStoreError> {
-    write_json(path, evidence).map_err(MachineRosterStoreError::from)
-}
-
-impl From<EvidenceFileError> for MachineRosterStoreError {
-    fn from(error: EvidenceFileError) -> Self {
-        match error {
-            EvidenceFileError::Read { message } => Self::Read { message },
-            EvidenceFileError::Decode { message } => Self::Decode { message },
-            EvidenceFileError::Encode { message } => Self::Encode { message },
-            EvidenceFileError::Write { message } => Self::Write { message },
-        }
-    }
-}

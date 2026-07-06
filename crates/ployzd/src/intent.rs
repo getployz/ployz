@@ -1,6 +1,5 @@
 //! Core-owned operator intent service.
 
-use crate::machine_lifecycle_runtime::machine_lifecycle_intent_from_file;
 use crate::machine_roster::MachineRosterStore;
 use crate::namespace_intent::NamespaceIntentStore;
 use crate::services::{intent_get_endpoint_spec, intent_service};
@@ -13,7 +12,6 @@ use ployz_nats::service_runtime::{
     start_nats_service,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -92,27 +90,16 @@ pub async fn start_intent_runtime(
     client: async_nats::Client,
     machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
-    machine_lifecycles_file: PathBuf,
     publish_interval: Duration,
 ) -> Result<RunningIntentRuntime, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
-    let service_machine_lifecycles_file = machine_lifecycles_file.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
             let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
-            let machine_lifecycles_file = service_machine_lifecycles_file.clone();
-            async move {
-                intent_get_response(
-                    request,
-                    &machine_roster,
-                    &namespace_intent,
-                    &machine_lifecycles_file,
-                )
-                .await
-            }
+            async move { intent_get_response(request, &machine_roster, &namespace_intent).await }
         })
         .await?;
 
@@ -120,9 +107,7 @@ pub async fn start_intent_runtime(
         let mut interval = tokio::time::interval(publish_interval);
         loop {
             interval.tick().await;
-            let Ok(intent) =
-                load_intent(&machine_roster, &namespace_intent, &machine_lifecycles_file).await
-            else {
+            let Ok(intent) = load_intent(&machine_roster, &namespace_intent).await else {
                 continue;
             };
             let Ok(payload) = serde_json::to_vec(&intent) else {
@@ -139,13 +124,12 @@ async fn intent_get_response(
     request: NatsServiceRequest,
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
-    machine_lifecycles_file: &Path,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<IntentGetRequest>(&request) {
         return response;
     }
 
-    match load_intent(machine_roster, namespace_intent, machine_lifecycles_file).await {
+    match load_intent(machine_roster, namespace_intent).await {
         Ok(intent) => NatsServiceResponse::json_ok(&intent),
         Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
     }
@@ -154,19 +138,12 @@ async fn intent_get_response(
 async fn load_intent(
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
-    machine_lifecycles_file: &Path,
 ) -> Result<IntentSnapshot, String> {
-    let mut active_machines = machine_roster
+    let active_machines = machine_roster
         .active_machines()
+        .await
         .map_err(|error| error.to_string())?;
     let namespace_intent = namespace_intent.load().await.map_err(|error| error.to_string())?;
-    let lifecycle_intent = machine_lifecycle_intent_from_file(machine_lifecycles_file)
-        .map_err(|error| error.to_string())?;
-    for active in &mut active_machines {
-        if let Some(lifecycle) = lifecycle_intent.get(&active.machine_id) {
-            active.lifecycle = *lifecycle;
-        }
-    }
 
     Ok(IntentSnapshot {
         active_machines,

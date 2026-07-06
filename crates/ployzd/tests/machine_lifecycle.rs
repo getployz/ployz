@@ -1,5 +1,5 @@
 //! Machine lifecycle operations against real NATS stores: drain and resume
-//! commit operator intent to the on-disk evidence file.
+//! commit operator intent to the machine's roster row.
 
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
 use ployz_core::machine::active_machine_from_completed_add;
@@ -8,9 +8,7 @@ use ployz_core::state::MachineLifecycle;
 use ployzd::controllers::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
-use ployzd::machine_lifecycle_runtime::{
-    MachineLifecycleOperationRuntime, machine_lifecycle_intent_from_file,
-};
+use ployzd::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::operation_log::OperationRepository;
 use ployzd::tasks::TaskRegistry;
@@ -24,16 +22,17 @@ mod support;
 async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let controllers = operation_controllers(nats.controller.clone()).await;
-    let work_dir = tempfile::tempdir().expect("evidence dir");
-    let evidence_file = work_dir.path().join("machine-lifecycles.json");
-    let machine_roster = MachineRosterStore::new(work_dir.path().join("machine-roster.json"));
+    let machine_roster = MachineRosterStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
     seed_active_machine(&machine_roster, "machine_a").await;
 
     let runtime = MachineLifecycleOperationRuntime::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        evidence_file.clone(),
         TaskRegistry::default(),
     );
 
@@ -47,16 +46,9 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
         .expect("drain accepted");
     runtime.clone().run(accepted).await;
 
-    let active_record = machine_roster
-        .active_machine(&machine_id("machine_a"))
-        .expect("machine reads")
-        .expect("machine exists");
-    assert_eq!(active_record.lifecycle, MachineLifecycle::Active);
     assert_eq!(
-        machine_lifecycle_intent_from_file(&evidence_file)
-            .expect("lifecycle intent reads")
-            .get(&machine_id("machine_a")),
-        Some(&MachineLifecycle::Draining)
+        drained_lifecycle(&machine_roster, "machine_a").await,
+        MachineLifecycle::Draining
     );
     assert_terminal_completed(&controllers, "op_drain_1").await;
 
@@ -70,33 +62,36 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
         .expect("resume accepted");
     runtime.clone().run(accepted).await;
 
-    let active_record = machine_roster
-        .active_machine(&machine_id("machine_a"))
-        .expect("machine reads")
-        .expect("machine exists");
-    assert_eq!(active_record.lifecycle, MachineLifecycle::Active);
-    let intent =
-        machine_lifecycle_intent_from_file(&evidence_file).expect("lifecycle intent reads");
-    assert!(
-        !intent.contains_key(&machine_id("machine_a")),
-        "resume clears the drained record: {intent:?}"
+    assert_eq!(
+        drained_lifecycle(&machine_roster, "machine_a").await,
+        MachineLifecycle::Active
     );
     assert_terminal_completed(&controllers, "op_resume_1").await;
+}
+
+async fn drained_lifecycle(machine_roster: &MachineRosterStore, machine: &str) -> MachineLifecycle {
+    machine_roster
+        .active_machine(&machine_id(machine))
+        .await
+        .expect("machine reads")
+        .expect("machine exists")
+        .lifecycle
 }
 
 #[tokio::test]
 async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let controllers = operation_controllers(nats.controller.clone()).await;
-    let work_dir = tempfile::tempdir().expect("evidence dir");
-    let evidence_file = work_dir.path().join("machine-lifecycles.json");
-    let machine_roster = MachineRosterStore::new(work_dir.path().join("machine-roster.json"));
+    let machine_roster = MachineRosterStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
 
     let runtime = MachineLifecycleOperationRuntime::new(
         nats.controller.clone(),
         controllers.clone(),
-        machine_roster,
-        evidence_file.clone(),
+        machine_roster.clone(),
         TaskRegistry::default(),
     );
 
@@ -111,8 +106,12 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     runtime.clone().run(accepted).await;
 
     assert!(
-        !evidence_file.exists(),
-        "a failed drain must not leave durable intent behind"
+        machine_roster
+            .active_machine(&machine_id("machine_ghost"))
+            .await
+            .expect("machine reads")
+            .is_none(),
+        "a failed drain must not create a machine record"
     );
     let status = controllers
         .repository()

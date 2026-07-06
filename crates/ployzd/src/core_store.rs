@@ -70,10 +70,8 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (namespace_id, service_id)
     );
     CREATE TABLE machines (
-        machine_id   TEXT PRIMARY KEY,
-        name         TEXT NOT NULL,
-        activated_by TEXT NOT NULL,
-        lifecycle    TEXT NOT NULL
+        machine_id TEXT PRIMARY KEY,
+        json       TEXT NOT NULL
     );
     ",
 ];
