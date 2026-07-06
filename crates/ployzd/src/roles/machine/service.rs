@@ -1,4 +1,4 @@
-//! NATS Service API runtime wiring for machine-local commands.
+//! NATS Service API wiring for machine-local commands.
 
 use crate::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
@@ -23,7 +23,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail, decide_container_run,
 };
-use crate::service_catalog::{machine_endpoint_spec, machine_runtime_service_base};
+use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::dataplane::{
     PloyzNativeMeshMachineReady, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
@@ -51,41 +51,41 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SUBSTRATE_VERSION_FILE: &str = "/var/lib/ployz/substrate-version.json";
 
-pub async fn start_machine_runtime_service<R, P, L>(
+pub async fn start_machine_role_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
     runner: R,
     preparer: P,
     log_reader: L,
-) -> Result<RunningNatsService, MachineServiceRuntimeError>
+) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    start_machine_runtime_service_with_public_ip(
+    start_machine_role_service_with_public_ip(
         client, machine_id, runner, preparer, log_reader, None,
     )
     .await
 }
 
-pub async fn start_machine_runtime_service_with_public_ip<R, P, L>(
+pub async fn start_machine_role_service_with_public_ip<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
     runner: R,
     preparer: P,
     log_reader: L,
     public_ip: Option<IpAddr>,
-) -> Result<RunningNatsService, MachineServiceRuntimeError>
+) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let spec = machine_runtime_service_base(&machine_id);
+    let spec = machine_role_service_base(&machine_id);
     let mut runtime = start_nats_service(client, &spec)
         .await
-        .map_err(MachineServiceRuntimeError::Nats)?;
+        .map_err(MachineServiceError::Nats)?;
 
     bind_machine_endpoint(
         &mut runtime,
@@ -180,7 +180,7 @@ async fn bind_machine_endpoint<S, H, Fut>(
     endpoint: MachineServiceEndpoint,
     state: S,
     handler: H,
-) -> Result<(), MachineServiceRuntimeError>
+) -> Result<(), MachineServiceError>
 where
     S: Clone + Send + Sync + 'static,
     H: Fn(MachineId, S, NatsServiceRequest) -> Fut + Send + Sync + 'static,
@@ -193,7 +193,7 @@ where
             handler(machine_id.clone(), state.clone(), request)
         })
         .await
-        .map_err(MachineServiceRuntimeError::Nats)
+        .map_err(MachineServiceError::Nats)
 }
 
 async fn handle_substrate_update(
@@ -841,11 +841,11 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineServiceRuntimeError {
+pub enum MachineServiceError {
     Nats(NatsServiceRuntimeError),
 }
 
-impl std::fmt::Display for MachineServiceRuntimeError {
+impl std::fmt::Display for MachineServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Nats(error) => {
@@ -855,4 +855,4 @@ impl std::fmt::Display for MachineServiceRuntimeError {
     }
 }
 
-impl std::error::Error for MachineServiceRuntimeError {}
+impl std::error::Error for MachineServiceError {}

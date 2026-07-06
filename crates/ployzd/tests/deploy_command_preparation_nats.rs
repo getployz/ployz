@@ -20,7 +20,7 @@ use ployzd::operations::deploy::{
     DeployMachineCandidates, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use ployzd::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::client::NatsMachineFactsReader;
 use ployzd::roles::machine::runner::{
@@ -29,7 +29,7 @@ use ployzd::roles::machine::runner::{
     MachineLogTail,
 };
 use ployzd::roles::machine::service::{
-    MachinePloyzNativeMeshPreparer, start_machine_runtime_service,
+    MachinePloyzNativeMeshPreparer, start_machine_role_service,
 };
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::time::Duration;
@@ -328,7 +328,7 @@ async fn prepare_command_from_nats(
 struct TestNats {
     connected: ployz_test_support::nats::TestNats,
     machine_roster: MachineRosterStore,
-    _intent: RunningIntentRuntime,
+    _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
 }
@@ -354,7 +354,7 @@ impl TestNats {
     ) -> RunningNatsService {
         let machine_id = snapshot.machine_id().clone();
         let machine_client = self.connected.machine_client(&machine_id).await;
-        start_machine_runtime_service(
+        start_machine_role_service(
             machine_client,
             machine_id,
             StaticRunner::from_snapshot(snapshot),
@@ -518,7 +518,7 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let intent = start_intent_runtime(
+    let intent = start_intent_service(
         connected.controller.clone(),
         machine_roster.clone(),
         namespace_intent.clone(),

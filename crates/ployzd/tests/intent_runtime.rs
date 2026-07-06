@@ -4,7 +4,7 @@ use ployz_core::state::{
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_test_support::ids::{machine_id, namespace_revision_entry_id, operation_id, service_id};
-use ployzd::intent::service::{NatsIntentReader, start_intent_runtime};
+use ployzd::intent::service::{NatsIntentReader, start_intent_service};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::time::Duration;
@@ -28,7 +28,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
         .subscribe(INTENT_CHANGED)
         .await
         .expect("subscribe intent changes");
-    let _runtime = start_intent_runtime(
+    let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_roster,
         temp_namespace_intent().await,
@@ -58,7 +58,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
 #[tokio::test]
 async fn intent_reader_gets_current_intent() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    let _runtime = start_intent_runtime(
+    let _runtime = start_intent_service(
         nats.controller.clone(),
         temp_machine_roster().await,
         temp_namespace_intent().await,
@@ -92,7 +92,7 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
         })
         .await
         .expect("active machine stores");
-    let _runtime = start_intent_runtime(
+    let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_roster,
         temp_namespace_intent().await,
@@ -138,7 +138,7 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         })
         .await
         .expect("route binding stores");
-    let _runtime = start_intent_runtime(
+    let _runtime = start_intent_service(
         nats.controller.clone(),
         temp_machine_roster().await,
         namespace_intent,

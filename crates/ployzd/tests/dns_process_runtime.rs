@@ -7,9 +7,9 @@ use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::roles::dns::projection::DnsAnswer;
 use ployzd::roles::dns::process::{
-    DnsProcessAttempt, RunningDnsProcessRuntime, start_dns_process_runtime_with_client,
+    DnsProcessAttempt, RunningDnsProcess, start_dns_process_with_client,
 };
-use ployzd::intent::service::{RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start().await;
     let runtime =
-        start_dns_process_runtime_with_client(nats.dns_client.clone(), Duration::from_millis(10))
+        start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
             .await
             .expect("dns runtime starts before sources exist");
 
@@ -39,7 +39,7 @@ async fn dns_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let runtime =
-        start_dns_process_runtime_with_client(nats.dns_client.clone(), Duration::from_millis(10))
+        start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
             .await
             .expect("dns runtime starts");
     wait_until(Duration::from_secs(2), || {
@@ -63,7 +63,7 @@ async fn dns_process_applies_route_changes_on_next_poll() {
     runtime.shutdown().await;
 }
 
-fn dns_serves_answer(runtime: &RunningDnsProcessRuntime, hostname: &str, answer: &str) -> bool {
+fn dns_serves_answer(runtime: &RunningDnsProcess, hostname: &str, answer: &str) -> bool {
     runtime.served_projection().is_some_and(|projection| {
         matches!(
             projection.records.as_slice(),
@@ -102,8 +102,8 @@ impl TestNats {
         }
     }
 
-    async fn start_intent(&self) -> RunningIntentRuntime {
-        start_intent_runtime(
+    async fn start_intent(&self) -> RunningIntentService {
+        start_intent_service(
             self.connected.controller.clone(),
             MachineRosterStore::new(
                 ployzd::core_store::CoreStore::open_in_memory()

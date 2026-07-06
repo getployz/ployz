@@ -20,7 +20,7 @@ use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::operations::deploy::DeployMachineCandidates;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
@@ -452,7 +452,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
 
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
-    _intent: RunningIntentRuntime,
+    _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
     /// Controller principal: the deploy-runtime side.
@@ -483,7 +483,7 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let intent = start_intent_runtime(
+    let intent = start_intent_service(
         client.clone(),
         machine_roster,
         namespace_intent.clone(),

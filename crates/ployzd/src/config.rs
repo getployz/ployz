@@ -18,7 +18,7 @@ use ployz_nats::connect::{
 use std::time::Duration;
 
 use crate::operation_api::admission::MachineAddBootstrapConfig;
-use crate::adapters::nats_server::NatsServerRuntime;
+use crate::adapters::nats_server::NatsServerLaunch;
 use crate::role_cli::DaemonProcessRole;
 pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
@@ -78,7 +78,7 @@ pub fn load_daemon_process_config(
             let connect = load_nats_connect_config(&role, &env)?;
             let nats_connect = read_connect_config_now(&role, &connect)?;
             let mut control = ControlProcessConfig::new(
-                NatsServerRuntime::External(connect.url),
+                NatsServerLaunch::External(connect.url),
                 machine_id,
                 nats_connect,
             )
@@ -629,7 +629,7 @@ impl std::error::Error for DaemonProcessConfigError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlProcessConfig {
-    pub nats: NatsServerRuntime,
+    pub nats: NatsServerLaunch,
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
     pub core_db_path: PathBuf,
@@ -641,7 +641,7 @@ pub struct ControlProcessConfig {
 impl ControlProcessConfig {
     #[must_use]
     pub fn new(
-        nats: NatsServerRuntime,
+        nats: NatsServerLaunch,
         first_deploy_machine: MachineId,
         nats_connect: NatsConnectConfig,
     ) -> Self {

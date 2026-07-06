@@ -1,4 +1,4 @@
-//! Plain-subject fact fanout consumed by role runtimes.
+//! Plain-subject fact fanout consumed by role processes.
 
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, MachineId};
@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Default)]
-pub struct RuntimeFactsCache {
+pub struct FactCache {
     state: Arc<RwLock<RuntimeFactsState>>,
 }
 
@@ -23,7 +23,7 @@ struct RuntimeFactsState {
     gateway_statuses: BTreeMap<MachineId, GatewayStatusObservation>,
 }
 
-impl RuntimeFactsCache {
+impl FactCache {
     pub fn record_machine_facts(&self, facts: MachineFactsSnapshot) {
         self.state
             .write()
@@ -109,14 +109,14 @@ impl RuntimeFactsCache {
     }
 }
 
-pub struct RunningRuntimeFactsCache {
-    cache: RuntimeFactsCache,
+pub struct RunningFactCache {
+    cache: FactCache,
     task: JoinHandle<()>,
 }
 
-impl RunningRuntimeFactsCache {
+impl RunningFactCache {
     #[must_use]
-    pub fn cache(&self) -> RuntimeFactsCache {
+    pub fn cache(&self) -> FactCache {
         self.cache.clone()
     }
 
@@ -131,36 +131,36 @@ impl RunningRuntimeFactsCache {
     }
 }
 
-pub async fn start_runtime_facts_cache(
+pub async fn start_fact_cache(
     client: async_nats::Client,
-) -> Result<RunningRuntimeFactsCache, RuntimeFactsCacheError> {
+) -> Result<RunningFactCache, FactCacheError> {
     let machine_subject = machine_facts_scope();
     let gateway_subject = gateway_status_scope();
     let machine_facts = client
         .subscribe(machine_subject.clone())
         .await
-        .map_err(|error| RuntimeFactsCacheError::Subscribe {
+        .map_err(|error| FactCacheError::Subscribe {
             subject: machine_subject,
             message: error.to_string(),
         })?;
     let gateway_statuses = client
         .subscribe(gateway_subject.clone())
         .await
-        .map_err(|error| RuntimeFactsCacheError::Subscribe {
+        .map_err(|error| FactCacheError::Subscribe {
             subject: gateway_subject,
             message: error.to_string(),
         })?;
-    let cache = RuntimeFactsCache::default();
+    let cache = FactCache::default();
     let task_cache = cache.clone();
     let task = tokio::spawn(async move {
-        consume_runtime_facts(task_cache, machine_facts, gateway_statuses).await;
+        consume_facts(task_cache, machine_facts, gateway_statuses).await;
     });
 
-    Ok(RunningRuntimeFactsCache { cache, task })
+    Ok(RunningFactCache { cache, task })
 }
 
-async fn consume_runtime_facts(
-    cache: RuntimeFactsCache,
+async fn consume_facts(
+    cache: FactCache,
     mut machine_facts: async_nats::Subscriber,
     mut gateway_statuses: async_nats::Subscriber,
 ) {
@@ -182,11 +182,11 @@ async fn consume_runtime_facts(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeFactsCacheError {
+pub enum FactCacheError {
     Subscribe { subject: String, message: String },
 }
 
-impl fmt::Display for RuntimeFactsCacheError {
+impl fmt::Display for FactCacheError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Subscribe { subject, message } => {
@@ -196,4 +196,4 @@ impl fmt::Display for RuntimeFactsCacheError {
     }
 }
 
-impl std::error::Error for RuntimeFactsCacheError {}
+impl std::error::Error for FactCacheError {}

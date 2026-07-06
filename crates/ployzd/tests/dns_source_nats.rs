@@ -5,13 +5,13 @@ use ployz_core::state::{
 };
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::roles::dns::projection::{
-    DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, project_dns,
+    DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsProjector, DnsServingState, project_dns,
 };
 use ployzd::roles::dns::source::load_dns_projection_update_from_nats;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::fact_cache::RuntimeFactsCache;
+use ployzd::fact_cache::FactCache;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
 #[tokio::test]
 async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let nats = test_nats().await;
-    let mut runtime = DnsRuntime::new();
+    let mut runtime = DnsProjector::new();
     let hostname = route_hostname("api.example.com");
 
     nats.namespace_intent
@@ -127,8 +127,8 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     intent_reader: NatsIntentReader,
-    facts: RuntimeFactsCache,
-    _intent: RunningIntentRuntime,
+    facts: FactCache,
+    _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
 }
@@ -150,7 +150,7 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let intent = start_intent_runtime(
+    let intent = start_intent_service(
         nats.controller.clone(),
         MachineRosterStore::new(
             ployzd::core_store::CoreStore::open_in_memory()
@@ -167,7 +167,7 @@ async fn test_nats() -> TestNats {
         _nats: nats,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
-        facts: RuntimeFactsCache::default(),
+        facts: FactCache::default(),
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,

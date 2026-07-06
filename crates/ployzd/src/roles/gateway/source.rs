@@ -5,13 +5,13 @@ use crate::roles::gateway::projection::{
     GatewayServingEntry,
 };
 use crate::intent::service::{IntentReadError, NatsIntentReader};
-use crate::fact_cache::RuntimeFactsCache;
+use crate::fact_cache::FactCache;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::fmt;
 pub async fn load_gateway_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &RuntimeFactsCache,
+    facts: &FactCache,
 ) -> GatewayProjectionUpdate {
     match load_gateway_projection_input_from_nats(intent_reader, facts).await {
         Ok(input) => GatewayProjectionUpdate::SourceAvailable(input),
@@ -30,7 +30,7 @@ pub async fn load_gateway_projection_update_from_nats(
 
 pub async fn load_gateway_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &RuntimeFactsCache,
+    facts: &FactCache,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let intent = async {
         intent_reader

@@ -12,11 +12,11 @@ use ployzd::roles::gateway::projection::{
     GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
     GatewayUpstream,
 };
-use ployzd::roles::gateway::route_table::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
+use ployzd::roles::gateway::route_table::{GatewayRouteSelectionError, GatewayRouteTable, GatewayProjector};
 
 #[test]
 fn gateway_runtime_serves_new_projection_from_available_source() {
-    let mut runtime = GatewayRuntime::new();
+    let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
 
     let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
@@ -36,7 +36,7 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
 
 #[test]
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
-    let mut runtime = GatewayRuntime::new();
+    let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
     runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
@@ -62,7 +62,7 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
 
 #[test]
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
-    let mut runtime = GatewayRuntime::new();
+    let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
     runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
@@ -87,7 +87,7 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
 
 #[test]
 fn gateway_runtime_applies_later_route_changes_after_outage() {
-    let mut runtime = GatewayRuntime::new();
+    let mut runtime = GatewayProjector::new();
     let api_v2 = projected_route("api.example.com", "machine_2", "ctr_2");
     runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
@@ -115,7 +115,7 @@ fn gateway_runtime_applies_later_route_changes_after_outage() {
 
 #[test]
 fn gateway_runtime_has_no_served_routes_before_first_valid_source() {
-    let mut runtime = GatewayRuntime::new();
+    let mut runtime = GatewayProjector::new();
 
     let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
         source_unavailable(),

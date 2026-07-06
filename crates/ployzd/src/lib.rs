@@ -3,7 +3,7 @@
 //! Ployz daemon process wiring.
 //!
 //! The daemon owns lifecycle, configuration, service registration,
-//! controllers, machine-local services, and runtime adapters. Product policy stays
+//! controllers, machine-local services, and integration adapters. Product policy stays
 //! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
 
 pub mod adapters {

@@ -1,28 +1,28 @@
-//! Runtime wiring for the control role.
+//! Process wiring for the control role.
 
-use crate::operation_api::service::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
+use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::config::ControlProcessConfig;
 use crate::operation_api::admission::OperationControllers;
 use crate::core_store::{CoreStore, CoreStoreError};
-use crate::operations::deploy::driver::DeployOperationRuntime;
+use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::deploy::DeployMachineCandidates;
-use crate::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use crate::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
+use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
-use crate::operations::machine_update::MachineUpdateOperationRuntime;
+use crate::operations::machine_update::MachineUpdateOperation;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::adapters::nats_authorization::{
-    MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
+    MachineCredentialMint, MintResumeError, MintVerifyEndpoint, NatsAuthorizationWriter,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
 use crate::operations::log::OperationRepository;
 use crate::process_support::shutdown_signal;
 use crate::fact_cache::{
-    RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
+    RunningFactCache, FactCacheError, start_fact_cache,
 };
 use crate::tasks::TaskRegistry;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
@@ -33,18 +33,18 @@ use std::time::Duration;
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
-pub struct RunningControlRuntime {
-    intent: RunningIntentRuntime,
+pub struct RunningControlProcess {
+    intent: RunningIntentService,
     operation_api: RunningNatsService,
     deploy_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
-    facts_cache: RunningRuntimeFactsCache,
-    authorization: NatsAuthorizationRuntime,
+    facts_cache: RunningFactCache,
+    authorization: NatsAuthorizationWriter,
 }
 
-impl RunningControlRuntime {
+impl RunningControlProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
         self.intent.shutdown().await?;
@@ -58,37 +58,37 @@ impl RunningControlRuntime {
     }
 }
 
-pub async fn start_control_runtime(
+pub async fn start_control_process(
     config: &ControlProcessConfig,
-) -> Result<RunningControlRuntime, ControlRuntimeError> {
+) -> Result<RunningControlProcess, ControlProcessError> {
     let client = connect_authenticated(&config.nats_connect, CONTROL_NATS_CONNECT_TIMEOUT)
         .await
-        .map_err(ControlRuntimeError::ConnectNats)?;
-    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+        .map_err(ControlProcessError::ConnectNats)?;
+    start_control_process_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
 }
 
-pub async fn start_control_runtime_with_client(
+pub async fn start_control_process_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
-) -> Result<RunningControlRuntime, ControlRuntimeError> {
-    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+) -> Result<RunningControlProcess, ControlProcessError> {
+    start_control_process_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
 }
 
-pub async fn start_control_runtime_with_client_and_reload(
+pub async fn start_control_process_with_client_and_reload(
     client: NatsClient,
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
-) -> Result<RunningControlRuntime, ControlRuntimeError> {
+) -> Result<RunningControlProcess, ControlProcessError> {
     if config.machine_bootstrap.join_material.is_none() {
-        return Err(ControlRuntimeError::MissingMachineJoinTemplate);
+        return Err(ControlProcessError::MissingMachineJoinTemplate);
     }
 
     let core_store = CoreStore::open(config.core_db_path.clone())
         .await
-        .map_err(ControlRuntimeError::OpenCoreStore)?;
+        .map_err(ControlProcessError::OpenCoreStore)?;
     let repository = OperationRepository::open(core_store.clone(), client.clone());
     let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
-    let authorization = NatsAuthorizationRuntime::start(
+    let authorization = NatsAuthorizationWriter::start(
         config.nats_authorization.authorized_users_file.clone(),
         reload,
     );
@@ -96,15 +96,15 @@ pub async fn start_control_runtime_with_client_and_reload(
         .handle()
         .render(None)
         .await
-        .map_err(ControlRuntimeError::RenderNatsAuthorization)?;
+        .map_err(ControlProcessError::RenderNatsAuthorization)?;
     // Start the facts cache only after authorization has rendered and
     // reloaded permissions: its subscription to plz.v1.facts.* must not be
     // established before the grant exists, or NATS rejects it asynchronously
     // and the cache never resubscribes. Nothing between here and the
     // operation API consumes the cache, so this ordering is free.
-    let facts_cache = start_runtime_facts_cache(client.clone())
+    let facts_cache = start_fact_cache(client.clone())
         .await
-        .map_err(ControlRuntimeError::StartFactsCache)?;
+        .map_err(ControlProcessError::StartFactsCache)?;
     let facts = facts_cache.cache();
     let deploy_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
@@ -112,7 +112,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
-    let deploy_runtime = DeployOperationRuntime::new(
+    let deploy_driver = DeployOperationDriver::new(
         client.clone(),
         namespace_intent.clone(),
         controllers.clone(),
@@ -120,7 +120,7 @@ pub async fn start_control_runtime_with_client_and_reload(
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );
-    let machine_mint = MachineCredentialMintRuntime::new(
+    let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
@@ -134,25 +134,25 @@ pub async fn start_control_runtime_with_client_and_reload(
     machine_mint
         .resume_unfinished_mints()
         .await
-        .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
+        .map_err(ControlProcessError::ResumeMachineAddMints)?;
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let facts_reader = NatsMachineFactsReader::new(client.clone());
     let intent_reader = NatsIntentReader::new(client.clone());
-    let intent = start_intent_runtime(
+    let intent = start_intent_service(
         client.clone(),
         machine_roster.clone(),
         namespace_intent,
         INTENT_PUBLISH_INTERVAL,
     )
     .await
-    .map_err(ControlRuntimeError::StartIntent)?;
+    .map_err(ControlProcessError::StartIntent)?;
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
-    let machine_update_runtime = MachineUpdateOperationRuntime::new(
+    let machine_update = MachineUpdateOperation::new(
         controllers.clone(),
         machine_updater,
         machine_update_tasks.clone(),
     );
-    let machine_lifecycle_runtime = MachineLifecycleOperationRuntime::new(
+    let machine_lifecycle = MachineLifecycleOperation::new(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
@@ -162,15 +162,15 @@ pub async fn start_control_runtime_with_client_and_reload(
         client.clone(),
         OperationApiHandlers::execute_operations(
             controllers,
-            deploy_runtime,
-            machine_update_runtime,
-            machine_lifecycle_runtime,
+            deploy_driver,
+            machine_update,
+            machine_lifecycle,
             machine_mint,
             config
                 .deploy_machines
                 .first()
                 .cloned()
-                .ok_or(ControlRuntimeError::MissingDeployMachine)?,
+                .ok_or(ControlProcessError::MissingDeployMachine)?,
             client.clone(),
             machine_roster,
             facts,
@@ -180,9 +180,9 @@ pub async fn start_control_runtime_with_client_and_reload(
         ),
     )
     .await
-    .map_err(ControlRuntimeError::StartOperationApi)?;
+    .map_err(ControlProcessError::StartOperationApi)?;
 
-    Ok(RunningControlRuntime {
+    Ok(RunningControlProcess {
         intent,
         operation_api,
         deploy_tasks,
@@ -196,33 +196,33 @@ pub async fn start_control_runtime_with_client_and_reload(
 
 pub async fn run_control_until_shutdown(
     config: &ControlProcessConfig,
-) -> Result<(), ControlRuntimeError> {
-    let runtime = start_control_runtime(config).await?;
+) -> Result<(), ControlProcessError> {
+    let runtime = start_control_process(config).await?;
     shutdown_signal()
         .await
-        .map_err(ControlRuntimeError::ShutdownSignal)?;
+        .map_err(ControlProcessError::ShutdownSignal)?;
     runtime
         .shutdown()
         .await
-        .map_err(ControlRuntimeError::ShutdownOperationApi)
+        .map_err(ControlProcessError::ShutdownOperationApi)
 }
 
 #[derive(Debug)]
-pub enum ControlRuntimeError {
+pub enum ControlProcessError {
     MissingMachineJoinTemplate,
     MissingDeployMachine,
     ConnectNats(NatsConnectError),
     OpenCoreStore(CoreStoreError),
-    StartFactsCache(RuntimeFactsCacheError),
+    StartFactsCache(FactCacheError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
-    StartOperationApi(ApiServiceRuntimeError),
+    StartOperationApi(ApiServiceError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
 }
 
-impl fmt::Display for ControlRuntimeError {
+impl fmt::Display for ControlProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingMachineJoinTemplate => {
@@ -263,4 +263,4 @@ impl fmt::Display for ControlRuntimeError {
     }
 }
 
-impl std::error::Error for ControlRuntimeError {}
+impl std::error::Error for ControlProcessError {}

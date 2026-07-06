@@ -1,4 +1,4 @@
-//! Runtime for operation-owned machine lifecycle changes (drain/resume).
+//! Operation-owned machine lifecycle changes (drain/resume).
 //!
 //! Lifecycle is operator intent about a machine (which may be unreachable), so
 //! it is control-side durable authority, committed to the machine's roster row
@@ -13,14 +13,14 @@ use ployz_core::ops::{FailureMessage, MachineLifecycleFailure, MachineLifecycleT
 use ployz_core::subjects::INTENT_CHANGED;
 
 #[derive(Debug, Clone)]
-pub struct MachineLifecycleOperationRuntime {
+pub struct MachineLifecycleOperation {
     intent_change_client: async_nats::Client,
     controllers: OperationControllers,
     machine_roster: MachineRosterStore,
     task_registry: TaskRegistry,
 }
 
-impl MachineLifecycleOperationRuntime {
+impl MachineLifecycleOperation {
     #[must_use]
     pub fn new(
         intent_change_client: async_nats::Client,

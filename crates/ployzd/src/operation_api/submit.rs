@@ -70,7 +70,7 @@ pub async fn deploy_submit(
         .await
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.deploy_runtime.start(accepted);
+    handlers.deploy_driver.start(accepted);
 
     Ok(operation)
 }
@@ -181,7 +181,7 @@ pub async fn machine_update(
             }
         })?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.machine_update_runtime().start(accepted);
+    handlers.machine_update().start(accepted);
 
     Ok(operation)
 }
@@ -261,7 +261,7 @@ async fn machine_lifecycle(
             }
         })?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.machine_lifecycle_runtime().start(accepted);
+    handlers.machine_lifecycle().start(accepted);
 
     Ok(operation)
 }

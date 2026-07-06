@@ -55,7 +55,7 @@ impl DaemonServiceCatalog {
     #[must_use]
     pub fn for_machine(machine_id: &MachineId) -> Self {
         Self {
-            services: vec![machine_runtime_service(machine_id)],
+            services: vec![machine_role_service(machine_id)],
         }
     }
 
@@ -134,8 +134,8 @@ pub const fn api_endpoint_execution(execution: OperationApiEndpointExecution) ->
 }
 
 #[must_use]
-pub fn machine_runtime_service(machine_id: &MachineId) -> NatsServiceSpec {
-    machine_runtime_service_spec(
+pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
+    machine_role_service_spec(
         machine_id,
         vec![
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
@@ -156,8 +156,8 @@ pub fn machine_runtime_service(machine_id: &MachineId) -> NatsServiceSpec {
 }
 
 #[must_use]
-pub fn machine_runtime_service_base(machine_id: &MachineId) -> NatsServiceSpec {
-    machine_runtime_service_spec(machine_id, Vec::new())
+pub fn machine_role_service_base(machine_id: &MachineId) -> NatsServiceSpec {
+    machine_role_service_spec(machine_id, Vec::new())
 }
 
 #[must_use]
@@ -190,7 +190,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
     }
 }
 
-fn machine_runtime_service_spec(
+fn machine_role_service_spec(
     machine_id: &MachineId,
     endpoints: Vec<NatsServiceEndpointSpec>,
 ) -> NatsServiceSpec {

@@ -16,7 +16,7 @@ use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::adapters::nats_authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };
-use ployzd::adapters::nats_server::NatsServerRuntime;
+use ployzd::adapters::nats_server::NatsServerLaunch;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -77,7 +77,7 @@ impl TestNats {
 
     pub fn control_config_without_join_template(&self) -> ControlProcessConfig {
         ControlProcessConfig::new(
-            NatsServerRuntime::External(self.server().client_url().clone()),
+            NatsServerLaunch::External(self.server().client_url().clone()),
             machine_id("core_1"),
             self.server().controller_config(),
         )
@@ -91,7 +91,7 @@ impl TestNats {
     pub async fn start_control(
         &self,
         config: &ControlProcessConfig,
-    ) -> ployzd::roles::control::RunningControlRuntime {
+    ) -> ployzd::roles::control::RunningControlProcess {
         self.start_control_with_reload(config, self.reload_runner())
             .await
     }
@@ -100,8 +100,8 @@ impl TestNats {
         &self,
         config: &ControlProcessConfig,
         reload: RecordingReload,
-    ) -> ployzd::roles::control::RunningControlRuntime {
-        ployzd::roles::control::start_control_runtime_with_client_and_reload(
+    ) -> ployzd::roles::control::RunningControlProcess {
+        ployzd::roles::control::start_control_process_with_client_and_reload(
             self.connected.controller.clone(),
             config,
             reload,

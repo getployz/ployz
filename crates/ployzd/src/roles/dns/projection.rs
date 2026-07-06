@@ -1,4 +1,4 @@
-//! DNS projection runtime.
+//! DNS projection read-model.
 
 use ployz_core::ops::RouteHostname;
 
@@ -156,12 +156,12 @@ pub fn project_dns(input: DnsProjectionInput) -> DnsProjection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DnsRuntime {
+pub struct DnsProjector {
     state: DnsProjectionState,
     answers: DnsAnswerTable,
 }
 
-impl DnsRuntime {
+impl DnsProjector {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -180,7 +180,7 @@ impl DnsRuntime {
         &self.answers
     }
 
-    pub fn apply_source_update(&mut self, update: DnsProjectionUpdate) -> DnsRuntimeTick {
+    pub fn apply_source_update(&mut self, update: DnsProjectionUpdate) -> DnsProjectorTick {
         let previous = std::mem::replace(&mut self.state, DnsProjectionState::unavailable());
         self.state = apply_dns_update(previous, update);
 
@@ -188,7 +188,7 @@ impl DnsRuntime {
             self.answers.replace(projection.clone());
         }
 
-        DnsRuntimeTick {
+        DnsProjectorTick {
             state: self.state.clone(),
             served: self.answers.current().cloned(),
             serving: dns_serving_state_from_projection_state(&self.state),
@@ -196,14 +196,14 @@ impl DnsRuntime {
     }
 }
 
-impl Default for DnsRuntime {
+impl Default for DnsProjector {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DnsRuntimeTick {
+pub struct DnsProjectorTick {
     pub state: DnsProjectionState,
     pub served: Option<DnsProjection>,
     pub serving: DnsServingState,

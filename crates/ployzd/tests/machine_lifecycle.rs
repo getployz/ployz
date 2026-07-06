@@ -8,7 +8,7 @@ use ployz_core::state::MachineLifecycle;
 use ployzd::operation_api::admission::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
-use ployzd::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
+use ployzd::operations::machine_lifecycle::MachineLifecycleOperation;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operations::log::OperationRepository;
 use ployzd::tasks::TaskRegistry;
@@ -29,7 +29,7 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     );
     seed_active_machine(&machine_roster, "machine_a").await;
 
-    let runtime = MachineLifecycleOperationRuntime::new(
+    let runtime = MachineLifecycleOperation::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),
@@ -88,7 +88,7 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
             .expect("open core store"),
     );
 
-    let runtime = MachineLifecycleOperationRuntime::new(
+    let runtime = MachineLifecycleOperation::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),

@@ -1,7 +1,7 @@
 use ployz_test_support::ids::route_hostname;
 use ployzd::roles::dns::projection::{
     DnsAnswer, DnsProjection, DnsProjectionError, DnsProjectionInput, DnsProjectionState,
-    DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, apply_dns_update, project_dns,
+    DnsProjectionUpdate, DnsRecordSet, DnsProjector, DnsServingState, apply_dns_update, project_dns,
 };
 
 #[test]
@@ -110,7 +110,7 @@ fn dns_keeps_failure_evidence_when_invalid_source_then_disappears() {
 
 #[test]
 fn dns_runtime_keeps_serving_last_good_answers_after_source_disappears() {
-    let mut runtime = DnsRuntime::new();
+    let mut runtime = DnsProjector::new();
     let hostname = route_hostname("api.example.com");
     let first_tick =
         runtime.apply_source_update(DnsProjectionUpdate::SourceAvailable(DnsProjectionInput {
