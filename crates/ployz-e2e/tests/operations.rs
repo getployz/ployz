@@ -22,14 +22,14 @@ use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::machine_facts;
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest, ServiceInspectRequest};
 use ployzctl::api_client::OperationApiClient;
-use ployzd::controllers::MachineAddBootstrapConfig;
-use ployzd::deploy_worker::{
+use ployzd::operation_api::admission::MachineAddBootstrapConfig;
+use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::machine_runtime::client::NatsMachineContainerRuntime;
-use ployzd::machine_runtime::protocol::MachineContainerRunRpcRequest;
-use ployzd::machine_runtime::service::{
+use ployzd::roles::gateway::process::start_gateway_process_runtime_with_client;
+use ployzd::roles::machine::client::NatsMachineContainerRuntime;
+use ployzd::roles::machine::protocol::MachineContainerRunRpcRequest;
+use ployzd::roles::machine::service::{
     start_machine_runtime_service, start_machine_runtime_service_with_public_ip,
 };
 
@@ -61,7 +61,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         .control_config(machine_id("core_1"))
         .with_machine_bootstrap(machine_bootstrap_config());
     let _runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+        ployzd::roles::control::start_control_runtime_with_client(client.clone(), &config).await?;
     let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
         idempotency_key: idempotency_key("idem_api_123"),
@@ -126,7 +126,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+        ployzd::roles::control::start_control_runtime_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_runtime_service(
@@ -276,7 +276,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+        ployzd::roles::control::start_control_runtime_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_runtime_service_with_public_ip(
@@ -362,7 +362,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+        ployzd::roles::control::start_control_runtime_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_runtime_service_with_public_ip(
@@ -454,7 +454,7 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+        ployzd::roles::control::start_control_runtime_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_runtime_service_with_public_ip(
@@ -555,7 +555,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+        ployzd::roles::control::start_control_runtime_with_client(client.clone(), &config).await?;
     let core_machine_client = nats.machine_client(&machine_id("core_1")).await;
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));
@@ -761,7 +761,7 @@ fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
 }
 
 async fn wait_for_gateway_upstream(
-    runtime: &ployzd::gateway_process_runtime::RunningGatewayProcessRuntime,
+    runtime: &ployzd::roles::gateway::process::RunningGatewayProcessRuntime,
     endpoint_ip: &str,
     endpoint_port: u16,
 ) {

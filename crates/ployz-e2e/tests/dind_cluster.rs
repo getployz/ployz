@@ -46,7 +46,7 @@ use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
-use ployzd::docker::labels::{
+use ployzd::adapters::docker::labels::{
     CONTAINER_TYPE_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL,
 };
 use std::collections::HashMap;
