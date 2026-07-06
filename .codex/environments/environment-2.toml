@@ -5,9 +5,8 @@ name = "ployz-rust"
 [setup]
 script = '''
 cd "$CODEX_WORKTREE_PATH"
-source_target="${CODEX_SOURCE_TREE_PATH:-}/target"
-if [ -d "$source_target/debug" ]; then
-  scripts/cargo-hardlink-deps.py "$source_target" target
+if [ -n "${CODEX_SOURCE_TREE_PATH:-}" ] && [ -d "$CODEX_SOURCE_TREE_PATH/target/debug" ]; then
+  scripts/cargo-hardlink-deps.py "$CODEX_SOURCE_TREE_PATH/target" target
 fi
 
 '''
