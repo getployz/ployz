@@ -1,8 +1,8 @@
 //! Runtime for operation-owned machine substrate updates.
 
 use crate::controllers::OperationControllers;
-use crate::machine_runtime::client::NatsMachineSubstrateUpdater;
-use crate::machine_runtime::protocol::MachineSubstrateUpdateRpcRequest;
+use crate::roles::machine::client::NatsMachineSubstrateUpdater;
+use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::operation_log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;

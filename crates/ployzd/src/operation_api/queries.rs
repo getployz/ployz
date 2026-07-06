@@ -3,11 +3,11 @@
 
 use crate::controllers::OperationControllers;
 use crate::intent::NatsIntentReader;
-use crate::machine_runtime::client::{
+use crate::roles::machine::client::{
     MachineLogsTailRuntimeError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
-use crate::machine_runtime::protocol::MachineLogsTailRpcRequest;
+use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
 use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,

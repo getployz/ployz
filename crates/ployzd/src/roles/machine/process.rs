@@ -4,8 +4,8 @@ use crate::config::MachineProcessConfig;
 use crate::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
 use crate::adapters::docker::runner::DockerManagedContainerRunner;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::machine_runtime::runner::{MachineContainerRunner, MachineLogReader};
-use crate::machine_runtime::service::{
+use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
+use crate::roles::machine::service::{
     MachineFactsReadError, MachineServiceRuntimeError, current_unix_ms,
     read_machine_facts_snapshot, start_machine_runtime_service_with_public_ip,
 };
@@ -91,7 +91,7 @@ pub async fn start_machine_process_runtime_with_ports<R, P, L>(
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
     P: Clone
-        + crate::machine_runtime::service::MachinePloyzNativeMeshPreparer
+        + crate::roles::machine::service::MachinePloyzNativeMeshPreparer
         + Send
         + Sync
         + 'static,
@@ -324,12 +324,12 @@ impl std::error::Error for MachineProcessRuntimeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machine_runtime::runner::{
+    use crate::roles::machine::runner::{
         CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
         MachineContainerRunner, MachineContainerRunnerError, MachineLogReader,
         MachineLogReaderError, MachineLogTail,
     };
-    use crate::machine_runtime::service::observation_state;
+    use crate::roles::machine::service::observation_state;
     use futures_util::StreamExt;
     use ployz_core::dataplane::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
@@ -630,7 +630,7 @@ mod tests {
     #[derive(Clone)]
     struct ReadyWireGuardEbpf;
 
-    impl crate::machine_runtime::service::MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
+    impl crate::roles::machine::service::MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
         async fn read_wireguard_public_key(
             &self,
         ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {

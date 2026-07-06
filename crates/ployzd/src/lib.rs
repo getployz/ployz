@@ -16,24 +16,30 @@ pub mod adapters {
 }
 pub mod api_runtime;
 pub mod config;
-pub mod control_runtime;
 pub mod controllers;
+pub mod roles {
+    pub mod control;
+    pub mod dns {
+        pub mod process;
+        pub mod projection;
+        pub mod source;
+    }
+    pub mod gateway {
+        pub mod pingora;
+        pub mod process;
+        pub mod projection;
+        pub mod route_table;
+        pub mod source;
+    }
+    pub mod machine;
+}
 pub mod core_store;
 pub mod dispatch;
 pub mod deploy_runtime;
 pub mod deploy_worker;
-pub mod dns;
-pub mod dns_process_runtime;
-pub mod dns_source;
-pub mod gateway;
-pub mod gateway_pingora;
-pub mod gateway_process_runtime;
-pub mod gateway_runtime;
-pub mod gateway_source;
 pub mod intent;
 pub mod machine_lifecycle_runtime;
 pub mod machine_roster;
-pub mod machine_runtime;
 pub mod machine_update_runtime;
 pub mod namespace_intent;
 pub mod operation_api;

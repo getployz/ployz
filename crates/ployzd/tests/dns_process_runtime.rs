@@ -5,8 +5,8 @@ use ployz_core::state::{
 };
 use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::dns::DnsAnswer;
-use ployzd::dns_process_runtime::{
+use ployzd::roles::dns::projection::DnsAnswer;
+use ployzd::roles::dns::process::{
     DnsProcessAttempt, RunningDnsProcessRuntime, start_dns_process_runtime_with_client,
 };
 use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};

@@ -1,6 +1,6 @@
 //! Gateway runtime state.
 
-use crate::gateway::{
+use crate::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionState,
     GatewayProjectionUpdate, GatewayUpstream, apply_gateway_update,
 };

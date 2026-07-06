@@ -1,6 +1,6 @@
 //! NATS Service API runtime wiring for machine-local commands.
 
-use crate::machine_runtime::protocol::{
+use crate::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
@@ -18,7 +18,7 @@ use crate::machine_runtime::protocol::{
     MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest,
     MachineSubstrateUpdateRpcResponse,
 };
-use crate::machine_runtime::runner::{
+use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainerState, MachineContainerRunDecision,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail, decide_container_run,

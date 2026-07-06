@@ -8,10 +8,10 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::gateway::{
+use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
-use ployzd::gateway_source::load_gateway_projection_update_from_nats;
+use ployzd::roles::gateway::source::load_gateway_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;

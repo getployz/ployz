@@ -7,7 +7,7 @@ use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::future::Future;
 
-use crate::machine_runtime::protocol::{
+use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,

@@ -91,7 +91,7 @@ impl TestNats {
     pub async fn start_control(
         &self,
         config: &ControlProcessConfig,
-    ) -> ployzd::control_runtime::RunningControlRuntime {
+    ) -> ployzd::roles::control::RunningControlRuntime {
         self.start_control_with_reload(config, self.reload_runner())
             .await
     }
@@ -100,8 +100,8 @@ impl TestNats {
         &self,
         config: &ControlProcessConfig,
         reload: RecordingReload,
-    ) -> ployzd::control_runtime::RunningControlRuntime {
-        ployzd::control_runtime::start_control_runtime_with_client_and_reload(
+    ) -> ployzd::roles::control::RunningControlRuntime {
+        ployzd::roles::control::start_control_runtime_with_client_and_reload(
             self.connected.controller.clone(),
             config,
             reload,

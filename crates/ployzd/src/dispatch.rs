@@ -1,10 +1,10 @@
 //! Runtime dispatch for configured daemon processes.
 
 use crate::config::DaemonProcessConfig;
-use crate::control_runtime::{ControlRuntimeError, run_control_until_shutdown};
-use crate::dns_process_runtime::{DnsProcessRuntimeError, run_dns_until_shutdown};
-use crate::gateway_process_runtime::{GatewayProcessRuntimeError, run_gateway_until_shutdown};
-use crate::machine_runtime::process::{MachineProcessRuntimeError, run_machine_until_shutdown};
+use crate::roles::control::{ControlRuntimeError, run_control_until_shutdown};
+use crate::roles::dns::process::{DnsProcessRuntimeError, run_dns_until_shutdown};
+use crate::roles::gateway::process::{GatewayProcessRuntimeError, run_gateway_until_shutdown};
+use crate::roles::machine::process::{MachineProcessRuntimeError, run_machine_until_shutdown};
 
 pub async fn run_daemon_process_until_shutdown(
     config: &DaemonProcessConfig,

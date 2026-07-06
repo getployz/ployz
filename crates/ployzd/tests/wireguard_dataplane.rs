@@ -8,11 +8,11 @@ use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAM
 use ployzd::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
 use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
-use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
-use ployzd::machine_runtime::runner::MachineContainerRunner;
-use ployzd::machine_runtime::service::MachinePloyzNativeMeshPreparer;
-use ployzd::machine_runtime::service::start_machine_runtime_service;
+use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;
+use ployzd::roles::machine::runner::MachineContainerRunner;
+use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
+use ployzd::roles::machine::service::start_machine_runtime_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;

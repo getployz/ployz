@@ -1,6 +1,6 @@
 //! DNS projection source adapters.
 
-use crate::dns::{
+use crate::roles::dns::projection::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use crate::intent::{IntentReadError, NatsIntentReader};

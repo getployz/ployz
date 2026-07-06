@@ -10,8 +10,8 @@ use ployz_test_support::ids::{
 use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,

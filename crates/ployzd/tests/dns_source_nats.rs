@@ -4,10 +4,10 @@ use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::dns::{
+use ployzd::roles::dns::projection::{
     DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, project_dns,
 };
-use ployzd::dns_source::load_dns_projection_update_from_nats;
+use ployzd::roles::dns::source::load_dns_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;

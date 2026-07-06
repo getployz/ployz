@@ -10,8 +10,8 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::gateway::GatewayUpstream;
-use ployzd::gateway_process_runtime::{
+use ployzd::roles::gateway::projection::GatewayUpstream;
+use ployzd::roles::gateway::process::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
     start_gateway_process_runtime_with_client,
 };
@@ -231,7 +231,7 @@ async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscrib
 }
 
 fn gateway_serves_route(
-    runtime: &ployzd::gateway_process_runtime::RunningGatewayProcessRuntime,
+    runtime: &ployzd::roles::gateway::process::RunningGatewayProcessRuntime,
     endpoint_ip: &str,
     endpoint_port: u16,
 ) -> bool {

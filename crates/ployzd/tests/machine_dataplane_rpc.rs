@@ -12,8 +12,8 @@ use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use ployzd::deploy_worker::DataplanePreparer;
-use ployzd::machine_runtime::client::NatsMachineDataplanePreparer;
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::client::NatsMachineDataplanePreparer;
+use ployzd::roles::machine::protocol::{
     MachineDataplanePrepareRpcRequest, MachineDataplanePrepareRpcResponse, MachineFactsGetRpcOk,
     MachineFactsGetRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,

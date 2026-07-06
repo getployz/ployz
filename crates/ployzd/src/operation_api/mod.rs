@@ -21,7 +21,7 @@ use crate::deploy_runtime::DeployOperationRuntime;
 use crate::intent::NatsIntentReader;
 use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
 use crate::machine_roster::MachineRosterStore;
-use crate::machine_runtime::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
+use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::adapters::nats_authorization::MachineCredentialMintRuntime;
 use crate::fact_cache::RuntimeFactsCache;

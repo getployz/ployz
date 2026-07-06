@@ -1,6 +1,6 @@
 //! Gateway projection source adapters.
 
-use crate::gateway::{
+use crate::roles::gateway::projection::{
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
     GatewayServingEntry,
 };
