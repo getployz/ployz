@@ -1,13 +1,6 @@
 <div align="center">
   <h1>Ployz</h1>
-  <p><strong>▸ Run a small cluster through explicit operations — every change owned, watchable, and safe to retry ◂</strong></p>
-
-  <p>
-    <a href="VISION.md">Vision</a> ·
-    <a href="AGENTS.md">Architecture</a> ·
-    <a href="CONTEXT.md">Domain language</a> ·
-    <a href="docs/adr/">Decisions</a>
-  </p>
+  <p><strong>Run a small cluster through explicit operations — every change owned, watchable, and safe to retry.</strong></p>
 </div>
 
 Ployz is a small-cluster orchestration core for deploying and operating containerised services across cloud VMs and
@@ -25,7 +18,7 @@ Ployz is for the 1–200 machine range — homelabs, small teams, customer-owned
 reliability comes from simple mechanics and legible behaviour, not a large hidden policy engine. It gives humans,
 agents, CLIs, SDKs, and cloud workflows the exact same bounded operations.
 
-## ✨ Features
+## Features
 
 * **Explicit operations, not magic**: Every mutation returns an operation id with live progress, a typed terminal
   result, and evidence you can inspect. The cluster never surprises you.
@@ -46,7 +39,7 @@ agents, CLIs, SDKs, and cloud workflows the exact same bounded operations.
 * **Made for automation and agents**: The same terse operations drive a human at a CLI, an SDK client, an agent, or
   Ployz Cloud. Everything is scriptable and honest when uncertain.
 
-## 💫 Why Ployz?
+## Why Ployz?
 
 Kubernetes gives you power and flexibility, but it reconciles the world behind your back: something drifts, a loop
 rewrites it, and you reverse-engineer *why* from logs after the fact. Hand-rolled deploy scripts are legible but leave
@@ -67,7 +60,7 @@ There is a pragmatic middle for the majority of us who aren't running at Google 
 Ployz's goal is to make operating your own small cluster feel as direct and legible as running a single command —
 whether that's on a $5 VPS, a spare Mac mini, or a rack of bare metal.
 
-## 🚀 Quick start
+## Quick start
 
 1. **Bootstrap your first machine** (installs `ployz-keeper` and forms the cluster):
 
@@ -103,12 +96,12 @@ whether that's on a $5 VPS, a spare Mac mini, or a rack of bare metal.
    ```
 
 5. Point an A record for `app.example.com` at your machine's public IP, give DNS a minute, and your app is live at
-   https://app.example.com ✨
+   https://app.example.com
 
 Then explore capacity and lifecycle operations — `ployzctl machine drain`, `ployzctl machine resume`,
 `ployzctl ops list`, `ployzctl inspect` — each one an explicit, retryable operation.
 
-## ⚙️ How it works
+## How it works
 
 Ployz is **one daemon, one NATS control domain, and local runtime execution**:
 
@@ -138,10 +131,7 @@ Ployz Cloud is a *consumer* of the core, not its owner: Cloud holds product work
 integration, builds, billing, history — and calls small core operations while watching their events. The core owns
 runtime truth.
 
-The full design, its guardrails, and the ubiquitous language live in [`VISION.md`](VISION.md), [`AGENTS.md`](AGENTS.md),
-[`CONTEXT.md`](CONTEXT.md), and the accepted ADRs under [`docs/adr/`](docs/adr/).
-
-## 🏗 Project status
+## Project status
 
 Ployz is pre-1.0 and under active development, so expect breaking changes between releases. Bootstrap resolves the
 `alpha` channel to an exact GitHub release, verifies its SHA-256, and installs only `ployz-keeper`; pin an exact
