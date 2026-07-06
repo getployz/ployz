@@ -50,8 +50,22 @@ The decision, seam by seam:
 
 - **Promotion is `ployz core-promote`: local, idempotent, operator-triggered.** It
   seeds the intent store from the local mirror, bumps and persists a higher epoch,
-  and starts serving as core. Nothing auto-elects (ADR 0019/0030); the operator
-  runs it over an SSH forced command or by hand.
+  re-renders authorized-users from the mirrored machine nkey publics (minting its
+  own fresh core principals), self-issues its server TLS cert, and starts serving
+  as core. Nothing auto-elects (ADR 0019/0030); the operator runs it over an SSH
+  forced command or by hand.
+- **The one cluster secret a candidate needs is the CA signing key, and it rides
+  encrypted.** A promoted core at a new address must present a server cert the
+  fleet's `tls://` clients trust — signed by the cluster CA, whose key the dead
+  disposable core cannot hand over at promote time. So the CA key is pre-positioned
+  on Reachable Machines **wrapped with an operator recovery secret** — a passphrase
+  set at `init`, KDF-stretched. A machine compromise yields only ciphertext;
+  `core-promote` takes the secret, decrypts the local copy, and self-issues.
+  Everything else the new core regenerates (its own controller/operator nkeys) or
+  holds non-secret (the machines' nkey publics via the mirrored authorized-users,
+  and the CA cert). The recovery secret is the one thing the operator must keep —
+  losing it means no promotion. This keeps promotion instant (the key is local, not
+  fetched) while a stolen machine cannot impersonate the cluster.
 
 Build order, because each earns the next:
 
@@ -72,6 +86,10 @@ This rejects:
 - **Shipping the candidate list before the mirror.** It would be a length-one list
   that reads as done but recovers nothing — worse than absent, because it looks
   finished.
+- **Mirroring the CA key in plaintext** (root on any Reachable Machine would then
+  own the cluster's signing key), and equally **BYOK-only** (the operator must have
+  the key in hand at promote, forfeiting instant recovery and Cloud's one-button).
+  The encrypted-at-rest recovery key is the balance between the two.
 
 Consequences, stated plainly:
 
