@@ -12,6 +12,7 @@ use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
     NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
 };
+use crate::recovery_secret::{self, RecoverySecretError};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use crate::steps::{FirstMachineInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
@@ -314,6 +315,10 @@ pub fn first_machine_install_target_from_spec(
     )?;
     let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
+    let recovery_secret = resolve_recovery_secret();
+    let recovery_key_wrapped =
+        recovery_secret::wrap(&recovery_secret, nats_identity.ca_key.secret().as_bytes())
+            .map_err(KeeperCliError::RecoverySecret)?;
 
     let mut target = FirstMachineInstallTarget::new(
         machine_id,
@@ -322,6 +327,7 @@ pub fn first_machine_install_target_from_spec(
         nats_server_artifact,
         roles,
         nats_identity,
+        recovery_key_wrapped,
     )
     .with_nats_server_unit(nats_server_unit);
     if let Some(url) = machine_bootstrap_url {
@@ -337,6 +343,22 @@ pub fn first_machine_install_target_from_spec(
         target = target.with_machine_public_ip(public_ip);
     }
     Ok(target)
+}
+
+/// The operator's cluster recovery secret: `PLOYZ_RECOVERY_SECRET` if set, else
+/// generated and shown once (ADR 0031). It wraps the CA key and is required later
+/// to `core-promote`; it is never itself persisted.
+fn resolve_recovery_secret() -> String {
+    match std::env::var("PLOYZ_RECOVERY_SECRET") {
+        Ok(secret) if !secret.is_empty() => secret,
+        _ => {
+            let generated = recovery_secret::generate_recovery_secret();
+            eprintln!(
+                "cluster recovery secret (save this — required to promote a new core):\n    {generated}"
+            );
+            generated
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -356,6 +378,7 @@ pub enum KeeperCliError {
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
     NatsIdentity(NatsIdentityError),
+    RecoverySecret(RecoverySecretError),
 }
 
 impl KeeperCliError {
@@ -420,6 +443,7 @@ impl fmt::Display for KeeperCliError {
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
             Self::NatsIdentity(error) => write!(formatter, "{error}"),
+            Self::RecoverySecret(error) => write!(formatter, "{error}"),
         }
     }
 }

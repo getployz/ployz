@@ -63,6 +63,7 @@ fn local_effects_install_first_machine_process_units() {
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
+            b"wrapped-ca-key".to_vec(),
         )
         .with_nats_server_unit(nats_unit(&root))
         .with_nats_material_paths(nats_material(&root))
@@ -96,6 +97,11 @@ fn local_effects_install_first_machine_process_units() {
         test_identity().server_cert.key_pem.secret()
     );
     assert_secret_file_mode(root.join("nats/server.key"));
+    assert_eq!(
+        fs::read(root.join("nats/ca-recovery.key")).unwrap(),
+        b"wrapped-ca-key"
+    );
+    assert_secret_file_mode(root.join("nats/ca-recovery.key"));
     let authorized_users = fs::read_to_string(root.join("etc/authorized-users.conf")).unwrap();
     assert!(authorized_users.starts_with("authorization {\n  users [\n"));
     assert!(authorized_users.contains(test_identity().controller.public.as_str()));
@@ -171,6 +177,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
             .without_gateway()
             .without_dns(),
         test_identity().clone(),
+        b"wrapped-ca-key".to_vec(),
     )
     .with_nats_server_unit(nats_unit(&root))
     .with_nats_material_paths(nats_material(&root))
@@ -219,6 +226,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
             .without_gateway()
             .without_dns(),
         test_identity().clone(),
+        b"wrapped-ca-key".to_vec(),
     )
     .with_nats_server_unit(nats_unit(&root))
     .with_nats_material_paths(nats_material(&root))
@@ -644,6 +652,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
+            b"wrapped-ca-key".to_vec(),
         )
         .with_nats_server_unit(nats_unit(&root))
         .with_nats_material_paths(nats_material(&root))
@@ -713,6 +722,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
+            b"wrapped-ca-key".to_vec(),
         )
         .with_nats_server_unit(nats_unit(&root))
         .with_nats_material_paths(nats_material(&root))
@@ -1208,6 +1218,7 @@ fn first_machine_plan_with_ployzd(
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
+            b"wrapped-ca-key".to_vec(),
         )
         .with_nats_server_unit(nats_unit(root))
         .with_nats_material_paths(nats_material(root))

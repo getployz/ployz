@@ -360,6 +360,9 @@ pub struct FirstMachineInstallTarget {
     pub nats_server_artifact: ArtifactTarget,
     pub roles: InstallRolePolicy,
     pub nats_identity: ClusterNatsIdentity,
+    /// The CA signing key wrapped with the recovery secret (ADR 0031), persisted
+    /// beside the TLS material so a promotion can decrypt and self-issue.
+    pub recovery_key_wrapped: Vec<u8>,
     pub nats_material: NatsMachineMaterialPaths,
     pub additional_user_public_keys: Vec<NatsUserPublicKey>,
     pub machine_public_ip: Option<IpAddr>,
@@ -379,6 +382,7 @@ impl FirstMachineInstallTarget {
         nats_server_artifact: ArtifactTarget,
         roles: InstallRolePolicy,
         nats_identity: ClusterNatsIdentity,
+        recovery_key_wrapped: Vec<u8>,
     ) -> Self {
         let nats_server_unit = NatsServerUnitTarget::new(
             nats_server_artifact.install_path().to_path_buf(),
@@ -407,6 +411,7 @@ impl FirstMachineInstallTarget {
             nats_server_artifact,
             roles,
             nats_identity,
+            recovery_key_wrapped,
             nats_material,
             additional_user_public_keys: Vec::new(),
             machine_public_ip: None,
@@ -829,6 +834,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
         KeeperStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
             &target.nats_identity,
+            target.recovery_key_wrapped.clone(),
         )),
         KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),

@@ -40,6 +40,16 @@ pub enum RecoverySecretError {
     Malformed,
 }
 
+/// A random recovery secret for an operator who did not supply one: 32 bytes of
+/// OS entropy, hex-encoded. Shown once at init; the operator (or Cloud) keeps it,
+/// and it is required to `core-promote` later.
+#[must_use]
+pub fn generate_recovery_secret() -> String {
+    let mut bytes = [0u8; KEY_LEN];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Encrypt `plaintext` (the CA key PEM) under `passphrase`. Each call uses a
 /// fresh random salt and nonce, so wrapping the same key twice yields different
 /// output.
@@ -156,6 +166,14 @@ mod tests {
             unwrap("s", &[0xff, 1, 2, 3]),
             Err(RecoverySecretError::Malformed)
         ));
+    }
+
+    #[test]
+    fn generated_secrets_are_unique_hex() {
+        let secret = generate_recovery_secret();
+        assert_eq!(secret.len(), KEY_LEN * 2);
+        assert!(secret.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(generate_recovery_secret(), generate_recovery_secret());
     }
 
     #[test]

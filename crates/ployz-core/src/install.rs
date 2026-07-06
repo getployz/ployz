@@ -207,6 +207,13 @@ impl NatsMachineMaterialPaths {
         self.state_dir.join("server.key")
     }
 
+    /// The CA signing key, wrapped with the operator recovery secret (ADR 0031).
+    /// Pre-positioned so a promotion can decrypt it and self-issue a server cert.
+    #[must_use]
+    pub fn recovery_key_file(&self) -> PathBuf {
+        self.state_dir.join("ca-recovery.key")
+    }
+
     #[must_use]
     pub fn controller_seed_file(&self) -> PathBuf {
         self.state_dir.join("controller.seed")

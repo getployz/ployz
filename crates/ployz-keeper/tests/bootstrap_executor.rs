@@ -41,6 +41,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
             .without_gateway()
             .without_dns(),
         test_identity().clone(),
+        b"wrapped-ca-key".to_vec(),
     ));
     let mut effects = RecordingEffects::default();
     let mut recorder = RecordingRecorder::default();

@@ -188,14 +188,20 @@ impl NatsServerConfigTarget {
 pub struct NatsTlsMaterialTarget {
     material: NatsMachineMaterialPaths,
     identity: ClusterNatsIdentity,
+    recovery_key_wrapped: Vec<u8>,
 }
 
 impl NatsTlsMaterialTarget {
     #[must_use]
-    pub fn new(material: NatsMachineMaterialPaths, identity: &ClusterNatsIdentity) -> Self {
+    pub fn new(
+        material: NatsMachineMaterialPaths,
+        identity: &ClusterNatsIdentity,
+        recovery_key_wrapped: Vec<u8>,
+    ) -> Self {
         Self {
             material,
             identity: identity.clone(),
+            recovery_key_wrapped,
         }
     }
 
@@ -222,6 +228,11 @@ impl NatsTlsMaterialTarget {
     #[must_use]
     pub fn server_key_pem(&self) -> &NatsServerKeyPem {
         &self.identity.server_cert.key_pem
+    }
+
+    #[must_use]
+    pub fn recovery_key_wrapped(&self) -> &[u8] {
+        &self.recovery_key_wrapped
     }
 }
 

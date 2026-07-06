@@ -250,6 +250,7 @@ pub fn first_machine_plan() -> ployz_keeper::steps::KeeperStepPlan {
             .without_gateway()
             .without_dns(),
         test_identity().clone(),
+        b"wrapped-ca-key".to_vec(),
     ))
 }
 
