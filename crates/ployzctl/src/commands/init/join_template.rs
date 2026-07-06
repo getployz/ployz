@@ -4,7 +4,7 @@ use std::io::Read;
 use clap::Args;
 use ployz_core::install::{
     MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
+    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats, WrappedCaKey,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 
@@ -74,14 +74,15 @@ pub(crate) struct MachineJoinTemplateCli {
     artifact_spec: String,
 }
 
-fn read_recovery_key(path: Option<String>) -> Result<Vec<u8>, PloyzctlCliError> {
+fn read_recovery_key(path: Option<String>) -> Result<Option<WrappedCaKey>, PloyzctlCliError> {
     let Some(path) = path else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    fs::read(&path).map_err(|error| PloyzctlCliError::InvalidValue {
+    let bytes = fs::read(&path).map_err(|error| PloyzctlCliError::InvalidValue {
         flag: "--recovery-key-file",
         message: format!("cannot read {path}: {error}"),
-    })
+    })?;
+    Ok(Some(WrappedCaKey::new(bytes)))
 }
 
 fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCliError> {

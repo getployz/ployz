@@ -130,7 +130,6 @@
       "join_bundle": {
         "material": {
           "cluster_name": "prod",
-          "recovery_key_wrapped": [],
           "ebpf_bytecode": {
             "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -171,7 +170,6 @@
       "join_bundle": {
         "material": {
           "cluster_name": "prod",
-          "recovery_key_wrapped": [],
           "ebpf_bytecode": {
             "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

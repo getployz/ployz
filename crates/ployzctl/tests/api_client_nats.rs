@@ -589,7 +589,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
-            recovery_key_wrapped: Vec::new(),
+            recovery_key_wrapped: None,
             ployzd: InstallArtifactSpec {
                 version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
                     .expect("valid version"),

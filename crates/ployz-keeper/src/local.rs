@@ -275,7 +275,7 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
             target.state_dir(),
             &nats_file_name(&target.material().recovery_key_file()),
             FileMode::Secret0600,
-            target.recovery_key_wrapped(),
+            target.recovery_key_wrapped().as_bytes(),
         )
     }
 
@@ -442,15 +442,15 @@ fn commit_join_material_files(
         material.nats_credentials().secret().as_bytes(),
     )?;
     // Deliver the wrapped CA key so this joined machine can be core-promoted
-    // (ADR 0031). Skipped for material minted before recovery existed.
-    if material.recovery_key_wrapped().is_empty() {
+    // (ADR 0031). Absent for material minted before recovery existed.
+    let Some(recovery_key) = material.recovery_key_wrapped() else {
         return Ok(());
-    }
+    };
     join_material_write(
         directory,
         JOIN_RECOVERY_KEY_FILE,
         FileMode::Secret0600,
-        material.recovery_key_wrapped(),
+        recovery_key.as_bytes(),
     )
 }
 

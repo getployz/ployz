@@ -1,3 +1,4 @@
+use ployz_core::install::WrappedCaKey;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -64,7 +65,7 @@ fn local_effects_install_first_machine_process_units() {
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
-            b"wrapped-ca-key".to_vec(),
+            WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         )
         .with_nats_server_unit(nats_unit(&root))
         .with_nats_material_paths(nats_material(&root))
@@ -178,7 +179,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
             .without_gateway()
             .without_dns(),
         test_identity().clone(),
-        b"wrapped-ca-key".to_vec(),
+        WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
     )
     .with_nats_server_unit(nats_unit(&root))
     .with_nats_material_paths(nats_material(&root))
@@ -227,7 +228,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
             .without_gateway()
             .without_dns(),
         test_identity().clone(),
-        b"wrapped-ca-key".to_vec(),
+        WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
     )
     .with_nats_server_unit(nats_unit(&root))
     .with_nats_material_paths(nats_material(&root))
@@ -653,7 +654,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
-            b"wrapped-ca-key".to_vec(),
+            WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         )
         .with_nats_server_unit(nats_unit(&root))
         .with_nats_material_paths(nats_material(&root))
@@ -723,7 +724,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
-            b"wrapped-ca-key".to_vec(),
+            WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         )
         .with_nats_server_unit(nats_unit(&root))
         .with_nats_material_paths(nats_material(&root))
@@ -757,7 +758,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
                 .expect("valid nats credentials"),
             test_ca_pem(),
-            b"wrapped-ca-key".to_vec(),
+            Some(WrappedCaKey::new(b"wrapped-ca-key".to_vec())),
         )
         .expect("valid join material"),
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
@@ -888,7 +889,7 @@ fn local_effects_store_redacted_join_material() {
         NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
             .expect("valid nats credentials"),
         test_ca_pem(),
-        b"wrapped-ca-key".to_vec(),
+        Some(WrappedCaKey::new(b"wrapped-ca-key".to_vec())),
     )
     .expect("valid join material");
     let mut effects = KeeperLocalEffects::new(
@@ -1235,7 +1236,7 @@ fn first_machine_plan_with_ployzd(
                 .without_gateway()
                 .without_dns(),
             test_identity().clone(),
-            b"wrapped-ca-key".to_vec(),
+            WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         )
         .with_nats_server_unit(nats_unit(root))
         .with_nats_material_paths(nats_material(root))

@@ -231,7 +231,7 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 )
                 .expect("valid CA pem"),
             },
-            recovery_key_wrapped: Vec::new(),
+            recovery_key_wrapped: None,
             ployzd: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployzd"),

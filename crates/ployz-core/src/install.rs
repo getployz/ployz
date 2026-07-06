@@ -5,6 +5,7 @@ use crate::ids::MachineId;
 use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
 use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use url::{Host, Url};
 
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://ployz.sh";
@@ -126,6 +127,32 @@ pub struct MachineJoinBundle {
     pub material: MachineJoinMaterial,
 }
 
+/// The cluster CA signing key encrypted with the operator recovery secret
+/// (ADR 0031). Ciphertext, not a secret — safe to deliver broadly; only the
+/// recovery-secret holder can decrypt it at promote time.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(transparent)]
+pub struct WrappedCaKey(Vec<u8>);
+
+impl WrappedCaKey {
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for WrappedCaKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "WrappedCaKey({} bytes)", self.0.len())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -135,9 +162,9 @@ pub struct MachineJoinMaterial {
     pub trusted_nats: MachineJoinTrustedNats,
     /// The cluster CA signing key wrapped with the recovery secret (ADR 0031),
     /// delivered so a joined promotion candidate can decrypt it and self-issue
-    /// the trusted NATS server cert. Empty for material minted before recovery.
-    #[serde(default)]
-    pub recovery_key_wrapped: Vec<u8>,
+    /// the trusted NATS server cert. `None` for material minted before recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key_wrapped: Option<WrappedCaKey>,
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,

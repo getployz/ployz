@@ -10,7 +10,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinTrustedNats, NatsMachineMaterialPaths,
+    MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
@@ -183,7 +183,7 @@ pub struct KeeperJoinMaterial {
     redacted: RedactedJoinMaterial,
     nats_credentials: NatsUserSeed,
     trusted_ca_pem: NatsCaCertificatePem,
-    recovery_key_wrapped: Vec<u8>,
+    recovery_key_wrapped: Option<WrappedCaKey>,
 }
 
 impl KeeperJoinMaterial {
@@ -206,7 +206,7 @@ impl KeeperJoinMaterial {
         cluster_name: impl Into<String>,
         nats_credentials: NatsUserSeed,
         trusted_ca_pem: NatsCaCertificatePem,
-        recovery_key_wrapped: Vec<u8>,
+        recovery_key_wrapped: Option<WrappedCaKey>,
     ) -> Result<Self, JoinMaterialError> {
         let redacted = RedactedJoinMaterial::new(
             machine_id,
@@ -240,11 +240,11 @@ impl KeeperJoinMaterial {
         &self.trusted_ca_pem
     }
 
-    /// The wrapped cluster CA signing key (ADR 0031), empty when the material
+    /// The wrapped cluster CA signing key (ADR 0031), `None` when the material
     /// predates recovery. Written 0600 so this candidate can be core-promoted.
     #[must_use]
-    pub fn recovery_key_wrapped(&self) -> &[u8] {
-        &self.recovery_key_wrapped
+    pub fn recovery_key_wrapped(&self) -> Option<&WrappedCaKey> {
+        self.recovery_key_wrapped.as_ref()
     }
 }
 
@@ -373,7 +373,7 @@ pub struct FirstMachineInstallTarget {
     pub nats_identity: ClusterNatsIdentity,
     /// The CA signing key wrapped with the recovery secret (ADR 0031), persisted
     /// beside the TLS material so a promotion can decrypt and self-issue.
-    pub recovery_key_wrapped: Vec<u8>,
+    pub recovery_key_wrapped: WrappedCaKey,
     pub nats_material: NatsMachineMaterialPaths,
     pub additional_user_public_keys: Vec<NatsUserPublicKey>,
     pub machine_public_ip: Option<IpAddr>,
@@ -393,7 +393,7 @@ impl FirstMachineInstallTarget {
         nats_server_artifact: ArtifactTarget,
         roles: InstallRolePolicy,
         nats_identity: ClusterNatsIdentity,
-        recovery_key_wrapped: Vec<u8>,
+        recovery_key_wrapped: WrappedCaKey,
     ) -> Self {
         let nats_server_unit = NatsServerUnitTarget::new(
             nats_server_artifact.install_path().to_path_buf(),
@@ -870,7 +870,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
                     trusted_nats: MachineJoinTrustedNats {
                         ca_pem: target.nats_identity.ca.clone(),
                     },
-                    recovery_key_wrapped: target.recovery_key_wrapped.clone(),
+                    recovery_key_wrapped: Some(target.recovery_key_wrapped.clone()),
                     ployzd: target.ployzd_artifact.install_spec(),
                     ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
                     ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),

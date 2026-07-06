@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::MachineId;
-use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey};
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
     NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
@@ -188,7 +188,7 @@ impl NatsServerConfigTarget {
 pub struct NatsTlsMaterialTarget {
     material: NatsMachineMaterialPaths,
     identity: ClusterNatsIdentity,
-    recovery_key_wrapped: Vec<u8>,
+    recovery_key_wrapped: WrappedCaKey,
 }
 
 impl NatsTlsMaterialTarget {
@@ -196,7 +196,7 @@ impl NatsTlsMaterialTarget {
     pub fn new(
         material: NatsMachineMaterialPaths,
         identity: &ClusterNatsIdentity,
-        recovery_key_wrapped: Vec<u8>,
+        recovery_key_wrapped: WrappedCaKey,
     ) -> Self {
         Self {
             material,
@@ -231,7 +231,7 @@ impl NatsTlsMaterialTarget {
     }
 
     #[must_use]
-    pub fn recovery_key_wrapped(&self) -> &[u8] {
+    pub fn recovery_key_wrapped(&self) -> &WrappedCaKey {
         &self.recovery_key_wrapped
     }
 }

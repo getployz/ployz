@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand};
 use ployz_core::ids::OperationId;
 use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
-    NatsServerInstallSpec,
+    NatsServerInstallSpec, WrappedCaKey,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,9 +316,10 @@ pub fn first_machine_install_target_from_spec(
     let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
     let recovery_secret = resolve_recovery_secret();
-    let recovery_key_wrapped =
+    let recovery_key_wrapped = WrappedCaKey::new(
         recovery_secret::wrap(&recovery_secret, nats_identity.ca_key.secret().as_bytes())
-            .map_err(KeeperCliError::RecoverySecret)?;
+            .map_err(KeeperCliError::RecoverySecret)?,
+    );
 
     let mut target = FirstMachineInstallTarget::new(
         machine_id,

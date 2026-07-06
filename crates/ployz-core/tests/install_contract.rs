@@ -217,7 +217,6 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 "trusted_nats": {
                     "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
                 },
-                "recovery_key_wrapped": [],
                 "ployzd": {
                     "version": "0.1.0",
                     "source": "/tmp/ployzd",
@@ -310,7 +309,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
-            recovery_key_wrapped: Vec::new(),
+            recovery_key_wrapped: None,
             ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: join_artifact(
                 "/tmp/ployz-ebpf-tc",

@@ -43,7 +43,7 @@ pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoi
         trusted_nats: MachineJoinTrustedNats {
             ca_pem: NatsCaCertificatePem::try_new(ca_pem).expect("valid ca pem"),
         },
-        recovery_key_wrapped: Vec::new(),
+        recovery_key_wrapped: None,
         ployzd: install_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
         ebpf_bytecode: install_artifact(
             "/tmp/ployz-ebpf-tc",

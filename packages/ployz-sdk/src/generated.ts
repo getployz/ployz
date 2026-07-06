@@ -358,9 +358,9 @@ export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtim
 /**
  * The cluster CA signing key wrapped with the recovery secret (ADR 0031),
  * delivered so a joined promotion candidate can decrypt it and self-issue
- * the trusted NATS server cert. Empty for material minted before recovery.
+ * the trusted NATS server cert. `None` for material minted before recovery.
  */
-recovery_key_wrapped: Array<number>, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
+recovery_key_wrapped?: WrappedCaKey | null, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
 
 export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
@@ -379,6 +379,8 @@ export type NatsUserPublicKey = string;
 export type NatsCaCertificatePem = string;
 
 export type MachineJoinTrustedNats = { ca_pem: NatsCaCertificatePem, };
+
+export type WrappedCaKey = Array<number>;
 
 export type InstallArtifactVersion = string;
 

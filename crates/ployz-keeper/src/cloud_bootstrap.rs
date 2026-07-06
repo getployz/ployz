@@ -616,7 +616,7 @@ mod tests {
                     )
                     .expect("valid ca pem"),
                 },
-                recovery_key_wrapped: Vec::new(),
+                recovery_key_wrapped: None,
                 ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
                 ebpf_bytecode: join_artifact(
                     "/tmp/ployz-ebpf-tc",
