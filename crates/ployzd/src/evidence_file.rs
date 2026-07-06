@@ -1,48 +1,11 @@
-//! Small helpers for JSON evidence files owned by one local process.
+//! Atomic file write for a rendered config artifact owned by one local process.
+//!
+//! The one remaining caller is the NATS authorization renderer, which writes
+//! the `authorized-users.conf` include the `nats-server` reloads. Durable
+//! control-plane state lives in the core database (`core_store`), not here.
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug)]
-pub(crate) enum EvidenceFileError {
-    Read { message: String },
-    Decode { message: String },
-    Encode { message: String },
-    Write { message: String },
-}
-
-pub(crate) fn read_json_or_default<T>(path: &Path) -> Result<T, EvidenceFileError>
-where
-    T: DeserializeOwned + Default,
-{
-    let payload = match std::fs::read(path) {
-        Ok(payload) => payload,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
-        Err(error) => {
-            return Err(EvidenceFileError::Read {
-                message: error.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&payload).map_err(|error| EvidenceFileError::Decode {
-        message: error.to_string(),
-    })
-}
-
-pub(crate) fn write_json<T>(path: &Path, evidence: &T) -> Result<(), EvidenceFileError>
-where
-    T: Serialize,
-{
-    let payload =
-        serde_json::to_vec_pretty(evidence).map_err(|error| EvidenceFileError::Encode {
-            message: error.to_string(),
-        })?;
-    write_file_atomically(path, &payload).map_err(|error| EvidenceFileError::Write {
-        message: error.to_string(),
-    })
-}
 
 #[derive(Debug)]
 pub(crate) struct AtomicFileWriteError {
@@ -88,47 +51,4 @@ fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
 #[cfg(not(unix))]
 fn sync_parent_directory(_parent: &Path) -> Result<(), std::io::Error> {
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{EvidenceFileError, read_json_or_default, write_json};
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-    struct ExampleEvidence {
-        values: Vec<String>,
-    }
-
-    #[test]
-    fn missing_file_loads_default_and_written_json_round_trips() {
-        let temp = tempfile::tempdir().expect("tempdir is created");
-        let path = temp.path().join("nested").join("evidence.json");
-
-        assert_eq!(
-            read_json_or_default::<ExampleEvidence>(&path).expect("missing file defaults"),
-            ExampleEvidence::default()
-        );
-
-        let evidence = ExampleEvidence {
-            values: vec!["alpha".to_owned(), "beta".to_owned()],
-        };
-        write_json(&path, &evidence).expect("evidence is written atomically");
-
-        assert_eq!(
-            read_json_or_default::<ExampleEvidence>(&path).expect("written evidence reads"),
-            evidence
-        );
-    }
-
-    #[test]
-    fn invalid_json_reports_decode_error() {
-        let temp = tempfile::tempdir().expect("tempdir is created");
-        let path = temp.path().join("evidence.json");
-        std::fs::write(&path, b"{").expect("invalid json is written");
-
-        let error = read_json_or_default::<ExampleEvidence>(&path)
-            .expect_err("invalid json fails to decode");
-        assert!(matches!(error, EvidenceFileError::Decode { .. }));
-    }
 }

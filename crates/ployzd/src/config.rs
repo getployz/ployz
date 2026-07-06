@@ -26,14 +26,6 @@ pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
-pub const PLOYZ_MACHINE_ROSTER_FILE_ENV: &str = "PLOYZ_MACHINE_ROSTER_FILE";
-pub const DEFAULT_MACHINE_ROSTER_FILE: &str = "/var/lib/ployz/machine-roster.json";
-pub const PLOYZ_MACHINE_LIFECYCLES_FILE_ENV: &str = "PLOYZ_MACHINE_LIFECYCLES_FILE";
-pub const DEFAULT_MACHINE_LIFECYCLES_FILE: &str = "/var/lib/ployz/machine-lifecycles.json";
-pub const PLOYZ_NAMESPACE_INTENT_FILE_ENV: &str = "PLOYZ_NAMESPACE_INTENT_FILE";
-pub const DEFAULT_NAMESPACE_INTENT_FILE: &str = "/var/lib/ployz/namespace-intent.json";
-pub const PLOYZ_OPERATION_EVIDENCE_DIR_ENV: &str = "PLOYZ_OPERATION_EVIDENCE_DIR";
-pub const DEFAULT_OPERATION_EVIDENCE_DIR: &str = "/var/lib/ployz/operations";
 pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
 pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
 pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
@@ -94,7 +86,6 @@ pub fn load_daemon_process_config(
             if let Some(deploy_machines) = load_deploy_machines(&env)? {
                 control = control.with_deploy_machines(deploy_machines);
             }
-            control = control.with_operation_evidence_dir(load_operation_evidence_dir(&env));
             control = control.with_core_db_path(load_core_db_path(&env));
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
@@ -276,22 +267,7 @@ fn load_control_nats_authorization(
         machine_seed_file: env_value(env, PLOYZ_NATS_MACHINE_SEED_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.machine_seed_file),
-        machine_roster_file: env_value(env, PLOYZ_MACHINE_ROSTER_FILE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or(defaults.machine_roster_file),
-        machine_lifecycles_file: env_value(env, PLOYZ_MACHINE_LIFECYCLES_FILE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or(defaults.machine_lifecycles_file),
-        namespace_intent_file: env_value(env, PLOYZ_NAMESPACE_INTENT_FILE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or(defaults.namespace_intent_file),
     }
-}
-
-fn load_operation_evidence_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
-    env_value(env, PLOYZ_OPERATION_EVIDENCE_DIR_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_OPERATION_EVIDENCE_DIR))
 }
 
 fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -300,17 +276,13 @@ fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_DB))
 }
 
-/// Control-owned durable paths: the rendered authority file, the first
-/// machine's locally written `machine.seed`, and core intent evidence files.
+/// Control-owned file paths: the rendered authority include the nats-server
+/// reloads, and the first machine's locally written `machine.seed`. Durable
+/// control state lives in the core database, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
     pub machine_seed_file: PathBuf,
-    pub machine_roster_file: PathBuf,
-    /// Recovery evidence for machine lifecycle intent (drained machines);
-    /// overlaid onto the intent snapshot at read time.
-    pub machine_lifecycles_file: PathBuf,
-    pub namespace_intent_file: PathBuf,
 }
 
 impl ControlNatsAuthorizationConfig {
@@ -319,9 +291,6 @@ impl ControlNatsAuthorizationConfig {
         Self {
             authorized_users_file: PathBuf::from(DEFAULT_NATS_AUTHORIZED_USERS_FILE),
             machine_seed_file: NatsMachineMaterialPaths::in_default_state_dir().machine_seed_file(),
-            machine_roster_file: PathBuf::from(DEFAULT_MACHINE_ROSTER_FILE),
-            machine_lifecycles_file: PathBuf::from(DEFAULT_MACHINE_LIFECYCLES_FILE),
-            namespace_intent_file: PathBuf::from(DEFAULT_NAMESPACE_INTENT_FILE),
         }
     }
 }
@@ -663,7 +632,6 @@ pub struct ControlProcessConfig {
     pub nats: NatsServerRuntime,
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
-    pub operation_evidence_dir: PathBuf,
     pub core_db_path: PathBuf,
     pub deploy_machines: Vec<MachineId>,
     pub deploy_step_timeout: Duration,
@@ -681,7 +649,6 @@ impl ControlProcessConfig {
             nats,
             nats_connect,
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),
-            operation_evidence_dir: PathBuf::from(DEFAULT_OPERATION_EVIDENCE_DIR),
             core_db_path: PathBuf::from(DEFAULT_CORE_DB),
             deploy_machines: vec![first_deploy_machine],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
@@ -701,12 +668,6 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn with_deploy_machines(mut self, deploy_machines: Vec<MachineId>) -> Self {
         self.deploy_machines = deploy_machines;
-        self
-    }
-
-    #[must_use]
-    pub fn with_operation_evidence_dir(mut self, operation_evidence_dir: PathBuf) -> Self {
-        self.operation_evidence_dir = operation_evidence_dir;
         self
     }
 
