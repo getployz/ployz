@@ -565,6 +565,45 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
         .expect("control runtime shuts down");
 }
 
+#[tokio::test]
+async fn machine_add_reusing_another_operations_idempotency_key_is_rejected() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    machine_add(&api, "op_a", "idem_a", "machine_a").await;
+    machine_add(&api, "op_b", "idem_b", "machine_b").await;
+
+    // op_b already exists; reusing op_a's idempotency key must not return
+    // op_a's join material — it is a duplicate key, not an adopt of op_b.
+    let mismatch = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_b"),
+            idempotency_key: idempotency_key("idem_a"),
+            machine_id: machine_id("machine_b"),
+            name: ployz_sdk_types::MachineName::try_new("machine_b").expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        })
+        .await
+        .expect_err("reusing another operation's idempotency key is rejected");
+    assert_eq!(
+        mismatch,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_b"),
+            },
+        }
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
 async fn machine_add(
     api: &OperationApiClient,
     operation: &str,

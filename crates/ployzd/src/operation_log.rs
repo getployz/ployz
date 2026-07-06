@@ -693,6 +693,19 @@ fn record_operation_event_txn(
     {
         return Ok(RecordTxn::Projection(error));
     }
+    // Singleton deploy evidence (plan, dataplane, health, cleanup) is recorded
+    // once per deploy. A retry or re-entry that re-records it — even with a
+    // different plan while still producing — adopts the original rather than
+    // durably appending a second, conflicting event and advancing the replay
+    // cursor. Per-container started events are multi-instance and are exempt.
+    if let Some(evidence) = deploy_evidence_from_event(&event)
+        && let Some(subject) = singleton_deploy_evidence_subject(&evidence)
+        && singleton_deploy_evidence_recorded(&transaction, operation_id, subject)?
+    {
+        return Ok(RecordTxn::AlreadySatisfied {
+            current_sequence: current.last_event_sequence(),
+        });
+    }
     let projection = match project_operation_event(&current, event.clone(), sequence) {
         Ok(projection) => projection,
         Err(error) => return Ok(RecordTxn::Projection(error)),
@@ -798,6 +811,13 @@ fn submit_machine_add_txn(
             });
         }
         if let Some(existing) = select_machine_add_submission(&transaction, &idempotency_key)? {
+            // The idempotency key must name the same operation the caller did.
+            // A key already bound to a different operation is a duplicate key,
+            // not an adopt of this one — returning that operation's join
+            // material would answer the wrong request.
+            if existing.operation_id != operation_id {
+                return Ok(MachineAddTxn::DuplicateIdempotencyKey);
+            }
             transaction.commit()?;
             return Ok(MachineAddTxn::Accepted {
                 submitted: Box::new(existing),
@@ -1859,6 +1879,52 @@ pub enum RecordMachineJoinReportError {
     StoreStatus(OperationStatusStoreError),
     RecordMachineAddEvent(RecordMachineAddEventError),
     JoinTokenMismatch { operation_id: OperationId },
+}
+
+/// Deploy evidence that is recorded once per deploy — the plan, the dataplane
+/// report, the health-check start, the cleanup result. Per-container started
+/// events are deliberately absent: they are multi-instance.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SingletonDeployEvidence {
+    PlanCreated,
+    DataplanePrepared,
+    HealthCheckStarted,
+    CleanupFinished,
+}
+
+fn singleton_deploy_evidence_subject(
+    evidence: &DeployEvidence,
+) -> Option<SingletonDeployEvidence> {
+    match evidence {
+        DeployEvidence::PlanCreated { .. } => Some(SingletonDeployEvidence::PlanCreated),
+        DeployEvidence::DataplanePrepared { .. } => {
+            Some(SingletonDeployEvidence::DataplanePrepared)
+        }
+        DeployEvidence::HealthCheckStarted => Some(SingletonDeployEvidence::HealthCheckStarted),
+        DeployEvidence::CleanupFinished { .. } => Some(SingletonDeployEvidence::CleanupFinished),
+        DeployEvidence::ContainerStarted { .. } => None,
+    }
+}
+
+fn singleton_deploy_evidence_recorded(
+    conn: &Connection,
+    operation_id: &OperationId,
+    subject: SingletonDeployEvidence,
+) -> Result<bool, rusqlite::Error> {
+    let mut statement =
+        conn.prepare("SELECT event_json FROM operation_events WHERE operation_id = ?1")?;
+    let rows = statement.query_map([operation_id.as_str()], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let event: OperationEvent = from_json(&row?)?;
+        if deploy_evidence_from_event(&event)
+            .as_ref()
+            .and_then(singleton_deploy_evidence_subject)
+            == Some(subject)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> {
