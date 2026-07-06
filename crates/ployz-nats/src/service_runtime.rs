@@ -26,6 +26,7 @@ pub type NatsClient = async_nats::Client;
 /// a wait-forever.
 const NO_RESPONDERS_RETRIES: usize = 4;
 const NO_RESPONDERS_RETRY_DELAY: Duration = Duration::from_millis(100);
+const SERVICE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub async fn request_json<Request, Response>(
     client: &async_nats::Client,
@@ -254,14 +255,7 @@ impl RunningNatsService {
                 .fetch_add(1, Ordering::Relaxed);
         });
         self.endpoint_tasks.push(task);
-        tokio::task::yield_now().await;
-        self.client
-            .flush()
-            .await
-            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
-                subject: endpoint.subject.clone(),
-                message: format!("endpoint task flush failed: {error}"),
-            })?;
+        wait_for_service_registration(&self.client, endpoint.subject.as_str()).await?;
         Ok(())
     }
 
@@ -493,6 +487,39 @@ pub async fn start_nats_service(
         endpoint_tasks: Vec::new(),
         health: Arc::new(NatsServiceHealthCounters::default()),
     })
+}
+
+async fn wait_for_service_registration(
+    client: &async_nats::Client,
+    endpoint_subject: &str,
+) -> Result<(), NatsServiceRuntimeError> {
+    // Receiving this self-message proves the server processed earlier commands
+    // on this connection, including the endpoint subscription.
+    let inbox = client.new_inbox();
+    let mut proof = client.subscribe(inbox.clone()).await.map_err(|error| {
+        NatsServiceRuntimeError::AddEndpoint {
+            subject: endpoint_subject.to_owned(),
+            message: format!("service registration proof subscribe failed: {error}"),
+        }
+    })?;
+    client
+        .publish(inbox, Vec::new().into())
+        .await
+        .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+            subject: endpoint_subject.to_owned(),
+            message: format!("service registration proof publish failed: {error}"),
+        })?;
+    timeout(SERVICE_REGISTRATION_TIMEOUT, proof.next())
+        .await
+        .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+            subject: endpoint_subject.to_owned(),
+            message: format!("service registration proof timed out: {error}"),
+        })?
+        .ok_or_else(|| NatsServiceRuntimeError::AddEndpoint {
+            subject: endpoint_subject.to_owned(),
+            message: "service registration proof subscriber closed".to_owned(),
+        })?;
+    Ok(())
 }
 
 fn service_metadata_map(metadata: &ServiceMetadata) -> HashMap<String, String> {
