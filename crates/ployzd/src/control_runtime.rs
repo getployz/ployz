@@ -21,7 +21,7 @@ use crate::nats_authorization::{
 use crate::operation_api::OperationApiHandlers;
 use crate::operation_log::OperationRepository;
 use crate::process_support::shutdown_signal;
-use crate::runtime_facts::{
+use crate::fact_cache::{
     RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
 };
 use crate::tasks::TaskRegistry;

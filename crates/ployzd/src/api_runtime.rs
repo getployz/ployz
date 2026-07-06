@@ -5,7 +5,7 @@ use crate::operation_api::{
     machine_join_redeem, machine_join_report, machine_resume, machine_update, ops_list, ops_status,
     ops_watch,
 };
-use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
+use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
@@ -281,7 +281,7 @@ impl std::fmt::Display for ApiServiceRuntimeError {
 
 #[cfg(test)]
 mod tests {
-    use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_service};
+    use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_service};
 
     #[test]
     fn operation_api_service_advertises_only_bound_endpoints() {

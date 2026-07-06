@@ -11,7 +11,7 @@ use ployzd::dns_source::load_dns_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::runtime_facts::RuntimeFactsCache;
+use ployzd::fact_cache::RuntimeFactsCache;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 

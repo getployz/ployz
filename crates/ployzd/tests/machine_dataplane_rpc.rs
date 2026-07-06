@@ -18,7 +18,7 @@ use ployzd::machine_runtime::protocol::{
     MachineFactsGetRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };
-use ployzd::services::machine_runtime_service;
+use ployzd::service_catalog::machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 

@@ -47,7 +47,7 @@ use ployzd::machine_runtime::protocol::{
 };
 use ployzd::machine_runtime::service::start_machine_runtime_service;
 use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::services::machine_runtime_service;
+use ployzd::service_catalog::machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};

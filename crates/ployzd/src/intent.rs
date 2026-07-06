@@ -2,7 +2,7 @@
 
 use crate::machine_roster::MachineRosterStore;
 use crate::namespace_intent::NamespaceIntentStore;
-use crate::services::{intent_get_endpoint_spec, intent_service};
+use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET};
 use ployz_nats::service_protocol::NatsServiceError;

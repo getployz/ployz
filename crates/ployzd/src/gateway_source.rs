@@ -5,7 +5,7 @@ use crate::gateway::{
     GatewayServingEntry,
 };
 use crate::intent::{IntentReadError, NatsIntentReader};
-use crate::runtime_facts::RuntimeFactsCache;
+use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::fmt;

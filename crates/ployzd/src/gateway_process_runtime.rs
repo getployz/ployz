@@ -14,7 +14,7 @@ use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
-use crate::runtime_facts::{
+use crate::fact_cache::{
     RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
 };
 use futures_util::StreamExt;

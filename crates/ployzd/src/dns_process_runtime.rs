@@ -10,7 +10,7 @@ use crate::dns_source::load_dns_projection_update_from_nats;
 use crate::intent::NatsIntentReader;
 use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
-use crate::runtime_facts::{
+use crate::fact_cache::{
     RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
 };
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};

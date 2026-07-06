@@ -14,7 +14,7 @@ use ployzd::config::{
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_MACHINE_PUBLIC_IP_ENV, PLOYZ_NATS_CA_FILE_ENV,
     PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, load_daemon_process_config,
 };
-use ployzd::role::{DaemonProcessRole, parse_role_args};
+use ployzd::role_cli::{DaemonProcessRole, parse_role_args};
 
 /// Syntactically valid NKey user seed for config tests (not a real key).
 const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";

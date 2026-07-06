@@ -15,7 +15,7 @@ use ployzd::gateway_source::load_gateway_projection_update_from_nats;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::runtime_facts::RuntimeFactsCache;
+use ployzd::fact_cache::RuntimeFactsCache;
 use std::time::Duration;
 
 #[tokio::test]
