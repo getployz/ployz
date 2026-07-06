@@ -862,6 +862,58 @@ pub struct CorePromoteTarget {
     pub role_environment: PloyzdRoleEnvironmentTarget,
 }
 
+impl CorePromoteTarget {
+    /// Assemble a promote target from the resolved inputs, constructing the core
+    /// material paths, the `nats-server` unit, and the Control role environment
+    /// (pointed at `seed_from_mirror`) the same way first-machine install does.
+    // ponytail: a constructor for a 10-field target from cohesive promotion inputs
+    // that needs steps.rs-private helpers (the TLS loopback URL); bundling the args
+    // into an intermediate struct just to satisfy the lint would be a sparse option
+    // bag. Bundle only if a second caller wants a different subset.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble(
+        machine_id: MachineId,
+        nats_server_artifact: ArtifactTarget,
+        ployzd_artifact: ArtifactTarget,
+        nats_identity: ClusterNatsIdentity,
+        recovery_key_wrapped: WrappedCaKey,
+        machine_authorized_publics: Vec<(MachineId, NatsUserPublicKey)>,
+        machine_public_ip: Option<IpAddr>,
+        seed_from_mirror: PathBuf,
+    ) -> Self {
+        let nats_material = NatsMachineMaterialPaths::in_default_state_dir();
+        let nats_server_unit = NatsServerUnitTarget::new(
+            nats_server_artifact.install_path().to_path_buf(),
+            NatsServerUnitTarget::default_paths()
+                .config_path()
+                .to_path_buf(),
+        )
+        .expect("validated nats-server artifact install path is a valid unit path");
+        let mut role_environment = PloyzdRoleEnvironmentTarget::default_path(
+            machine_id.clone(),
+            tls_loopback_nats_url(DEFAULT_NATS_PORT),
+            RoleNatsCredentials::cluster(&nats_material),
+        )
+        .with_seed_from_mirror(seed_from_mirror);
+        if let Some(public_ip) = machine_public_ip {
+            role_environment = role_environment.with_machine_public_ip(public_ip);
+        }
+        Self {
+            machine_id,
+            nats_server_artifact,
+            ployzd_artifact,
+            nats_identity,
+            recovery_key_wrapped,
+            machine_authorized_publics,
+            nats_material,
+            machine_public_ip,
+            nats_server_unit,
+            role_environment,
+        }
+    }
+}
+
 /// The promotion plan: install `nats-server`, write the TLS material (self-issued
 /// cert under the kept CA) + a from-scratch authorized-users off the roster +
 /// fresh core credentials + the server config, start the core `nats-server`, then

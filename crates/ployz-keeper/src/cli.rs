@@ -3,31 +3,39 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Read;
-use std::path::PathBuf;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 
 use crate::artifacts::{
     ArtifactKind, ArtifactTargetError, DataplaneArtifactTargets, artifact_target,
 };
-use crate::join::{JoinTokenFileError, read_join_token_file};
+use crate::join::{
+    JOIN_MATERIAL_DIR, JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE, JoinTokenFileError,
+    read_join_token_file,
+};
 use crate::nats_identity::{
     NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
+    promoted_core_identity,
 };
 use crate::recovery_secret::{self, RecoverySecretError};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
-use crate::steps::{FirstMachineInstallTarget, JoinToken};
+use crate::steps::{CorePromoteTarget, FirstMachineInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 use clap::{Parser, Subcommand};
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
     NatsServerInstallSpec, WrappedCaKey,
 };
+use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::state::IntentSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperCommand {
     Start(KeeperStartup),
     Bootstrap(KeeperBootstrap),
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
+    CorePromote(Box<CorePromoteTarget>),
     SubstrateUpdate(KeeperSubstrateUpdate),
 }
 
@@ -156,6 +164,12 @@ pub fn load_command(
                 first_machine_install_target_from_spec(spec)?,
             )))
         }
+        Some(KeeperSubcommand::CorePromote { spec }) => {
+            let spec = read_spec::<CorePromoteSpec>(spec)?;
+            Ok(KeeperCommand::CorePromote(Box::new(
+                core_promote_target_from_spec(spec)?,
+            )))
+        }
         Some(KeeperSubcommand::SubstrateUpdate {
             operation_id,
             version,
@@ -203,6 +217,10 @@ enum KeeperSubcommand {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
     },
+    CorePromote {
+        #[arg(long, value_name = "path|-")]
+        spec: SpecSource,
+    },
     SubstrateUpdate {
         #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
         operation_id: Option<OperationId>,
@@ -240,9 +258,7 @@ impl std::str::FromStr for SpecSource {
     }
 }
 
-fn read_first_machine_install_spec(
-    source: SpecSource,
-) -> Result<FirstMachineInstallSpec, KeeperCliError> {
+fn read_spec<T: serde::de::DeserializeOwned>(source: SpecSource) -> Result<T, KeeperCliError> {
     let mut bytes = String::new();
     match &source {
         SpecSource::Path(path) => {
@@ -261,6 +277,113 @@ fn read_first_machine_install_spec(
         }
     }
     serde_json::from_str(&bytes).map_err(|error| KeeperCliError::ParseSpec { source, error })
+}
+
+fn read_first_machine_install_spec(
+    source: SpecSource,
+) -> Result<FirstMachineInstallSpec, KeeperCliError> {
+    read_spec(source)
+}
+
+/// The operator-supplied promotion inputs: the `nats-server` + ployzd artifacts to
+/// run the new core with, this machine's address, and where its intent mirror is.
+/// The pre-positioned CA cert + wrapped recovery key are read from join material.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorePromoteSpec {
+    pub machine_id: MachineId,
+    #[serde(default)]
+    pub machine_public_ip: Option<IpAddr>,
+    pub nats_server: NatsServerInstallSpec,
+    pub ployzd: InstallArtifactSpec,
+    pub mirror_path: String,
+}
+
+const DEFAULT_STATE_DIR: &str = "/var/lib/ployz";
+
+fn read_promote_file(path: &Path) -> Result<String, KeeperCliError> {
+    std::fs::read_to_string(path).map_err(|error| {
+        KeeperCliError::CorePromoteInput(format!("cannot read {}: {error}", path.display()))
+    })
+}
+
+/// Gather everything `core-promote` needs from the machine: artifacts from the
+/// spec, the CA cert + wrapped CA key from join material (decrypted with
+/// `PLOYZ_RECOVERY_SECRET`), and the machine publics from the local intent mirror.
+pub fn core_promote_target_from_spec(
+    spec: CorePromoteSpec,
+) -> Result<CorePromoteTarget, KeeperCliError> {
+    let CorePromoteSpec {
+        machine_id,
+        machine_public_ip,
+        nats_server,
+        ployzd,
+        mirror_path,
+    } = spec;
+    let nats_server_artifact = artifact_target(
+        ArtifactKind::NatsServer,
+        &InstallArtifactSpec {
+            version: nats_server.version,
+            source: nats_server.source,
+            sha256: nats_server.sha256,
+            install_path: nats_server.binary,
+        },
+    )?;
+    let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
+
+    let join_dir = PathBuf::from(DEFAULT_STATE_DIR).join(JOIN_MATERIAL_DIR);
+    let ca =
+        NatsCaCertificatePem::try_new(read_promote_file(&join_dir.join(JOIN_TRUSTED_CA_FILE))?)
+            .map_err(|error| {
+                KeeperCliError::CorePromoteInput(format!("invalid trusted CA: {error}"))
+            })?;
+    let wrapped = std::fs::read(join_dir.join(JOIN_RECOVERY_KEY_FILE)).map_err(|error| {
+        KeeperCliError::CorePromoteInput(format!("cannot read wrapped CA key: {error}"))
+    })?;
+    let secret = std::env::var("PLOYZ_RECOVERY_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            KeeperCliError::CorePromoteInput(
+                "PLOYZ_RECOVERY_SECRET is required to promote".to_owned(),
+            )
+        })?;
+    let ca_key_pem = String::from_utf8(
+        recovery_secret::unwrap(&secret, &wrapped).map_err(KeeperCliError::RecoverySecret)?,
+    )
+    .map_err(|_| {
+        KeeperCliError::CorePromoteInput("decrypted CA key is not valid UTF-8".to_owned())
+    })?;
+
+    let sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
+    let nats_identity = promoted_core_identity(ca, ca_key_pem, &sans)?;
+
+    let snapshot: IntentSnapshot =
+        serde_json::from_str(&read_promote_file(Path::new(&mirror_path))?).map_err(|error| {
+            KeeperCliError::CorePromoteInput(format!(
+                "cannot parse intent mirror {mirror_path}: {error}"
+            ))
+        })?;
+    let machine_authorized_publics = snapshot
+        .active_machines
+        .into_iter()
+        .filter_map(|machine| {
+            machine
+                .nkey_public
+                .map(|public| (machine.machine_id, public))
+        })
+        .collect();
+
+    Ok(CorePromoteTarget::assemble(
+        machine_id,
+        nats_server_artifact,
+        ployzd_artifact,
+        nats_identity,
+        WrappedCaKey::new(wrapped),
+        machine_authorized_publics,
+        machine_public_ip,
+        PathBuf::from(mirror_path),
+    ))
 }
 
 /// The machine hostname covered by the server certificate SANs. A host
@@ -380,6 +503,7 @@ pub enum KeeperCliError {
     SupervisorUnit(SupervisorUnitFileError),
     NatsIdentity(NatsIdentityError),
     RecoverySecret(RecoverySecretError),
+    CorePromoteInput(String),
 }
 
 impl KeeperCliError {
@@ -445,6 +569,7 @@ impl fmt::Display for KeeperCliError {
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
             Self::NatsIdentity(error) => write!(formatter, "{error}"),
             Self::RecoverySecret(error) => write!(formatter, "{error}"),
+            Self::CorePromoteInput(message) => write!(formatter, "core-promote: {message}"),
         }
     }
 }

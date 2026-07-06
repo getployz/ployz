@@ -27,9 +27,9 @@ use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::release_manifest::{ReleaseManifest, release_manifest_url};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
-    FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
-    KeeperStep, KeeperStepPlan, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
-    first_machine_install_plan,
+    CorePromoteTarget, FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial,
+    KeeperJoinTarget, KeeperStep, KeeperStepPlan, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
+    RoleNatsCredentials, core_promote_plan, first_machine_install_plan,
 };
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
@@ -105,6 +105,21 @@ fn main() -> ExitCode {
                 KeeperPlanTerminal::Failed(failure) => {
                     eprintln!(
                         "ployz-keeper first-machine-install failed: {}",
+                        failure_summary(&failure)
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(KeeperCommand::CorePromote(target)) => {
+            let stdout = std::io::stdout();
+            let mut recorder = KeeperTextRecorder::new(stdout.lock());
+            let execution = run_core_promote_command(*target, &mut recorder);
+            match execution.terminal {
+                KeeperPlanTerminal::Completed => ExitCode::SUCCESS,
+                KeeperPlanTerminal::Failed(failure) => {
+                    eprintln!(
+                        "ployz-keeper core-promote failed: {}",
                         failure_summary(&failure)
                     );
                     ExitCode::FAILURE
@@ -463,6 +478,21 @@ fn run_first_machine_install(
     recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
 ) -> ployz_keeper::executor::KeeperPlanExecution {
     let plan = first_machine_install_plan(target);
+    let mut effects = KeeperLocalEffects::new(
+        KeeperLocalConfig {
+            systemd_dir: "/etc/systemd/system".into(),
+            state_dir: KEEPER_STATE_DIR.into(),
+        },
+        SystemKeeperCommandRunner::default(),
+    );
+    execute_keeper_plan(&plan, &mut effects, recorder)
+}
+
+fn run_core_promote_command(
+    target: CorePromoteTarget,
+    recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
+) -> ployz_keeper::executor::KeeperPlanExecution {
+    let plan = core_promote_plan(target);
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
