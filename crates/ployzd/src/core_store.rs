@@ -11,6 +11,7 @@
 //! on the blocking pool via [`CoreStore::call`], matching how the file stores
 //! this replaces already blocked inside an async mutex.
 
+use ployz_core::state::ControlPlaneEpoch;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -90,6 +91,12 @@ const MIGRATIONS: &[&str] = &[
         ON operation_events(operation_id, subject)
         WHERE subject IS NOT NULL;
     ",
+    "
+    CREATE TABLE control_plane (
+        id   INTEGER PRIMARY KEY CHECK (id = 0),
+        json TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -162,6 +169,31 @@ impl CoreStore {
         })
         .await
         .map_err(CoreStoreError::Join)?
+    }
+
+    /// The core's control-plane epoch, minting the initial epoch on first read.
+    /// Advertised with intent so a machine can fence a stale core; promotion
+    /// bumps it (ADR 0031).
+    pub async fn control_plane_epoch(&self) -> Result<ControlPlaneEpoch, CoreStoreError> {
+        self.call(|conn| {
+            let existing: Option<String> = conn
+                .query_row("SELECT json FROM control_plane WHERE id = 0", [], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            match existing {
+                Some(json) => from_json(&json),
+                None => {
+                    let epoch = ControlPlaneEpoch::initial();
+                    conn.execute(
+                        "INSERT INTO control_plane (id, json) VALUES (0, ?1)",
+                        [to_json(&epoch)?],
+                    )?;
+                    Ok(epoch)
+                }
+            }
+        })
+        .await
     }
 }
 
@@ -268,6 +300,7 @@ mod tests {
             .expect("read tables");
 
         for expected in [
+            "control_plane",
             "machines",
             "operation_events",
             "operations",
@@ -285,5 +318,31 @@ mod tests {
             .await
             .expect("read user_version");
         assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[tokio::test]
+    async fn control_plane_epoch_mints_initial_and_persists() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("ployz-core.db");
+
+        let store = CoreStore::open(path.clone()).await.expect("first open");
+        assert_eq!(
+            store.control_plane_epoch().await.expect("mint epoch"),
+            ControlPlaneEpoch::initial()
+        );
+        // Reading again reads the existing row rather than re-minting.
+        assert_eq!(
+            store.control_plane_epoch().await.expect("read epoch"),
+            ControlPlaneEpoch::initial()
+        );
+
+        // The epoch survives a core restart — this is what lets it fence a
+        // stale core after promotion.
+        drop(store);
+        let reopened = CoreStore::open(path).await.expect("reopen");
+        assert_eq!(
+            reopened.control_plane_epoch().await.expect("read epoch"),
+            ControlPlaneEpoch::initial()
+        );
     }
 }

@@ -140,6 +140,7 @@ pub async fn start_control_process_with_client_and_reload(
         client.clone(),
         machine_roster.clone(),
         namespace_intent,
+        core_store.clone(),
         INTENT_PUBLISH_INTERVAL,
     )
     .await

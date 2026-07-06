@@ -32,6 +32,9 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
         nats.controller.clone(),
         machine_roster,
         temp_namespace_intent().await,
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens"),
         Duration::from_millis(10),
     )
     .await
@@ -62,6 +65,9 @@ async fn intent_reader_gets_current_intent() {
         nats.controller.clone(),
         temp_machine_roster().await,
         temp_namespace_intent().await,
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens"),
         Duration::from_secs(30),
     )
     .await
@@ -96,6 +102,9 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
         nats.controller.clone(),
         machine_roster,
         temp_namespace_intent().await,
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens"),
         Duration::from_secs(30),
     )
     .await
@@ -142,6 +151,9 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         nats.controller.clone(),
         temp_machine_roster().await,
         namespace_intent,
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens"),
         Duration::from_secs(30),
     )
     .await
