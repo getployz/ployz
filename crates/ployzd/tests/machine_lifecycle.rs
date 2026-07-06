@@ -163,8 +163,11 @@ async fn operation_controllers(client: async_nats::Client) -> OperationControlle
     let evidence_dir = tempfile::tempdir()
         .expect("operation evidence temp dir")
         .keep();
+    let core_store = ployzd::core_store::CoreStore::open(evidence_dir.join("ployz-core.db"))
+        .await
+        .expect("open core store");
     OperationControllers::new(
-        OperationRepository::open(evidence_dir, client).expect("open operation repository"),
+        OperationRepository::open(core_store, client),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),

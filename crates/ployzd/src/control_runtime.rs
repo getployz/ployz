@@ -18,7 +18,8 @@ use crate::nats_authorization::{
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
-use crate::operation_log::{OperationRepository, OperationStoreError};
+use crate::core_store::{CoreStore, CoreStoreError};
+use crate::operation_log::OperationRepository;
 use crate::process_support::shutdown_signal;
 use crate::runtime_facts::{
     RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,
@@ -82,9 +83,10 @@ pub async fn start_control_runtime_with_client_and_reload(
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
     }
 
-    let repository =
-        OperationRepository::open(config.operation_evidence_dir.clone(), client.clone())
-            .map_err(ControlRuntimeError::OpenOperationEvidence)?;
+    let core_store = CoreStore::open(config.core_db_path.clone())
+        .await
+        .map_err(ControlRuntimeError::OpenCoreStore)?;
+    let repository = OperationRepository::open(core_store, client.clone());
     let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
     let authorization = NatsAuthorizationRuntime::start(
         config.nats_authorization.authorized_users_file.clone(),
@@ -214,7 +216,7 @@ pub enum ControlRuntimeError {
     MissingMachineJoinTemplate,
     MissingDeployMachine,
     ConnectNats(NatsConnectError),
-    OpenOperationEvidence(OperationStoreError),
+    OpenCoreStore(CoreStoreError),
     StartFactsCache(RuntimeFactsCacheError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
@@ -234,11 +236,8 @@ impl fmt::Display for ControlRuntimeError {
                 write!(formatter, "control runtime requires a deploy machine")
             }
             Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::OpenOperationEvidence(error) => {
-                write!(
-                    formatter,
-                    "failed to open operation evidence store: {error}"
-                )
+            Self::OpenCoreStore(error) => {
+                write!(formatter, "failed to open core state store: {error}")
             }
             Self::StartFactsCache(error) => {
                 write!(formatter, "failed to start runtime facts cache: {error}")

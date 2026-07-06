@@ -52,11 +52,6 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget
         }
-        SubmitCommandError::Submit(SubmitOperationError::AppendEvent(source)) => {
-            SubmitFailure::Unavailable {
-                message: source.to_string(),
-            }
-        }
         SubmitCommandError::Submit(SubmitOperationError::StoreStatus(source)) => {
             SubmitFailure::Unavailable {
                 message: source.to_string(),
@@ -314,21 +309,22 @@ mod tests {
     }
 
     #[test]
-    fn deploy_submit_renders_event_log_failure_to_message() {
+    fn deploy_submit_renders_store_failure_to_message() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
             deploy_submit_error_from_submit_error(
                 operation_id.clone(),
-                SubmitCommandError::Submit(SubmitOperationError::AppendEvent(
-                    OperationEventLogError::WriteEvent {
-                        message: "write unavailable".to_owned(),
+                SubmitCommandError::Submit(SubmitOperationError::StoreStatus(
+                    OperationStatusStoreError::Index {
+                        message: "core database query: disk I/O error".to_owned(),
                     },
                 )),
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                message: "write operation event: write unavailable".to_owned(),
+                message: "operation working records: core database query: disk I/O error"
+                    .to_owned(),
             }
         );
     }
