@@ -31,7 +31,9 @@ use ployz_keeper::join_executor::{
     execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
-use ployz_keeper::release_manifest::{ReleaseManifest, release_manifest_url};
+use ployz_keeper::release_manifest::{
+    ReleaseManifest, default_release_manifest_url, release_manifest_url,
+};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
     CorePromoteTarget, FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial,
@@ -482,9 +484,14 @@ fn run_first_machine_install(
 }
 
 fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
-    // The release (via --version) supplies the core nats-server + ployzd binaries;
-    // everything else is read from this machine's own state.
-    let manifest = match load_versioned_release_manifest(&release_manifest_url(&promote.version)) {
+    // The release supplies the core nats-server + ployzd binaries; it defaults to
+    // this keeper binary's own version (the cluster release on a joined machine),
+    // with --version as an override. Everything else is read from machine state.
+    let manifest_url = match &promote.version {
+        Some(version) => release_manifest_url(version),
+        None => default_release_manifest_url(),
+    };
+    let manifest = match load_versioned_release_manifest(&manifest_url) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
@@ -578,9 +585,10 @@ fn resolve_core_promote_target(
     )
     .map_err(|_| "decrypted CA key is not valid UTF-8".to_owned())?;
 
-    let mirror_path = PathBuf::from(KEEPER_STATE_DIR)
-        .join("nats")
-        .join("intent-mirror.json");
+    // The machine persists its mirror beside its seed file; on a joined machine
+    // that seed lives in the join-material directory (nats.creds), so the mirror is
+    // there too — not the first-machine `/var/lib/ployz/nats` layout.
+    let mirror_path = join_dir.join("intent-mirror.json");
     let snapshot: ployz_core::state::IntentSnapshot =
         serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
             format!(
@@ -588,13 +596,23 @@ fn resolve_core_promote_target(
                 mirror_path.display()
             )
         })?;
-    let machine_public_ip = snapshot.public_endpoint_of(&machine_id);
+    // A promoted core must serve on a fleet-dialable address: without an advertised
+    // public endpoint the listener + cert would be loopback-only and every other
+    // machine's failover pool could never reach it. Require one.
+    let machine_public_ip = snapshot.public_endpoint_of(&machine_id).ok_or_else(|| {
+        "this machine has no advertised public endpoint in the mirror — the core \
+         never recorded its reachability, so it cannot be promoted to a core the \
+         fleet can dial"
+            .to_owned()
+    })?;
     let machine_authorized_publics = snapshot.authorized_machine_publics();
 
     let hostname = gethostname::gethostname().into_string().ok();
-    let sans =
-        ployz_keeper::nats_identity::ServerCertificateSans::try_new(machine_public_ip, hostname)
-            .map_err(|error| format!("{error}"))?;
+    let sans = ployz_keeper::nats_identity::ServerCertificateSans::try_new(
+        Some(machine_public_ip),
+        hostname,
+    )
+    .map_err(|error| format!("{error}"))?;
     let nats_identity = ployz_keeper::nats_identity::promoted_core_identity(ca, ca_key_pem, &sans)
         .map_err(|error| format!("{error}"))?;
 
@@ -605,7 +623,7 @@ fn resolve_core_promote_target(
         nats_identity,
         ployz_core::install::WrappedCaKey::new(wrapped),
         machine_authorized_publics,
-        machine_public_ip,
+        Some(machine_public_ip),
         mirror_path,
     ))
 }

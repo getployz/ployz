@@ -132,12 +132,14 @@ pub struct KeeperSubstrateUpdate {
     pub version: ExactPloyzVersion,
 }
 
-/// `core-promote` needs only the release to pull the core `nats-server` from —
-/// everything else (this machine's id + public IP, the CA + wrapped recovery key,
-/// the fleet's machine publics) is read from the machine's own state at run time.
+/// `core-promote` reads everything from the machine's own state (its id + public
+/// IP, the CA + wrapped recovery key, the fleet's machine publics). The only
+/// external input is which release to pull the core `nats-server` from, and that
+/// defaults to this keeper binary's own version — which, on a joined machine, is
+/// the cluster's release. `version` overrides it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperCorePromote {
-    pub version: ExactPloyzVersion,
+    pub version: Option<ExactPloyzVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,7 +219,7 @@ enum KeeperSubcommand {
     },
     CorePromote {
         #[arg(long, value_name = "version")]
-        version: ExactPloyzVersion,
+        version: Option<ExactPloyzVersion>,
     },
     SubstrateUpdate {
         #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
