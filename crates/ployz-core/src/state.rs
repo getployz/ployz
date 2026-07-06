@@ -71,6 +71,14 @@ impl ControlPlaneEpoch {
     pub const fn get(self) -> u64 {
         self.0
     }
+
+    /// The next generation, minted by a promotion to fence the core it succeeds
+    /// (ADR 0031). `#[must_use]` because a bump only matters once persisted as the
+    /// new epoch.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
 /// Full operator intent visible to readers, stamped with the epoch it reflects.

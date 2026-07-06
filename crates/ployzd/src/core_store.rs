@@ -195,6 +195,23 @@ impl CoreStore {
         })
         .await
     }
+
+    /// Overwrite the control-plane epoch. Promotion sets it to a strictly higher
+    /// value than the core it succeeds, which is what fences the old core.
+    pub async fn set_control_plane_epoch(
+        &self,
+        epoch: ControlPlaneEpoch,
+    ) -> Result<(), CoreStoreError> {
+        self.call(move |conn| {
+            conn.execute(
+                "INSERT INTO control_plane (id, json) VALUES (0, ?1)
+                 ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                [to_json(&epoch)?],
+            )?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 fn migrate(conn: &mut Connection) -> Result<(), rusqlite::Error> {
