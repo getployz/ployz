@@ -16,7 +16,8 @@ use ployz_keeper::executor::{
     execute_keeper_plan,
 };
 use ployz_keeper::join::{
-    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE,
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_RECOVERY_KEY_FILE,
+    JOIN_TRUSTED_CA_FILE,
 };
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
@@ -756,6 +757,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
                 .expect("valid nats credentials"),
             test_ca_pem(),
+            b"wrapped-ca-key".to_vec(),
         )
         .expect("valid join material"),
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
@@ -886,6 +888,7 @@ fn local_effects_store_redacted_join_material() {
         NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
             .expect("valid nats credentials"),
         test_ca_pem(),
+        b"wrapped-ca-key".to_vec(),
     )
     .expect("valid join material");
     let mut effects = KeeperLocalEffects::new(
@@ -925,6 +928,20 @@ fn local_effects_store_redacted_join_material() {
         root.join("state")
             .join(JOIN_MATERIAL_DIR)
             .join(JOIN_NATS_CREDENTIALS_FILE),
+    );
+    assert_eq!(
+        fs::read(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_RECOVERY_KEY_FILE),
+        )
+        .expect("wrapped CA recovery key is delivered to the joined machine"),
+        b"wrapped-ca-key"
+    );
+    assert_secret_file_mode(
+        root.join("state")
+            .join(JOIN_MATERIAL_DIR)
+            .join(JOIN_RECOVERY_KEY_FILE),
     );
 }
 

@@ -183,6 +183,7 @@ pub struct KeeperJoinMaterial {
     redacted: RedactedJoinMaterial,
     nats_credentials: NatsUserSeed,
     trusted_ca_pem: NatsCaCertificatePem,
+    recovery_key_wrapped: Vec<u8>,
 }
 
 impl KeeperJoinMaterial {
@@ -196,6 +197,7 @@ impl KeeperJoinMaterial {
             join_bundle.material.cluster_name.as_str(),
             secret_delivery.nats_credentials.clone(),
             join_bundle.material.trusted_nats.ca_pem.clone(),
+            join_bundle.material.recovery_key_wrapped.clone(),
         )
     }
 
@@ -204,6 +206,7 @@ impl KeeperJoinMaterial {
         cluster_name: impl Into<String>,
         nats_credentials: NatsUserSeed,
         trusted_ca_pem: NatsCaCertificatePem,
+        recovery_key_wrapped: Vec<u8>,
     ) -> Result<Self, JoinMaterialError> {
         let redacted = RedactedJoinMaterial::new(
             machine_id,
@@ -214,6 +217,7 @@ impl KeeperJoinMaterial {
             redacted,
             nats_credentials,
             trusted_ca_pem,
+            recovery_key_wrapped,
         })
     }
 
@@ -234,6 +238,13 @@ impl KeeperJoinMaterial {
     #[must_use]
     pub fn trusted_ca_pem(&self) -> &NatsCaCertificatePem {
         &self.trusted_ca_pem
+    }
+
+    /// The wrapped cluster CA signing key (ADR 0031), empty when the material
+    /// predates recovery. Written 0600 so this candidate can be core-promoted.
+    #[must_use]
+    pub fn recovery_key_wrapped(&self) -> &[u8] {
+        &self.recovery_key_wrapped
     }
 }
 
@@ -859,6 +870,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
                     trusted_nats: MachineJoinTrustedNats {
                         ca_pem: target.nats_identity.ca.clone(),
                     },
+                    recovery_key_wrapped: target.recovery_key_wrapped.clone(),
                     ployzd: target.ployzd_artifact.install_spec(),
                     ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
                     ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),

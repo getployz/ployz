@@ -354,7 +354,13 @@ export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
 
-export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
+export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats,
+/**
+ * The cluster CA signing key wrapped with the recovery secret (ADR 0031),
+ * delivered so a joined promotion candidate can decrypt it and self-issue
+ * the trusted NATS server cert. Empty for material minted before recovery.
+ */
+recovery_key_wrapped: Array<number>, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
 
 export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 

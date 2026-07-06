@@ -14,8 +14,8 @@ use crate::command::KeeperCommandRunner;
 use crate::executor::KeeperStepEffects;
 use crate::fsx::{FileMode, StagedDirectory, ensure_directory, write_durable_file};
 use crate::join::{
-    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE,
-    render_redacted_join_material,
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_RECOVERY_KEY_FILE,
+    JOIN_TRUSTED_CA_FILE, render_redacted_join_material,
 };
 use crate::steps::{
     ContainerRuntime, HostPrerequisite, KeeperJoinMaterial, KeeperStep, KeeperStepEffectError,
@@ -440,6 +440,17 @@ fn commit_join_material_files(
         JOIN_NATS_CREDENTIALS_FILE,
         FileMode::Secret0600,
         material.nats_credentials().secret().as_bytes(),
+    )?;
+    // Deliver the wrapped CA key so this joined machine can be core-promoted
+    // (ADR 0031). Skipped for material minted before recovery existed.
+    if material.recovery_key_wrapped().is_empty() {
+        return Ok(());
+    }
+    join_material_write(
+        directory,
+        JOIN_RECOVERY_KEY_FILE,
+        FileMode::Secret0600,
+        material.recovery_key_wrapped(),
     )
 }
 

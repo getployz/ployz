@@ -133,6 +133,11 @@ pub struct MachineJoinMaterial {
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub trusted_nats: MachineJoinTrustedNats,
+    /// The cluster CA signing key wrapped with the recovery secret (ADR 0031),
+    /// delivered so a joined promotion candidate can decrypt it and self-issue
+    /// the trusted NATS server cert. Empty for material minted before recovery.
+    #[serde(default)]
+    pub recovery_key_wrapped: Vec<u8>,
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,

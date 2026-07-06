@@ -664,6 +664,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: trusted_nats(),
+            recovery_key_wrapped: Vec::new(),
             ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",

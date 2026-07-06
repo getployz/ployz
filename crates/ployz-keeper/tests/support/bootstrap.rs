@@ -119,6 +119,7 @@ pub fn keeper_join_material() -> KeeperJoinMaterial {
         NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
             .expect("valid nats credentials"),
         test_ca_pem(),
+        b"wrapped-ca-key".to_vec(),
     )
     .expect("valid join material")
 }
