@@ -465,6 +465,17 @@ impl OperationRepository {
         adopted.into_value()
     }
 
+    pub async fn scrub_machine_add_secrets(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<(), OperationStatusStoreError> {
+        let operation_id = operation_id.clone();
+        self.store
+            .call(move |conn| scrub_machine_add_secret_rows(conn, &operation_id))
+            .await
+            .map_err(|error| index_error(&error))
+    }
+
     pub async fn redeem_machine_join_token(
         &self,
         token: &RawJoinToken,
@@ -513,10 +524,12 @@ impl OperationRepository {
                                 operation_id: id.clone(),
                             })?
                             .secret_delivery;
-                        self.record_machine_add_joined(&id, &machine_id, joined_at)
+                        let status_write = self
+                            .record_machine_add_joined(&id, &machine_id, joined_at)
                             .await
                             .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
                         let Some(OperationStatus::MachineAdd {
+                            state,
                             last_event_sequence,
                             ..
                         }) = self
@@ -528,7 +541,12 @@ impl OperationRepository {
                                 operation_id: id,
                             });
                         };
-                        Ok(MachineJoinRedemption::Joined(RedeemedMachineJoin {
+                        let MachineAddOperationState::Joining { joined_at } = state else {
+                            return Err(RedeemMachineJoinTokenError::MissingOperation {
+                                operation_id: id,
+                            });
+                        };
+                        let joined = RedeemedMachineJoin {
                             operation_id: id,
                             machine_id,
                             name,
@@ -537,7 +555,15 @@ impl OperationRepository {
                             secret_delivery,
                             joined_at,
                             last_event_sequence,
-                        }))
+                        };
+                        match status_write {
+                            OperationStatusWrite::Stored => {
+                                Ok(MachineJoinRedemption::Joined(joined))
+                            }
+                            OperationStatusWrite::AlreadySatisfied { .. } => {
+                                Ok(MachineJoinRedemption::AlreadyJoined(joined))
+                            }
+                        }
                     }
                     Err(failure) => {
                         self.record_machine_add_failed(&id, &machine_id, failure.clone())
@@ -706,6 +732,11 @@ fn record_operation_event_txn(
             current_sequence: current.last_event_sequence(),
         });
     }
+    if duplicate_machine_add_joined(&current, &event) {
+        return Ok(RecordTxn::AlreadySatisfied {
+            current_sequence: current.last_event_sequence(),
+        });
+    }
     let projection = match project_operation_event(&current, event.clone(), sequence) {
         Ok(projection) => projection,
         Err(error) => return Ok(RecordTxn::Projection(error)),
@@ -717,7 +748,7 @@ fn record_operation_event_txn(
     };
     insert_event(&transaction, &event, sequence)?;
     upsert_status(&transaction, operation_id, &status)?;
-    scrub_terminal_machine_add_secrets(&transaction, &status)?;
+    scrub_failed_machine_add_secrets(&transaction, &status)?;
     transaction.commit()?;
     Ok(RecordTxn::Stored { sequence, event })
 }
@@ -1260,7 +1291,7 @@ fn select_machine_add_mint_claim(
     )
 }
 
-fn scrub_terminal_machine_add_secrets(
+fn scrub_failed_machine_add_secrets(
     conn: &Connection,
     status: &OperationStatus,
 ) -> Result<(), rusqlite::Error> {
@@ -1269,12 +1300,17 @@ fn scrub_terminal_machine_add_secrets(
     };
     if !matches!(
         state,
-        MachineAddOperationState::Completed
-            | MachineAddOperationState::Failed { .. }
-            | MachineAddOperationState::Cancelled { .. }
+        MachineAddOperationState::Failed { .. } | MachineAddOperationState::Cancelled { .. }
     ) {
         return Ok(());
     }
+    scrub_machine_add_secret_rows(conn, id)
+}
+
+fn scrub_machine_add_secret_rows(
+    conn: &Connection,
+    operation_id: &OperationId,
+) -> Result<(), rusqlite::Error> {
     for table in [
         "machine_add_claims",
         "machine_add_submissions",
@@ -1284,10 +1320,31 @@ fn scrub_terminal_machine_add_secrets(
     ] {
         conn.execute(
             &format!("DELETE FROM {table} WHERE operation_id = ?1"),
-            [id.as_str()],
+            [operation_id.as_str()],
         )?;
     }
     Ok(())
+}
+
+fn duplicate_machine_add_joined(current: &OperationStatus, event: &OperationEvent) -> bool {
+    let OperationStatus::MachineAdd {
+        id,
+        machine_id,
+        state: MachineAddOperationState::Joining { .. },
+        ..
+    } = current
+    else {
+        return false;
+    };
+    let OperationEvent::MachineAddJoined {
+        operation_id,
+        machine_id: joined_machine_id,
+        ..
+    } = event
+    else {
+        return false;
+    };
+    id == operation_id && machine_id == joined_machine_id
 }
 
 // -------- SQLite row helpers --------
@@ -1892,9 +1949,7 @@ enum SingletonDeployEvidence {
     CleanupFinished,
 }
 
-fn singleton_deploy_evidence_subject(
-    evidence: &DeployEvidence,
-) -> Option<SingletonDeployEvidence> {
+fn singleton_deploy_evidence_subject(evidence: &DeployEvidence) -> Option<SingletonDeployEvidence> {
     match evidence {
         DeployEvidence::PlanCreated { .. } => Some(SingletonDeployEvidence::PlanCreated),
         DeployEvidence::DataplanePrepared { .. } => {

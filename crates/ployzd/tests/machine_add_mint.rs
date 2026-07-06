@@ -6,7 +6,7 @@
 //! fixture's real `nats-server`, including the ADR-0015 single-writer
 //! fence and the ADR-0001 authority-file durability rules.
 
-use ployz_core::machine::MachineAddFailure;
+use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
@@ -28,6 +28,9 @@ mod support;
 use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
+
+use ployzd::core_store::CoreStore;
+use ployzd::operation_log::{OperationRepository, OperationStatusWrite};
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
@@ -566,6 +569,77 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
 }
 
 #[tokio::test]
+async fn completed_report_can_repair_activation_before_secret_scrub() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_repair_scrub", "idem_repair_scrub", "machine_rs").await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+
+    let raw_token = RawJoinToken::try_new(accepted.join_token.as_str()).expect("join token valid");
+    let repository = operation_repository_for_test(&nats).await;
+    repository
+        .record_machine_join_completed(&raw_token)
+        .await
+        .expect("completion records before activation");
+    assert!(
+        secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub") > 0,
+        "completed evidence keeps token lookup until activation can repair"
+    );
+
+    api.machine_join_report(&MachineJoinReportRequest {
+        join_token: accepted.join_token.clone(),
+        outcome: MachineJoinReportOutcome::Completed,
+    })
+    .await
+    .expect("completed report repairs activation and scrubs");
+    assert_eq!(
+        secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub"),
+        0,
+        "successful activation scrubs completed machine-add secrets"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn duplicate_machine_add_joined_event_adopts_existing_join() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_join_race", "idem_join_race", "machine_jr").await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+    let repository = operation_repository_for_test(&nats).await;
+
+    let outcome = repository
+        .record_machine_add_joined(
+            &operation_id("op_join_race"),
+            &machine_id("machine_jr"),
+            JoinTokenRedeemedAt::try_new(999).expect("valid join time"),
+        )
+        .await
+        .expect("duplicate joined event adopts stored join");
+    assert!(matches!(
+        outcome,
+        OperationStatusWrite::AlreadySatisfied { .. }
+    ));
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn machine_add_reusing_another_operations_idempotency_key_is_rejected() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
@@ -602,6 +676,26 @@ async fn machine_add_reusing_another_operations_idempotency_key_is_rejected() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+async fn operation_repository_for_test(nats: &TestNats) -> OperationRepository {
+    OperationRepository::open(
+        CoreStore::open(nats.work_dir.path().join("ployz-core.db"))
+            .await
+            .expect("core store opens"),
+        nats.connected.controller.clone(),
+    )
+}
+
+fn secret_row_count(nats: &TestNats, table: &str, operation: &str) -> u64 {
+    let conn = rusqlite::Connection::open(nats.work_dir.path().join("ployz-core.db"))
+        .expect("core db opens");
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE operation_id = ?1"),
+        [operation],
+        |row| row.get(0),
+    )
+    .expect("secret rows count")
 }
 
 async fn machine_add(
