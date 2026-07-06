@@ -62,6 +62,12 @@ macro_rules! positive_u64_wire_newtype {
                 Ok(Self(value))
             }
 
+            /// The first value in the series (one), proven valid at compile time.
+            #[must_use]
+            pub const fn first() -> Self {
+                Self(::std::num::NonZeroU64::MIN)
+            }
+
             #[must_use]
             pub const fn $accessor(self) -> u64 {
                 self.0.get()

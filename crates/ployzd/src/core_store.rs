@@ -11,7 +11,7 @@
 //! on the blocking pool via [`CoreStore::call`], matching how the file stores
 //! this replaces already blocked inside an async mutex.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -23,9 +23,8 @@ const MIGRATIONS: &[&str] = &[
     // the operation models stay enum-shaped in Rust and are persisted whole.
     "
     CREATE TABLE operations (
-        operation_id  TEXT PRIMARY KEY,
-        status_json   TEXT NOT NULL,
-        last_sequence INTEGER NOT NULL
+        operation_id TEXT PRIMARY KEY,
+        status_json  TEXT NOT NULL
     );
     CREATE TABLE operation_events (
         operation_id TEXT    NOT NULL,
@@ -33,30 +32,12 @@ const MIGRATIONS: &[&str] = &[
         event_json   TEXT    NOT NULL,
         PRIMARY KEY (operation_id, sequence)
     );
-    CREATE TABLE deploy_claims (
-        idempotency_key TEXT PRIMARY KEY,
-        json            TEXT NOT NULL
-    );
-    CREATE TABLE machine_add_claims (
-        idempotency_key TEXT PRIMARY KEY,
-        json            TEXT NOT NULL
-    );
-    CREATE TABLE machine_add_submissions (
-        idempotency_key TEXT PRIMARY KEY,
-        json            TEXT NOT NULL
-    );
-    CREATE TABLE machine_add_secret_deliveries (
-        idempotency_key TEXT PRIMARY KEY,
-        json            TEXT NOT NULL
-    );
-    CREATE TABLE machine_add_mint_claims (
-        idempotency_key TEXT PRIMARY KEY,
-        json            TEXT NOT NULL
-    );
-    CREATE TABLE machine_add_join_tokens (
-        fingerprint TEXT PRIMARY KEY,
-        json        TEXT NOT NULL
-    );
+    CREATE TABLE deploy_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE machine_add_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE machine_add_submissions (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE machine_add_secret_deliveries (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE machine_add_mint_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE machine_add_join_tokens (key TEXT PRIMARY KEY, json TEXT NOT NULL);
     CREATE TABLE route_bindings (
         hostname TEXT    NOT NULL,
         port     INTEGER NOT NULL,
@@ -93,20 +74,32 @@ impl CoreStore {
     /// Open (creating if absent) the database at `path`, enable WAL durability,
     /// and apply any pending migrations.
     pub async fn open(path: PathBuf) -> Result<Self, CoreStoreError> {
-        let conn = tokio::task::spawn_blocking(move || open_connection(&path))
-            .await
-            .map_err(CoreStoreError::Join)??;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+        Self::open_blocking(move || {
+            let conn = Connection::open(&path).map_err(CoreStoreError::Open)?;
+            // WAL + NORMAL: crash-atomic commits without an fsync per statement,
+            // the durability the tmpfile+rename file stores gave. journal_mode
+            // must be set outside a transaction, so this runs before migrate.
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
+                .map_err(CoreStoreError::Open)?;
+            Ok(conn)
         })
+        .await
     }
 
     /// Open a private in-memory database with the schema applied. The database
     /// lives only as long as this handle and its clones (they share the one
     /// connection), which is exactly what a test wants.
     pub async fn open_in_memory() -> Result<Self, CoreStoreError> {
-        let conn = tokio::task::spawn_blocking(|| {
-            let mut conn = Connection::open_in_memory().map_err(CoreStoreError::Open)?;
+        Self::open_blocking(|| Connection::open_in_memory().map_err(CoreStoreError::Open)).await
+    }
+
+    /// Run `open_connection` on the blocking pool, then apply foreign-key
+    /// enforcement, migrations, and wrap the connection in the shared handle.
+    async fn open_blocking(
+        open_connection: impl FnOnce() -> Result<Connection, CoreStoreError> + Send + 'static,
+    ) -> Result<Self, CoreStoreError> {
+        let conn = tokio::task::spawn_blocking(move || {
+            let mut conn = open_connection()?;
             conn.execute_batch("PRAGMA foreign_keys = ON;")
                 .map_err(CoreStoreError::Open)?;
             migrate(&mut conn).map_err(CoreStoreError::Migrate)?;
@@ -135,21 +128,6 @@ impl CoreStore {
         .await
         .map_err(CoreStoreError::Join)?
     }
-}
-
-fn open_connection(path: &PathBuf) -> Result<Connection, CoreStoreError> {
-    let mut conn = Connection::open(path).map_err(CoreStoreError::Open)?;
-    // WAL + NORMAL: crash-atomic commits without an fsync per statement, the
-    // durability the tmpfile+rename file stores gave. journal_mode must be set
-    // outside a transaction, so this runs before migrate opens one.
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;",
-    )
-    .map_err(CoreStoreError::Open)?;
-    migrate(&mut conn).map_err(CoreStoreError::Migrate)?;
-    Ok(conn)
 }
 
 fn migrate(conn: &mut Connection) -> Result<(), rusqlite::Error> {
@@ -202,6 +180,19 @@ pub(crate) fn from_json<V: serde::de::DeserializeOwned>(json: &str) -> Result<V,
             Box::new(error),
         )
     })
+}
+
+/// Run a single-row query whose first column is a JSON blob, bound to one key,
+/// and decode it. `None` when no row matches.
+pub(crate) fn query_json<V: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    sql: &str,
+    key: &str,
+) -> Result<Option<V>, rusqlite::Error> {
+    conn.query_row(sql, [key], |row| row.get::<_, String>(0))
+        .optional()?
+        .map(|json| from_json(&json))
+        .transpose()
 }
 
 /// Run a query whose first column is a JSON blob and decode every row. `sql`

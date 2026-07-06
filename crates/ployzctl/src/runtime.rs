@@ -385,7 +385,7 @@ async fn watch_accepted_operation(
         api,
         OperationEventReplayRequest {
             operation_id,
-            start_sequence: EventSequence::try_new(1).expect("one is a valid event sequence"),
+            start_sequence: EventSequence::first(),
             limit: ployz_core::ops::OperationEventReplayLimit::try_new(
                 ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
             )

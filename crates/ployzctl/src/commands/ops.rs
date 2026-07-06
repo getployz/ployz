@@ -51,7 +51,7 @@ impl OpsWatchCommand {
     pub fn into_request(self) -> OperationEventReplayRequest {
         OperationEventReplayRequest {
             operation_id: self.operation_id,
-            start_sequence: EventSequence::try_new(1).expect("one is a valid event sequence"),
+            start_sequence: EventSequence::first(),
             limit: OperationEventReplayLimit::try_new(MAX_OPERATION_EVENT_REPLAY_LIMIT)
                 .expect("max replay limit is valid"),
         }

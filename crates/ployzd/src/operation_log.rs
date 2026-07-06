@@ -7,7 +7,7 @@
 //! outcomes (a duplicate submit, a stale projection, a fingerprint conflict)
 //! travel back inside `Ok(...)`; only a genuine database failure is `Err`.
 
-use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
+use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json, query_json_list, to_json};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
@@ -28,16 +28,15 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// One index table and the column its primary key lives in.
-type IndexTable = (&'static str, &'static str);
-
-const DEPLOY_CLAIMS: IndexTable = ("deploy_claims", "idempotency_key");
-const MACHINE_ADD_CLAIMS: IndexTable = ("machine_add_claims", "idempotency_key");
-const MACHINE_ADD_SUBMISSIONS: IndexTable = ("machine_add_submissions", "idempotency_key");
-const MACHINE_ADD_SECRET_DELIVERIES: IndexTable =
-    ("machine_add_secret_deliveries", "idempotency_key");
-const MACHINE_ADD_MINT_CLAIMS: IndexTable = ("machine_add_mint_claims", "idempotency_key");
-const MACHINE_ADD_JOIN_TOKENS: IndexTable = ("machine_add_join_tokens", "fingerprint");
+/// The machine-add working-record tables. Each is a `(key, json)` row store;
+/// the key is an idempotency key or a join-token fingerprint, whatever the
+/// caller passes.
+const DEPLOY_CLAIMS: &str = "deploy_claims";
+const MACHINE_ADD_CLAIMS: &str = "machine_add_claims";
+const MACHINE_ADD_SUBMISSIONS: &str = "machine_add_submissions";
+const MACHINE_ADD_SECRET_DELIVERIES: &str = "machine_add_secret_deliveries";
+const MACHINE_ADD_MINT_CLAIMS: &str = "machine_add_mint_claims";
+const MACHINE_ADD_JOIN_TOKENS: &str = "machine_add_join_tokens";
 
 #[derive(Debug, Clone)]
 pub struct OperationRepository {
@@ -429,7 +428,7 @@ impl OperationRepository {
         &self,
     ) -> Result<Vec<StoredMachineAddSubmission>, OperationStatusStoreError> {
         self.store
-            .call(|conn| select_all_json(conn, MACHINE_ADD_SUBMISSIONS.0))
+            .call(|conn| select_all_json(conn, MACHINE_ADD_SUBMISSIONS))
             .await
             .map_err(|error| index_error(&error))
     }
@@ -737,7 +736,7 @@ fn record_operation_event_txn(
         });
     };
     insert_event(&transaction, &event, sequence)?;
-    upsert_status(&transaction, operation_id, &status, sequence)?;
+    upsert_status(&transaction, operation_id, &status)?;
     transaction.commit()?;
     Ok(RecordTxn::Stored { sequence, event })
 }
@@ -770,7 +769,7 @@ fn submit_operation_txn<K: SubmitKind>(
         let Some((first_event, first_sequence)) = select_first_event(&transaction, &operation_id)?
         else {
             return Ok(SubmitTxn::DuplicateSequenceMismatch {
-                sequence: first_event_sequence(),
+                sequence: EventSequence::first(),
             });
         };
         let Some((stored_operation_id, payload)) = K::submitted_event_parts(first_event) else {
@@ -789,11 +788,11 @@ fn submit_operation_txn<K: SubmitKind>(
             should_start_execution: current.last_event_sequence() == first_sequence,
         });
     }
-    let sequence = first_event_sequence();
+    let sequence = EventSequence::first();
     let event = K::submitted_event(operation_id.clone(), payload.clone());
     let status = K::accepted_status(operation_id.clone(), &payload, sequence);
     insert_event(&transaction, &event, sequence)?;
-    upsert_status(&transaction, &operation_id, &status, sequence)?;
+    upsert_status(&transaction, &operation_id, &status)?;
     transaction.commit()?;
     Ok(SubmitTxn::Created {
         start_sequence: sequence,
@@ -826,12 +825,15 @@ fn submit_machine_add_txn(
             sequence: current.last_event_sequence(),
         });
     }
-    let submissions: Vec<StoredMachineAddSubmission> =
-        select_all_json(&transaction, MACHINE_ADD_SUBMISSIONS.0)?;
-    if submissions
-        .iter()
-        .any(|submitted| submitted.operation_id == operation_id && submitted.idempotency_key != idempotency_key)
-    {
+    // A second idempotency key claiming the same operation id is a conflict.
+    // Probe by operation id without hydrating every submission blob.
+    let duplicate_operation: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM machine_add_submissions
+             WHERE json_extract(json, '$.operation_id') = ?1 AND key <> ?2)",
+        params![operation_id.as_str(), idempotency_key.as_str()],
+        |row| row.get(0),
+    )?;
+    if duplicate_operation {
         return Ok(MachineAddTxn::DuplicateIdempotencyKey);
     }
     let claim = match create_or_adopt(
@@ -880,7 +882,7 @@ fn submit_machine_add_txn(
         });
     }
 
-    let sequence = first_event_sequence();
+    let sequence = EventSequence::first();
     let event = OperationEvent::MachineAddSubmitted {
         operation_id: claim.operation_id.clone(),
         machine_id: claim.machine_id.clone(),
@@ -919,7 +921,7 @@ fn submit_machine_add_txn(
         sequence,
     );
     insert_event(&transaction, &event, sequence)?;
-    upsert_status(&transaction, &submitted.operation_id, &status, sequence)?;
+    upsert_status(&transaction, &submitted.operation_id, &status)?;
     transaction.commit()?;
     Ok(MachineAddTxn::Accepted {
         submitted: Box::new(submitted),
@@ -1065,14 +1067,11 @@ fn select_status(
     conn: &Connection,
     operation_id: &OperationId,
 ) -> Result<Option<OperationStatus>, rusqlite::Error> {
-    conn.query_row(
+    query_json(
+        conn,
         "SELECT status_json FROM operations WHERE operation_id = ?1",
-        [operation_id.as_str()],
-        |row| row.get::<_, String>(0),
+        operation_id.as_str(),
     )
-    .optional()?
-    .map(|json| from_json(&json))
-    .transpose()
 }
 
 fn select_all_statuses(conn: &mut Connection) -> Result<Vec<OperationStatus>, rusqlite::Error> {
@@ -1090,13 +1089,11 @@ fn upsert_status(
     conn: &Connection,
     operation_id: &OperationId,
     status: &OperationStatus,
-    last_sequence: EventSequence,
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
-        "INSERT INTO operations (operation_id, status_json, last_sequence) VALUES (?1, ?2, ?3)
-         ON CONFLICT(operation_id) DO UPDATE SET
-             status_json = excluded.status_json, last_sequence = excluded.last_sequence",
-        params![operation_id.as_str(), to_json(status)?, last_sequence.get()],
+        "INSERT INTO operations (operation_id, status_json) VALUES (?1, ?2)
+         ON CONFLICT(operation_id) DO UPDATE SET status_json = excluded.status_json",
+        params![operation_id.as_str(), to_json(status)?],
     )?;
     Ok(())
 }
@@ -1134,18 +1131,10 @@ fn select_first_event(
 
 fn select_json<V: DeserializeOwned>(
     conn: &Connection,
-    table: IndexTable,
+    table: &str,
     key: &str,
 ) -> Result<Option<V>, rusqlite::Error> {
-    let (name, key_column) = table;
-    conn.query_row(
-        &format!("SELECT json FROM {name} WHERE {key_column} = ?1"),
-        [key],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|json| from_json(&json))
-    .transpose()
+    query_json(conn, &format!("SELECT json FROM {table} WHERE key = ?1"), key)
 }
 
 fn select_all_json<V: DeserializeOwned>(
@@ -1157,24 +1146,19 @@ fn select_all_json<V: DeserializeOwned>(
 
 fn insert_json<V: Serialize>(
     conn: &Connection,
-    table: IndexTable,
+    table: &str,
     key: &str,
     value: &V,
 ) -> Result<(), rusqlite::Error> {
-    let (name, key_column) = table;
     conn.execute(
-        &format!("INSERT INTO {name} ({key_column}, json) VALUES (?1, ?2)"),
+        &format!("INSERT INTO {table} (key, json) VALUES (?1, ?2)"),
         params![key, to_json(value)?],
     )?;
     Ok(())
 }
 
-fn delete_json(conn: &Connection, table: IndexTable, key: &str) -> Result<(), rusqlite::Error> {
-    let (name, key_column) = table;
-    conn.execute(
-        &format!("DELETE FROM {name} WHERE {key_column} = ?1"),
-        [key],
-    )?;
+fn delete_json(conn: &Connection, table: &str, key: &str) -> Result<(), rusqlite::Error> {
+    conn.execute(&format!("DELETE FROM {table} WHERE key = ?1"), [key])?;
     Ok(())
 }
 
@@ -1196,7 +1180,7 @@ impl<V> AdoptResult<V> {
 
 fn create_or_adopt<V>(
     conn: &Connection,
-    table: IndexTable,
+    table: &str,
     key: &str,
     value: &V,
     policy: AdoptPolicy,
@@ -1213,10 +1197,6 @@ where
     }
     insert_json(conn, table, key, value)?;
     Ok(AdoptResult::Value(value.clone()))
-}
-
-fn first_event_sequence() -> EventSequence {
-    EventSequence::try_new(1).expect("one is a valid event sequence")
 }
 
 fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::Error {
