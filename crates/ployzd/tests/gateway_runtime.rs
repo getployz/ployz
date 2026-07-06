@@ -12,7 +12,9 @@ use ployzd::roles::gateway::projection::{
     GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
     GatewayUpstream,
 };
-use ployzd::roles::gateway::route_table::{GatewayRouteSelectionError, GatewayRouteTable, GatewayProjector};
+use ployzd::roles::gateway::route_table::{
+    GatewayProjector, GatewayRouteSelectionError, GatewayRouteTable,
+};
 
 #[test]
 fn gateway_runtime_serves_new_projection_from_available_source() {

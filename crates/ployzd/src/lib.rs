@@ -39,10 +39,10 @@ pub mod operations {
 }
 pub mod core_store;
 pub mod dispatch;
+pub mod fact_cache;
 pub mod intent;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;
-pub mod fact_cache;
 pub mod service_catalog;
 pub mod tasks;

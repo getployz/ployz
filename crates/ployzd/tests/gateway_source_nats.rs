@@ -8,14 +8,14 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
+use ployzd::fact_cache::FactCache;
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
 use ployzd::roles::gateway::source::load_gateway_projection_update_from_nats;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::fact_cache::FactCache;
 use std::time::Duration;
 
 #[tokio::test]

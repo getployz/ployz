@@ -224,7 +224,8 @@ impl OperationControllers {
     pub async fn submit_machine_lifecycle(
         &self,
         command: MachineLifecycleSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedMachineLifecycleSubmission, SubmitCommandError> {
+    ) -> Result<crate::operations::log::AcceptedMachineLifecycleSubmission, SubmitCommandError>
+    {
         Ok(self
             .repository
             .submit_machine_lifecycle(MachineLifecycleOperationSubmission {

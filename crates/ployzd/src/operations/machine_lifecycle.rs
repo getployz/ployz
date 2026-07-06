@@ -4,8 +4,8 @@
 //! it is control-side durable authority, committed to the machine's roster row
 //! in the core database.
 
-use crate::operation_api::admission::OperationControllers;
 use crate::intent::machine_roster::{MachineLifecycleUpdate, MachineRosterStore};
+use crate::operation_api::admission::OperationControllers;
 use crate::operations::log::AcceptedMachineLifecycleSubmission;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{MachineId, OperationId};

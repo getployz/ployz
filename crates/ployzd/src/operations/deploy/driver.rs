@@ -1,5 +1,7 @@
 //! Owned deploy execution started by the control service.
 
+use crate::intent::namespace_intent::NamespaceIntentStore;
+use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::{
     DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionOutcome,
@@ -8,15 +10,13 @@ use crate::operations::deploy::{
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use crate::intent::service::NatsIntentReader;
-use crate::roles::machine::client::{
-    MachineFactsReadError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader,
-};
-use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
+};
+use crate::roles::machine::client::{
+    MachineFactsReadError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
+    NatsMachineFactsReader,
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{

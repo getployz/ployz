@@ -1,10 +1,12 @@
 use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use ployz_core::ops::{RouteHostnameError, RouteTarget};
 use ployz_test_support::ids::{container_id, machine_id, route_hostname, route_port};
-use ployzd::roles::gateway::projection::{GatewayProjectedRoute, GatewayProjection, GatewayUpstream};
 use ployzd::roles::gateway::pingora::{
     HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteSelectionError,
     route_target_from_authority,
+};
+use ployzd::roles::gateway::projection::{
+    GatewayProjectedRoute, GatewayProjection, GatewayUpstream,
 };
 use std::collections::BTreeSet;
 use std::net::SocketAddr;

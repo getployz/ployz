@@ -1,11 +1,11 @@
 //! User-facing operation service handlers.
 
 pub mod admission;
-pub mod service;
 mod error_map;
 mod first_machine;
 mod machine_join;
 mod queries;
+pub mod service;
 mod submit;
 
 pub use first_machine::init_first_machine_activate;
@@ -18,15 +18,15 @@ pub use submit::{
     deploy_submit, machine_add, machine_drain, machine_resume, machine_update, owned_operation,
 };
 
-use crate::operation_api::admission::OperationControllers;
-use crate::operations::deploy::driver::DeployOperationDriver;
-use crate::intent::service::NatsIntentReader;
-use crate::operations::machine_lifecycle::MachineLifecycleOperation;
-use crate::intent::machine_roster::MachineRosterStore;
-use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
-use crate::operations::machine_update::MachineUpdateOperation;
 use crate::adapters::nats_authorization::MachineCredentialMint;
 use crate::fact_cache::FactCache;
+use crate::intent::machine_roster::MachineRosterStore;
+use crate::intent::service::NatsIntentReader;
+use crate::operation_api::admission::OperationControllers;
+use crate::operations::deploy::driver::DeployOperationDriver;
+use crate::operations::machine_lifecycle::MachineLifecycleOperation;
+use crate::operations::machine_update::MachineUpdateOperation;
+use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use ployz_core::ids::MachineId;
 use std::sync::Arc;
 

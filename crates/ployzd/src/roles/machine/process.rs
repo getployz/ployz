@@ -1,15 +1,17 @@
 //! Process wiring for the machine role.
 
-use crate::config::MachineProcessConfig;
-use crate::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
+use crate::adapters::credentials::{
+    AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
+};
 use crate::adapters::docker::runner::DockerManagedContainerRunner;
-use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
+use crate::config::MachineProcessConfig;
+use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineFactsReadError, MachineServiceError, current_unix_ms,
-    read_machine_facts_snapshot, start_machine_role_service_with_public_ip,
+    MachineFactsReadError, MachineServiceError, current_unix_ms, read_machine_facts_snapshot,
+    start_machine_role_service_with_public_ip,
 };
-use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::machine_facts;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
@@ -242,8 +244,7 @@ impl MachineObservationPublisher {
         let facts = read_machine_facts_snapshot(machine_id, runner, public_ip, current_unix_ms())
             .await
             .map_err(MachineProcessError::ReadFacts)?;
-        let payload =
-            serde_json::to_vec(&facts).map_err(MachineProcessError::EncodeFacts)?;
+        let payload = serde_json::to_vec(&facts).map_err(MachineProcessError::EncodeFacts)?;
         self.client
             .publish(machine_facts(machine_id), payload.into())
             .await

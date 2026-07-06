@@ -5,12 +5,12 @@ use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
 use ployz_core::machine::active_machine_from_completed_add;
 use ployz_core::ops::{MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus};
 use ployz_core::state::MachineLifecycle;
+use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operation_api::admission::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
-use ployzd::operations::machine_lifecycle::MachineLifecycleOperation;
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operations::log::OperationRepository;
+use ployzd::operations::machine_lifecycle::MachineLifecycleOperation;
 use ployzd::tasks::TaskRegistry;
 
 use ployz_test_support::ids::{machine_id, operation_id};

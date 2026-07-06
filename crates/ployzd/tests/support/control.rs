@@ -11,12 +11,12 @@ use ployz_sdk_types::{
 use ployz_test_support::fixtures::machine_join_material;
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
-use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::adapters::nats_authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };
 use ployzd::adapters::nats_server::NatsServerLaunch;
+use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
+use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

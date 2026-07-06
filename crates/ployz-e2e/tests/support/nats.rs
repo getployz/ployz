@@ -3,8 +3,8 @@
 //! the e2e scenarios launch ployzd with.
 
 use ployz_core::ids::MachineId;
-use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::adapters::nats_server::NatsServerLaunch;
+use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 
 pub struct TestNats {
     connected: ployz_test_support::nats::TestNats,

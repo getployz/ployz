@@ -1,11 +1,11 @@
 //! Gateway projection source adapters.
 
+use crate::fact_cache::FactCache;
+use crate::intent::service::{IntentReadError, NatsIntentReader};
 use crate::roles::gateway::projection::{
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
     GatewayServingEntry,
 };
-use crate::intent::service::{IntentReadError, NatsIntentReader};
-use crate::fact_cache::FactCache;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::fmt;

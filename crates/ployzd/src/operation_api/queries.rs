@@ -1,14 +1,14 @@
 //! Read-only query services behind the operation API: machine, service,
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
-use crate::operation_api::admission::OperationControllers;
+use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
+use crate::operation_api::admission::OperationControllers;
 use crate::roles::machine::client::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
 use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
-use crate::fact_cache::FactCache;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
@@ -593,12 +593,10 @@ fn logs_tail_machine_error(error: MachineLogsTailError) -> LogsTailError {
             container_id,
             message,
         },
-        MachineLogsTailError::Unavailable { machine_id, reason } => {
-            LogsTailError::Unavailable {
-                message: reason.failure_message().as_str().to_owned(),
-                machine_id: Some(machine_id),
-            }
-        }
+        MachineLogsTailError::Unavailable { machine_id, reason } => LogsTailError::Unavailable {
+            message: reason.failure_message().as_str().to_owned(),
+            machine_id: Some(machine_id),
+        },
     }
 }
 

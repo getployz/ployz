@@ -10,14 +10,14 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::roles::gateway::projection::GatewayUpstream;
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::gateway::process::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessError,
     start_gateway_process_with_client,
 };
-use ployzd::intent::service::{RunningIntentService, start_intent_service};
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::roles::gateway::projection::GatewayUpstream;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

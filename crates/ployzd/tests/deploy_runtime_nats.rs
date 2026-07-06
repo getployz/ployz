@@ -13,22 +13,22 @@ use ployz_core::ops::{
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
+use ployzd::operations::deploy::DeployMachineCandidates;
 use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
-use ployzd::operations::deploy::DeployMachineCandidates;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
-use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::operations::log::OperationRepository;
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::operations::log::OperationRepository;
 use std::time::Duration;
 
 #[tokio::test]
