@@ -41,6 +41,13 @@ pub struct ActiveMachineState {
     /// default is active.
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
+    /// The machine's advertised reachable public endpoint, recorded by the core
+    /// from the machine's own public-IP testimony (ADR 0030). Selects promotion
+    /// candidates and rides intent to every mirror. `None` until the machine has
+    /// advertised one; never cleared on a transient disconnect — reachability is
+    /// a durable address property, not live liveness.
+    #[serde(default)]
+    pub public_endpoint: Option<IpAddr>,
 }
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a
