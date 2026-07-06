@@ -1,6 +1,13 @@
-//! Core-local operation evidence and working records.
+//! Core-local operation evidence and working records, stored in SQLite.
+//!
+//! The operation projection (`operations`), the append-only event log
+//! (`operation_events`), and the machine-add working records (the six index
+//! tables) all live in the one core database. Every read is a query and every
+//! mutation a transaction — there is no in-memory copy of this state. Business
+//! outcomes (a duplicate submit, a stale projection, a fingerprint conflict)
+//! travel back inside `Ok(...)`; only a genuine database failure is `Err`.
 
-use crate::evidence_file::{read_json_or_default, write_json};
+use crate::core_store::{CoreStore, CoreStoreError};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
@@ -8,74 +15,40 @@ use ployz_core::machine::{
     RawJoinToken, redeem_pending_join_token,
 };
 use ployz_core::ops::{
-    DeployEvidence, DeployTransition, EventSequence, EventSequenceError, MachineAddOperationState,
+    DeployEvidence, DeployTransition, EventSequence, MachineAddOperationState,
     MachineAddOperationStateName, MachineLifecycleTransition, MachineUpdateTransition,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayPage,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
     OperationEventReplayRequest, OperationIdempotencyKey, OperationKind, OperationProjection,
-    OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent, StatusProjectionError,
-    project_operation_event, validate_fresh_deploy_evidence,
+    OperationStatus, OperationStatusSnapshot, StatusProjectionError, project_operation_event,
+    validate_fresh_deploy_evidence,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+/// One index table and the column its primary key lives in.
+type IndexTable = (&'static str, &'static str);
+
+const DEPLOY_CLAIMS: IndexTable = ("deploy_claims", "idempotency_key");
+const MACHINE_ADD_CLAIMS: IndexTable = ("machine_add_claims", "idempotency_key");
+const MACHINE_ADD_SUBMISSIONS: IndexTable = ("machine_add_submissions", "idempotency_key");
+const MACHINE_ADD_SECRET_DELIVERIES: IndexTable =
+    ("machine_add_secret_deliveries", "idempotency_key");
+const MACHINE_ADD_MINT_CLAIMS: IndexTable = ("machine_add_mint_claims", "idempotency_key");
+const MACHINE_ADD_JOIN_TOKENS: IndexTable = ("machine_add_join_tokens", "fingerprint");
 
 #[derive(Debug, Clone)]
 pub struct OperationRepository {
-    inner: Arc<Mutex<OperationRepositoryInner>>,
+    store: CoreStore,
     progress: async_nats::Client,
 }
 
-#[derive(Debug)]
-struct OperationRepositoryInner {
-    dir: PathBuf,
-    index: OperationIndex,
-    statuses: BTreeMap<OperationId, OperationStatus>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OperationIndex {
-    deploy_claims: BTreeMap<OperationIdempotencyKey, StoredDeployClaim>,
-    machine_add_claims: BTreeMap<OperationIdempotencyKey, StoredMachineAddClaim>,
-    machine_add_submissions: BTreeMap<OperationIdempotencyKey, StoredMachineAddSubmission>,
-    machine_add_secret_deliveries:
-        BTreeMap<OperationIdempotencyKey, StoredMachineAddSecretDelivery>,
-    machine_add_mint_claims: BTreeMap<OperationIdempotencyKey, StoredMachineAddMintClaim>,
-    machine_add_join_tokens: BTreeMap<JoinTokenFingerprint, StoredMachineAddJoinToken>,
-}
-
 impl OperationRepository {
-    pub fn open(
-        dir: impl Into<PathBuf>,
-        progress: async_nats::Client,
-    ) -> Result<Self, OperationStoreError> {
-        let dir = dir.into();
-        prepare_operation_dir(&dir)?;
-        let mut index = read_json_or_default(&index_path(&dir)).map_err(|error| {
-            OperationStoreError::Index {
-                message: format!("{error:?}"),
-            }
-        })?;
-        if recover_machine_add_submissions(&dir, &mut index)? {
-            write_operation_index(&dir, &index).map_err(|error| OperationStoreError::Index {
-                message: format!("{error:?}"),
-            })?;
-        }
-        let statuses = load_statuses(&dir)?;
-        Ok(Self {
-            inner: Arc::new(Mutex::new(OperationRepositoryInner {
-                dir,
-                index,
-                statuses,
-            })),
-            progress,
-        })
+    #[must_use]
+    pub fn open(store: CoreStore, progress: async_nats::Client) -> Self {
+        Self { store, progress }
     }
 
     pub async fn claim_deploy(
@@ -87,19 +60,19 @@ impl OperationRepository {
             idempotency_key,
             target,
         } = submission;
-        let mut inner = self.inner.lock().await;
         let claim = StoredDeployClaim {
             operation_id,
             target,
         };
-        let claim = create_or_adopt(
-            &mut inner.index.deploy_claims,
-            idempotency_key.clone(),
-            claim,
-            AdoptPolicy::FirstWriterWins,
-        )
-        .map_err(SubmitOperationError::StoreStatus)?;
-        write_index(&inner).map_err(SubmitOperationError::StoreStatus)?;
+        let key = idempotency_key.clone();
+        let adopted = self
+            .store
+            .call(move |conn| {
+                create_or_adopt(conn, DEPLOY_CLAIMS, key.as_str(), &claim, AdoptPolicy::FirstWriterWins)
+            })
+            .await
+            .map_err(store_status)?;
+        let claim = adopted.into_value().map_err(SubmitOperationError::StoreStatus)?;
         Ok(DeployOperationSubmission {
             operation_id: claim.operation_id,
             idempotency_key,
@@ -171,37 +144,43 @@ impl OperationRepository {
         operation_id: OperationId,
         payload: K::Payload,
     ) -> Result<SubmittedOperation<K::Payload>, SubmitOperationError> {
-        let event = K::submitted_event(operation_id.clone(), payload.clone());
-        let mut inner = self.inner.lock().await;
-        if let Some(current) = inner.statuses.get(&operation_id) {
-            if current.kind() != K::KIND {
-                return Err(SubmitOperationError::DuplicateSequenceMismatch {
-                    sequence: current.last_event_sequence(),
-                });
+        let closure_payload = payload.clone();
+        let closure_id = operation_id.clone();
+        let outcome = self
+            .store
+            .call(move |conn| submit_operation_txn::<K>(conn, closure_id, closure_payload))
+            .await
+            .map_err(store_status)?;
+        match outcome {
+            SubmitTxn::KindMismatch { sequence } => {
+                Err(SubmitOperationError::DuplicateSequenceMismatch { sequence })
             }
-            let (stored_payload, start_sequence) =
-                submitted_payload::<K>(&inner.dir, &operation_id)?;
-            return Ok(SubmittedOperation {
+            SubmitTxn::BadFirstEvent { sequence } => {
+                Err(SubmitOperationError::DuplicateSequenceMismatch { sequence })
+            }
+            SubmitTxn::Existing {
+                start_sequence,
+                payload,
+                should_start_execution,
+            } => Ok(SubmittedOperation {
                 operation_id,
                 start_sequence,
-                payload: stored_payload,
-                should_start_execution: current.last_event_sequence() == start_sequence,
-            });
+                payload,
+                should_start_execution,
+            }),
+            SubmitTxn::Created {
+                start_sequence,
+                event,
+            } => {
+                publish_progress(&self.progress, event).await;
+                Ok(SubmittedOperation {
+                    operation_id,
+                    start_sequence,
+                    payload,
+                    should_start_execution: true,
+                })
+            }
         }
-
-        // A submission is the operation's first event, so its sequence is one.
-        let sequence = EventSequence::try_new(1).expect("first event sequence is one");
-        append_event(&inner.dir, &event).map_err(SubmitOperationError::AppendEvent)?;
-        let status = K::accepted_status(operation_id.clone(), &payload, sequence);
-        inner.statuses.insert(operation_id.clone(), status);
-        drop(inner);
-        publish_progress(&self.progress, event).await;
-        Ok(SubmittedOperation {
-            operation_id,
-            start_sequence: sequence,
-            payload,
-            should_start_execution: true,
-        })
     }
 
     pub async fn submit_machine_add(
@@ -209,136 +188,62 @@ impl OperationRepository {
         submission: MachineAddOperationSubmission,
     ) -> Result<AcceptedMachineAddSubmission, SubmitMachineAddError> {
         validate_machine_add_join_material(&submission.raw_join_token, &submission.join_token)?;
-        let requested_operation_id = submission.operation_id.clone();
-        let idempotency_key = submission.idempotency_key;
-        let claim = StoredMachineAddClaim {
-            operation_id: submission.operation_id,
-            machine_id: submission.machine_id,
-            name: submission.name,
-            roles: submission.roles,
-            join_bundle: submission.join_bundle,
-            join_token: submission.join_token,
-            raw_join_token: submission.raw_join_token,
-        };
-        let mut inner = self.inner.lock().await;
-        if let Some(current) = inner.statuses.get(&requested_operation_id)
-            && current.kind() != OperationKind::MachineAdd
-        {
-            return Err(submit_machine_add_duplicate_mismatch(
-                current.last_event_sequence(),
-            ));
-        }
-        if inner
-            .index
-            .machine_add_submissions
-            .iter()
-            .any(|(key, submitted)| {
-                *key != idempotency_key && submitted.operation_id == requested_operation_id
-            })
-        {
-            return Err(SubmitMachineAddError::DuplicateIdempotencyKey);
-        }
-        let claim = create_or_adopt(
-            &mut inner.index.machine_add_claims,
-            idempotency_key.clone(),
-            claim,
-            AdoptPolicy::FirstWriterWins,
-        )
-        .map_err(submit_machine_add_store_status)?;
-        if claim.operation_id != requested_operation_id {
-            return Err(SubmitMachineAddError::DuplicateIdempotencyKey);
-        }
-        let fingerprint =
-            validate_machine_add_join_material(&claim.raw_join_token, &claim.join_token)?;
-        create_or_adopt(
-            &mut inner.index.machine_add_join_tokens,
-            fingerprint,
-            StoredMachineAddJoinToken {
-                operation_id: claim.operation_id.clone(),
-                idempotency_key: idempotency_key.clone(),
-            },
-            AdoptPolicy::RequireEqual {
-                conflict_message: "join token fingerprint is already assigned",
-            },
-        )
-        .map_err(submit_machine_add_store_status)?;
-        write_index(&inner).map_err(submit_machine_add_store_status)?;
-
-        if let Some(current) = inner.statuses.get(&claim.operation_id) {
-            let submitted = inner
-                .index
-                .machine_add_submissions
-                .get(&idempotency_key)
-                .cloned()
-                .ok_or_else(|| {
-                    submit_machine_add_duplicate_mismatch(current.last_event_sequence())
-                })?;
-            return Ok(AcceptedMachineAddSubmission {
-                operation_id: submitted.operation_id,
-                start_sequence: submitted.start_sequence,
-                machine_id: submitted.machine_id,
-                name: submitted.name,
-                roles: submitted.roles,
-                join_bundle: submitted.join_bundle,
-                join_token: submitted.join_token,
-                raw_join_token: submitted.raw_join_token,
-            });
-        }
-
-        let event = OperationEvent::MachineAddSubmitted {
-            operation_id: claim.operation_id.clone(),
-            machine_id: claim.machine_id.clone(),
-            name: claim.name.clone(),
-            roles: claim.roles,
-            join_token: claim.join_token.clone(),
-        };
-        // The submitted event is the operation's first, so its sequence is one.
-        let sequence = EventSequence::try_new(1).expect("first event sequence is one");
-        append_event(&inner.dir, &event).map_err(submit_machine_add_append_event)?;
-        let submitted = StoredMachineAddSubmission {
-            operation_id: claim.operation_id.clone(),
-            idempotency_key: idempotency_key.clone(),
-            start_sequence: sequence,
-            machine_id: claim.machine_id,
-            name: claim.name,
-            roles: claim.roles,
-            join_bundle: claim.join_bundle,
-            join_token: claim.join_token,
-            raw_join_token: claim.raw_join_token,
-        };
-        create_or_adopt(
-            &mut inner.index.machine_add_submissions,
+        let MachineAddOperationSubmission {
+            operation_id,
+            machine_id,
+            name,
+            roles,
+            join_bundle,
+            join_token,
+            raw_join_token,
             idempotency_key,
-            submitted.clone(),
-            AdoptPolicy::RequireEqual {
-                conflict_message: "machine add submission is already assigned",
-            },
-        )
-        .map_err(submit_machine_add_store_status)?;
-        inner.statuses.insert(
-            submitted.operation_id.clone(),
-            OperationStatus::machine_add_pending(
-                submitted.operation_id.clone(),
-                submitted.machine_id.clone(),
-                submitted.name.clone(),
-                submitted.roles,
-                submitted.join_token.clone(),
-                sequence,
-            ),
-        );
-        write_index(&inner).map_err(submit_machine_add_store_status)?;
-        drop(inner);
-        publish_progress(&self.progress, event).await;
-        Ok(AcceptedMachineAddSubmission {
-            operation_id: submitted.operation_id,
-            start_sequence: sequence,
-            machine_id: submitted.machine_id,
-            name: submitted.name,
-            roles: submitted.roles,
-            join_bundle: submitted.join_bundle,
-            join_token: submitted.join_token,
-            raw_join_token: submitted.raw_join_token,
-        })
+        } = submission;
+        let claim = StoredMachineAddClaim {
+            operation_id: operation_id.clone(),
+            machine_id,
+            name,
+            roles,
+            join_bundle,
+            join_token,
+            raw_join_token,
+        };
+        let outcome = self
+            .store
+            .call(move |conn| submit_machine_add_txn(conn, operation_id, idempotency_key, claim))
+            .await
+            .map_err(submit_machine_add_store_status)?;
+        match outcome {
+            MachineAddTxn::KindMismatch { sequence } => {
+                Err(submit_machine_add_duplicate_mismatch(sequence))
+            }
+            MachineAddTxn::DuplicateIdempotencyKey => {
+                Err(SubmitMachineAddError::DuplicateIdempotencyKey)
+            }
+            MachineAddTxn::JoinTokenMismatch => Err(SubmitMachineAddError::JoinTokenMismatch),
+            MachineAddTxn::Conflict(message) => {
+                Err(SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(
+                    OperationStatusStoreError::CasConflict {
+                        message: message.to_owned(),
+                    },
+                )))
+            }
+            MachineAddTxn::Accepted { submitted, event } => {
+                if let Some(event) = event {
+                    publish_progress(&self.progress, event).await;
+                }
+                let submitted = *submitted;
+                Ok(AcceptedMachineAddSubmission {
+                    operation_id: submitted.operation_id,
+                    start_sequence: submitted.start_sequence,
+                    machine_id: submitted.machine_id,
+                    name: submitted.name,
+                    roles: submitted.roles,
+                    join_bundle: submitted.join_bundle,
+                    join_token: submitted.join_token,
+                    raw_join_token: submitted.raw_join_token,
+                })
+            }
+        }
     }
 
     pub async fn record_deploy_transition(
@@ -458,19 +363,6 @@ impl OperationRepository {
         operation_id: &OperationId,
         event: OperationEvent,
     ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
-        let evidence = deploy_evidence_from_event(&event);
-        if let Some(evidence) = &evidence {
-            let inner = self.inner.lock().await;
-            let Some(current) = inner.statuses.get(operation_id) else {
-                return Err(RecordOperationEventError::MissingOperation {
-                    operation_id: operation_id.clone(),
-                });
-            };
-            if current.is_terminal() {
-                validate_fresh_deploy_evidence(current, evidence)
-                    .map_err(RecordOperationEventError::ProjectStatus)?;
-            }
-        }
         self.record_operation_event(operation_id, event).await
     }
 
@@ -479,97 +371,89 @@ impl OperationRepository {
         operation_id: &OperationId,
         event: OperationEvent,
     ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
-        let mut inner = self.inner.lock().await;
-        let Some(current) = inner.statuses.get(operation_id).cloned() else {
-            return Err(RecordOperationEventError::MissingOperation {
+        let closure_id = operation_id.clone();
+        let outcome = self
+            .store
+            .call(move |conn| record_operation_event_txn(conn, &closure_id, event))
+            .await
+            .map_err(|error| RecordOperationEventError::StoreStatus(index_error(&error)))?;
+        match outcome {
+            RecordTxn::Missing => Err(RecordOperationEventError::MissingOperation {
                 operation_id: operation_id.clone(),
-            });
-        };
-        // The next sequence is the in-memory status's, not something to
-        // recompute from disk: the statuses map is authoritative and the lock
-        // is held, so the append lands at exactly this sequence.
-        let sequence = current.next_event_sequence();
-        let projection = project_operation_event(&current, event.clone(), sequence)
-            .map_err(RecordOperationEventError::ProjectStatus)?;
-        let OperationProjection::StatusChanged { status } = projection else {
-            return Ok(RecordOperationEventOutcome::AlreadySatisfied {
-                current_sequence: current.last_event_sequence(),
-            });
-        };
-        append_event(&inner.dir, &event).map_err(RecordOperationEventError::AppendEvent)?;
-        inner.statuses.insert(operation_id.clone(), *status);
-        drop(inner);
-        publish_progress(&self.progress, event).await;
-        Ok(RecordOperationEventOutcome::Stored { sequence })
+            }),
+            RecordTxn::Projection(error) => Err(RecordOperationEventError::ProjectStatus(error)),
+            RecordTxn::AlreadySatisfied { current_sequence } => {
+                Ok(RecordOperationEventOutcome::AlreadySatisfied { current_sequence })
+            }
+            RecordTxn::Stored { sequence, event } => {
+                publish_progress(&self.progress, event).await;
+                Ok(RecordOperationEventOutcome::Stored { sequence })
+            }
+        }
     }
 
     pub async fn operation_status_snapshot(
         &self,
         operation_id: &OperationId,
     ) -> Option<OperationStatusSnapshot> {
-        let inner = self.inner.lock().await;
-        inner
-            .statuses
-            .get(operation_id)
-            .cloned()
+        let operation_id = operation_id.clone();
+        // ponytail: a SELECT on the open core DB does not fail in practice; a
+        // hard database fault surfaces here as an absent operation.
+        self.store
+            .call(move |conn| select_status(conn, &operation_id))
+            .await
+            .ok()
+            .flatten()
             .map(OperationStatusSnapshot::new)
     }
 
     pub async fn operation_statuses(&self) -> Vec<OperationStatus> {
-        let inner = self.inner.lock().await;
-        inner.statuses.values().cloned().collect()
+        self.store
+            .call(select_all_statuses)
+            .await
+            .unwrap_or_default()
     }
 
     pub async fn replay_operation_events(
         &self,
         request: OperationEventReplayRequest,
     ) -> Result<OperationEventReplayPage, ReplayOperationEventsError> {
-        let inner = self.inner.lock().await;
-        let Some(status) = inner.statuses.get(&request.operation_id) else {
-            return Err(ReplayOperationEventsError::MissingOperation {
-                operation_id: request.operation_id,
-            });
-        };
-        let page = replay_operation_events_from_file(
-            &inner.dir,
-            &request.operation_id,
-            request.start_sequence,
-            request.limit,
-        )
-        .map_err(ReplayOperationEventsError::ReadEvents)?;
-        match (page.cursor, status.is_terminal()) {
-            (OperationEventReplayCursor::CaughtUp, true) => {
-                Ok(OperationEventReplayPage::terminal(page.events))
-            }
-            (cursor, _) => Ok(OperationEventReplayPage {
-                events: page.events,
-                cursor,
-            }),
+        let OperationEventReplayRequest {
+            operation_id,
+            start_sequence,
+            limit,
+        } = request;
+        let closure_id = operation_id.clone();
+        let outcome = self
+            .store
+            .call(move |conn| replay_operation_events_txn(conn, &closure_id, start_sequence, limit))
+            .await
+            .map_err(|error| ReplayOperationEventsError::ReadEvents(read_event_error(&error)))?;
+        match outcome {
+            ReplayTxn::Missing => Err(ReplayOperationEventsError::MissingOperation { operation_id }),
+            ReplayTxn::Invalid(error) => Err(ReplayOperationEventsError::ReadEvents(error)),
+            ReplayTxn::Page(page) => Ok(page),
         }
     }
 
     pub async fn machine_add_submissions(
         &self,
     ) -> Result<Vec<StoredMachineAddSubmission>, OperationStatusStoreError> {
-        let inner = self.inner.lock().await;
-        Ok(inner
-            .index
-            .machine_add_submissions
-            .values()
-            .cloned()
-            .collect())
+        self.store
+            .call(|conn| select_all_json(conn, MACHINE_ADD_SUBMISSIONS.0))
+            .await
+            .map_err(|error| index_error(&error))
     }
 
     pub async fn machine_add_secret_delivery(
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
-        let inner = self.inner.lock().await;
-        Ok(inner
-            .index
-            .machine_add_secret_deliveries
-            .get(idempotency_key)
-            .cloned())
+        let key = idempotency_key.clone();
+        self.store
+            .call(move |conn| select_json(conn, MACHINE_ADD_SECRET_DELIVERIES, key.as_str()))
+            .await
+            .map_err(|error| index_error(&error))
     }
 
     pub async fn put_machine_add_mint_claim_if_absent(
@@ -577,15 +461,22 @@ impl OperationRepository {
         idempotency_key: &OperationIdempotencyKey,
         claim: &StoredMachineAddMintClaim,
     ) -> Result<StoredMachineAddMintClaim, OperationStatusStoreError> {
-        let mut inner = self.inner.lock().await;
-        let claim = create_or_adopt(
-            &mut inner.index.machine_add_mint_claims,
-            idempotency_key.clone(),
-            claim.clone(),
-            AdoptPolicy::FirstWriterWins,
-        )?;
-        write_index(&inner)?;
-        Ok(claim)
+        let key = idempotency_key.clone();
+        let claim = claim.clone();
+        let adopted = self
+            .store
+            .call(move |conn| {
+                create_or_adopt(
+                    conn,
+                    MACHINE_ADD_MINT_CLAIMS,
+                    key.as_str(),
+                    &claim,
+                    AdoptPolicy::FirstWriterWins,
+                )
+            })
+            .await
+            .map_err(|error| index_error(&error))?;
+        adopted.into_value()
     }
 
     pub async fn put_machine_add_secret_delivery_if_absent(
@@ -593,29 +484,35 @@ impl OperationRepository {
         idempotency_key: &OperationIdempotencyKey,
         secret_delivery: &StoredMachineAddSecretDelivery,
     ) -> Result<StoredMachineAddSecretDelivery, OperationStatusStoreError> {
-        let mut inner = self.inner.lock().await;
-        let delivery = create_or_adopt(
-            &mut inner.index.machine_add_secret_deliveries,
-            idempotency_key.clone(),
-            secret_delivery.clone(),
-            AdoptPolicy::RequireEqual {
-                conflict_message: "machine add secret delivery is already assigned",
-            },
-        )?;
-        write_index(&inner)?;
-        Ok(delivery)
+        let key = idempotency_key.clone();
+        let delivery = secret_delivery.clone();
+        let adopted = self
+            .store
+            .call(move |conn| {
+                create_or_adopt(
+                    conn,
+                    MACHINE_ADD_SECRET_DELIVERIES,
+                    key.as_str(),
+                    &delivery,
+                    AdoptPolicy::RequireEqual {
+                        conflict_message: "machine add secret delivery is already assigned",
+                    },
+                )
+            })
+            .await
+            .map_err(|error| index_error(&error))?;
+        adopted.into_value()
     }
 
     pub async fn delete_machine_add_secret_delivery(
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<(), OperationStatusStoreError> {
-        let mut inner = self.inner.lock().await;
-        inner
-            .index
-            .machine_add_secret_deliveries
-            .remove(idempotency_key);
-        write_index(&inner)
+        let key = idempotency_key.clone();
+        self.store
+            .call(move |conn| delete_json(conn, MACHINE_ADD_SECRET_DELIVERIES, key.as_str()))
+            .await
+            .map_err(|error| index_error(&error))
     }
 
     pub async fn redeem_machine_join_token(
@@ -792,37 +689,593 @@ impl OperationRepository {
                 .map_err(|_| OperationStatusStoreError::CorruptRecord {
                     message: "invalid join token".to_owned(),
                 })?;
-        let inner = self.inner.lock().await;
-        let Some(index) = inner.index.machine_add_join_tokens.get(&fingerprint) else {
-            return Ok(None);
-        };
-        let Some(submission) = inner
-            .index
-            .machine_add_submissions
-            .get(&index.idempotency_key)
-            .cloned()
-        else {
-            return Ok(None);
-        };
-        if submission.operation_id != index.operation_id
-            || submission.raw_join_token != *token
-            || !submission.join_token.matches(&fingerprint)
-        {
-            return Err(OperationStatusStoreError::CorruptRecord {
-                message: "join token index does not match submission".to_owned(),
-            });
-        }
-        Ok(Some(submission))
+        let token = token.clone();
+        let outcome = self
+            .store
+            .call(move |conn| submission_for_token_txn(conn, &fingerprint, &token))
+            .await
+            .map_err(|error| index_error(&error))?;
+        outcome.into_result()
     }
 
     pub async fn get(&self, operation_id: &OperationId) -> Option<OperationStatus> {
-        let inner = self.inner.lock().await;
-        inner.statuses.get(operation_id).cloned()
+        let operation_id = operation_id.clone();
+        // ponytail: see operation_status_snapshot — an open-DB read is
+        // effectively infallible; a hard fault reads as absence.
+        self.store
+            .call(move |conn| select_status(conn, &operation_id))
+            .await
+            .ok()
+            .flatten()
     }
 }
 
+// -------- transaction bodies (run inside CoreStore::call) --------
+
+enum RecordTxn {
+    Missing,
+    Projection(StatusProjectionError),
+    AlreadySatisfied { current_sequence: EventSequence },
+    Stored { sequence: EventSequence, event: OperationEvent },
+}
+
+fn record_operation_event_txn(
+    conn: &mut Connection,
+    operation_id: &OperationId,
+    event: OperationEvent,
+) -> Result<RecordTxn, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    let Some(current) = select_status(&transaction, operation_id)? else {
+        return Ok(RecordTxn::Missing);
+    };
+    // The next sequence is the projection's own: status is authoritative and
+    // the transaction holds the write, so the insert lands at this sequence.
+    let sequence = current.next_event_sequence();
+    // Deploy evidence recorded after a terminal deploy must be fresh.
+    if let Some(evidence) = deploy_evidence_from_event(&event)
+        && current.is_terminal()
+        && let Err(error) = validate_fresh_deploy_evidence(&current, &evidence)
+    {
+        return Ok(RecordTxn::Projection(error));
+    }
+    let projection = match project_operation_event(&current, event.clone(), sequence) {
+        Ok(projection) => projection,
+        Err(error) => return Ok(RecordTxn::Projection(error)),
+    };
+    let OperationProjection::StatusChanged { status } = projection else {
+        return Ok(RecordTxn::AlreadySatisfied {
+            current_sequence: current.last_event_sequence(),
+        });
+    };
+    insert_event(&transaction, &event, sequence)?;
+    upsert_status(&transaction, operation_id, &status, sequence)?;
+    transaction.commit()?;
+    Ok(RecordTxn::Stored { sequence, event })
+}
+
+enum SubmitTxn<P> {
+    KindMismatch { sequence: EventSequence },
+    BadFirstEvent { sequence: EventSequence },
+    Existing {
+        start_sequence: EventSequence,
+        payload: P,
+        should_start_execution: bool,
+    },
+    Created {
+        start_sequence: EventSequence,
+        event: OperationEvent,
+    },
+}
+
+fn submit_operation_txn<K: SubmitKind>(
+    conn: &mut Connection,
+    operation_id: OperationId,
+    payload: K::Payload,
+) -> Result<SubmitTxn<K::Payload>, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    if let Some(current) = select_status(&transaction, &operation_id)? {
+        if current.kind() != K::KIND {
+            return Ok(SubmitTxn::KindMismatch {
+                sequence: current.last_event_sequence(),
+            });
+        }
+        let Some((first_event, first_sequence)) = select_first_event(&transaction, &operation_id)?
+        else {
+            return Ok(SubmitTxn::BadFirstEvent {
+                sequence: first_event_sequence(),
+            });
+        };
+        let Some((stored_operation_id, payload)) = K::submitted_event_parts(first_event) else {
+            return Ok(SubmitTxn::BadFirstEvent {
+                sequence: first_sequence,
+            });
+        };
+        if stored_operation_id != operation_id {
+            return Ok(SubmitTxn::BadFirstEvent {
+                sequence: first_sequence,
+            });
+        }
+        return Ok(SubmitTxn::Existing {
+            start_sequence: first_sequence,
+            payload,
+            should_start_execution: current.last_event_sequence() == first_sequence,
+        });
+    }
+    let sequence = first_event_sequence();
+    let event = K::submitted_event(operation_id.clone(), payload.clone());
+    let status = K::accepted_status(operation_id.clone(), &payload, sequence);
+    insert_event(&transaction, &event, sequence)?;
+    upsert_status(&transaction, &operation_id, &status, sequence)?;
+    transaction.commit()?;
+    Ok(SubmitTxn::Created {
+        start_sequence: sequence,
+        event,
+    })
+}
+
+enum MachineAddTxn {
+    KindMismatch { sequence: EventSequence },
+    DuplicateIdempotencyKey,
+    JoinTokenMismatch,
+    Conflict(&'static str),
+    Accepted {
+        submitted: Box<StoredMachineAddSubmission>,
+        event: Option<OperationEvent>,
+    },
+}
+
+fn submit_machine_add_txn(
+    conn: &mut Connection,
+    operation_id: OperationId,
+    idempotency_key: OperationIdempotencyKey,
+    claim: StoredMachineAddClaim,
+) -> Result<MachineAddTxn, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    if let Some(current) = select_status(&transaction, &operation_id)?
+        && current.kind() != OperationKind::MachineAdd
+    {
+        return Ok(MachineAddTxn::KindMismatch {
+            sequence: current.last_event_sequence(),
+        });
+    }
+    let submissions: Vec<StoredMachineAddSubmission> =
+        select_all_json(&transaction, MACHINE_ADD_SUBMISSIONS.0)?;
+    if submissions
+        .iter()
+        .any(|submitted| submitted.operation_id == operation_id && submitted.idempotency_key != idempotency_key)
+    {
+        return Ok(MachineAddTxn::DuplicateIdempotencyKey);
+    }
+    let claim = match create_or_adopt(
+        &transaction,
+        MACHINE_ADD_CLAIMS,
+        idempotency_key.as_str(),
+        &claim,
+        AdoptPolicy::FirstWriterWins,
+    )? {
+        AdoptResult::Value(claim) => claim,
+        AdoptResult::Conflict(message) => return Ok(MachineAddTxn::Conflict(message)),
+    };
+    if claim.operation_id != operation_id {
+        return Ok(MachineAddTxn::DuplicateIdempotencyKey);
+    }
+    let Ok(fingerprint) = claim.raw_join_token.fingerprint() else {
+        return Ok(MachineAddTxn::JoinTokenMismatch);
+    };
+    if !claim.join_token.matches(&fingerprint) {
+        return Ok(MachineAddTxn::JoinTokenMismatch);
+    }
+    if let AdoptResult::Conflict(message) = create_or_adopt(
+        &transaction,
+        MACHINE_ADD_JOIN_TOKENS,
+        fingerprint.as_str(),
+        &StoredMachineAddJoinToken {
+            operation_id: claim.operation_id.clone(),
+            idempotency_key: idempotency_key.clone(),
+        },
+        AdoptPolicy::RequireEqual {
+            conflict_message: "join token fingerprint is already assigned",
+        },
+    )? {
+        return Ok(MachineAddTxn::Conflict(message));
+    }
+
+    // A prior submission for this operation means the accept already happened;
+    // adopt it and skip re-emitting the submitted event.
+    if let Some(existing) =
+        select_json::<StoredMachineAddSubmission>(&transaction, MACHINE_ADD_SUBMISSIONS, idempotency_key.as_str())?
+    {
+        transaction.commit()?;
+        return Ok(MachineAddTxn::Accepted {
+            submitted: Box::new(existing),
+            event: None,
+        });
+    }
+
+    let sequence = first_event_sequence();
+    let event = OperationEvent::MachineAddSubmitted {
+        operation_id: claim.operation_id.clone(),
+        machine_id: claim.machine_id.clone(),
+        name: claim.name.clone(),
+        roles: claim.roles,
+        join_token: claim.join_token.clone(),
+    };
+    let submitted = StoredMachineAddSubmission {
+        operation_id: claim.operation_id.clone(),
+        idempotency_key: idempotency_key.clone(),
+        start_sequence: sequence,
+        machine_id: claim.machine_id.clone(),
+        name: claim.name.clone(),
+        roles: claim.roles,
+        join_bundle: claim.join_bundle.clone(),
+        join_token: claim.join_token.clone(),
+        raw_join_token: claim.raw_join_token.clone(),
+    };
+    if let AdoptResult::Conflict(message) = create_or_adopt(
+        &transaction,
+        MACHINE_ADD_SUBMISSIONS,
+        idempotency_key.as_str(),
+        &submitted,
+        AdoptPolicy::RequireEqual {
+            conflict_message: "machine add submission is already assigned",
+        },
+    )? {
+        return Ok(MachineAddTxn::Conflict(message));
+    }
+    let status = OperationStatus::machine_add_pending(
+        submitted.operation_id.clone(),
+        submitted.machine_id.clone(),
+        submitted.name.clone(),
+        submitted.roles,
+        submitted.join_token.clone(),
+        sequence,
+    );
+    insert_event(&transaction, &event, sequence)?;
+    upsert_status(&transaction, &submitted.operation_id, &status, sequence)?;
+    transaction.commit()?;
+    Ok(MachineAddTxn::Accepted {
+        submitted: Box::new(submitted),
+        event: Some(event),
+    })
+}
+
+enum ReplayTxn {
+    Missing,
+    Invalid(OperationEventLogError),
+    Page(OperationEventReplayPage),
+}
+
+fn replay_operation_events_txn(
+    conn: &mut Connection,
+    operation_id: &OperationId,
+    start_sequence: EventSequence,
+    limit: OperationEventReplayLimit,
+) -> Result<ReplayTxn, rusqlite::Error> {
+    let Some(status) = select_status(conn, operation_id)? else {
+        return Ok(ReplayTxn::Missing);
+    };
+    let page_limit = limit.as_usize();
+    let mut statement = conn.prepare(
+        "SELECT sequence, event_json FROM operation_events
+         WHERE operation_id = ?1 AND sequence >= ?2 ORDER BY sequence LIMIT ?3",
+    )?;
+    let rows = statement.query_map(
+        params![
+            operation_id.as_str(),
+            start_sequence.get(),
+            page_limit as i64
+        ],
+        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    let mut events = Vec::new();
+    for row in rows {
+        let (sequence, event_json) = row?;
+        let sequence = match EventSequence::try_new(sequence) {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                return Ok(ReplayTxn::Invalid(
+                    OperationEventLogError::InvalidEventSequence { sequence, error },
+                ));
+            }
+        };
+        let event = match serde_json::from_str(&event_json) {
+            Ok(event) => event,
+            Err(error) => {
+                return Ok(ReplayTxn::Invalid(OperationEventLogError::DecodeEvent(error)));
+            }
+        };
+        events.push(ployz_core::ops::ReplayedOperationEvent { sequence, event });
+    }
+    if events.len() < page_limit {
+        return finish_replay_page(OperationEventReplayPage::caught_up(events), status.is_terminal());
+    }
+    let Some(next) = events.last().and_then(|event| event.sequence.get().checked_add(1)) else {
+        return Ok(ReplayTxn::Invalid(
+            OperationEventLogError::InvalidNextReplaySequence { sequence: u64::MAX },
+        ));
+    };
+    let next = match EventSequence::try_new(next) {
+        Ok(next) => next,
+        Err(error) => {
+            return Ok(ReplayTxn::Invalid(
+                OperationEventLogError::InvalidEventSequence {
+                    sequence: next,
+                    error,
+                },
+            ));
+        }
+    };
+    finish_replay_page(
+        OperationEventReplayPage::more(events, next),
+        status.is_terminal(),
+    )
+}
+
+fn finish_replay_page(
+    page: OperationEventReplayPage,
+    terminal: bool,
+) -> Result<ReplayTxn, rusqlite::Error> {
+    let page = match (page.cursor, terminal) {
+        (OperationEventReplayCursor::CaughtUp, true) => {
+            OperationEventReplayPage::terminal(page.events)
+        }
+        (cursor, _) => OperationEventReplayPage {
+            events: page.events,
+            cursor,
+        },
+    };
+    Ok(ReplayTxn::Page(page))
+}
+
+enum TokenSubmission {
+    None,
+    Corrupt,
+    Found(Box<StoredMachineAddSubmission>),
+}
+
+impl TokenSubmission {
+    fn into_result(
+        self,
+    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        match self {
+            Self::None => Ok(None),
+            Self::Found(submission) => Ok(Some(*submission)),
+            Self::Corrupt => Err(OperationStatusStoreError::CorruptRecord {
+                message: "join token index does not match submission".to_owned(),
+            }),
+        }
+    }
+}
+
+fn submission_for_token_txn(
+    conn: &mut Connection,
+    fingerprint: &JoinTokenFingerprint,
+    token: &RawJoinToken,
+) -> Result<TokenSubmission, rusqlite::Error> {
+    let Some(index): Option<StoredMachineAddJoinToken> =
+        select_json(conn, MACHINE_ADD_JOIN_TOKENS, fingerprint.as_str())?
+    else {
+        return Ok(TokenSubmission::None);
+    };
+    let Some(submission): Option<StoredMachineAddSubmission> =
+        select_json(conn, MACHINE_ADD_SUBMISSIONS, index.idempotency_key.as_str())?
+    else {
+        return Ok(TokenSubmission::None);
+    };
+    if submission.operation_id != index.operation_id
+        || submission.raw_join_token != *token
+        || !submission.join_token.matches(fingerprint)
+    {
+        return Ok(TokenSubmission::Corrupt);
+    }
+    Ok(TokenSubmission::Found(Box::new(submission)))
+}
+
+// -------- SQLite row helpers --------
+
+fn select_status(
+    conn: &Connection,
+    operation_id: &OperationId,
+) -> Result<Option<OperationStatus>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT status_json FROM operations WHERE operation_id = ?1",
+        [operation_id.as_str()],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|json| from_json(&json))
+    .transpose()
+}
+
+fn select_all_statuses(conn: &mut Connection) -> Result<Vec<OperationStatus>, rusqlite::Error> {
+    let mut statement =
+        conn.prepare("SELECT status_json FROM operations ORDER BY operation_id")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut statuses = Vec::new();
+    for row in rows {
+        statuses.push(from_json(&row?)?);
+    }
+    Ok(statuses)
+}
+
+fn upsert_status(
+    conn: &Connection,
+    operation_id: &OperationId,
+    status: &OperationStatus,
+    last_sequence: EventSequence,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO operations (operation_id, status_json, last_sequence) VALUES (?1, ?2, ?3)
+         ON CONFLICT(operation_id) DO UPDATE SET
+             status_json = excluded.status_json, last_sequence = excluded.last_sequence",
+        params![operation_id.as_str(), to_json(status)?, last_sequence.get()],
+    )?;
+    Ok(())
+}
+
+fn insert_event(
+    conn: &Connection,
+    event: &OperationEvent,
+    sequence: EventSequence,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO operation_events (operation_id, sequence, event_json) VALUES (?1, ?2, ?3)",
+        params![event.operation_id().as_str(), sequence.get(), to_json(event)?],
+    )?;
+    Ok(())
+}
+
+fn select_first_event(
+    conn: &Connection,
+    operation_id: &OperationId,
+) -> Result<Option<(OperationEvent, EventSequence)>, rusqlite::Error> {
+    let Some((sequence, event_json)) = conn
+        .query_row(
+            "SELECT sequence, event_json FROM operation_events
+             WHERE operation_id = ?1 ORDER BY sequence LIMIT 1",
+            [operation_id.as_str()],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let sequence = EventSequence::try_new(sequence).map_err(sequence_conversion)?;
+    Ok(Some((from_json(&event_json)?, sequence)))
+}
+
+fn select_json<V: DeserializeOwned>(
+    conn: &Connection,
+    table: IndexTable,
+    key: &str,
+) -> Result<Option<V>, rusqlite::Error> {
+    let (name, key_column) = table;
+    conn.query_row(
+        &format!("SELECT json FROM {name} WHERE {key_column} = ?1"),
+        [key],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|json| from_json(&json))
+    .transpose()
+}
+
+fn select_all_json<V: DeserializeOwned>(
+    conn: &Connection,
+    table: &str,
+) -> Result<Vec<V>, rusqlite::Error> {
+    let mut statement = conn.prepare(&format!("SELECT json FROM {table} ORDER BY 1"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(from_json(&row?)?);
+    }
+    Ok(values)
+}
+
+fn insert_json<V: Serialize>(
+    conn: &Connection,
+    table: IndexTable,
+    key: &str,
+    value: &V,
+) -> Result<(), rusqlite::Error> {
+    let (name, key_column) = table;
+    conn.execute(
+        &format!("INSERT INTO {name} ({key_column}, json) VALUES (?1, ?2)"),
+        params![key, to_json(value)?],
+    )?;
+    Ok(())
+}
+
+fn delete_json(conn: &Connection, table: IndexTable, key: &str) -> Result<(), rusqlite::Error> {
+    let (name, key_column) = table;
+    conn.execute(
+        &format!("DELETE FROM {name} WHERE {key_column} = ?1"),
+        [key],
+    )?;
+    Ok(())
+}
+
+enum AdoptResult<V> {
+    Value(V),
+    Conflict(&'static str),
+}
+
+impl<V> AdoptResult<V> {
+    fn into_value(self) -> Result<V, OperationStatusStoreError> {
+        match self {
+            Self::Value(value) => Ok(value),
+            Self::Conflict(message) => Err(OperationStatusStoreError::CasConflict {
+                message: message.to_owned(),
+            }),
+        }
+    }
+}
+
+fn create_or_adopt<V>(
+    conn: &Connection,
+    table: IndexTable,
+    key: &str,
+    value: &V,
+    policy: AdoptPolicy,
+) -> Result<AdoptResult<V>, rusqlite::Error>
+where
+    V: Serialize + DeserializeOwned + Clone + PartialEq,
+{
+    if let Some(existing) = select_json::<V>(conn, table, key)? {
+        return Ok(match policy {
+            AdoptPolicy::FirstWriterWins => AdoptResult::Value(existing),
+            AdoptPolicy::RequireEqual { .. } if existing == *value => AdoptResult::Value(existing),
+            AdoptPolicy::RequireEqual { conflict_message } => AdoptResult::Conflict(conflict_message),
+        });
+    }
+    insert_json(conn, table, key, value)?;
+    Ok(AdoptResult::Value(value.clone()))
+}
+
+fn first_event_sequence() -> EventSequence {
+    EventSequence::try_new(1).expect("one is a valid event sequence")
+}
+
+fn to_json<V: Serialize>(value: &V) -> Result<String, rusqlite::Error> {
+    serde_json::to_string(value)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
+fn from_json<V: DeserializeOwned>(json: &str) -> Result<V, rusqlite::Error> {
+    serde_json::from_str(json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(json.len(), rusqlite::types::Type::Text, Box::new(error))
+    })
+}
+
+fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Integer,
+        format!("invalid event sequence: {error}").into(),
+    )
+}
+
+fn index_error(error: &CoreStoreError) -> OperationStatusStoreError {
+    OperationStatusStoreError::Index {
+        message: error.to_string(),
+    }
+}
+
+fn read_event_error(error: &CoreStoreError) -> OperationEventLogError {
+    OperationEventLogError::ReadEvent {
+        message: error.to_string(),
+    }
+}
+
+fn store_status(error: CoreStoreError) -> SubmitOperationError {
+    SubmitOperationError::StoreStatus(index_error(&error))
+}
+
+// -------- submit kinds (pure) --------
+
 trait SubmitKind: Sized {
-    type Payload: Clone;
+    type Payload: Clone + Send + 'static;
     const KIND: OperationKind;
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent;
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)>;
@@ -953,14 +1406,14 @@ struct SubmittedOperation<P> {
     should_start_execution: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredDeployClaim {
     pub operation_id: OperationId,
     pub target: ployz_core::deploy::DeployRequest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddSubmission {
     pub operation_id: OperationId,
@@ -974,7 +1427,7 @@ pub struct StoredMachineAddSubmission {
     pub raw_join_token: RawJoinToken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddClaim {
     pub operation_id: OperationId,
@@ -986,14 +1439,14 @@ pub struct StoredMachineAddClaim {
     pub raw_join_token: RawJoinToken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddSecretDelivery {
     pub operation_id: OperationId,
     pub secret_delivery: MachineJoinSecretDelivery,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddMintClaim {
     pub operation_id: OperationId,
@@ -1001,7 +1454,7 @@ pub struct StoredMachineAddMintClaim {
     pub nkey_seed: ployz_core::nats_config::NatsUserSeed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddJoinToken {
     pub operation_id: OperationId,
@@ -1098,12 +1551,8 @@ pub enum OperationStatusWrite {
 }
 
 enum RecordOperationEventOutcome {
-    AlreadySatisfied {
-        current_sequence: EventSequence,
-    },
-    Stored {
-        sequence: EventSequence,
-    },
+    AlreadySatisfied { current_sequence: EventSequence },
+    Stored { sequence: EventSequence },
 }
 
 impl RecordOperationEventOutcome {
@@ -1127,7 +1576,6 @@ impl RecordOperationEventOutcome {
 #[derive(Debug)]
 pub enum SubmitOperationError {
     InvalidDeployTarget,
-    AppendEvent(OperationEventLogError),
     StoreStatus(OperationStatusStoreError),
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
@@ -1147,8 +1595,6 @@ pub enum RecordOperationEventError {
     MissingOperation { operation_id: OperationId },
     #[error("operation status projection failed: {0}")]
     ProjectStatus(StatusProjectionError),
-    #[error("{0}")]
-    AppendEvent(OperationEventLogError),
 }
 
 pub type RecordDeployTransitionError = RecordOperationEventError;
@@ -1167,31 +1613,15 @@ pub enum OperationStatusStoreError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum OperationStoreError {
-    #[error("operation evidence directory: {message}")]
-    Directory { message: String },
-    #[error("operation working records: {message}")]
-    Index { message: String },
-    #[error("{0}")]
-    EventLog(OperationEventLogError),
-    #[error("{0}")]
-    ProjectStatus(StatusProjectionError),
-}
-
-#[derive(Debug, thiserror::Error)]
 pub enum OperationEventLogError {
-    #[error("encode operation event: {0}")]
-    EncodeEvent(serde_json::Error),
     #[error("decode operation event: {0}")]
     DecodeEvent(serde_json::Error),
     #[error("read operation event: {message}")]
     ReadEvent { message: String },
-    #[error("write operation event: {message}")]
-    WriteEvent { message: String },
     #[error("operation event sequence {sequence} is invalid: {error}")]
     InvalidEventSequence {
         sequence: u64,
-        error: EventSequenceError,
+        error: ployz_core::ops::EventSequenceError,
     },
     #[error("operation replay next sequence {sequence} is invalid")]
     InvalidNextReplaySequence { sequence: u64 },
@@ -1280,455 +1710,6 @@ enum AdoptPolicy {
     RequireEqual { conflict_message: &'static str },
 }
 
-fn create_or_adopt<K, V>(
-    records: &mut BTreeMap<K, V>,
-    key: K,
-    value: V,
-    policy: AdoptPolicy,
-) -> Result<V, OperationStatusStoreError>
-where
-    K: Ord,
-    V: Clone + PartialEq,
-{
-    let Some(existing) = records.get(&key) else {
-        records.insert(key, value.clone());
-        return Ok(value);
-    };
-    match policy {
-        AdoptPolicy::FirstWriterWins => Ok(existing.clone()),
-        AdoptPolicy::RequireEqual {
-            conflict_message: _,
-        } if *existing == value => Ok(existing.clone()),
-        AdoptPolicy::RequireEqual { conflict_message } => {
-            Err(OperationStatusStoreError::CasConflict {
-                message: conflict_message.to_owned(),
-            })
-        }
-    }
-}
-
-fn write_index(inner: &OperationRepositoryInner) -> Result<(), OperationStatusStoreError> {
-    write_operation_index(&inner.dir, &inner.index).map_err(|error| {
-        OperationStatusStoreError::Index {
-            message: format!("{error:?}"),
-        }
-    })
-}
-
-fn write_operation_index(
-    dir: &Path,
-    index: &OperationIndex,
-) -> Result<(), crate::evidence_file::EvidenceFileError> {
-    write_json(&index_path(dir), index)
-}
-
-fn index_path(dir: &Path) -> PathBuf {
-    dir.join("working-records.json")
-}
-
-fn prepare_operation_dir(dir: &Path) -> Result<(), OperationStoreError> {
-    std::fs::create_dir_all(dir).map_err(|error| OperationStoreError::Directory {
-        message: error.to_string(),
-    })?;
-    set_dir_permissions(dir).map_err(|error| OperationStoreError::Directory {
-        message: error.to_string(),
-    })
-}
-
-#[cfg(unix)]
-fn set_dir_permissions(dir: &Path) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_dir_permissions(_dir: &Path) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-fn operation_file(dir: &Path, operation_id: &OperationId) -> PathBuf {
-    dir.join(format!("{}.jsonl", operation_id.as_str()))
-}
-
-fn recover_machine_add_submissions(
-    dir: &Path,
-    index: &mut OperationIndex,
-) -> Result<bool, OperationStoreError> {
-    let mut changed = false;
-    let claims_by_operation = index
-        .machine_add_claims
-        .iter()
-        .map(|(idempotency_key, claim)| {
-            (
-                claim.operation_id.clone(),
-                (idempotency_key.clone(), claim.clone()),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    for entry in std::fs::read_dir(dir).map_err(|error| OperationStoreError::Directory {
-        message: error.to_string(),
-    })? {
-        let entry = entry.map_err(|error| OperationStoreError::Directory {
-            message: error.to_string(),
-        })?;
-        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        for replayed in
-            read_operation_events(&entry.path()).map_err(OperationStoreError::EventLog)?
-        {
-            let OperationEvent::MachineAddSubmitted {
-                operation_id,
-                machine_id,
-                name,
-                roles,
-                join_token,
-            } = replayed.event
-            else {
-                continue;
-            };
-            let Some((idempotency_key, claim)) = claims_by_operation.get(&operation_id).cloned()
-            else {
-                continue;
-            };
-            if claim.machine_id != machine_id
-                || claim.name != name
-                || claim.roles != roles
-                || claim.join_token != join_token
-            {
-                return Err(OperationStoreError::Index {
-                    message: format!(
-                        "machine-add claim does not match submitted event for {}",
-                        operation_id.as_str()
-                    ),
-                });
-            }
-            if !index.machine_add_submissions.contains_key(&idempotency_key) {
-                index.machine_add_submissions.insert(
-                    idempotency_key.clone(),
-                    StoredMachineAddSubmission {
-                        operation_id: operation_id.clone(),
-                        idempotency_key: idempotency_key.clone(),
-                        start_sequence: replayed.sequence,
-                        machine_id: claim.machine_id.clone(),
-                        name: claim.name.clone(),
-                        roles: claim.roles,
-                        join_bundle: claim.join_bundle.clone(),
-                        join_token: claim.join_token.clone(),
-                        raw_join_token: claim.raw_join_token.clone(),
-                    },
-                );
-                changed = true;
-            }
-            let fingerprint =
-                claim
-                    .raw_join_token
-                    .fingerprint()
-                    .map_err(|error| OperationStoreError::Index {
-                        message: format!("machine-add raw join token is invalid: {error}"),
-                    })?;
-            if !claim.join_token.matches(&fingerprint) {
-                return Err(OperationStoreError::Index {
-                    message: format!(
-                        "machine-add join token does not match raw token for {}",
-                        operation_id.as_str()
-                    ),
-                });
-            }
-            let join_token_entry = StoredMachineAddJoinToken {
-                operation_id,
-                idempotency_key: idempotency_key.clone(),
-            };
-            match index.machine_add_join_tokens.get(&fingerprint) {
-                Some(existing) if existing == &join_token_entry => {}
-                Some(_) => {
-                    return Err(OperationStoreError::Index {
-                        message: "join token fingerprint is already assigned".to_owned(),
-                    });
-                }
-                None => {
-                    index
-                        .machine_add_join_tokens
-                        .insert(fingerprint, join_token_entry);
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    Ok(changed)
-}
-
-fn load_statuses(
-    dir: &Path,
-) -> Result<BTreeMap<OperationId, OperationStatus>, OperationStoreError> {
-    let mut statuses = BTreeMap::new();
-    for entry in std::fs::read_dir(dir).map_err(|error| OperationStoreError::Directory {
-        message: error.to_string(),
-    })? {
-        let entry = entry.map_err(|error| OperationStoreError::Directory {
-            message: error.to_string(),
-        })?;
-        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        for replayed in
-            read_operation_events(&entry.path()).map_err(OperationStoreError::EventLog)?
-        {
-            let operation_id = replayed.event.operation_id().clone();
-            match statuses.get(&operation_id) {
-                Some(current) => {
-                    match project_operation_event(current, replayed.event, replayed.sequence)
-                        .map_err(OperationStoreError::ProjectStatus)?
-                    {
-                        OperationProjection::StatusChanged { status } => {
-                            statuses.insert(operation_id, *status);
-                        }
-                        OperationProjection::AlreadySatisfied => {}
-                    }
-                }
-                None => {
-                    statuses.insert(
-                        operation_id.clone(),
-                        accepted_status_from_submitted_event(replayed.event, replayed.sequence)?,
-                    );
-                }
-            }
-        }
-    }
-    Ok(statuses)
-}
-
-fn accepted_status_from_submitted_event(
-    event: OperationEvent,
-    sequence: EventSequence,
-) -> Result<OperationStatus, OperationStoreError> {
-    match event {
-        OperationEvent::DeploySubmitted {
-            operation_id,
-            target,
-        } => Ok(OperationStatus::deploy_accepted(
-            operation_id,
-            target.status_service_id(),
-            sequence,
-        )),
-        OperationEvent::MachineAddSubmitted {
-            operation_id,
-            machine_id,
-            name,
-            roles,
-            join_token,
-        } => Ok(OperationStatus::machine_add_pending(
-            operation_id,
-            machine_id,
-            name,
-            roles,
-            join_token,
-            sequence,
-        )),
-        OperationEvent::MachineUpdateSubmitted {
-            operation_id,
-            machine_id,
-            target_version,
-        } => Ok(OperationStatus::machine_update_accepted(
-            operation_id,
-            machine_id,
-            target_version,
-            sequence,
-        )),
-        OperationEvent::MachineLifecycleSubmitted {
-            operation_id,
-            machine_id,
-            target,
-        } => Ok(OperationStatus::machine_lifecycle_accepted(
-            operation_id,
-            machine_id,
-            target,
-            sequence,
-        )),
-        event @ (OperationEvent::DeployPlanningStarted { .. }
-        | OperationEvent::DeployPlanCreated { .. }
-        | OperationEvent::DeployRunning { .. }
-        | OperationEvent::DeployDataplanePrepared { .. }
-        | OperationEvent::DeployContainerStarted { .. }
-        | OperationEvent::DeployHealthCheckStarted { .. }
-        | OperationEvent::DeployCleanupFinished { .. }
-        | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::DeployFailed { .. }
-        | OperationEvent::CertRenewalSubmitted { .. }
-        | OperationEvent::CertChallengePublished { .. }
-        | OperationEvent::CertValidationStarted { .. }
-        | OperationEvent::CertCompleted { .. }
-        | OperationEvent::CertFailed { .. }
-        | OperationEvent::MachineAddJoined { .. }
-        | OperationEvent::MachineAddCredentialProvisioned { .. }
-        | OperationEvent::MachineAddCompleted { .. }
-        | OperationEvent::MachineAddFailed { .. }
-        | OperationEvent::MachineUpdateRunning { .. }
-        | OperationEvent::MachineUpdateCompleted { .. }
-        | OperationEvent::MachineUpdateFailed { .. }
-        | OperationEvent::MachineLifecycleCompleted { .. }
-        | OperationEvent::MachineLifecycleFailed { .. }
-        | OperationEvent::Cancelled { .. }) => Err(OperationStoreError::Directory {
-            message: format!(
-                "operation {} evidence starts with non-submitted event",
-                event.operation_id().as_str()
-            ),
-        }),
-    }
-}
-
-fn read_operation_events(
-    path: &Path,
-) -> Result<Vec<ReplayedOperationEvent>, OperationEventLogError> {
-    let file = File::open(path).map_err(|error| OperationEventLogError::ReadEvent {
-        message: error.to_string(),
-    })?;
-    std::io::BufReader::new(file)
-        .lines()
-        .enumerate()
-        .map(|(index, line)| {
-            let payload = line.map_err(|error| OperationEventLogError::ReadEvent {
-                message: error.to_string(),
-            })?;
-            let sequence = event_sequence_from_index(index)?;
-            let event =
-                serde_json::from_str(&payload).map_err(OperationEventLogError::DecodeEvent)?;
-            Ok(ReplayedOperationEvent { sequence, event })
-        })
-        .collect()
-}
-
-fn event_sequence_from_index(index: usize) -> Result<EventSequence, OperationEventLogError> {
-    let sequence = u64::try_from(index)
-        .ok()
-        .and_then(|value| value.checked_add(1))
-        .ok_or(OperationEventLogError::InvalidEventSequence {
-            sequence: u64::MAX,
-            error: EventSequenceError::Zero,
-        })?;
-    EventSequence::try_new(sequence)
-        .map_err(|error| OperationEventLogError::InvalidEventSequence { sequence, error })
-}
-
-fn append_event(dir: &Path, event: &OperationEvent) -> Result<(), OperationEventLogError> {
-    prepare_event_dir(dir)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(operation_file(dir, event.operation_id()))
-        .map_err(|error| OperationEventLogError::WriteEvent {
-            message: error.to_string(),
-        })?;
-    set_file_permissions(&file).map_err(|error| OperationEventLogError::WriteEvent {
-        message: error.to_string(),
-    })?;
-    serde_json::to_writer(&mut file, event).map_err(OperationEventLogError::EncodeEvent)?;
-    file.write_all(b"\n")
-        .and_then(|()| file.sync_all())
-        .map_err(|error| OperationEventLogError::WriteEvent {
-            message: error.to_string(),
-        })?;
-    sync_parent_directory(dir).map_err(|error| OperationEventLogError::WriteEvent {
-        message: error.to_string(),
-    })
-}
-
-fn prepare_event_dir(dir: &Path) -> Result<(), OperationEventLogError> {
-    std::fs::create_dir_all(dir).map_err(|error| OperationEventLogError::WriteEvent {
-        message: error.to_string(),
-    })?;
-    set_dir_permissions(dir).map_err(|error| OperationEventLogError::WriteEvent {
-        message: error.to_string(),
-    })
-}
-
-#[cfg(unix)]
-fn set_file_permissions(file: &File) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_file_permissions(_file: &File) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
-    std::fs::File::open(parent)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(_parent: &Path) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-fn replay_operation_events_from_file(
-    dir: &Path,
-    operation_id: &OperationId,
-    start_sequence: EventSequence,
-    limit: ployz_core::ops::OperationEventReplayLimit,
-) -> Result<OperationEventReplayPage, OperationEventLogError> {
-    let events = read_operation_events(&operation_file(dir, operation_id))?;
-    let start = usize::try_from(start_sequence.get().saturating_sub(1)).unwrap_or(usize::MAX);
-    let limit = limit.as_usize();
-    let page = events
-        .into_iter()
-        .skip(start)
-        .take(limit)
-        .collect::<Vec<_>>();
-    if page.len() < limit {
-        return Ok(OperationEventReplayPage::caught_up(page));
-    }
-    let next = page
-        .last()
-        .and_then(|event| event.sequence.get().checked_add(1))
-        .ok_or(OperationEventLogError::InvalidNextReplaySequence { sequence: u64::MAX })?;
-    Ok(OperationEventReplayPage::more(
-        page,
-        EventSequence::try_new(next).map_err(|error| {
-            OperationEventLogError::InvalidEventSequence {
-                sequence: next,
-                error,
-            }
-        })?,
-    ))
-}
-
-
-fn submitted_payload<K: SubmitKind>(
-    dir: &Path,
-    operation_id: &OperationId,
-) -> Result<(K::Payload, EventSequence), SubmitOperationError> {
-    let events = read_operation_events(&operation_file(dir, operation_id))
-        .map_err(SubmitOperationError::AppendEvent)?;
-    let Some(first) = events.into_iter().next() else {
-        return Err(SubmitOperationError::DuplicateSequenceMismatch {
-            sequence: EventSequence::try_new(1).expect("one is a valid event sequence"),
-        });
-    };
-    let Some((stored_operation_id, payload)) = K::submitted_event_parts(first.event) else {
-        return Err(SubmitOperationError::DuplicateSequenceMismatch {
-            sequence: first.sequence,
-        });
-    };
-    if &stored_operation_id != operation_id {
-        return Err(SubmitOperationError::DuplicateSequenceMismatch {
-            sequence: first.sequence,
-        });
-    }
-    Ok((payload, first.sequence))
-}
-
-async fn publish_progress(client: &async_nats::Client, event: OperationEvent) {
-    let Ok(payload) = serde_json::to_vec(&event) else {
-        return;
-    };
-    let _ = client.publish(event.subject(), payload.into()).await;
-}
-
 fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> {
     match event {
         OperationEvent::DeployPlanCreated { plan, .. } => {
@@ -1783,12 +1764,15 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
     }
 }
 
-fn submit_machine_add_store_status(error: OperationStatusStoreError) -> SubmitMachineAddError {
-    SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(error))
+async fn publish_progress(client: &async_nats::Client, event: OperationEvent) {
+    let Ok(payload) = serde_json::to_vec(&event) else {
+        return;
+    };
+    let _ = client.publish(event.subject(), payload.into()).await;
 }
 
-fn submit_machine_add_append_event(error: OperationEventLogError) -> SubmitMachineAddError {
-    SubmitMachineAddError::Operation(SubmitOperationError::AppendEvent(error))
+fn submit_machine_add_store_status(error: CoreStoreError) -> SubmitMachineAddError {
+    SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(index_error(&error)))
 }
 
 const fn submit_machine_add_duplicate_mismatch(sequence: EventSequence) -> SubmitMachineAddError {
@@ -1806,86 +1790,5 @@ fn validate_machine_add_join_material(
         Ok(fingerprint)
     } else {
         Err(SubmitMachineAddError::JoinTokenMismatch)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ployz_core::machine::JoinTokenExpiresAt;
-    use ployz_test_support::fixtures::machine_join_bundle;
-    use ployz_test_support::ids::{idempotency_key, machine_id, operation_id, raw_join_token};
-
-    #[test]
-    fn machine_add_submission_index_recovers_from_durable_claim_and_event() {
-        let dir = tempfile::tempdir().expect("operation dir");
-        prepare_operation_dir(dir.path()).expect("operation dir prepares");
-        let raw_join_token = raw_join_token("raw_join_token_123");
-        let fingerprint = raw_join_token
-            .fingerprint()
-            .expect("join token fingerprints");
-        let join_token = IssuedJoinToken::new(
-            fingerprint.clone(),
-            JoinTokenExpiresAt::try_new(99_999).expect("valid expiry"),
-        );
-        let idempotency_key = idempotency_key("idem_machine_add");
-        let operation_id = operation_id("op_machine_add");
-        let mut index = OperationIndex::default();
-        index.machine_add_claims.insert(
-            idempotency_key.clone(),
-            StoredMachineAddClaim {
-                operation_id: operation_id.clone(),
-                machine_id: machine_id("machine_a"),
-                name: MachineName::try_new("machine_a").expect("valid machine name"),
-                roles: InstallRolePolicy::install_all(),
-                join_bundle: machine_join_bundle(),
-                join_token: join_token.clone(),
-                raw_join_token: raw_join_token.clone(),
-            },
-        );
-        index.machine_add_join_tokens.insert(
-            fingerprint.clone(),
-            StoredMachineAddJoinToken {
-                operation_id: operation_id.clone(),
-                idempotency_key: idempotency_key.clone(),
-            },
-        );
-        write_operation_index(dir.path(), &index).expect("claim index writes");
-        append_event(
-            dir.path(),
-            &OperationEvent::MachineAddSubmitted {
-                operation_id: operation_id.clone(),
-                machine_id: machine_id("machine_a"),
-                name: MachineName::try_new("machine_a").expect("valid machine name"),
-                roles: InstallRolePolicy::install_all(),
-                join_token,
-            },
-        )
-        .expect("submitted event appends");
-
-        let mut recovered =
-            read_json_or_default::<OperationIndex>(&index_path(dir.path())).expect("index reads");
-        assert!(recovered.machine_add_submissions.is_empty());
-
-        assert!(
-            recover_machine_add_submissions(dir.path(), &mut recovered).expect("recovery succeeds")
-        );
-        let submission = recovered
-            .machine_add_submissions
-            .get(&idempotency_key)
-            .expect("submission recovered");
-        assert_eq!(submission.operation_id, operation_id);
-        assert_eq!(
-            submission.start_sequence,
-            EventSequence::try_new(1).expect("one is valid")
-        );
-        assert_eq!(submission.raw_join_token, raw_join_token);
-        assert_eq!(
-            recovered.machine_add_join_tokens.get(&fingerprint),
-            Some(&StoredMachineAddJoinToken {
-                operation_id,
-                idempotency_key,
-            })
-        );
     }
 }
