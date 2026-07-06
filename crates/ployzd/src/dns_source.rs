@@ -4,7 +4,7 @@ use crate::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use crate::intent::{IntentReadError, NatsIntentReader};
-use crate::runtime_facts::RuntimeFactsCache;
+use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};
 use std::collections::{BTreeMap, BTreeSet};

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crate::controllers::MachineAddBootstrapConfig;
 use crate::nats_process::NatsServerRuntime;
-use crate::role::DaemonProcessRole;
+use crate::role_cli::DaemonProcessRole;
 pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";

@@ -23,7 +23,7 @@ use crate::machine_runtime::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail, decide_container_run,
 };
-use crate::services::{machine_endpoint_spec, machine_runtime_service_base};
+use crate::service_catalog::{machine_endpoint_spec, machine_runtime_service_base};
 use ployz_core::dataplane::{
     PloyzNativeMeshMachineReady, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,

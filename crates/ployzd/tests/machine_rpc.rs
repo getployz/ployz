@@ -17,7 +17,7 @@ use ployzd::machine_runtime::protocol::{
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
 };
-use ployzd::services::machine_runtime_service;
+use ployzd::service_catalog::machine_runtime_service;
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]

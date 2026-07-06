@@ -1,6 +1,6 @@
 use ployzd::config::load_daemon_process_config;
-use ployzd::daemon_runtime::run_daemon_process_until_shutdown;
-use ployzd::role::parse_role_args;
+use ployzd::dispatch::run_daemon_process_until_shutdown;
+use ployzd::role_cli::parse_role_args;
 
 #[tokio::main]
 async fn main() {
@@ -25,9 +25,9 @@ async fn run() -> Result<(), MainError> {
 
 #[derive(Debug)]
 enum MainError {
-    Role(ployzd::role::DaemonRoleParseError),
+    Role(ployzd::role_cli::DaemonRoleParseError),
     Config(ployzd::config::DaemonProcessConfigError),
-    Runtime(ployzd::daemon_runtime::DaemonRuntimeError),
+    Runtime(ployzd::dispatch::DaemonRuntimeError),
 }
 
 impl MainError {
