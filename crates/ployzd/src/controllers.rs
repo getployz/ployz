@@ -1,6 +1,6 @@
 //! Controller wiring for operation execution.
 
-use crate::operation_log::{
+use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, DeployOperationSubmission,
     MachineAddOperationSubmission, MachineJoinRedemption, MachineLifecycleOperationSubmission,
     MachineUpdateOperationSubmission, OperationRepository, OperationStatusStoreError,
@@ -210,7 +210,7 @@ impl OperationControllers {
     pub async fn submit_machine_update(
         &self,
         command: MachineUpdateSubmitCommand,
-    ) -> Result<crate::operation_log::AcceptedMachineUpdateSubmission, SubmitCommandError> {
+    ) -> Result<crate::operations::log::AcceptedMachineUpdateSubmission, SubmitCommandError> {
         Ok(self
             .repository
             .submit_machine_update(MachineUpdateOperationSubmission {
@@ -224,7 +224,7 @@ impl OperationControllers {
     pub async fn submit_machine_lifecycle(
         &self,
         command: MachineLifecycleSubmitCommand,
-    ) -> Result<crate::operation_log::AcceptedMachineLifecycleSubmission, SubmitCommandError> {
+    ) -> Result<crate::operations::log::AcceptedMachineLifecycleSubmission, SubmitCommandError> {
         Ok(self
             .repository
             .submit_machine_lifecycle(MachineLifecycleOperationSubmission {

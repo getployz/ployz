@@ -1,6 +1,6 @@
 //! Request-side NATS adapters for machine-local services.
 
-use crate::deploy_worker::{
+use crate::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use crate::roles::machine::protocol::{

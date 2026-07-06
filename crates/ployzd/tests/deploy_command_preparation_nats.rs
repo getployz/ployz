@@ -16,7 +16,7 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, route_port,
     service_id,
 };
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     DeployMachineCandidates, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
@@ -312,7 +312,7 @@ async fn prepare_command_from_nats(
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
-) -> ployzd::deploy_worker::DeployExecutionCommand {
+) -> ployzd::operations::deploy::DeployExecutionCommand {
     let facts = load_deploy_execution_facts_from_nats(
         &request,
         machine_scope,

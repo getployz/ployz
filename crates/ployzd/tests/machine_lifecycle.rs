@@ -8,9 +8,9 @@ use ployz_core::state::MachineLifecycle;
 use ployzd::controllers::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
-use ployzd::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
+use ployzd::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
 use ployzd::machine_roster::MachineRosterStore;
-use ployzd::operation_log::OperationRepository;
+use ployzd::operations::log::OperationRepository;
 use ployzd::tasks::TaskRegistry;
 
 use ployz_test_support::ids::{machine_id, operation_id};

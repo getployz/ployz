@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::operation_log::{
+use crate::operations::log::{
     OperationStatusStoreError, StoredMachineAddMintClaim, StoredMachineAddSecretDelivery,
 };
 use ployz_core::ids::{MachineId, OperationId};

@@ -16,10 +16,10 @@ use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use ployzd::controllers::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
-use ployzd::deploy_runtime::{
+use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
-use ployzd::deploy_worker::DeployMachineCandidates;
+use ployzd::operations::deploy::DeployMachineCandidates;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
@@ -28,7 +28,7 @@ use ployzd::roles::machine::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
 use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::operation_log::OperationRepository;
+use ployzd::operations::log::OperationRepository;
 use std::time::Duration;
 
 #[tokio::test]

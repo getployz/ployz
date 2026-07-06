@@ -3,7 +3,7 @@
 use crate::controllers::OperationControllers;
 use crate::roles::machine::client::NatsMachineSubstrateUpdater;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
-use crate::operation_log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};
+use crate::operations::log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;

@@ -17,12 +17,12 @@ pub use submit::{
 };
 
 use crate::controllers::OperationControllers;
-use crate::deploy_runtime::DeployOperationRuntime;
+use crate::operations::deploy::driver::DeployOperationRuntime;
 use crate::intent::NatsIntentReader;
-use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
+use crate::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
 use crate::machine_roster::MachineRosterStore;
 use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
-use crate::machine_update_runtime::MachineUpdateOperationRuntime;
+use crate::operations::machine_update::MachineUpdateOperationRuntime;
 use crate::adapters::nats_authorization::MachineCredentialMintRuntime;
 use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::ids::MachineId;

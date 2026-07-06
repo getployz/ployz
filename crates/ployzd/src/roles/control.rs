@@ -4,22 +4,22 @@ use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_wit
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::core_store::{CoreStore, CoreStoreError};
-use crate::deploy_runtime::DeployOperationRuntime;
-use crate::deploy_worker::DeployMachineCandidates;
+use crate::operations::deploy::driver::DeployOperationRuntime;
+use crate::operations::deploy::DeployMachineCandidates;
 use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
+use crate::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
 use crate::machine_roster::MachineRosterStore;
 use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
-use crate::machine_update_runtime::MachineUpdateOperationRuntime;
+use crate::operations::machine_update::MachineUpdateOperationRuntime;
 use crate::namespace_intent::NamespaceIntentStore;
 use crate::adapters::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
-use crate::operation_log::OperationRepository;
+use crate::operations::log::OperationRepository;
 use crate::process_support::shutdown_signal;
 use crate::fact_cache::{
     RunningRuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,

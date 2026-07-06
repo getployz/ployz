@@ -3,7 +3,7 @@
 //! truth (record-then-activate).
 
 use crate::controllers::OperationControllers;
-use crate::operation_log::{MachineJoinRedemption, RecordMachineJoinReportError};
+use crate::operations::log::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::OperationStatus;

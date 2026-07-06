@@ -1,4 +1,4 @@
-use crate::operation_log::{RecordDeployEvidenceError, RecordDeployTransitionError};
+use crate::operations::log::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{
