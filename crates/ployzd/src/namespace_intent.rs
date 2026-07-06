@@ -1,94 +1,114 @@
-//! Core-local namespace intent evidence.
+//! Core-local namespace intent (route bindings and serving targets), in SQLite.
 
-use crate::evidence_file::{EvidenceFileError, read_json_or_default, write_json};
+use crate::core_store::{CoreStore, CoreStoreError, query_json_list, to_json};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct NamespaceIntentStore {
-    path: PathBuf,
-    lock: Arc<Mutex<()>>,
+    store: CoreStore,
 }
 
 impl NamespaceIntentStore {
     #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            lock: Arc::new(Mutex::new(())),
-        }
+    pub fn new(store: CoreStore) -> Self {
+        Self { store }
     }
 
     pub async fn replace_route_binding(
         &self,
         state: RouteBindingState,
     ) -> Result<(), NamespaceIntentStoreError> {
-        let _guard = self.lock.lock().await;
-        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
-        evidence
-            .route_bindings
-            .retain(|route| route.target != state.target);
-        evidence.route_bindings.push(state);
-        evidence.route_bindings.sort_by(|left, right| {
-            left.target
-                .hostname
-                .as_str()
-                .cmp(right.target.hostname.as_str())
-                .then(left.target.port.get().cmp(&right.target.port.get()))
-        });
-        write_evidence(&self.path, &evidence)
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO route_bindings (hostname, port, json) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(hostname, port) DO UPDATE SET json = excluded.json",
+                    params![
+                        state.target.hostname.as_str(),
+                        state.target.port.get(),
+                        to_json(&state)?
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
     }
 
     pub async fn remove_route_binding(
         &self,
         target: &RouteTarget,
     ) -> Result<(), NamespaceIntentStoreError> {
-        let _guard = self.lock.lock().await;
-        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
-        evidence
-            .route_bindings
-            .retain(|route| &route.target != target);
-        write_evidence(&self.path, &evidence)
+        let target = target.clone();
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM route_bindings WHERE hostname = ?1 AND port = ?2",
+                    params![target.hostname.as_str(), target.port.get()],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
     }
 
     pub async fn replace_serving_target_entry(
         &self,
         state: ServingTargetEntry,
     ) -> Result<(), NamespaceIntentStoreError> {
-        let _guard = self.lock.lock().await;
-        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
-        evidence.serving_target_entries.retain(|entry| {
-            entry.namespace_id != state.namespace_id || entry.service_id != state.service_id
-        });
-        evidence.serving_target_entries.push(state);
-        evidence.serving_target_entries.sort_by(|left, right| {
-            left.namespace_id
-                .as_str()
-                .cmp(right.namespace_id.as_str())
-                .then(left.service_id.as_str().cmp(right.service_id.as_str()))
-        });
-        write_evidence(&self.path, &evidence)
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO serving_targets (namespace_id, service_id, json) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(namespace_id, service_id) DO UPDATE SET json = excluded.json",
+                    params![
+                        state.namespace_id.as_str(),
+                        state.service_id.as_str(),
+                        to_json(&state)?
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
     }
 
     pub async fn remove_serving_target_entry(
         &self,
         entry: &ServingTargetEntry,
     ) -> Result<(), NamespaceIntentStoreError> {
-        let _guard = self.lock.lock().await;
-        let mut evidence: NamespaceIntentEvidence = read_json_or_default(&self.path)?;
-        evidence.serving_target_entries.retain(|current| {
-            current.namespace_id != entry.namespace_id || current.service_id != entry.service_id
-        });
-        write_evidence(&self.path, &evidence)
+        let entry = entry.clone();
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM serving_targets WHERE namespace_id = ?1 AND service_id = ?2",
+                    params![entry.namespace_id.as_str(), entry.service_id.as_str()],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
     }
 
-    pub fn load(&self) -> Result<NamespaceIntentEvidence, NamespaceIntentStoreError> {
-        read_json_or_default(&self.path).map_err(NamespaceIntentStoreError::from)
+    pub async fn load(&self) -> Result<NamespaceIntentEvidence, NamespaceIntentStoreError> {
+        self.store.call(load_evidence).await.map_err(store_error)
     }
+}
+
+fn load_evidence(conn: &mut Connection) -> Result<NamespaceIntentEvidence, rusqlite::Error> {
+    Ok(NamespaceIntentEvidence {
+        route_bindings: query_json_list(
+            conn,
+            "SELECT json FROM route_bindings ORDER BY hostname, port",
+        )?,
+        serving_target_entries: query_json_list(
+            conn,
+            "SELECT json FROM serving_targets ORDER BY namespace_id, service_id",
+        )?,
+    })
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,48 +119,20 @@ pub struct NamespaceIntentEvidence {
 }
 
 #[derive(Debug)]
-pub enum NamespaceIntentStoreError {
-    Read { message: String },
-    Decode { message: String },
-    Encode { message: String },
-    Write { message: String },
+pub struct NamespaceIntentStoreError {
+    message: String,
+}
+
+fn store_error(error: CoreStoreError) -> NamespaceIntentStoreError {
+    NamespaceIntentStoreError {
+        message: error.to_string(),
+    }
 }
 
 impl std::fmt::Display for NamespaceIntentStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Read { message } => {
-                write!(formatter, "read namespace intent evidence: {message}")
-            }
-            Self::Decode { message } => {
-                write!(formatter, "decode namespace intent evidence: {message}")
-            }
-            Self::Encode { message } => {
-                write!(formatter, "encode namespace intent evidence: {message}")
-            }
-            Self::Write { message } => {
-                write!(formatter, "write namespace intent evidence: {message}")
-            }
-        }
+        write!(formatter, "namespace intent store: {}", self.message)
     }
 }
 
 impl std::error::Error for NamespaceIntentStoreError {}
-
-fn write_evidence(
-    path: &Path,
-    evidence: &NamespaceIntentEvidence,
-) -> Result<(), NamespaceIntentStoreError> {
-    write_json(path, evidence).map_err(NamespaceIntentStoreError::from)
-}
-
-impl From<EvidenceFileError> for NamespaceIntentStoreError {
-    fn from(error: EvidenceFileError) -> Self {
-        match error {
-            EvidenceFileError::Read { message } => Self::Read { message },
-            EvidenceFileError::Decode { message } => Self::Decode { message },
-            EvidenceFileError::Encode { message } => Self::Encode { message },
-            EvidenceFileError::Write { message } => Self::Write { message },
-        }
-    }
-}

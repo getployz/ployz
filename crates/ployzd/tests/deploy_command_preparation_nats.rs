@@ -17,7 +17,7 @@ use ployz_test_support::ids::{
     service_id,
 };
 use ployzd::deploy_worker::{
-    DeployFactLoadError, DeployMachineCandidates, load_deploy_execution_facts_from_nats,
+    DeployMachineCandidates, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
@@ -32,7 +32,6 @@ use ployzd::machine_runtime::service::{
     MachinePloyzNativeMeshPreparer, start_machine_runtime_service,
 };
 use ployzd::namespace_intent::NamespaceIntentStore;
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
@@ -306,61 +305,6 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     assert!(command.existing_replicas().is_empty());
 }
 
-#[tokio::test]
-async fn nats_preparation_preserves_unknown_intent_field_failure() {
-    let nats = test_nats().await;
-    let facts_reader = nats.facts_reader();
-    let intent_reader = nats.intent_reader();
-    std::fs::write(
-        &nats.namespace_intent_file,
-        br#"{"route_bindings":[],"serving_target_entries":[],"extra":true}"#,
-    )
-    .expect("corrupt namespace intent stores");
-
-    let request = deploy_request();
-    let error = load_deploy_execution_facts_from_nats(
-        &request,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
-        &intent_reader,
-        &facts_reader,
-        Duration::from_secs(7),
-    )
-    .await
-    .expect_err("unknown namespace intent field is rejected");
-
-    assert!(matches!(
-        error,
-        DeployFactLoadError::IntentRead { ref message }
-            if message.contains("decode namespace intent evidence")
-    ));
-}
-
-#[tokio::test]
-async fn nats_preparation_preserves_decode_failure_message() {
-    let nats = test_nats().await;
-    let facts_reader = nats.facts_reader();
-    let intent_reader = nats.intent_reader();
-    let request = deploy_request();
-    std::fs::write(&nats.namespace_intent_file, br#"{"route_bindings":["#)
-        .expect("malformed namespace intent stores");
-
-    let error = load_deploy_execution_facts_from_nats(
-        &request,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
-        &intent_reader,
-        &facts_reader,
-        Duration::from_secs(7),
-    )
-    .await
-    .expect_err("malformed serving target entry payload is rejected");
-
-    assert!(matches!(
-        error,
-        DeployFactLoadError::IntentRead { ref message }
-            if message.contains("decode namespace intent evidence")
-    ));
-}
-
 async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
@@ -387,7 +331,6 @@ struct TestNats {
     _intent: RunningIntentRuntime,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
-    namespace_intent_file: PathBuf,
 }
 
 impl TestNats {
@@ -565,8 +508,11 @@ async fn test_nats() -> TestNats {
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     let intent_dir = tempfile::tempdir().expect("intent dir");
-    let namespace_intent_file = intent_dir.path().join("namespace-intent.json");
-    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
     let machine_roster = MachineRosterStore::new(intent_dir.path().join("machine-roster.json"));
     let intent = start_intent_runtime(
         connected.controller.clone(),
@@ -584,7 +530,6 @@ async fn test_nats() -> TestNats {
         _intent: intent,
         _intent_dir: intent_dir,
         namespace_intent,
-        namespace_intent_file,
     }
 }
 

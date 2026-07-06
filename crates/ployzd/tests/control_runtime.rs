@@ -246,7 +246,11 @@ async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
     let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+        NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
     let runtime = nats.start_control(&config).await;
     namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {
@@ -295,7 +299,11 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats.control_config();
     let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+        NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
     let machine_roster = machine_roster(&config);
     let runtime = nats.start_control(&config).await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
@@ -437,10 +445,15 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         "expected deploy to complete, got {status:?}"
     );
     let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+        NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
     assert_eq!(
         namespace_intent
             .load()
+            .await
             .expect("namespace intent reads")
             .serving_target_entries
             .into_iter()

@@ -92,7 +92,11 @@ impl TestNats {
         let dns_client = connected.machine_client(&machine_id("dns_machine")).await;
         let intent_dir = tempfile::tempdir().expect("intent dir");
         let namespace_intent =
-            NamespaceIntentStore::new(intent_dir.path().join("namespace-intent.json"));
+            NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
 
         Self {
             connected,
