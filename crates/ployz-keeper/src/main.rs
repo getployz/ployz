@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -569,10 +570,7 @@ fn resolve_core_promote_target(
     let wrapped = std::fs::read(join_dir.join(JOIN_RECOVERY_KEY_FILE)).map_err(|error| {
         format!("cannot read the wrapped CA key (was this machine joined with recovery material?): {error}")
     })?;
-    let secret = std::env::var("PLOYZ_RECOVERY_SECRET")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .ok_or("PLOYZ_RECOVERY_SECRET is required to promote")?;
+    let secret = read_recovery_secret()?;
     let ca_key_pem = String::from_utf8(
         ployz_keeper::recovery_secret::unwrap(&secret, &wrapped).map_err(|error| {
             format!("cannot decrypt the CA key (wrong recovery secret?): {error}")
@@ -615,6 +613,24 @@ fn resolve_core_promote_target(
 fn read_promote_file(path: &std::path::Path) -> Result<String, String> {
     std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+/// The cluster recovery secret: `PLOYZ_RECOVERY_SECRET` when set (automation and
+/// Cloud SSH forced commands), otherwise prompted (hidden) from an interactive
+/// terminal. Never on argv or in shell history either way.
+fn read_recovery_secret() -> Result<String, String> {
+    if let Some(secret) = std::env::var("PLOYZ_RECOVERY_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(secret);
+    }
+    if std::io::stdin().is_terminal() {
+        rpassword::prompt_password("Cluster recovery secret: ")
+            .map_err(|error| format!("failed to read recovery secret: {error}"))
+    } else {
+        Err("set PLOYZ_RECOVERY_SECRET, or run interactively to be prompted for it".to_owned())
+    }
 }
 
 fn failure_summary(failure: &KeeperPlanFailure) -> &str {
