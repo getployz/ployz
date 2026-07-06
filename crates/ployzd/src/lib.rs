@@ -10,6 +10,7 @@ pub mod api_runtime;
 pub mod config;
 pub mod control_runtime;
 pub mod controllers;
+pub mod core_store;
 pub mod daemon_runtime;
 pub mod dataplane_runtime;
 pub mod deploy_runtime;
