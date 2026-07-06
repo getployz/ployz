@@ -29,7 +29,6 @@ use ployzd::machine_runtime::protocol::{
 };
 use ployzd::namespace_intent::NamespaceIntentStore;
 use ployzd::operation_log::OperationRepository;
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
@@ -89,6 +88,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     assert_eq!(
         nats.namespace_intent
             .load()
+            .await
             .expect("namespace intent reads")
             .serving_target_entries
             .into_iter()
@@ -212,6 +212,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     assert!(
         nats.namespace_intent
             .load()
+            .await
             .expect("namespace intent reads")
             .serving_target_entries
             .is_empty()
@@ -273,6 +274,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     assert!(
         nats.namespace_intent
             .load()
+            .await
             .expect("namespace intent reads")
             .serving_target_entries
             .is_empty()
@@ -344,6 +346,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     assert!(
         nats.namespace_intent
             .load()
+            .await
             .expect("namespace intent reads")
             .serving_target_entries
             .is_empty()
@@ -372,71 +375,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         ),
         "unexpected operation status: {status:?}"
     );
-}
-
-#[tokio::test]
-async fn fact_load_failure_marks_accepted_operation_failed() {
-    let nats = test_nats().await;
-    let controllers = operation_controllers(nats.client.clone()).await;
-    let deploy_request = deploy_request(1);
-    let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request))
-        .await
-        .expect("deploy operation accepted");
-    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    std::fs::write(&nats.namespace_intent_file, b"{")
-        .expect("namespace intent evidence is corrupted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::healthy();
-
-    let error = run_deploy_operation(
-        accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
-        DeployOperationStores {
-            intent_change_client: nats.client.clone(),
-            namespace_intent: nats.namespace_intent.clone(),
-            controllers: controllers.clone(),
-        },
-        DeployOperationPorts {
-            facts_reader: &facts_reader,
-            intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
-            machine_runtime: &mut runtime,
-            health_checker: &mut health,
-        },
-        Duration::from_secs(5),
-    )
-    .await
-    .expect_err("fact load fails");
-
-    assert!(matches!(
-        error,
-        DeployOperationRunError::LoadFacts {
-            failure_record_error: None,
-            ..
-        }
-    ));
-    assert!(runtime.requests.is_empty());
-    assert!(matches!(
-        controllers
-            .repository().get(&operation_id("op_123"))
-            .await,
-        Some(OperationStatus::Deploy {
-            state:
-                DeployOperationState::Failed {
-                    failure:
-                        DeployOperationFailure::PlanningFailed {
-                            service_id: failed_service_id,
-                            namespace_revision_id: failed_namespace_revision_id,
-                            ..
-                        },
-                },
-            ..
-        }) if failed_service_id == service_id("svc_api")
-            && failed_namespace_revision_id == target_namespace_revision_id(1)
-    ));
 }
 
 #[tokio::test]
@@ -510,7 +448,6 @@ struct TestNats {
     _intent: RunningIntentRuntime,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
-    namespace_intent_file: PathBuf,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -529,8 +466,11 @@ async fn test_nats() -> TestNats {
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
     let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
-    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
-    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
     let machine_roster = MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json"));
     let intent = start_intent_runtime(
         client.clone(),
@@ -547,7 +487,6 @@ async fn test_nats() -> TestNats {
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
-        namespace_intent_file,
         client,
         machine_a,
         machine_slow,

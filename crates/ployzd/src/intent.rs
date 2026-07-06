@@ -159,7 +159,7 @@ async fn load_intent(
     let mut active_machines = machine_roster
         .active_machines()
         .map_err(|error| error.to_string())?;
-    let namespace_intent = namespace_intent.load().map_err(|error| error.to_string())?;
+    let namespace_intent = namespace_intent.load().await.map_err(|error| error.to_string())?;
     let lifecycle_intent = machine_lifecycle_intent_from_file(machine_lifecycles_file)
         .map_err(|error| error.to_string())?;
     for active in &mut active_machines {

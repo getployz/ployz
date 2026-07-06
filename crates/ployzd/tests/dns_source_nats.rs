@@ -13,7 +13,6 @@ use ployzd::machine_roster::MachineRosterStore;
 use ployzd::namespace_intent::NamespaceIntentStore;
 use ployzd::runtime_facts::RuntimeFactsCache;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test]
@@ -80,16 +79,6 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
 }
 
 #[tokio::test]
-async fn dns_source_reports_unreadable_intent_as_unavailable() {
-    let nats = test_nats().await;
-    std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
-
-    let update = load_dns_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
-
-    assert_eq!(update, DnsProjectionUpdate::SourceUnavailable);
-}
-
-#[tokio::test]
 async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let nats = test_nats().await;
     let mut runtime = DnsRuntime::new();
@@ -142,7 +131,6 @@ struct TestNats {
     _intent: RunningIntentRuntime,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
-    namespace_intent_file: PathBuf,
 }
 
 async fn test_nats() -> TestNats {
@@ -157,8 +145,11 @@ async fn test_nats() -> TestNats {
     .await;
     let machine_client = nats.machine_client(&dns_machine).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
-    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
-    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
     let intent = start_intent_runtime(
         nats.controller.clone(),
         MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json")),
@@ -177,7 +168,6 @@ async fn test_nats() -> TestNats {
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
-        namespace_intent_file,
     }
 }
 

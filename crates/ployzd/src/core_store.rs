@@ -58,17 +58,15 @@ const MIGRATIONS: &[&str] = &[
         json        TEXT NOT NULL
     );
     CREATE TABLE route_bindings (
-        hostname      TEXT    NOT NULL,
-        port          INTEGER NOT NULL,
-        namespace_id  TEXT    NOT NULL,
-        service_id    TEXT    NOT NULL,
-        endpoint_port INTEGER NOT NULL,
+        hostname TEXT    NOT NULL,
+        port     INTEGER NOT NULL,
+        json     TEXT    NOT NULL,
         PRIMARY KEY (hostname, port)
     );
     CREATE TABLE serving_targets (
-        namespace_id                TEXT NOT NULL,
-        service_id                  TEXT NOT NULL,
-        namespace_revision_entry_id TEXT NOT NULL,
+        namespace_id TEXT NOT NULL,
+        service_id   TEXT NOT NULL,
+        json         TEXT NOT NULL,
         PRIMARY KEY (namespace_id, service_id)
     );
     CREATE TABLE machines (
@@ -87,6 +85,12 @@ pub struct CoreStore {
     conn: Arc<Mutex<Connection>>,
 }
 
+impl std::fmt::Debug for CoreStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CoreStore")
+    }
+}
+
 impl CoreStore {
     /// Open (creating if absent) the database at `path`, enable WAL durability,
     /// and apply any pending migrations.
@@ -94,6 +98,24 @@ impl CoreStore {
         let conn = tokio::task::spawn_blocking(move || open_connection(&path))
             .await
             .map_err(CoreStoreError::Join)??;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    /// Open a private in-memory database with the schema applied. The database
+    /// lives only as long as this handle and its clones (they share the one
+    /// connection), which is exactly what a test wants.
+    pub async fn open_in_memory() -> Result<Self, CoreStoreError> {
+        let conn = tokio::task::spawn_blocking(|| {
+            let mut conn = Connection::open_in_memory().map_err(CoreStoreError::Open)?;
+            conn.execute_batch("PRAGMA foreign_keys = ON;")
+                .map_err(CoreStoreError::Open)?;
+            migrate(&mut conn).map_err(CoreStoreError::Migrate)?;
+            Ok::<_, CoreStoreError>(conn)
+        })
+        .await
+        .map_err(CoreStoreError::Join)??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -164,6 +186,40 @@ impl std::fmt::Display for CoreStoreError {
 }
 
 impl std::error::Error for CoreStoreError {}
+
+/// Serialize a value for a JSON text column. A failure here is a programming
+/// error (our own types), surfaced as a rusqlite conversion failure so it
+/// travels the same channel as any other statement error.
+pub(crate) fn to_json<V: serde::Serialize>(value: &V) -> Result<String, rusqlite::Error> {
+    serde_json::to_string(value)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
+/// Deserialize a value from a JSON text column.
+pub(crate) fn from_json<V: serde::de::DeserializeOwned>(json: &str) -> Result<V, rusqlite::Error> {
+    serde_json::from_str(json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            json.len(),
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+/// Run a query whose first column is a JSON blob and decode every row. `sql`
+/// selects that one `json` column (with whatever ordering the caller wants).
+pub(crate) fn query_json_list<V: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    sql: &str,
+) -> Result<Vec<V>, rusqlite::Error> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(from_json(&row?)?);
+    }
+    Ok(values)
+}
 
 #[cfg(test)]
 mod tests {

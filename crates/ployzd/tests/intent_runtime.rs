@@ -31,7 +31,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
         machine_roster,
-        temp_namespace_intent(),
+        temp_namespace_intent().await,
         tempfile::tempdir()
             .expect("lifecycle dir")
             .path()
@@ -61,7 +61,7 @@ async fn intent_reader_gets_current_intent() {
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
         temp_machine_roster(),
-        temp_namespace_intent(),
+        temp_namespace_intent().await,
         tempfile::tempdir()
             .expect("lifecycle dir")
             .path()
@@ -103,7 +103,7 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let _runtime = start_intent_runtime(
         nats.controller.clone(),
         machine_roster,
-        temp_namespace_intent(),
+        temp_namespace_intent().await,
         lifecycle_file,
         Duration::from_secs(30),
     )
@@ -125,7 +125,7 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
 #[tokio::test]
 async fn intent_reader_gets_namespace_intent_from_file() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    let namespace_intent = temp_namespace_intent();
+    let namespace_intent = temp_namespace_intent().await;
     namespace_intent
         .replace_serving_target_entry(ServingTargetEntry {
             namespace_id: ployz_test_support::ids::namespace_id("default"),
@@ -166,12 +166,11 @@ async fn intent_reader_gets_namespace_intent_from_file() {
     assert_eq!(intent.serving_target_entries.len(), 1);
 }
 
-fn temp_namespace_intent() -> NamespaceIntentStore {
+async fn temp_namespace_intent() -> NamespaceIntentStore {
     NamespaceIntentStore::new(
-        tempfile::tempdir()
-            .expect("namespace intent dir")
-            .path()
-            .join("namespace-intent.json"),
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
     )
 }
 

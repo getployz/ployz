@@ -7,7 +7,7 @@
 //! outcomes (a duplicate submit, a stale projection, a fingerprint conflict)
 //! travel back inside `Ok(...)`; only a genuine database failure is `Err`.
 
-use crate::core_store::{CoreStore, CoreStoreError};
+use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
@@ -1152,13 +1152,7 @@ fn select_all_json<V: DeserializeOwned>(
     conn: &Connection,
     table: &str,
 ) -> Result<Vec<V>, rusqlite::Error> {
-    let mut statement = conn.prepare(&format!("SELECT json FROM {table} ORDER BY 1"))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let mut values = Vec::new();
-    for row in rows {
-        values.push(from_json(&row?)?);
-    }
-    Ok(values)
+    query_json_list(conn, &format!("SELECT json FROM {table} ORDER BY 1"))
 }
 
 fn insert_json<V: Serialize>(
@@ -1223,17 +1217,6 @@ where
 
 fn first_event_sequence() -> EventSequence {
     EventSequence::try_new(1).expect("one is a valid event sequence")
-}
-
-fn to_json<V: Serialize>(value: &V) -> Result<String, rusqlite::Error> {
-    serde_json::to_string(value)
-        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
-}
-
-fn from_json<V: DeserializeOwned>(json: &str) -> Result<V, rusqlite::Error> {
-    serde_json::from_str(json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(json.len(), rusqlite::types::Type::Text, Box::new(error))
-    })
 }
 
 fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::Error {

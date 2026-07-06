@@ -86,7 +86,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let core_store = CoreStore::open(config.core_db_path.clone())
         .await
         .map_err(ControlRuntimeError::OpenCoreStore)?;
-    let repository = OperationRepository::open(core_store, client.clone());
+    let repository = OperationRepository::open(core_store.clone(), client.clone());
     let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
     let authorization = NatsAuthorizationRuntime::start(
         config.nats_authorization.authorized_users_file.clone(),
@@ -110,8 +110,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
-    let namespace_intent =
-        NamespaceIntentStore::new(config.nats_authorization.namespace_intent_file.clone());
+    let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let machine_roster =
         MachineRosterStore::new(config.nats_authorization.machine_roster_file.clone());
     let deploy_runtime = DeployOperationRuntime::new(
