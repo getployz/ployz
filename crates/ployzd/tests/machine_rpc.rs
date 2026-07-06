@@ -7,17 +7,17 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
 };
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
 };
-use ployzd::services::machine_runtime_service;
+use ployzd::service_catalog::machine_role_service;
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -146,10 +146,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
     let conflict = MachineContainerRunDomainError::OperationStepConflict {
         container_id: container_id("ctr_existing"),
         expected: managed_identity(),
-        actual: ManagedContainerIdentity {
+        actual: Box::new(ManagedContainerIdentity {
             namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
             ..managed_identity()
-        },
+        }),
     };
     let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
         let conflict = conflict.clone();
@@ -171,10 +171,10 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_existing"),
             expected: managed_identity(),
-            actual: ManagedContainerIdentity {
+            actual: Box::new(ManagedContainerIdentity {
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
                 ..managed_identity()
-            },
+            }),
         }
     );
 }
@@ -331,7 +331,7 @@ async fn start_container_run_raw_service(
     machine_id: MachineId,
     handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()
@@ -384,7 +384,7 @@ async fn start_container_remove_raw_service(
     machine_id: MachineId,
     handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
 ) -> ployz_nats::service_runtime::RunningNatsService {
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()
@@ -413,7 +413,7 @@ async fn start_substrate_report_service(
     machine_id: &MachineId,
 ) -> ployz_nats::service_runtime::RunningNatsService {
     let machine_id = machine_id.clone();
-    let spec = machine_runtime_service(&machine_id);
+    let spec = machine_role_service(&machine_id);
     let endpoint = spec
         .endpoints
         .iter()
@@ -552,7 +552,6 @@ async fn test_nats() -> TestNats {
         machine_id("machine_b"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
 

@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use async_nats::jetstream;
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
@@ -21,7 +20,6 @@ use ployz_core::nats_config::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
-use ployz_nats::bootstrap::{BootstrapPlan, assure_nats_resources};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
@@ -115,7 +113,6 @@ impl SecuredTestNats {
         let server_config = NatsServerConfig::single_machine(
             MachineId::try_new(SERVER_MACHINE_ID)
                 .expect("fixture server machine id is a valid subject token"),
-            dir.path().join("jetstream"),
             NatsListener::Loopback,
             NatsServerTlsFiles {
                 cert_file: tls.cert_path,
@@ -271,12 +268,11 @@ impl SecuredTestNats {
 }
 
 /// The one connected fixture the suites share: a [`SecuredTestNats`] server
-/// plus authenticated Controller/User clients and a JetStream context.
+/// plus authenticated Controller/User clients.
 pub struct TestNats {
     pub server: SecuredTestNats,
     pub controller: async_nats::Client,
     pub user: async_nats::Client,
-    pub jetstream: jetstream::Context,
 }
 
 impl TestNats {
@@ -297,24 +293,12 @@ impl TestNats {
         let user = connect_authenticated(&server.user_config(), TEST_NATS_CONNECT_TIMEOUT)
             .await
             .expect("operator connects");
-        let jetstream = jetstream::new(controller.clone());
 
         Self {
             server,
             controller,
             user,
-            jetstream,
         }
-    }
-
-    /// Assures the production single-core resource manifest on the fixture
-    /// server — no parallel test-only resource recipes.
-    pub async fn bootstrap_resources(&self) {
-        let plan = BootstrapPlan::for_single_server_client(&self.controller)
-            .expect("bootstrap plan builds");
-        assure_nats_resources(&self.jetstream, &plan)
-            .await
-            .expect("nats resources bootstrap");
     }
 
     /// The operator-facing operation API client (User principal).

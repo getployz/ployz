@@ -6,6 +6,7 @@ Ployz uses two release surfaces:
   under exact `v*` tags.
 - `https://ployz.sh` serves the installer and mutable channel files that point
   at one exact tag.
+- npm publishes `@ployz/sdk` from published GitHub Releases.
 
 The mutable channel is only Bootstrap Delivery convenience. `ployz.sh` resolves
 it before downloading the keeper artifact. Keeper update, substrate update, and
@@ -44,6 +45,7 @@ gh run watch <run-id> --repo getployz/ployz --exit-status
 
 The `release` workflow packages:
 
+   - a prechecked `@ployz/sdk` npm tarball for the release tag version.
    - `ployz-release-linux-amd64.env`
    - `ployz-release-linux-arm64.env`
    - `ployz-release-darwin-amd64.env`
@@ -51,7 +53,8 @@ The `release` workflow packages:
    - the binaries referenced by those manifests.
 
 5. Review the draft GitHub Release and publish it as a prerelease only after
-   all assets are attached:
+   all assets are attached. Publishing the GitHub Release also publishes
+   `@ployz/sdk` to npm with the same version as the tag:
 
 ```sh
 gh release view "${tag}" --repo getployz/ployz \
@@ -59,6 +62,12 @@ gh release view "${tag}" --repo getployz/ployz \
 gh release edit "${tag}" --repo getployz/ployz \
   --draft=false --prerelease=true
 ```
+
+The npm package must have trusted publishing configured for
+`getployz/ployz`, workflow filename `release.yml`, and action `npm publish`.
+Prereleases publish under the npm `alpha` dist-tag.
+The tag-push workflow checks that the SDK version is not already published and
+that `npm publish --dry-run` succeeds before building release assets.
 
 6. Verify the release assets before promotion:
 

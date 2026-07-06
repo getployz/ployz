@@ -12,7 +12,6 @@
 
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
-use crate::state::{CoreStateKeyFamily, KV_CORE_BUCKET, KV_OPS_BUCKET};
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
     INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status, gateway_status_scope,
@@ -21,8 +20,6 @@ use crate::subjects::{
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
-const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
-const JETSTREAM_ACK_SCOPE: &str = "$JS.ACK.>";
 const NATS_SERVICE_DISCOVERY_SCOPE: &str = "$SRV.>";
 
 /// The request-reply inbox prefix a principal connects with.
@@ -44,44 +41,6 @@ pub fn inbox_prefix(principal: &NatsPrincipal) -> String {
 #[must_use]
 pub fn inbox_subscribe_scope(principal: &NatsPrincipal) -> String {
     format!("{}.>", inbox_prefix(principal))
-}
-
-/// The controller's KV write grant for one state-key family. The wildcard
-/// pattern comes from the key type itself (via [`CoreStateKeyFamily`]), so a
-/// key format and its grant cannot drift apart; this function only adds the
-/// bucket and decides nothing about key shape.
-#[must_use]
-pub fn core_state_kv_write_scope(family: CoreStateKeyFamily) -> String {
-    format!("$KV.{KV_CORE_BUCKET}.{}", family.wildcard_pattern())
-}
-
-/// Operation status writes span the whole `KV_OPS` bucket: status records
-/// are the bucket's only tenant, so this is a bucket grant rather than a
-/// [`CoreStateKeyFamily`] and is immune to key-arity drift.
-#[must_use]
-pub fn operation_status_kv_write_scope() -> String {
-    format!("$KV.{KV_OPS_BUCKET}.>")
-}
-
-/// JetStream API subjects a client publishes to for read-only access to one
-/// KV bucket: stream info, direct gets, and ordered-consumer lifecycle for
-/// watches/scans. Replies and watch deliveries arrive on the client's own
-/// inbox prefix, so no extra subscribe permission is required.
-#[must_use]
-pub fn kv_read_js_api_subjects(bucket: &str) -> [String; 8] {
-    let stream = format!("KV_{bucket}");
-    [
-        format!("$JS.API.STREAM.INFO.{stream}"),
-        format!("$JS.API.DIRECT.GET.{stream}"),
-        format!("$JS.API.DIRECT.GET.{stream}.>"),
-        // Unnamed ordered consumers (KV watches/scans) create against the
-        // bare stream subject; named consumers append name and filter.
-        format!("$JS.API.CONSUMER.CREATE.{stream}"),
-        format!("$JS.API.CONSUMER.CREATE.{stream}.>"),
-        format!("$JS.API.CONSUMER.INFO.{stream}.>"),
-        format!("$JS.API.CONSUMER.MSG.NEXT.{stream}.>"),
-        format!("$JS.API.CONSUMER.DELETE.{stream}.>"),
-    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,11 +149,7 @@ fn controller_publications() -> SubjectPermissions {
         OPS_STREAM_SUBJECT.to_owned(),
         INTENT_GET.to_owned(),
         INTENT_CHANGED.to_owned(),
-        JETSTREAM_API_SCOPE.to_owned(),
-        JETSTREAM_ACK_SCOPE.to_owned(),
     ]);
-    allow.extend(CoreStateKeyFamily::ALL.map(core_state_kv_write_scope));
-    allow.push(operation_status_kv_write_scope());
     SubjectPermissions::allowing_all(allow)
 }
 

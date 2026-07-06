@@ -210,6 +210,27 @@ fn machine_add_join_token_failure_after_join_is_rejected() {
 }
 
 #[test]
+fn machine_add_duplicate_join_after_join_is_satisfied() {
+    let joined_at =
+        ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
+    let joined = machine_add_joining_status(joined_at);
+
+    assert_eq!(
+        project_operation_event(
+            &joined,
+            OperationEvent::MachineAddJoined {
+                operation_id: operation_id("op_machine"),
+                machine_id: machine_id("machine_2"),
+                joined_at: ployz_core::machine::JoinTokenRedeemedAt::try_new(651)
+                    .expect("valid later joined at"),
+            },
+            event_sequence(9),
+        ),
+        Ok(OperationProjection::AlreadySatisfied)
+    );
+}
+
+#[test]
 fn machine_add_readiness_failure_after_join_is_allowed() {
     let joined_at =
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");

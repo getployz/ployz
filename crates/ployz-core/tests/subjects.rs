@@ -11,9 +11,7 @@ use ployz_core::subjects::{
 };
 use ployz_test_support::ids::{container_id, machine_id, operation_id};
 
-/// Subjects and message ids are persisted stream contracts. Every literal in
-/// this file pins a rendering that must never change for an existing event
-/// variant.
+/// Operation progress subject literals are externally observed contracts.
 #[test]
 fn operation_event_subjects_are_pinned() {
     let op_id = operation_id("op_123");
@@ -84,89 +82,6 @@ fn operation_event_subjects_are_pinned() {
     assert_eq!(
         cert_validation_started(&op_id).subject(),
         "plz.v1.op.op_cert.cert.validation.started"
-    );
-}
-
-#[test]
-fn operation_event_message_ids_are_pinned() {
-    let op_id = operation_id("op_123");
-
-    assert_eq!(
-        cert_submitted(&op_id).message_id(),
-        "operation.submit.op_123"
-    );
-    assert_eq!(
-        planning_started(&op_id).message_id(),
-        "deploy.event.op_123.planning.started"
-    );
-    assert_eq!(
-        deploy_running(&op_id, DeployRunningStage::StartingContainers).message_id(),
-        "deploy.event.op_123.running.starting_containers"
-    );
-    assert_eq!(
-        container_started(&op_id).message_id(),
-        "deploy.container.started.op_123.machine_7.ctr_1"
-    );
-    assert_eq!(
-        health_check_started(&op_id).message_id(),
-        "deploy.health_check.started.op_123"
-    );
-    assert_eq!(
-        machine_add_joined(&op_id).message_id(),
-        "machine.add.joined.op_123"
-    );
-    assert_eq!(
-        machine_update_running(&op_id).message_id(),
-        "machine.update.running.op_123"
-    );
-    assert_eq!(
-        cert_validation_started(&op_id).message_id(),
-        "cert.validation.started.op_123"
-    );
-}
-
-/// Every terminal event of one operation kind shares one message id, so
-/// JetStream dedup enforces "terminal states are final" at the stream:
-/// a second terminal write for the same operation is dropped.
-#[test]
-fn terminal_events_share_one_message_id_per_operation_kind() {
-    let op_id = operation_id("op_123");
-
-    assert_eq!(
-        deploy_completed(&op_id).message_id(),
-        "deploy.terminal.op_123"
-    );
-    assert_eq!(
-        cancelled(&op_id).message_id(),
-        deploy_completed(&op_id).message_id()
-    );
-    assert_eq!(
-        machine_add_completed(&op_id).message_id(),
-        "machine.add.terminal.op_123"
-    );
-    assert_eq!(
-        machine_add_failed(&op_id).message_id(),
-        machine_add_completed(&op_id).message_id()
-    );
-    assert_eq!(
-        machine_update_completed(&op_id).message_id(),
-        "machine.update.terminal.op_123"
-    );
-    assert_eq!(
-        cancelled_with_kind(&op_id, ployz_core::ops::OperationKind::MachineUpdate).message_id(),
-        machine_update_completed(&op_id).message_id()
-    );
-    assert_eq!(
-        lifecycle_completed(&op_id).message_id(),
-        "machine.lifecycle.terminal.op_123"
-    );
-    assert_eq!(
-        cancelled_with_kind(&op_id, ployz_core::ops::OperationKind::MachineLifecycle).message_id(),
-        lifecycle_completed(&op_id).message_id()
-    );
-    assert_eq!(
-        lifecycle_submitted(&op_id, MachineLifecycle::Draining).message_id(),
-        "operation.submit.op_123"
     );
 }
 

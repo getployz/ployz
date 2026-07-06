@@ -17,21 +17,17 @@ use ployz_nats::connect::{
 };
 use std::time::Duration;
 
-use crate::controllers::MachineAddBootstrapConfig;
-use crate::nats_process::NatsServerRuntime;
-use crate::role::DaemonProcessRole;
+use crate::adapters::nats_server::NatsServerLaunch;
+use crate::operation_api::admission::MachineAddBootstrapConfig;
+use crate::role_cli::DaemonProcessRole;
 pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
-pub const PLOYZ_MACHINE_ROSTER_FILE_ENV: &str = "PLOYZ_MACHINE_ROSTER_FILE";
-pub const DEFAULT_MACHINE_ROSTER_FILE: &str = "/var/lib/ployz/machine-roster.json";
-pub const PLOYZ_MACHINE_LIFECYCLES_FILE_ENV: &str = "PLOYZ_MACHINE_LIFECYCLES_FILE";
-pub const DEFAULT_MACHINE_LIFECYCLES_FILE: &str = "/var/lib/ployz/machine-lifecycles.json";
-pub const PLOYZ_NAMESPACE_INTENT_FILE_ENV: &str = "PLOYZ_NAMESPACE_INTENT_FILE";
-pub const DEFAULT_NAMESPACE_INTENT_FILE: &str = "/var/lib/ployz/namespace-intent.json";
+pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
+pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
 pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
 pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
@@ -82,7 +78,7 @@ pub fn load_daemon_process_config(
             let connect = load_nats_connect_config(&role, &env)?;
             let nats_connect = read_connect_config_now(&role, &connect)?;
             let mut control = ControlProcessConfig::new(
-                NatsServerRuntime::External(connect.url),
+                NatsServerLaunch::External(connect.url),
                 machine_id,
                 nats_connect,
             )
@@ -90,6 +86,7 @@ pub fn load_daemon_process_config(
             if let Some(deploy_machines) = load_deploy_machines(&env)? {
                 control = control.with_deploy_machines(deploy_machines);
             }
+            control = control.with_core_db_path(load_core_db_path(&env));
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
@@ -270,29 +267,22 @@ fn load_control_nats_authorization(
         machine_seed_file: env_value(env, PLOYZ_NATS_MACHINE_SEED_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.machine_seed_file),
-        machine_roster_file: env_value(env, PLOYZ_MACHINE_ROSTER_FILE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or(defaults.machine_roster_file),
-        machine_lifecycles_file: env_value(env, PLOYZ_MACHINE_LIFECYCLES_FILE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or(defaults.machine_lifecycles_file),
-        namespace_intent_file: env_value(env, PLOYZ_NAMESPACE_INTENT_FILE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or(defaults.namespace_intent_file),
     }
 }
 
-/// Control-owned durable paths: the rendered authority file, the first
-/// machine's locally written `machine.seed`, and core intent evidence files.
+fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
+    env_value(env, PLOYZ_CORE_DB_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_DB))
+}
+
+/// Control-owned file paths: the rendered authority include the nats-server
+/// reloads, and the first machine's locally written `machine.seed`. Durable
+/// control state lives in the core database, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
     pub machine_seed_file: PathBuf,
-    pub machine_roster_file: PathBuf,
-    /// Recovery evidence for machine lifecycle intent (drained machines);
-    /// overlaid onto the intent snapshot at read time.
-    pub machine_lifecycles_file: PathBuf,
-    pub namespace_intent_file: PathBuf,
 }
 
 impl ControlNatsAuthorizationConfig {
@@ -301,9 +291,6 @@ impl ControlNatsAuthorizationConfig {
         Self {
             authorized_users_file: PathBuf::from(DEFAULT_NATS_AUTHORIZED_USERS_FILE),
             machine_seed_file: NatsMachineMaterialPaths::in_default_state_dir().machine_seed_file(),
-            machine_roster_file: PathBuf::from(DEFAULT_MACHINE_ROSTER_FILE),
-            machine_lifecycles_file: PathBuf::from(DEFAULT_MACHINE_LIFECYCLES_FILE),
-            namespace_intent_file: PathBuf::from(DEFAULT_NAMESPACE_INTENT_FILE),
         }
     }
 }
@@ -642,9 +629,10 @@ impl std::error::Error for DaemonProcessConfigError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlProcessConfig {
-    pub nats: NatsServerRuntime,
+    pub nats: NatsServerLaunch,
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
+    pub core_db_path: PathBuf,
     pub deploy_machines: Vec<MachineId>,
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
@@ -653,7 +641,7 @@ pub struct ControlProcessConfig {
 impl ControlProcessConfig {
     #[must_use]
     pub fn new(
-        nats: NatsServerRuntime,
+        nats: NatsServerLaunch,
         first_deploy_machine: MachineId,
         nats_connect: NatsConnectConfig,
     ) -> Self {
@@ -661,6 +649,7 @@ impl ControlProcessConfig {
             nats,
             nats_connect,
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),
+            core_db_path: PathBuf::from(DEFAULT_CORE_DB),
             deploy_machines: vec![first_deploy_machine],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
@@ -679,6 +668,12 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn with_deploy_machines(mut self, deploy_machines: Vec<MachineId>) -> Self {
         self.deploy_machines = deploy_machines;
+        self
+    }
+
+    #[must_use]
+    pub fn with_core_db_path(mut self, core_db_path: PathBuf) -> Self {
+        self.core_db_path = core_db_path;
         self
     }
 

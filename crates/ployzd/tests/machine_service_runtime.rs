@@ -13,14 +13,14 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
 };
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
     MachineRuntimeUnavailableReason,
 };
-use ployzd::machine_runtime::client::{
+use ployzd::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
 };
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
@@ -31,23 +31,23 @@ use ployzd::machine_runtime::protocol::{
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse,
 };
-use ployzd::machine_runtime::runner::{
+use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::machine_runtime::service::{
-    MachinePloyzNativeMeshPreparer as LocalWireGuardEbpfPreparer, start_machine_runtime_service,
-    start_machine_runtime_service_with_public_ip,
+use ployzd::roles::machine::service::{
+    MachinePloyzNativeMeshPreparer as LocalWireGuardEbpfPreparer, start_machine_role_service,
+    start_machine_role_service_with_public_ip,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[tokio::test]
-async fn machine_runtime_service_ensures_endpoint_network() {
+async fn machine_role_service_ensures_endpoint_network() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone()),
@@ -76,9 +76,9 @@ async fn machine_runtime_service_ensures_endpoint_network() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reports_unknown_substrate_without_evidence() {
+async fn machine_role_service_reports_unknown_substrate_without_evidence() {
     let nats = test_nats().await;
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default()),
@@ -115,9 +115,9 @@ async fn machine_runtime_service_reports_unknown_substrate_without_evidence() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_gets_fresh_facts_without_observation_tick() {
+async fn machine_role_service_gets_fresh_facts_without_observation_tick() {
     let nats = test_nats().await;
-    let _service = start_machine_runtime_service_with_public_ip(
+    let _service = start_machine_role_service_with_public_ip(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
@@ -162,10 +162,10 @@ async fn machine_runtime_service_gets_fresh_facts_without_observation_tick() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_creates_missing_container() {
+async fn machine_role_service_creates_missing_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone()).with_next_container("ctr_created"),
@@ -201,10 +201,10 @@ async fn machine_runtime_service_creates_missing_container() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reuses_existing_operation_step_container() {
+async fn machine_role_service_reuses_existing_operation_step_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone())
@@ -235,10 +235,10 @@ async fn machine_runtime_service_reuses_existing_operation_step_container() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_starts_existing_stopped_operation_step_container() {
+async fn machine_role_service_starts_existing_stopped_operation_step_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone()).with_existing(existing_container_with_state(
@@ -273,10 +273,10 @@ async fn machine_runtime_service_starts_existing_stopped_operation_step_containe
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reports_start_failure_with_container_evidence() {
+async fn machine_role_service_reports_start_failure_with_container_evidence() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state).with_start_failure("ctr_created", "exec format error"),
@@ -308,10 +308,10 @@ async fn machine_runtime_service_reports_start_failure_with_container_evidence()
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reports_existing_start_failure_without_created_evidence() {
+async fn machine_role_service_reports_existing_start_failure_without_created_evidence() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state).with_existing_start_failure("ctr_existing", "still stopping"),
@@ -343,12 +343,12 @@ async fn machine_runtime_service_reports_existing_start_failure_without_created_
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error() {
+async fn machine_role_service_reports_operation_step_conflict_as_domain_error() {
     let nats = test_nats().await;
     let mut conflicting_labels = managed_identity();
     conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_other");
     let state = RecordingRunnerState::default();
-    let service = start_machine_runtime_service(
+    let service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state).with_existing(existing_container(
@@ -377,16 +377,16 @@ async fn machine_runtime_service_reports_operation_step_conflict_as_domain_error
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_conflict"),
             expected: managed_identity(),
-            actual: conflicting_labels,
+            actual: Box::new(conflicting_labels),
         }
     );
     assert_eq!(service.health().domain_failures, 1);
 }
 
 #[tokio::test]
-async fn machine_runtime_service_maps_create_failure_to_unavailable_runtime() {
+async fn machine_role_service_maps_create_failure_to_unavailable_runtime() {
     let nats = test_nats().await;
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default()).with_create_failure("disk full"),
@@ -418,10 +418,10 @@ async fn machine_runtime_service_maps_create_failure_to_unavailable_runtime() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_removes_container() {
+async fn machine_role_service_removes_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone()),
@@ -462,10 +462,10 @@ async fn machine_runtime_service_removes_container() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_stops_container() {
+async fn machine_role_service_stops_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(state.clone()),
@@ -496,9 +496,9 @@ async fn machine_runtime_service_stops_container() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reports_remove_failure_as_domain_error() {
+async fn machine_role_service_reports_remove_failure_as_domain_error() {
     let nats = test_nats().await;
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
@@ -543,9 +543,9 @@ async fn machine_runtime_service_reports_remove_failure_as_domain_error() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_reports_stop_failure_as_domain_error() {
+async fn machine_role_service_reports_stop_failure_as_domain_error() {
     let nats = test_nats().await;
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
@@ -590,9 +590,9 @@ async fn machine_runtime_service_reports_stop_failure_as_domain_error() {
 }
 
 #[tokio::test]
-async fn machine_runtime_service_tails_container_logs() {
+async fn machine_role_service_tails_container_logs() {
     let nats = test_nats().await;
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
@@ -622,7 +622,7 @@ async fn machine_runtime_service_tails_container_logs() {
     assert_eq!(
         response,
         MachineLogsTailRpcResponse::Ok(MachineLogsTailRpcOk {
-            value: ployzd::machine_runtime::protocol::MachineLogsTailResult {
+            value: ployzd::roles::machine::protocol::MachineLogsTailResult {
                 machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_failed"),
                 text: "panic: missing DATABASE_URL\n".to_owned(),
@@ -636,7 +636,7 @@ async fn machine_runtime_service_tails_container_logs() {
 async fn machine_wireguard_ebpf_service_calls_local_preparer() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         idle_runner(),
@@ -665,7 +665,7 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
 async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machine() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         idle_runner(),
@@ -714,7 +714,7 @@ async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machi
 async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_machine_runtime_service(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         idle_runner(),
@@ -1152,7 +1152,6 @@ struct TestNats {
 async fn test_nats() -> TestNats {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    nats.bootstrap_resources().await;
     let client = nats.controller.clone();
     let machine_a = nats.machine_client(&machine_id("machine_a")).await;
 

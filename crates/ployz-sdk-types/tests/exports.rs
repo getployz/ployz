@@ -92,7 +92,9 @@ fn sdk_exports_cert_wire_types() {
     let active_cert = ActiveCertState {
         cert_id: cert_id.clone(),
         hostname: RouteHostname::try_new("api.example.com").expect("valid hostname"),
-        bundle_ref: CertBundleRef::try_new("obj://PLZ_CERTS/cert_api/rev_1")
+        bundle_ref: CertBundleRef::try_new(
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem",
+        )
             .expect("valid bundle ref"),
         validity: CertValidityWindow::try_new(valid_at(1_700_000_000), valid_at(1_707_776_000))
             .expect("valid validity window"),
@@ -127,7 +129,7 @@ fn sdk_exports_cert_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"obj://PLZ_CERTS/cert_api/rev_1","validity":{"not_before":"1700000000","not_after":"1707776000"}}}"#
+        r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem","validity":{"not_before":"1700000000","not_after":"1707776000"}}}"#
     );
     assert_eq!(challenge.ttl_seconds().get(), 60);
 }
@@ -761,7 +763,7 @@ fn sdk_exports_constructor_error_types() {
         Err(CertTextError::InvalidAcmeChallengeValue { .. })
     ));
     assert!(matches!(
-        CertBundleRef::try_new("file://PLZ_CERTS/cert_api/rev_1"),
+        CertBundleRef::try_new("obj://PLZ_CERTS/cert_api/rev_1"),
         Err(CertTextError::InvalidBundleRef { .. })
     ));
     assert!(matches!(

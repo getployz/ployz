@@ -8,7 +8,7 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::gateway::{
+use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
     GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
     GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,

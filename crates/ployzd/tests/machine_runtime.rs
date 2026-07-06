@@ -6,12 +6,12 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
-use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
-use ployzd::machine_runtime::protocol::{
+use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
+use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineRunContainerOutcome,
 };
-use ployzd::machine_runtime::service::start_machine_runtime_service;
+use ployzd::roles::machine::service::start_machine_role_service;
 
 mod support;
 
@@ -21,7 +21,7 @@ use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 async fn machine_runtime_serves_container_run_and_observes_created_container() {
     let nats = TestNats::start_bootstrapped().await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_runtime_service(
+    let runtime = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -61,7 +61,7 @@ async fn machine_runtime_serves_container_run_and_observes_created_container() {
 async fn machine_runtime_serves_container_remove_and_updates_observations() {
     let nats = TestNats::start_bootstrapped().await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_runtime_service(
+    let runtime = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -103,7 +103,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
 async fn machine_runtime_serves_wireguard_ebpf_prepare() {
     let nats = TestNats::start_bootstrapped().await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_runtime_service(
+    let runtime = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -141,7 +141,6 @@ impl TestNats {
         let nats =
             ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")])
                 .await;
-        nats.bootstrap_resources().await;
         let client = nats.controller.clone();
         let machine_client = nats.machine_client(&machine_id("machine_a")).await;
 

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::CertId;
+use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
 use crate::ops::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
@@ -11,10 +12,7 @@ pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 
-/// Persisted `KV_CORE.certs.*` value.
-///
-/// Changing this shape intentionally breaks existing clusters unless paired
-/// with a KV cleanup or migration.
+/// Active certificate intent/evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -29,10 +27,7 @@ id_prefixed_state_key! { pub struct CertStateKey; prefix: CERT_STATE_PREFIX; fn 
 id_prefixed_state_key! { pub struct AcmeLockKey; prefix: ACME_LOCK_PREFIX; fn from_cert_id(&CertId); }
 id_prefixed_state_key! { pub struct AcmeChallengeStateKey; prefix: ACME_CHALLENGE_PREFIX; fn from_cert_id(&CertId); }
 
-/// Persisted `KV_CORE.acme.challenges.*` value.
-///
-/// Changing this shape intentionally breaks existing ACME challenge recovery
-/// unless paired with a KV cleanup or migration.
+/// ACME HTTP-01 challenge evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(try_from = "AcmeHttp01ChallengeWire", into = "AcmeHttp01ChallengeWire")]
@@ -279,7 +274,7 @@ pub struct CertBundleRef(String);
 impl CertBundleRef {
     pub fn try_new(value: impl Into<String>) -> Result<Self, CertTextError> {
         let value = validated_visible_ascii(value.into(), "cert bundle reference")?;
-        validate_object_store_ref(&value)?;
+        validate_artifact_ref(&value)?;
 
         Ok(Self(value))
     }
@@ -357,19 +352,20 @@ fn validate_acme_key_authorization(value: &str) -> Result<(), CertTextError> {
     Ok(())
 }
 
-fn validate_object_store_ref(value: &str) -> Result<(), CertTextError> {
-    let Some(path) = value.strip_prefix("obj://") else {
+fn validate_artifact_ref(value: &str) -> Result<(), CertTextError> {
+    let Some(rest) = value.strip_prefix("sha256:") else {
         return Err(CertTextError::InvalidBundleRef {
             value: value.to_owned(),
         });
     };
-    let Some((bucket, object)) = path.split_once('/') else {
+    let Some((digest, path)) = rest.split_once(':') else {
         return Err(CertTextError::InvalidBundleRef {
             value: value.to_owned(),
         });
     };
 
-    if bucket.is_empty() || object.is_empty() || object.starts_with('/') || object.contains("//") {
+    if InstallSha256Digest::try_new(digest).is_err() || AbsoluteInstallPath::try_new(path).is_err()
+    {
         return Err(CertTextError::InvalidBundleRef {
             value: value.to_owned(),
         });

@@ -674,13 +674,13 @@ impl PloyzdRoleEnvironmentTarget {
         output.push('=');
         output.push_str(self.machine_id.as_str());
         output.push('\n');
-        if matches!(role, DaemonProcessRole::Control) {
-            if let Some(path) = self.nats_credentials.join_seed_file() {
-                output.push_str(PLOYZ_JOIN_NKEY_SEED_FILE_ENV);
-                output.push('=');
-                output.push_str(&path.display().to_string());
-                output.push('\n');
-            }
+        if matches!(role, DaemonProcessRole::Control)
+            && let Some(path) = self.nats_credentials.join_seed_file()
+        {
+            output.push_str(PLOYZ_JOIN_NKEY_SEED_FILE_ENV);
+            output.push('=');
+            output.push_str(&path.display().to_string());
+            output.push('\n');
         }
         if let Some(public_ip) = self.machine_public_ip {
             output.push_str(PLOYZ_MACHINE_PUBLIC_IP_ENV);

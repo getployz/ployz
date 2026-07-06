@@ -10,7 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
-async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "service"] }
+async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
 ployz-core.workspace = true
 ployz-keeper = { path = "../ployz-keeper" }
 ployz-nats.workspace = true

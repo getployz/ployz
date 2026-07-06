@@ -1,12 +1,12 @@
 //! Submit handlers: accept the operation quickly, start the owned worker,
 //! and return the operation id + watch subject.
 
-use crate::controllers::{
+use crate::adapters::nats_authorization::MintRequest;
+use crate::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError,
     MachineAddSubmitCommand, MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand,
     OperationControllers,
 };
-use crate::nats_authorization::MintRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;
@@ -70,7 +70,7 @@ pub async fn deploy_submit(
         .await
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.deploy_runtime.start(accepted);
+    handlers.deploy_driver.start(accepted);
 
     Ok(operation)
 }
@@ -144,6 +144,7 @@ pub async fn machine_update(
     let target_machine = handlers
         .machine_roster
         .active_machine(&request.machine_id)
+        .await
         .map_err(|error| MachineUpdateError::Unavailable {
             operation_id: operation_id.clone(),
             message: error.to_string(),
@@ -180,7 +181,7 @@ pub async fn machine_update(
             }
         })?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.machine_update_runtime().start(accepted);
+    handlers.machine_update().start(accepted);
 
     Ok(operation)
 }
@@ -220,6 +221,7 @@ async fn machine_lifecycle(
     let target_machine = handlers
         .machine_roster
         .active_machine(&machine_id)
+        .await
         .map_err(|error| MachineLifecycleError::Unavailable {
             operation_id: operation_id.clone(),
             message: error.to_string(),
@@ -259,7 +261,7 @@ async fn machine_lifecycle(
             }
         })?;
     let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
-    handlers.machine_lifecycle_runtime().start(accepted);
+    handlers.machine_lifecycle().start(accepted);
 
     Ok(operation)
 }

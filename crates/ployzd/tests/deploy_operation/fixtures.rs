@@ -23,13 +23,13 @@ pub(crate) use ployz_test_support::containers;
 pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
     NamespaceCommitError, NamespaceStateCommitter, prepare_deploy_execution_command,
 };
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
@@ -365,7 +365,7 @@ impl RecordingHealth {
 impl DeployHealthChecker for RecordingHealth {
     async fn wait_healthy(
         &mut self,
-        containers: &[ployzd::deploy_worker::DeployContainer],
+        containers: &[ployzd::operations::deploy::DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
         self.checked.push(
             containers
@@ -391,7 +391,7 @@ pub(super) struct HangingHealth;
 impl DeployHealthChecker for HangingHealth {
     async fn wait_healthy(
         &mut self,
-        _containers: &[ployzd::deploy_worker::DeployContainer],
+        _containers: &[ployzd::operations::deploy::DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
@@ -776,7 +776,10 @@ pub(super) fn empty_deploy_command_with_running_container(
 fn namespace_cleanup_candidates(
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
-    ployzd::deploy_worker::namespace_cleanup_candidates(&namespace_id("default"), observed_machines)
+    ployzd::operations::deploy::namespace_cleanup_candidates(
+        &namespace_id("default"),
+        observed_machines,
+    )
 }
 
 fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {

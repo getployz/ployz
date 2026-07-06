@@ -7,12 +7,12 @@ use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
-use ployzd::machine_runtime::runner::{
+use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::machine_runtime::service::MachinePloyzNativeMeshPreparer;
+use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]

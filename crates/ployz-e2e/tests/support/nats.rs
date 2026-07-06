@@ -3,8 +3,8 @@
 //! the e2e scenarios launch ployzd with.
 
 use ployz_core::ids::MachineId;
+use ployzd::adapters::nats_server::NatsServerLaunch;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::nats_process::NatsServerRuntime;
 
 pub struct TestNats {
     connected: ployz_test_support::nats::TestNats,
@@ -47,15 +47,13 @@ impl TestNats {
     #[must_use]
     pub fn control_config(&self, core_machine_id: MachineId) -> ControlProcessConfig {
         ControlProcessConfig::new(
-            NatsServerRuntime::External(self.connected.server.client_url().clone()),
+            NatsServerLaunch::External(self.connected.server.client_url().clone()),
             core_machine_id,
             self.connected.server.controller_config(),
         )
+        .with_core_db_path(self.work_dir.path().join("ployz-core.db"))
         .with_nats_authorization(ControlNatsAuthorizationConfig {
             authorized_users_file: self.connected.server.authorized_users_path().to_path_buf(),
-            machine_roster_file: self.work_dir.path().join("machine-roster.json"),
-            machine_lifecycles_file: self.work_dir.path().join("machine-lifecycles.json"),
-            namespace_intent_file: self.work_dir.path().join("namespace-intent.json"),
             machine_seed_file: self.work_dir.path().join("machine.seed"),
         })
     }

@@ -9,13 +9,13 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_test_support::ids::{failure_message, namespace_id};
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     DataplanePreparer, DeployCleanupResult, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
     MachineContainerRuntimeError, NamespaceStateCommitter, execute_deploy_operation,
 };
-use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
+use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use std::time::Duration;
 
 fn assert_deploy_event_order(
@@ -273,7 +273,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
         runtime.removals,
         vec![(
             machine_id("machine_b"),
-            ployzd::machine_runtime::protocol::MachineContainerRemoveRpcRequest {
+            ployzd::roles::machine::protocol::MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_old"),
                 expected_identity: cleanup_container("machine_b", "ctr_old", "entry_old").identity,
@@ -388,7 +388,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
         runtime.removals,
         vec![(
             machine_id("machine_b"),
-            ployzd::machine_runtime::protocol::MachineContainerRemoveRpcRequest {
+            ployzd::roles::machine::protocol::MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_old"),
                 expected_identity: cleanup_target.identity.clone(),
@@ -689,7 +689,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             .map(|((request_machine_id, request), container_id)| {
                 (
                     request_machine_id.clone(),
-                    ployzd::machine_runtime::protocol::MachineContainerStopRpcRequest {
+                    ployzd::roles::machine::protocol::MachineContainerStopRpcRequest {
                         operation_id: operation_id("op_123"),
                         container_id,
                         expected_identity: request.container.clone(),
@@ -1223,7 +1223,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         } if matches!(
             *source,
             DeployExecutionError::CommitNamespaceState(
-                ployzd::deploy_worker::NamespaceCommitError::ServingTargetLockLost { .. }
+                ployzd::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
             )
         )
     ));

@@ -2,12 +2,12 @@
 //! the operation event first and then activates the machine in cluster
 //! truth (record-then-activate).
 
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
+use crate::operations::log::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::OperationStatus;
 use ployz_core::subjects::INTENT_CHANGED;
-use ployz_nats::operations::{MachineJoinRedemption, RecordMachineJoinReportError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,
@@ -73,7 +73,6 @@ pub async fn machine_join_report(
     let status = handlers
         .controllers
         .repository()
-        .records()
         .get(&reported.operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
@@ -96,6 +95,7 @@ pub async fn machine_join_report(
     };
     if let MachineJoinReportOutcome::Completed = outcome {
         activate_reported_machine(handlers, &reported.operation_id, &machine_id, &name).await?;
+        scrub_completed_machine_add_secrets(handlers, &reported.operation_id).await?;
     }
 
     Ok(MachineJoinReported {
@@ -116,7 +116,6 @@ async fn repair_completed_machine_join_report(
     let Some(status) = handlers
         .controllers
         .repository()
-        .records()
         .get(&operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
@@ -140,12 +139,27 @@ async fn repair_completed_machine_join_report(
     };
 
     activate_reported_machine(handlers, &id, &machine_id, &name).await?;
+    scrub_completed_machine_add_secrets(handlers, &id).await?;
     Ok(Some(MachineJoinReported {
         operation_id: id,
         machine_id,
         last_event_sequence,
         outcome: MachineJoinReportOutcome::Completed,
     }))
+}
+
+async fn scrub_completed_machine_add_secrets(
+    handlers: &OperationApiHandlers,
+    operation_id: &OperationId,
+) -> Result<(), MachineJoinReportError> {
+    handlers
+        .controllers
+        .repository()
+        .scrub_machine_add_secrets(operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })
 }
 
 /// Writes the completed machine-add into core-owned roster intent. This is

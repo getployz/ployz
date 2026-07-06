@@ -6,19 +6,18 @@
 //! fixture's real `nats-server`, including the ADR-0015 single-writer
 //! fence and the ADR-0001 authority-file durability rules.
 
-use ployz_core::machine::MachineAddFailure;
+use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
-use ployz_core::permissions::core_state_kv_write_scope;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::CoreStateKeyFamily;
-use ployz_core::subjects::OperationApiEndpoint;
+use ployz_core::subjects::{OPS_STREAM_SUBJECT, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest,
+    MachineJoinRedeemRequest, MachineJoinReportOutcome, MachineJoinReportRequest, OpsStatusError,
+    OpsStatusRequest,
 };
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -29,6 +28,9 @@ mod support;
 use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
+
+use ployzd::core_store::CoreStore;
+use ployzd::operations::log::{OperationRepository, OperationStatusWrite};
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
@@ -239,17 +241,17 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
 async fn startup_renders_current_authorization_permissions() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
-    let namespace_lock_scope = core_state_kv_write_scope(CoreStateKeyFamily::NamespaceLock);
+    let progress_scope = OPS_STREAM_SUBJECT;
     let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     assert!(
-        existing.contains(&namespace_lock_scope),
+        existing.contains(progress_scope),
         "fixture starts with current controller permissions"
     );
-    let stale = existing.replace(&format!("\"{namespace_lock_scope}\", "), "");
+    let stale = existing.replace(progress_scope, "plz.v1.oldprogress");
     assert!(
-        !stale.contains(&namespace_lock_scope),
-        "stale fixture removes the namespace-lock publish scope"
+        !stale.contains(progress_scope),
+        "stale fixture removes the operation progress publish scope"
     );
     std::fs::write(nats.server().authorized_users_path(), stale)
         .expect("stale authority file writes");
@@ -263,7 +265,7 @@ async fn startup_renders_current_authorization_permissions() {
     let repaired = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("repaired authorized-users file is readable");
     assert!(
-        repaired.contains(&namespace_lock_scope),
+        repaired.contains(progress_scope),
         "startup render restores the current controller permission profile"
     );
     assert_eq!(
@@ -421,6 +423,279 @@ async fn machine_join_redeem_waits_for_material_ready() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_dup", "idem_dup_a", "machine_dup").await;
+    let duplicate = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_dup"),
+            idempotency_key: idempotency_key("idem_dup_b"),
+            machine_id: machine_id("machine_dup_b"),
+            name: ployz_sdk_types::MachineName::try_new("machine_dup_b")
+                .expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        })
+        .await
+        .expect_err("duplicate operation id with new idempotency is rejected");
+    assert_eq!(
+        duplicate,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_dup"),
+            },
+        }
+    );
+
+    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    assert!(
+        redeemed.last_event_sequence.get() > accepted.accepted.start_sequence.get(),
+        "redeem response reports the joined event sequence"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+    let runtime = nats.start_control(&config).await;
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime restarts after rejected duplicate");
+}
+
+#[tokio::test]
+async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_unavailable() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let scrub_operation_id = operation_id("op_scrub");
+
+    let accepted = machine_add(
+        &api,
+        scrub_operation_id.as_str(),
+        "idem_scrub",
+        "machine_scrub",
+    )
+    .await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+    api.machine_join_report(&MachineJoinReportRequest {
+        join_token: accepted.join_token.clone(),
+        outcome: MachineJoinReportOutcome::Completed,
+    })
+    .await
+    .expect("machine join completion reports");
+    let duplicate = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_scrub_retry"),
+            idempotency_key: idempotency_key("idem_scrub"),
+            machine_id: machine_id("machine_scrub_retry"),
+            name: ployz_sdk_types::MachineName::try_new("machine_scrub_retry")
+                .expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        })
+        .await
+        .expect_err("terminal scrub keeps the non-secret idempotency tombstone");
+    assert_eq!(
+        duplicate,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_scrub_retry"),
+            },
+        }
+    );
+
+    let conn = rusqlite::Connection::open(nats.work_dir.path().join("ployz-core.db"))
+        .expect("core db opens");
+    for table in [
+        "machine_add_claims",
+        "machine_add_submissions",
+        "machine_add_join_tokens",
+        "machine_add_secret_deliveries",
+        "machine_add_mint_claims",
+    ] {
+        let count: u64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE operation_id = ?1"),
+                [scrub_operation_id.as_str()],
+                |row| row.get(0),
+            )
+            .expect("working rows count");
+        assert_eq!(count, 0, "{table} keeps terminal secret material");
+    }
+
+    conn.execute(
+        "UPDATE operations SET status_json = 'not json' WHERE operation_id = ?1",
+        [scrub_operation_id.as_str()],
+    )
+    .expect("status row corrupts");
+    drop(conn);
+
+    let error = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: scrub_operation_id.clone(),
+        })
+        .await
+        .expect_err("corrupt status is not reported as missing");
+    assert!(
+        matches!(
+            error,
+            OperationApiClientError::Domain {
+                endpoint: OperationApiEndpoint::OpsStatus,
+                error: OpsStatusError::Unavailable {
+                    operation_id: ref unavailable_id,
+                    ..
+                },
+            } if unavailable_id == &scrub_operation_id
+        ),
+        "expected unavailable status error, got {error:?}"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn completed_report_can_repair_activation_before_secret_scrub() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_repair_scrub", "idem_repair_scrub", "machine_rs").await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+
+    let raw_token = RawJoinToken::try_new(accepted.join_token.as_str()).expect("join token valid");
+    let repository = operation_repository_for_test(&nats).await;
+    repository
+        .record_machine_join_completed(&raw_token)
+        .await
+        .expect("completion records before activation");
+    assert!(
+        secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub") > 0,
+        "completed evidence keeps token lookup until activation can repair"
+    );
+
+    api.machine_join_report(&MachineJoinReportRequest {
+        join_token: accepted.join_token.clone(),
+        outcome: MachineJoinReportOutcome::Completed,
+    })
+    .await
+    .expect("completed report repairs activation and scrubs");
+    assert_eq!(
+        secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub"),
+        0,
+        "successful activation scrubs completed machine-add secrets"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn duplicate_machine_add_joined_event_adopts_existing_join() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_join_race", "idem_join_race", "machine_jr").await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+    let repository = operation_repository_for_test(&nats).await;
+
+    let outcome = repository
+        .record_machine_add_joined(
+            &operation_id("op_join_race"),
+            &machine_id("machine_jr"),
+            JoinTokenRedeemedAt::try_new(999).expect("valid join time"),
+        )
+        .await
+        .expect("duplicate joined event adopts stored join");
+    assert!(matches!(
+        outcome,
+        OperationStatusWrite::AlreadySatisfied { .. }
+    ));
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn machine_add_reusing_another_operations_idempotency_key_is_rejected() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    machine_add(&api, "op_a", "idem_a", "machine_a").await;
+    machine_add(&api, "op_b", "idem_b", "machine_b").await;
+
+    // op_b already exists; reusing op_a's idempotency key must not return
+    // op_a's join material — it is a duplicate key, not an adopt of op_b.
+    let mismatch = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_b"),
+            idempotency_key: idempotency_key("idem_a"),
+            machine_id: machine_id("machine_b"),
+            name: ployz_sdk_types::MachineName::try_new("machine_b").expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        })
+        .await
+        .expect_err("reusing another operation's idempotency key is rejected");
+    assert_eq!(
+        mismatch,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_b"),
+            },
+        }
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+async fn operation_repository_for_test(nats: &TestNats) -> OperationRepository {
+    OperationRepository::open(
+        CoreStore::open(nats.work_dir.path().join("ployz-core.db"))
+            .await
+            .expect("core store opens"),
+        nats.connected.controller.clone(),
+    )
+}
+
+fn secret_row_count(nats: &TestNats, table: &str, operation: &str) -> u64 {
+    let conn = rusqlite::Connection::open(nats.work_dir.path().join("ployz-core.db"))
+        .expect("core db opens");
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE operation_id = ?1"),
+        [operation],
+        |row| row.get(0),
+    )
+    .expect("secret rows count")
 }
 
 async fn machine_add(

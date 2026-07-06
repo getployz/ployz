@@ -10,44 +10,21 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::gateway::GatewayUpstream;
-use ployzd::gateway_process_runtime::{
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
-    start_gateway_process_runtime_with_client,
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{RunningIntentService, start_intent_service};
+use ployzd::roles::gateway::process::{
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessError,
+    start_gateway_process_with_client,
 };
-use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::roles::gateway::projection::GatewayUpstream;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
-async fn gateway_process_reports_unavailable_before_projection_sources_exist() {
-    let nats = TestNats::start_without_buckets().await;
-    let runtime = start_gateway_process_runtime_with_client(
-        nats.machine_client.clone(),
-        Duration::from_millis(10),
-        socket_addr("127.0.0.1:0"),
-        machine_id("machine_7"),
-    )
-    .await
-    .expect("gateway runtime starts before buckets exist");
-
-    wait_until(Duration::from_secs(2), || {
-        matches!(
-            runtime.health().last_attempt,
-            Some(GatewayProcessAttempt::Failed { .. })
-        )
-    })
-    .await;
-
-    runtime.shutdown().await;
-}
-
-#[tokio::test]
 async fn gateway_process_reports_http_bind_failure_before_returning() {
-    let nats = TestNats::start_without_buckets().await;
+    let nats = TestNats::start().await;
     let occupied_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind occupied listener");
@@ -55,7 +32,7 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
         .local_addr()
         .expect("read occupied listener address");
 
-    let result = start_gateway_process_runtime_with_client(
+    let result = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         occupied_addr,
@@ -68,17 +45,16 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
     };
     assert!(matches!(
         error,
-        GatewayProcessRuntimeError::BindHttp { addr, .. } if addr == occupied_addr
+        GatewayProcessError::BindHttp { addr, .. } if addr == occupied_addr
     ));
 }
 
 #[tokio::test]
 async fn gateway_process_serves_http_from_nats_projection() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_gateway_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
     let upstream = TestUpstream::start().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
@@ -141,10 +117,9 @@ async fn gateway_process_serves_http_from_nats_projection() {
 
 #[tokio::test]
 async fn gateway_process_applies_route_changes_on_next_poll() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_gateway_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
@@ -196,10 +171,9 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
 
 #[tokio::test]
 async fn gateway_process_records_http_proxy_failures() {
-    let nats = TestNats::start_without_buckets().await;
-    nats.create_gateway_buckets().await;
+    let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
-    let runtime = start_gateway_process_runtime_with_client(
+    let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
@@ -257,7 +231,7 @@ async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscrib
 }
 
 fn gateway_serves_route(
-    runtime: &ployzd::gateway_process_runtime::RunningGatewayProcessRuntime,
+    runtime: &ployzd::roles::gateway::process::RunningGatewayProcess,
     endpoint_ip: &str,
     endpoint_port: u16,
 ) -> bool {
@@ -277,46 +251,45 @@ fn gateway_serves_route(
 }
 
 struct TestNats {
-    connected: ployz_test_support::nats::TestNats,
-    /// Controller principal: bucket administration and route-state writes.
+    _connected: ployz_test_support::nats::TestNats,
+    /// Controller principal: route-state writes and intent service.
     client: async_nats::Client,
     /// Machine principal: the gateway process side (gateway runs as the
     /// machine's Machine user in v1) and fact writes.
     machine_client: async_nats::Client,
-    intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
 }
 
 impl TestNats {
-    async fn start_without_buckets() -> Self {
+    async fn start() -> Self {
         let connected =
             ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")])
                 .await;
         let client = connected.controller.clone();
         let machine_client = connected.machine_client(&machine_id("machine_7")).await;
-        let intent_dir = tempfile::tempdir().expect("intent dir");
-        let namespace_intent =
-            NamespaceIntentStore::new(intent_dir.path().join("namespace-intent.json"));
+        let namespace_intent = NamespaceIntentStore::new(
+            ployzd::core_store::CoreStore::open_in_memory()
+                .await
+                .expect("open core store"),
+        );
 
         Self {
-            connected,
+            _connected: connected,
             client,
             machine_client,
-            intent_dir,
             namespace_intent,
         }
     }
 
-    async fn create_gateway_buckets(&self) {
-        self.connected.bootstrap_resources().await;
-    }
-
-    async fn start_intent(&self) -> RunningIntentRuntime {
-        start_intent_runtime(
+    async fn start_intent(&self) -> RunningIntentService {
+        start_intent_service(
             self.client.clone(),
-            MachineRosterStore::new(self.intent_dir.path().join("machine-roster.json")),
+            MachineRosterStore::new(
+                ployzd::core_store::CoreStore::open_in_memory()
+                    .await
+                    .expect("open core store"),
+            ),
             self.namespace_intent.clone(),
-            self.intent_dir.path().join("machine-lifecycles.json"),
             Duration::from_millis(10),
         )
         .await

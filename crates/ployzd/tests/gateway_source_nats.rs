@@ -8,15 +8,14 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::gateway::{
+use ployzd::fact_cache::FactCache;
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
-use ployzd::gateway_source::load_gateway_projection_update_from_nats;
-use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::namespace_intent::NamespaceIntentStore;
-use ployzd::runtime_facts::RuntimeFactsCache;
-use std::path::PathBuf;
+use ployzd::roles::gateway::source::load_gateway_projection_update_from_nats;
 use std::time::Duration;
 
 #[tokio::test]
@@ -72,27 +71,13 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     );
 }
 
-#[tokio::test]
-async fn gateway_source_reports_unreadable_intent_as_unavailable() {
-    let nats = test_nats().await;
-    std::fs::write(&nats.namespace_intent_file, b"{").expect("corrupt namespace intent file");
-
-    let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
-
-    assert!(matches!(
-        update,
-        GatewayProjectionUpdate::SourceUnavailable(_)
-    ));
-}
-
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     intent_reader: NatsIntentReader,
-    facts: RuntimeFactsCache,
-    _intent: RunningIntentRuntime,
+    facts: FactCache,
+    _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
-    namespace_intent_file: PathBuf,
 }
 
 async fn test_nats() -> TestNats {
@@ -102,16 +87,21 @@ async fn test_nats() -> TestNats {
         machine_id("machine_7"),
     ])
     .await;
-    nats.bootstrap_resources().await;
     let machine_client = nats.machine_client(&gateway_machine).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
-    let namespace_intent_file = lifecycle_dir.path().join("namespace-intent.json");
-    let namespace_intent = NamespaceIntentStore::new(namespace_intent_file.clone());
-    let intent = start_intent_runtime(
+    let namespace_intent = NamespaceIntentStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
+    let intent = start_intent_service(
         nats.controller.clone(),
-        MachineRosterStore::new(lifecycle_dir.path().join("machine-roster.json")),
+        MachineRosterStore::new(
+            ployzd::core_store::CoreStore::open_in_memory()
+                .await
+                .expect("open core store"),
+        ),
         namespace_intent.clone(),
-        lifecycle_dir.path().join("machine-lifecycles.json"),
         Duration::from_secs(30),
     )
     .await
@@ -121,11 +111,10 @@ async fn test_nats() -> TestNats {
         _nats: nats,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
-        facts: RuntimeFactsCache::default(),
+        facts: FactCache::default(),
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
-        namespace_intent_file,
     }
 }
 

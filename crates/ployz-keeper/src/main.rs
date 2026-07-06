@@ -227,14 +227,14 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    if let Some(operation_id) = &update.operation_id {
-        if let Err(message) = write_substrate_update_evidence(operation_id, ployzd_version) {
-            eprintln!(
-                "failed to write substrate update evidence: {}",
-                message.as_str()
-            );
-            return ExitCode::FAILURE;
-        }
+    if let Some(operation_id) = &update.operation_id
+        && let Err(message) = write_substrate_update_evidence(operation_id, ployzd_version)
+    {
+        eprintln!(
+            "failed to write substrate update evidence: {}",
+            message.as_str()
+        );
+        return ExitCode::FAILURE;
     }
     println!(
         "substrate updated to {} and restarted {} unit(s)",
