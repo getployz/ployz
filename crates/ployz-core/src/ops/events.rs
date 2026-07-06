@@ -208,6 +208,96 @@ impl OperationEvent {
         }
     }
 
+    /// The subject key of singleton deploy evidence — evidence recorded once
+    /// per deploy (plan, dataplane, health-check start, cleanup). `None` for
+    /// multi-instance evidence (per-container starts) and every non-evidence
+    /// event. The store keys idempotent singleton evidence on this.
+    #[must_use]
+    pub fn singleton_subject(&self) -> Option<&'static str> {
+        match self {
+            Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
+            Self::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
+            Self::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
+            Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
+            Self::DeploySubmitted { .. }
+            | Self::DeployPlanningStarted { .. }
+            | Self::DeployContainerStarted { .. }
+            | Self::DeployRunning { .. }
+            | Self::DeployCompleted { .. }
+            | Self::DeployFailed { .. }
+            | Self::CertRenewalSubmitted { .. }
+            | Self::CertChallengePublished { .. }
+            | Self::CertValidationStarted { .. }
+            | Self::CertCompleted { .. }
+            | Self::CertFailed { .. }
+            | Self::MachineAddSubmitted { .. }
+            | Self::MachineAddJoined { .. }
+            | Self::MachineAddCredentialProvisioned { .. }
+            | Self::MachineAddCompleted { .. }
+            | Self::MachineAddFailed { .. }
+            | Self::MachineUpdateSubmitted { .. }
+            | Self::MachineUpdateRunning { .. }
+            | Self::MachineUpdateCompleted { .. }
+            | Self::MachineUpdateFailed { .. }
+            | Self::MachineLifecycleSubmitted { .. }
+            | Self::MachineLifecycleCompleted { .. }
+            | Self::MachineLifecycleFailed { .. }
+            | Self::Cancelled { .. } => None,
+        }
+    }
+
+    /// The deploy evidence this event carries, if any. `None` for non-evidence
+    /// deploy transitions and every other operation kind.
+    #[must_use]
+    pub fn deploy_evidence(&self) -> Option<DeployEvidence> {
+        match self {
+            Self::DeployPlanCreated { plan, .. } => {
+                Some(DeployEvidence::PlanCreated { plan: plan.clone() })
+            }
+            Self::DeployDataplanePrepared { report, .. } => Some(DeployEvidence::DataplanePrepared {
+                report: report.clone(),
+            }),
+            Self::DeployContainerStarted {
+                machine_id,
+                container_id,
+                ..
+            } => Some(DeployEvidence::ContainerStarted {
+                machine_id: machine_id.clone(),
+                container_id: container_id.clone(),
+            }),
+            Self::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),
+            Self::DeployCleanupFinished {
+                removed, failed, ..
+            } => Some(DeployEvidence::CleanupFinished {
+                removed: removed.clone(),
+                failed: failed.clone(),
+            }),
+            Self::DeploySubmitted { .. }
+            | Self::DeployPlanningStarted { .. }
+            | Self::DeployRunning { .. }
+            | Self::DeployCompleted { .. }
+            | Self::DeployFailed { .. }
+            | Self::CertRenewalSubmitted { .. }
+            | Self::CertChallengePublished { .. }
+            | Self::CertValidationStarted { .. }
+            | Self::CertCompleted { .. }
+            | Self::CertFailed { .. }
+            | Self::MachineAddSubmitted { .. }
+            | Self::MachineAddJoined { .. }
+            | Self::MachineAddCredentialProvisioned { .. }
+            | Self::MachineAddCompleted { .. }
+            | Self::MachineAddFailed { .. }
+            | Self::MachineUpdateSubmitted { .. }
+            | Self::MachineUpdateRunning { .. }
+            | Self::MachineUpdateCompleted { .. }
+            | Self::MachineUpdateFailed { .. }
+            | Self::MachineLifecycleSubmitted { .. }
+            | Self::MachineLifecycleCompleted { .. }
+            | Self::MachineLifecycleFailed { .. }
+            | Self::Cancelled { .. } => None,
+        }
+    }
+
     /// The durable stream subject this event publishes under. Subjects are a
     /// persisted contract: renderings must never change for an existing
     /// variant.
