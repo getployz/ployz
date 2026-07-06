@@ -411,9 +411,16 @@ fn invalid_name_override_reports_the_flag() {
 fn fake_ssh(script_body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let script = dir.path().join("fake-ssh");
-    fs::write(&script, format!("#!/bin/sh\n{script_body}")).expect("fake ssh writes");
-    make_executable(&script);
+    write_executable_script(&script, &format!("#!/bin/sh\n{script_body}"));
     (dir, script)
+}
+
+#[cfg(unix)]
+fn write_executable_script(path: &std::path::Path, contents: &str) {
+    let staged = path.with_extension("tmp");
+    fs::write(&staged, contents).expect("fake ssh writes");
+    make_executable(&staged);
+    fs::rename(staged, path).expect("fake ssh stages atomically");
 }
 
 fn ssh_timeout() -> std::time::Duration {
@@ -440,15 +447,13 @@ fn ssh_commands_pass_destination_and_remote_command() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let args_file = dir.path().join("args");
     let script = dir.path().join("fake-ssh");
-    fs::write(
+    write_executable_script(
         &script,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho sg-core-1\n",
             args_file.display()
         ),
-    )
-    .expect("fake ssh writes");
-    make_executable(&script);
+    );
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
