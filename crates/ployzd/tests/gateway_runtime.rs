@@ -7,12 +7,12 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
 };
-use ployzd::gateway::{
+use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
     GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
     GatewayUpstream,
 };
-use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
+use ployzd::roles::gateway::route_table::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
 
 #[test]
 fn gateway_runtime_serves_new_projection_from_available_source() {

@@ -1,5 +1,5 @@
 use ployz_test_support::ids::route_hostname;
-use ployzd::dns::{
+use ployzd::roles::dns::projection::{
     DnsAnswer, DnsProjection, DnsProjectionError, DnsProjectionInput, DnsProjectionState,
     DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, apply_dns_update, project_dns,
 };
@@ -145,7 +145,7 @@ fn dns_runtime_keeps_serving_last_good_answers_after_source_disappears() {
 fn dns_answers_reject_empty_and_whitespace_values() {
     assert_eq!(
         DnsAnswer::try_new(""),
-        Err(ployzd::dns::DnsAnswerError::Empty)
+        Err(ployzd::roles::dns::projection::DnsAnswerError::Empty)
     );
     assert!(DnsAnswer::try_new("not-an-address").is_err());
     assert!(DnsAnswer::try_new("203.0.113.10 203.0.113.11").is_err());

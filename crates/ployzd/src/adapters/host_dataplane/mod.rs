@@ -9,7 +9,7 @@ use ployz_core::ids::MachineId;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::machine_runtime::service::MachinePloyzNativeMeshPreparer;
+use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 
 mod host_commands;
 mod host_routes;

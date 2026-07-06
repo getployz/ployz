@@ -38,14 +38,14 @@ use ployz_sdk_types::{
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
-use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
+use ployzd::roles::gateway::process::start_gateway_process_runtime_with_client;
 use ployzd::machine_roster::MachineRosterStore;
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcResponse,
 };
-use ployzd::machine_runtime::service::start_machine_runtime_service;
+use ployzd::roles::machine::service::start_machine_runtime_service;
 use ployzd::namespace_intent::NamespaceIntentStore;
 use ployzd::service_catalog::machine_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -380,7 +380,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
 #[tokio::test]
 async fn control_runtime_refuses_machine_add_without_join_template() {
     let nats = TestNats::start().await;
-    let result = ployzd::control_runtime::start_control_runtime_with_client_and_reload(
+    let result = ployzd::roles::control::start_control_runtime_with_client_and_reload(
         nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
@@ -389,7 +389,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 
     assert!(matches!(
         result,
-        Err(ployzd::control_runtime::ControlRuntimeError::MissingMachineJoinTemplate)
+        Err(ployzd::roles::control::ControlRuntimeError::MissingMachineJoinTemplate)
     ));
 }
 

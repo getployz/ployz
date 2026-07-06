@@ -5,8 +5,8 @@
 //! table, and exposes typed health. It owns no command surface.
 
 use crate::config::DnsProcessConfig;
-use crate::dns::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
-use crate::dns_source::load_dns_projection_update_from_nats;
+use crate::roles::dns::projection::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
+use crate::roles::dns::source::load_dns_projection_update_from_nats;
 use crate::intent::NatsIntentReader;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
@@ -288,7 +288,7 @@ impl std::error::Error for DnsProcessRuntimeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns::{DnsProjectionError, DnsProjectionState};
+    use crate::roles::dns::projection::{DnsProjectionError, DnsProjectionState};
 
     #[test]
     fn retained_last_good_attempt_keeps_steady_refresh_interval() {

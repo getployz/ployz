@@ -3,7 +3,7 @@
 use crate::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use crate::machine_runtime::protocol::{
+use crate::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest, MachineContainerRpcOk,
     MachineContainerRunDomainError, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,

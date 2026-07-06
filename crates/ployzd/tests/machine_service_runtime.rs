@@ -17,10 +17,10 @@ use ployzd::deploy_worker::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
     MachineRuntimeUnavailableReason,
 };
-use ployzd::machine_runtime::client::{
+use ployzd::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
 };
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
@@ -31,12 +31,12 @@ use ployzd::machine_runtime::protocol::{
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse,
 };
-use ployzd::machine_runtime::runner::{
+use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::machine_runtime::service::{
+use ployzd::roles::machine::service::{
     MachinePloyzNativeMeshPreparer as LocalWireGuardEbpfPreparer, start_machine_runtime_service,
     start_machine_runtime_service_with_public_ip,
 };
@@ -622,7 +622,7 @@ async fn machine_runtime_service_tails_container_logs() {
     assert_eq!(
         response,
         MachineLogsTailRpcResponse::Ok(MachineLogsTailRpcOk {
-            value: ployzd::machine_runtime::protocol::MachineLogsTailResult {
+            value: ployzd::roles::machine::protocol::MachineLogsTailResult {
                 machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_failed"),
                 text: "panic: missing DATABASE_URL\n".to_owned(),

@@ -29,7 +29,7 @@ use ployzd::deploy_worker::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
     NamespaceCommitError, NamespaceStateCommitter, prepare_deploy_execution_command,
 };
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,

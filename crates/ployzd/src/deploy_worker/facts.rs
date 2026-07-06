@@ -1,7 +1,7 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
 use crate::intent::NatsIntentReader;
-use crate::machine_runtime::client::{NatsMachineFactsReader, read_machine_placement_facts};
+use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
@@ -125,7 +125,7 @@ fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>)
 }
 
 fn classify_machine_usability(
-    placement_facts: &[crate::machine_runtime::client::MachinePlacementFacts],
+    placement_facts: &[crate::roles::machine::client::MachinePlacementFacts],
 ) -> (Vec<MachineId>, Vec<UnusableMachine>) {
     let mut eligible = Vec::new();
     let mut unusable = BTreeMap::new();

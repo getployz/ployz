@@ -9,7 +9,7 @@ use crate::deploy_worker::DeployMachineCandidates;
 use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
 use crate::machine_roster::MachineRosterStore;
-use crate::machine_runtime::client::{
+use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;

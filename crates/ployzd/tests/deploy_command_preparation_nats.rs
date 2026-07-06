@@ -22,13 +22,13 @@ use ployzd::deploy_worker::{
 };
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
-use ployzd::machine_runtime::client::NatsMachineFactsReader;
-use ployzd::machine_runtime::runner::{
+use ployzd::roles::machine::client::NatsMachineFactsReader;
+use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::machine_runtime::service::{
+use ployzd::roles::machine::service::{
     MachinePloyzNativeMeshPreparer, start_machine_runtime_service,
 };
 use ployzd::namespace_intent::NamespaceIntentStore;

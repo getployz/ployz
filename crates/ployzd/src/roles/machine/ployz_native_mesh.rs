@@ -1,10 +1,10 @@
 //! Request-side adapter for the built-in Ployz Native Mesh provider.
 
 use crate::deploy_worker::DataplanePreparer;
-use crate::machine_runtime::client::{
+use crate::roles::machine::client::{
     MachineCallError, MachineFactsReadRuntimeError, NatsMachineDataplanePreparer, call_machine,
 };
-use crate::machine_runtime::protocol::{
+use crate::roles::machine::protocol::{
     MachineDataplanePrepareRpcRequest, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };

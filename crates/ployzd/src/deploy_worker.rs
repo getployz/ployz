@@ -32,7 +32,7 @@ pub use preparation::{
     DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 
-use crate::machine_runtime::protocol::{
+use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
 };

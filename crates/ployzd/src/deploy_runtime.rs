@@ -9,7 +9,7 @@ use crate::deploy_worker::{
     prepare_deploy_execution_command,
 };
 use crate::intent::NatsIntentReader;
-use crate::machine_runtime::client::{
+use crate::roles::machine::client::{
     MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
     NatsMachineFactsReader,
 };

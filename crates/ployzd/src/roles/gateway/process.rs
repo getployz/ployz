@@ -1,13 +1,13 @@
 //! Runtime wiring for the gateway role.
 
 use crate::config::GatewayProcessConfig;
-use crate::gateway::{GatewayProjection, GatewayProjectionUpdate};
-use crate::gateway_pingora::{
+use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
+use crate::roles::gateway::pingora::{
     GatewayPingoraFailureRecorder, PingoraRouteRegistry, PingoraRouteRegistryError,
     PloyzGatewayProxy,
 };
-use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
-use crate::gateway_source::load_gateway_projection_update_from_nats;
+use crate::roles::gateway::route_table::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
+use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
 use crate::intent::NatsIntentReader;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
@@ -803,8 +803,8 @@ impl std::error::Error for GatewayProcessRuntimeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::GatewayProjectionError;
-    use crate::gateway_runtime::GatewayServingState;
+    use crate::roles::gateway::projection::GatewayProjectionError;
+    use crate::roles::gateway::route_table::GatewayServingState;
 
     #[test]
     fn retained_last_good_attempt_keeps_steady_refresh_interval() {
@@ -823,7 +823,7 @@ mod tests {
         let next = record_gateway_attempt(
             &health,
             Ok(GatewayRuntimeTick {
-                state: crate::gateway::GatewayProjectionState {
+                state: crate::roles::gateway::projection::GatewayProjectionState {
                     last_good: None,
                     last_error: Some(GatewayProjectionError::SourceUnavailable {
                         message: "not used".to_owned(),

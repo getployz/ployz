@@ -1,6 +1,6 @@
 //! Pingora-backed HTTP gateway serving.
 
-use crate::gateway::GatewayProjection;
+use crate::roles::gateway::projection::GatewayProjection;
 use async_trait::async_trait;
 use pingora::Error;
 use pingora::ErrorType::{

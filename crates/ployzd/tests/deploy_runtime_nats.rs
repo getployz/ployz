@@ -22,8 +22,8 @@ use ployzd::deploy_runtime::{
 use ployzd::deploy_worker::DeployMachineCandidates;
 use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
 use ployzd::machine_roster::MachineRosterStore;
-use ployzd::machine_runtime::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
-use ployzd::machine_runtime::protocol::{
+use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
+use ployzd::roles::machine::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
