@@ -4,9 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::atomic_file::write_file_atomically;
-use ployz_core::nats_config::{
-    AuthorizedUsersParseError, NatsAuthorizedUser, parse_authorized_users, render_authorized_users,
-};
+use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
+use ployz_core::nats_config::{NatsAuthorizedUser, render_authorized_users};
 use ployz_nats::connect::{NatsConnectConfig, connect_authenticated};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -27,34 +26,23 @@ pub struct RenderedAuthorization {
     pub reload: Option<NatsReloadEvidence>,
 }
 
-/// Why reading the on-disk authorized-users file failed. A missing file is
-/// not an error: it reads as the empty set.
+/// Why reading the on-disk authorized-users file failed. The file is only read
+/// for the no-op comparison (the store is the source of truth); a missing file is
+/// not an error — it reads as absent.
 #[derive(Debug)]
-pub enum AuthorizedUsersFileError {
-    Read {
-        path: PathBuf,
-        message: String,
-    },
-    Parse {
-        path: PathBuf,
-        source: AuthorizedUsersParseError,
-    },
+pub struct AuthorizedUsersFileError {
+    path: PathBuf,
+    message: String,
 }
 
 impl fmt::Display for AuthorizedUsersFileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read { path, message } => write!(
-                formatter,
-                "failed to read authorized-users file {}: {message}",
-                path.display()
-            ),
-            Self::Parse { path, source } => write!(
-                formatter,
-                "failed to parse authorized-users file {}: {source}",
-                path.display()
-            ),
-        }
+        write!(
+            formatter,
+            "failed to read authorized-users file {}: {}",
+            self.path.display(),
+            self.message
+        )
     }
 }
 
@@ -96,7 +84,9 @@ impl std::error::Error for RenderFailure {}
 pub enum RenderPrepareFailure {
     /// The single-writer render task is no longer running.
     WriterClosed,
-    /// The current on-disk file could not be read or parsed.
+    /// The grant store could not be read or written.
+    Store { message: String },
+    /// The current on-disk file could not be read (for the no-op comparison).
     File { source: AuthorizedUsersFileError },
     /// The atomic file write failed.
     WriteFile { path: PathBuf, message: String },
@@ -108,6 +98,7 @@ impl fmt::Display for RenderPrepareFailure {
             Self::WriterClosed => {
                 formatter.write_str("authorization render writer task is no longer running")
             }
+            Self::Store { message } => write!(formatter, "grant store: {message}"),
             Self::File { source } => source.fmt(formatter),
             Self::WriteFile { path, message } => write!(
                 formatter,
@@ -175,9 +166,14 @@ pub struct NatsAuthorizationWriter {
 }
 
 impl NatsAuthorizationWriter {
-    /// Spawns the single-writer render task that owns the authorized-users
-    /// authority file.
-    pub fn start(authorized_users_file: PathBuf, reload: impl NatsReloadRunner) -> Self {
+    /// Spawns the single-writer render task. `authorized-users.conf` is a rendered
+    /// projection of the grant `store`; the task renders from the store and reloads
+    /// nats-server whenever a render is requested.
+    pub fn start(
+        authorized_users_file: PathBuf,
+        store: NatsAuthorizationStore,
+        reload: impl NatsReloadRunner,
+    ) -> Self {
         let (sender, mut receiver) = mpsc::channel(RENDER_QUEUE_DEPTH);
         let task = tokio::spawn(async move {
             let reload = Arc::new(reload);
@@ -189,6 +185,7 @@ impl NatsAuthorizationWriter {
                 } = request;
                 let result = handle_render_request(
                     &authorized_users_file,
+                    &store,
                     Arc::clone(&reload),
                     authorize,
                     verify,
@@ -215,24 +212,11 @@ impl NatsAuthorizationWriter {
     }
 }
 
-fn parse_authorized_users_contents(
-    path: &Path,
-    contents: Option<&str>,
-) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersFileError> {
-    let Some(contents) = contents else {
-        return Ok(Vec::new());
-    };
-    parse_authorized_users(contents).map_err(|source| AuthorizedUsersFileError::Parse {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
 fn read_authorized_users_contents(path: &Path) -> Result<Option<String>, AuthorizedUsersFileError> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(Some(contents)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(AuthorizedUsersFileError::Read {
+        Err(error) => Err(AuthorizedUsersFileError {
             path: path.to_path_buf(),
             message: error.to_string(),
         }),
@@ -241,18 +225,25 @@ fn read_authorized_users_contents(path: &Path) -> Result<Option<String>, Authori
 
 async fn handle_render_request(
     path: &Path,
+    store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     authorize: Option<NatsAuthorizedUser>,
     verify: Option<NatsConnectConfig>,
 ) -> Result<RenderedAuthorization, RenderFailure> {
     let prepare = |failure: RenderPrepareFailure| RenderFailure::Prepare { failure };
+    let store_prepare = |error: NatsAuthorizationStoreError| {
+        prepare(RenderPrepareFailure::Store {
+            message: error.to_string(),
+        })
+    };
+    // The store is the source of truth: persist the new grant, then render the whole
+    // set from it. The on-disk file is read only to skip a needless reload.
+    if let Some(user) = authorize {
+        store.upsert(&user).await.map_err(store_prepare)?;
+    }
+    let desired = store.list().await.map_err(store_prepare)?;
     let current_contents = read_authorized_users_contents(path)
         .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
-    let mut desired = parse_authorized_users_contents(path, current_contents.as_deref())
-        .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
-    if let Some(user) = authorize {
-        replace_authorized_user(&mut desired, user);
-    }
 
     let rendered = render_authorized_users(&desired);
     if current_contents.as_deref() == Some(rendered.as_str()) {
@@ -305,18 +296,6 @@ async fn handle_render_request(
         user_count: desired.len(),
         reload: Some(evidence),
     })
-}
-
-fn replace_authorized_user(users: &mut Vec<NatsAuthorizedUser>, user: NatsAuthorizedUser) {
-    let authority_key = user.authority_record_key();
-    if let Some(existing) = users
-        .iter_mut()
-        .find(|existing| existing.authority_record_key() == authority_key)
-    {
-        *existing = user;
-    } else {
-        users.push(user);
-    }
 }
 
 async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailure> {

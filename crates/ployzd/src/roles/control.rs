@@ -9,6 +9,7 @@ use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
+use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
@@ -116,8 +117,17 @@ pub async fn start_control_process_with_client_and_reload(
     }
     let repository = OperationRepository::open(core_store.clone(), client.clone());
     let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
+    // The grant store is the source of truth; the conf is its projection. On a
+    // fresh core, import the keeper-written conf into the store once — before the
+    // first render, or rendering the empty store would wipe the conf.
+    let nats_authorizations = NatsAuthorizationStore::new(core_store.clone());
+    nats_authorizations
+        .seed_from_conf_if_empty(&config.nats_authorization.authorized_users_file)
+        .await
+        .map_err(ControlProcessError::SeedAuthorizations)?;
     let authorization = NatsAuthorizationWriter::start(
         config.nats_authorization.authorized_users_file.clone(),
+        nats_authorizations,
         reload,
     );
     authorization
@@ -281,6 +291,7 @@ pub enum ControlProcessError {
     OpenCoreStore(CoreStoreError),
     SeedMirrorMissing(PathBuf),
     SeedCore(SeedCoreError),
+    SeedAuthorizations(NatsAuthorizationStoreError),
     StartFactsCache(FactCacheError),
     RenderNatsAuthorization(RenderFailure),
     ResumeMachineAddMints(MintResumeError),
@@ -312,6 +323,9 @@ impl fmt::Display for ControlProcessError {
             }
             Self::SeedCore(error) => {
                 write!(formatter, "failed to seed core store from mirror: {error}")
+            }
+            Self::SeedAuthorizations(error) => {
+                write!(formatter, "failed to seed authorization grants: {error}")
             }
             Self::StartFactsCache(error) => {
                 write!(formatter, "failed to start runtime facts cache: {error}")

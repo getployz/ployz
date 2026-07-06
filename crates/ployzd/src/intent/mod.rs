@@ -3,4 +3,5 @@
 
 pub mod machine_roster;
 pub mod namespace_intent;
+pub mod nats_authorizations;
 pub mod service;
