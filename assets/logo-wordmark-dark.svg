@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 72" width="240" height="72">
+  <g transform="translate(2 4)">
+    <rect x="6" y="22" width="32" height="32" rx="8" fill="hsl(338 76% 56%)" opacity="0.35"></rect>
+    <rect x="14" y="14" width="32" height="32" rx="8" fill="hsl(338 76% 56%)" opacity="0.65"></rect>
+    <rect x="22" y="6" width="32" height="32" rx="8" fill="hsl(338 76% 56%)"></rect>
+    <circle cx="48" cy="14" r="2.5" fill="#fff"></circle>
+  </g>
+  <text x="80" y="48" style="font-family: 'Poppins', system-ui, sans-serif; font-weight: 700; font-size: 40px; letter-spacing: -0.04em; fill: hsl(250 24% 96%);">ployz</text>
+</svg>
