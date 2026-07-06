@@ -325,7 +325,7 @@ impl DeployOperationRuntime {
         )
         .await;
         controllers
-            .release_deploy_namespace(&namespace_id, &operation_id)
+            .release_namespace(&namespace_id, &operation_id)
             .await;
         result
     }

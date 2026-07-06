@@ -251,14 +251,6 @@ impl OperationControllers {
         &self.repository
     }
 
-    pub async fn release_deploy_namespace(
-        &self,
-        namespace_id: &NamespaceId,
-        operation_id: &OperationId,
-    ) {
-        self.release_namespace(namespace_id, operation_id).await;
-    }
-
     pub fn issue_machine_add_bootstrap_material(
         &self,
         operation_id: &OperationId,
@@ -330,7 +322,7 @@ impl OperationControllers {
         }
     }
 
-    async fn release_namespace(&self, namespace_id: &NamespaceId, operation_id: &OperationId) {
+    pub async fn release_namespace(&self, namespace_id: &NamespaceId, operation_id: &OperationId) {
         let mut locks = self.namespace_locks.lock().await;
         if locks.get(namespace_id) == Some(operation_id) {
             locks.remove(namespace_id);
