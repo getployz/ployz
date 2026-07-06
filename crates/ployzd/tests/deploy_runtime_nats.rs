@@ -150,7 +150,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     .await
     .expect("deploy completes");
     controllers
-        .release_deploy_namespace(&namespace_id("default"), &operation_id("op_123"))
+        .release_namespace(&namespace_id("default"), &operation_id("op_123"))
         .await;
 
     let retry = controllers

@@ -84,6 +84,12 @@ const MIGRATIONS: &[&str] = &[
         json       TEXT NOT NULL
     );
     ",
+    "
+    ALTER TABLE operation_events ADD COLUMN subject TEXT;
+    CREATE UNIQUE INDEX operation_events_subject
+        ON operation_events(operation_id, subject)
+        WHERE subject IS NOT NULL;
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
