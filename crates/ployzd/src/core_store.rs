@@ -33,11 +33,40 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (operation_id, sequence)
     );
     CREATE TABLE deploy_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
-    CREATE TABLE machine_add_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
-    CREATE TABLE machine_add_submissions (key TEXT PRIMARY KEY, json TEXT NOT NULL);
-    CREATE TABLE machine_add_secret_deliveries (key TEXT PRIMARY KEY, json TEXT NOT NULL);
-    CREATE TABLE machine_add_mint_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
-    CREATE TABLE machine_add_join_tokens (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE machine_add_idempotency (
+        idempotency_key TEXT PRIMARY KEY,
+        operation_id    TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE machine_add_claims (
+        idempotency_key TEXT PRIMARY KEY,
+        operation_id    TEXT NOT NULL UNIQUE,
+        machine_id      TEXT NOT NULL,
+        raw_join_token  TEXT NOT NULL,
+        claim_json      TEXT NOT NULL
+    );
+    CREATE TABLE machine_add_submissions (
+        idempotency_key TEXT PRIMARY KEY,
+        operation_id    TEXT NOT NULL UNIQUE,
+        machine_id      TEXT NOT NULL,
+        raw_join_token  TEXT NOT NULL,
+        submission_json TEXT NOT NULL
+    );
+    CREATE TABLE machine_add_join_tokens (
+        fingerprint     TEXT PRIMARY KEY,
+        operation_id    TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE machine_add_secret_deliveries (
+        idempotency_key      TEXT PRIMARY KEY,
+        operation_id         TEXT NOT NULL,
+        secret_delivery_json TEXT NOT NULL
+    );
+    CREATE TABLE machine_add_mint_claims (
+        idempotency_key TEXT PRIMARY KEY,
+        operation_id    TEXT NOT NULL,
+        nkey_public     TEXT NOT NULL,
+        mint_claim_json TEXT NOT NULL
+    );
     CREATE TABLE route_bindings (
         hostname TEXT    NOT NULL,
         port     INTEGER NOT NULL,
@@ -222,9 +251,8 @@ mod tests {
         let store = CoreStore::open(path.clone()).await.expect("first open");
         let tables: Vec<String> = store
             .call(|conn| {
-                let mut statement = conn.prepare(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-                )?;
+                let mut statement = conn
+                    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
                 let names = statement
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;

@@ -3,6 +3,7 @@
 use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
+use crate::core_store::{CoreStore, CoreStoreError};
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployMachineCandidates;
 use crate::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
@@ -18,7 +19,6 @@ use crate::nats_authorization::{
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::operation_api::OperationApiHandlers;
-use crate::core_store::{CoreStore, CoreStoreError};
 use crate::operation_log::OperationRepository;
 use crate::process_support::shutdown_signal;
 use crate::runtime_facts::{

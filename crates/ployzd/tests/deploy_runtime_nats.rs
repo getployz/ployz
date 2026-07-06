@@ -104,7 +104,8 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         controllers
             .repository()
             .get(&operation_id("op_123"))
-            .await,
+            .await
+            .expect("status reads"),
         Some(OperationStatus::Deploy {
             state: DeployOperationState::Completed {
                 outcome: DeployCompletionOutcome::Completed,
@@ -219,8 +220,10 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     );
     assert!(matches!(
         controllers
-            .repository().get(&operation_id("op_123"))
-            .await,
+            .repository()
+            .get(&operation_id("op_123"))
+            .await
+            .expect("status reads"),
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -281,8 +284,10 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     );
     assert!(matches!(
         controllers
-            .repository().get(&operation_id("op_123"))
-            .await,
+            .repository()
+            .get(&operation_id("op_123"))
+            .await
+            .expect("status reads"),
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -354,7 +359,8 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let status = controllers
         .repository()
         .get(&operation_id("op_123"))
-        .await;
+        .await
+        .expect("status reads");
     assert!(
         matches!(
             status,
@@ -412,6 +418,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             .repository()
             .get(&operation_id("op_second"))
             .await
+            .expect("status reads")
             .is_none()
     );
 }
@@ -471,7 +478,11 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let machine_roster = MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store"));
+    let machine_roster = MachineRosterStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
     let intent = start_intent_runtime(
         client.clone(),
         machine_roster,
@@ -540,7 +551,6 @@ async fn start_facts_subscription(
         }
     })
 }
-
 
 fn facts_reader(client: &async_nats::Client, timeout: Duration) -> NatsMachineFactsReader {
     NatsMachineFactsReader::new(client.clone()).with_request_timeout(timeout)

@@ -625,7 +625,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn container_run_response_wire_shape_is_pinned() {
         let ok = MachineContainerRunRpcResponse::Ok(MachineContainerRunRpcOk {

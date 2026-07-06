@@ -16,7 +16,8 @@ use ployz_core::subjects::{OPS_STREAM_SUBJECT, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest,
+    MachineJoinRedeemRequest, MachineJoinReportOutcome, MachineJoinReportRequest, OpsStatusError,
+    OpsStatusRequest,
 };
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -466,6 +467,102 @@ async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() 
         .shutdown()
         .await
         .expect("control runtime restarts after rejected duplicate");
+}
+
+#[tokio::test]
+async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_unavailable() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let scrub_operation_id = operation_id("op_scrub");
+
+    let accepted = machine_add(
+        &api,
+        scrub_operation_id.as_str(),
+        "idem_scrub",
+        "machine_scrub",
+    )
+    .await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+    api.machine_join_report(&MachineJoinReportRequest {
+        join_token: accepted.join_token.clone(),
+        outcome: MachineJoinReportOutcome::Completed,
+    })
+    .await
+    .expect("machine join completion reports");
+    let duplicate = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_scrub_retry"),
+            idempotency_key: idempotency_key("idem_scrub"),
+            machine_id: machine_id("machine_scrub_retry"),
+            name: ployz_sdk_types::MachineName::try_new("machine_scrub_retry")
+                .expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+        })
+        .await
+        .expect_err("terminal scrub keeps the non-secret idempotency tombstone");
+    assert_eq!(
+        duplicate,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_scrub_retry"),
+            },
+        }
+    );
+
+    let conn = rusqlite::Connection::open(nats.work_dir.path().join("ployz-core.db"))
+        .expect("core db opens");
+    for table in [
+        "machine_add_claims",
+        "machine_add_submissions",
+        "machine_add_join_tokens",
+        "machine_add_secret_deliveries",
+        "machine_add_mint_claims",
+    ] {
+        let count: u64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE operation_id = ?1"),
+                [scrub_operation_id.as_str()],
+                |row| row.get(0),
+            )
+            .expect("working rows count");
+        assert_eq!(count, 0, "{table} keeps terminal secret material");
+    }
+
+    conn.execute(
+        "UPDATE operations SET status_json = 'not json' WHERE operation_id = ?1",
+        [scrub_operation_id.as_str()],
+    )
+    .expect("status row corrupts");
+    drop(conn);
+
+    let error = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: scrub_operation_id.clone(),
+        })
+        .await
+        .expect_err("corrupt status is not reported as missing");
+    assert!(
+        matches!(
+            error,
+            OperationApiClientError::Domain {
+                endpoint: OperationApiEndpoint::OpsStatus,
+                error: OpsStatusError::Unavailable {
+                    operation_id: ref unavailable_id,
+                    ..
+                },
+            } if unavailable_id == &scrub_operation_id
+        ),
+        "expected unavailable status error, got {error:?}"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
 }
 
 async fn machine_add(

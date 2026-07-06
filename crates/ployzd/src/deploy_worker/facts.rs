@@ -1,9 +1,7 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
 use crate::intent::NatsIntentReader;
-use crate::machine_runtime::client::{
-    NatsMachineFactsReader, read_machine_placement_facts,
-};
+use crate::machine_runtime::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
@@ -57,8 +55,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
-    let placement_facts =
-        read_machine_placement_facts(facts_reader, machine_lifecycles).await;
+    let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
     let observed_machines = placement_facts
         .iter()
         .filter_map(|facts| facts.containers.clone())

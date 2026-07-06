@@ -143,7 +143,10 @@ async fn load_intent(
         .active_machines()
         .await
         .map_err(|error| error.to_string())?;
-    let namespace_intent = namespace_intent.load().await.map_err(|error| error.to_string())?;
+    let namespace_intent = namespace_intent
+        .load()
+        .await
+        .map_err(|error| error.to_string())?;
 
     Ok(IntentSnapshot {
         active_machines,
