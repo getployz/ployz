@@ -42,8 +42,6 @@ pub mod operations {
 pub mod core_store;
 pub mod dispatch;
 pub mod intent;
-pub mod machine_roster;
-pub mod namespace_intent;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;

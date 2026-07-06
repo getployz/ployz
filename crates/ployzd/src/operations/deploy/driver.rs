@@ -8,12 +8,12 @@ use crate::operations::deploy::{
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use crate::intent::NatsIntentReader;
+use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{
     MachineFactsReadRuntimeError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
     NatsMachineFactsReader,
 };
-use crate::namespace_intent::NamespaceIntentStore;
+use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,

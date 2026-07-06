@@ -15,9 +15,9 @@ use ployzd::roles::gateway::process::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessRuntimeError,
     start_gateway_process_runtime_with_client,
 };
-use ployzd::intent::{RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
-use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

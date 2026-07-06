@@ -20,14 +20,14 @@ use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::operations::deploy::DeployMachineCandidates;
-use ployzd::intent::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
-use ployzd::machine_roster::MachineRosterStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentRuntime, start_intent_runtime};
+use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
-use ployzd::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::operations::log::OperationRepository;
 use std::time::Duration;
 

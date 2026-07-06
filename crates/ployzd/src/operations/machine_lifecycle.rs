@@ -5,7 +5,7 @@
 //! in the core database.
 
 use crate::controllers::OperationControllers;
-use crate::machine_roster::{MachineLifecycleUpdate, MachineRosterStore};
+use crate::intent::machine_roster::{MachineLifecycleUpdate, MachineRosterStore};
 use crate::operations::log::AcceptedMachineLifecycleSubmission;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{MachineId, OperationId};

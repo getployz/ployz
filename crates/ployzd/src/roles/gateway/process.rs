@@ -8,7 +8,7 @@ use crate::roles::gateway::pingora::{
 };
 use crate::roles::gateway::route_table::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
-use crate::intent::NatsIntentReader;
+use crate::intent::service::NatsIntentReader;
 use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,

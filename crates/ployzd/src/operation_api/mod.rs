@@ -18,9 +18,9 @@ pub use submit::{
 
 use crate::controllers::OperationControllers;
 use crate::operations::deploy::driver::DeployOperationRuntime;
-use crate::intent::NatsIntentReader;
+use crate::intent::service::NatsIntentReader;
 use crate::operations::machine_lifecycle::MachineLifecycleOperationRuntime;
-use crate::machine_roster::MachineRosterStore;
+use crate::intent::machine_roster::MachineRosterStore;
 use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::operations::machine_update::MachineUpdateOperationRuntime;
 use crate::adapters::nats_authorization::MachineCredentialMintRuntime;
