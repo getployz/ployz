@@ -17,10 +17,10 @@ use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
 use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::{INTENT_CHANGED, machine_facts};
-use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated};
+use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -62,7 +62,17 @@ pub async fn start_machine_process(
     )
     .await
     .map_err(MachineProcessError::AwaitCredentials)?;
-    let client = connect_authenticated(&connect, MACHINE_NATS_CONNECT_TIMEOUT)
+    // Build the failover pool from the persisted mirror *before* connecting, so a
+    // machine rebooting during a core outage dials a promoted core from its cached
+    // roster rather than timing out on the possibly-dead configured seed.
+    let intent_mirror =
+        MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json"));
+    let seed = connect.url.clone();
+    let initial_pool = match intent_mirror.load() {
+        Some(snapshot) => candidate_server_pool(&snapshot, &seed),
+        None => vec![seed.as_str().to_owned()],
+    };
+    let client = connect_authenticated_pool(&connect, &initial_pool, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(MachineProcessError::ConnectNats)?;
     let runner = DockerManagedContainerRunner::lazy_local_defaults(
@@ -78,9 +88,6 @@ pub async fn start_machine_process(
             config.ployz_native_mesh.wg_ifname.clone(),
         ));
 
-    let intent_mirror =
-        MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json"));
-    let seed = connect.url.clone();
     start_machine_process_with_ports(
         client,
         config.machine_id.clone(),
@@ -162,7 +169,9 @@ fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec
     let mut pool = vec![seed.as_str().to_owned()];
     for machine in &snapshot.active_machines {
         if let Some(endpoint) = machine.public_endpoint {
-            let url = format!("tls://{endpoint}:{CORE_NATS_PORT}");
+            // SocketAddr's Display brackets IPv6 (`[::1]:4222`); a bare interpolation
+            // would emit an invalid `tls://::1:4222`.
+            let url = format!("tls://{}", SocketAddr::new(endpoint, CORE_NATS_PORT));
             if !pool.contains(&url) {
                 pool.push(url);
             }
@@ -185,14 +194,6 @@ fn start_intent_mirror(
 ) -> RunningTask {
     let (shutdown, mut shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
-        // Boot-seed the failover pool from the last snapshot on disk, so a machine
-        // that reboots *during* a core outage can fail over immediately from its
-        // cached roster rather than waiting for a live drumbeat it may never get.
-        if let Some(snapshot) = mirror.load() {
-            let _ = client
-                .set_server_pool(candidate_server_pool(&snapshot, &seed))
-                .await;
-        }
         loop {
             let mut changed = match client.subscribe(INTENT_CHANGED).await {
                 Ok(subscription) => subscription,
@@ -217,14 +218,17 @@ fn start_intent_mirror(
                         if let Ok(snapshot) =
                             serde_json::from_slice::<IntentSnapshot>(&message.payload)
                         {
-                            let _ = mirror.store(&snapshot);
-                            // Keep the failover pool current: the configured core
-                            // (always) plus each Reachable Machine. This updates the
-                            // pool used on the *next* reconnect; it never forces one,
-                            // so the live core connection stays undisturbed.
-                            let _ = client
-                                .set_server_pool(candidate_server_pool(&snapshot, &seed))
-                                .await;
+                            // Only refresh the pool from intent the mirror *accepted*
+                            // (Ok(true)): a healed old core's lower-epoch snapshot is
+                            // refused by the store's epoch gate, and must not drop the
+                            // promoted-core candidates from the live pool. Updates the
+                            // pool used on the *next* reconnect; never forces one, so
+                            // the live core connection stays undisturbed.
+                            if let Ok(true) = mirror.store(&snapshot) {
+                                let _ = client
+                                    .set_server_pool(candidate_server_pool(&snapshot, &seed))
+                                    .await;
+                            }
                         }
                     }
                     _ = &mut shutdown_rx => return,

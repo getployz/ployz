@@ -4,8 +4,9 @@
 //! promotion drives this through a one-shot ployzd invocation: replay the
 //! mirror's roster, routes, and serving targets into the fresh store, and set a
 //! strictly higher epoch than the core being succeeded (ADR 0031). Every write
-//! is an idempotent upsert and the epoch is max-then-bump, so re-running
-//! `core-promote` is safe.
+//! is an idempotent upsert, and a re-run whose mirror is already behind the
+//! store's epoch is rejected as a no-op, so re-running `core-promote` never
+//! rolls a live core's intent back.
 
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
@@ -22,11 +23,30 @@ pub enum SeedCoreError {
     Epoch(#[from] CoreStoreError),
 }
 
-/// Replay `snapshot` into `core_store` and bump the epoch past the succeeded core.
+/// Whether a promotion seed replayed the mirror or found the store already ahead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedOutcome {
+    /// The store was fresh (or behind the mirror): intent was replayed and the
+    /// epoch fenced above the succeeded core.
+    Seeded,
+    /// The store already fenced a core above the mirror — a live core that took
+    /// later operator changes. Left untouched; no rollback.
+    AlreadyPromoted,
+}
+
+/// Replay `snapshot` into `core_store` and fence the epoch past the succeeded core.
 pub async fn seed_core_from_snapshot(
     core_store: &CoreStore,
     snapshot: &IntentSnapshot,
-) -> Result<(), SeedCoreError> {
+) -> Result<SeedOutcome, SeedCoreError> {
+    // Guard a stale re-run: if this store already fences a core above the mirror's
+    // epoch, it is a live core that has taken later operator changes. Replaying the
+    // stale snapshot would roll that intent back under a fresh epoch, and machines
+    // would accept the rollback instead of epoch-gating it away. Leave it untouched.
+    if core_store.control_plane_epoch().await? > snapshot.epoch {
+        return Ok(SeedOutcome::AlreadyPromoted);
+    }
+
     let roster = MachineRosterStore::new(core_store.clone());
     let namespace = NamespaceIntentStore::new(core_store.clone());
 
@@ -42,12 +62,12 @@ pub async fn seed_core_from_snapshot(
             .await?;
     }
 
-    // Fence the succeeded core in one atomic step (strictly above the mirror's
-    // epoch and any epoch this machine already held, e.g. a re-promotion).
+    // Fence the succeeded core in one atomic step, strictly above the mirror's
+    // epoch (the guard bounds the store's existing epoch at <= the mirror).
     core_store
         .fence_control_plane_epoch_above(snapshot.epoch)
         .await?;
-    Ok(())
+    Ok(SeedOutcome::Seeded)
 }
 
 #[cfg(test)]
@@ -77,10 +97,11 @@ mod tests {
         // Mirror is at epoch 3; a fresh store mints 1.
         let snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial().next().next());
 
-        seed_core_from_snapshot(&store, &snapshot)
+        let outcome = seed_core_from_snapshot(&store, &snapshot)
             .await
             .expect("seed");
 
+        assert_eq!(outcome, SeedOutcome::Seeded);
         let roster = MachineRosterStore::new(store.clone());
         assert_eq!(roster.active_machines().await.expect("roster").len(), 1);
         // max(mirror=3, existing=1) + 1 = 4 — strictly above the succeeded core.
@@ -88,16 +109,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn re_seeding_never_lowers_the_epoch() {
+    async fn re_running_on_an_advanced_store_is_a_no_op() {
         let store = CoreStore::open_in_memory().await.expect("store");
-        seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
-            .await
-            .expect("first seed");
+        let first =
+            seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
+                .await
+                .expect("first seed");
+        assert_eq!(first, SeedOutcome::Seeded);
         let after_first = store.control_plane_epoch().await.expect("epoch");
-        // A second seed from the same (now-stale) mirror epoch still advances.
-        seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
-            .await
-            .expect("second seed");
-        assert!(store.control_plane_epoch().await.expect("epoch") > after_first);
+
+        // The store now fences above the mirror; a stale re-run must not roll back.
+        let second =
+            seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
+                .await
+                .expect("second seed");
+        assert_eq!(second, SeedOutcome::AlreadyPromoted);
+        assert_eq!(
+            store.control_plane_epoch().await.expect("epoch"),
+            after_first
+        );
     }
 }

@@ -163,8 +163,10 @@ pub fn authenticated_connect_options(config: &NatsConnectConfig) -> async_nats::
         .require_tls(true)
         // The failover server pool is operator-controlled (the configured core
         // plus Reachable Machines from mirrored intent); don't merge servers the
-        // NATS server advertises, which would pollute the recovery candidate set.
+        // NATS server advertises, which would pollute the recovery candidate set,
+        // and keep the pool's order so the configured core stays tried first.
         .ignore_discovered_servers()
+        .retain_servers_order()
         .custom_inbox_prefix(inbox_prefix(principal))
 }
 
@@ -181,6 +183,30 @@ pub async fn connect_authenticated(
         }),
         Err(_) => Err(NatsConnectError::Timeout {
             url: config.url.as_str().to_owned(),
+            timeout,
+        }),
+    }
+}
+
+/// Connect authenticated to a whole failover pool (the configured core plus
+/// Reachable Machines from the cached mirror), tried in order. Used at machine
+/// startup so a reboot *during* a core outage still reaches a promoted core
+/// rather than timing out on a dead seed. `servers` must be non-empty and lead
+/// with the configured core.
+pub async fn connect_authenticated_pool(
+    config: &NatsConnectConfig,
+    servers: &[String],
+    timeout: Duration,
+) -> Result<async_nats::Client, NatsConnectError> {
+    let options = authenticated_connect_options(config);
+    match tokio::time::timeout(timeout, options.connect(servers.to_vec())).await {
+        Ok(Ok(client)) => Ok(client),
+        Ok(Err(error)) => Err(NatsConnectError::Connect {
+            url: servers.join(","),
+            message: error.to_string(),
+        }),
+        Err(_) => Err(NatsConnectError::Timeout {
+            url: servers.join(","),
             timeout,
         }),
     }
