@@ -28,6 +28,9 @@ pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
 pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
 pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
+/// Set by `core-promote` on the new core's control unit: the machine's local
+/// intent mirror to seed a fresh core store from on first startup (ADR 0031).
+pub const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
 pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
 pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
@@ -87,6 +90,7 @@ pub fn load_daemon_process_config(
                 control = control.with_deploy_machines(deploy_machines);
             }
             control = control.with_core_db_path(load_core_db_path(&env));
+            control = control.with_seed_from_mirror(load_seed_from_mirror(&env));
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
@@ -274,6 +278,10 @@ fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
     env_value(env, PLOYZ_CORE_DB_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_DB))
+}
+
+fn load_seed_from_mirror(env: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    env_value(env, PLOYZ_SEED_FROM_MIRROR_ENV).map(PathBuf::from)
 }
 
 /// Control-owned file paths: the rendered authority include the nats-server
@@ -633,6 +641,9 @@ pub struct ControlProcessConfig {
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
     pub core_db_path: PathBuf,
+    /// A machine-local intent mirror to seed a fresh core store from at startup,
+    /// set only by `core-promote` (ADR 0031); `None` for an ordinary core.
+    pub seed_from_mirror: Option<PathBuf>,
     pub deploy_machines: Vec<MachineId>,
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
@@ -650,6 +661,7 @@ impl ControlProcessConfig {
             nats_connect,
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),
             core_db_path: PathBuf::from(DEFAULT_CORE_DB),
+            seed_from_mirror: None,
             deploy_machines: vec![first_deploy_machine],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
@@ -674,6 +686,12 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn with_core_db_path(mut self, core_db_path: PathBuf) -> Self {
         self.core_db_path = core_db_path;
+        self
+    }
+
+    #[must_use]
+    pub fn with_seed_from_mirror(mut self, seed_from_mirror: Option<PathBuf>) -> Self {
+        self.seed_from_mirror = seed_from_mirror;
         self
     }
 
