@@ -10,7 +10,7 @@ use crate::fact_cache::{FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
-use crate::operation_api::OperationApiHandlers;
+use crate::operation_api::{OperationApiHandlers, OperationWorkers};
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operations::deploy::DeployMachineCandidates;
@@ -160,10 +160,12 @@ pub async fn start_control_process_with_client_and_reload(
         client.clone(),
         OperationApiHandlers::execute_operations(
             controllers,
-            deploy_driver,
-            machine_update,
-            machine_lifecycle,
-            machine_mint,
+            OperationWorkers {
+                deploy: deploy_driver,
+                machine_update,
+                machine_lifecycle,
+                machine_mint,
+            },
             config
                 .deploy_machines
                 .first()
