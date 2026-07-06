@@ -10,10 +10,10 @@ use crate::machine_runtime::protocol::{
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder,
-    MachineRpcResponse, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
-    MachineSubstrateReportRpcRequest, MachineSubstrateUpdateDomainError,
-    MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
+    MachineSubstrateUpdateRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};

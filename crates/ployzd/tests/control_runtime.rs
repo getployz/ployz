@@ -246,8 +246,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
 async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
-    let namespace_intent =
-        NamespaceIntentStore::new(
+    let namespace_intent = NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
@@ -299,8 +298,7 @@ async fn control_runtime_serves_active_service_queries() {
 async fn control_runtime_serves_runtime_snapshot_projection() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats.control_config();
-    let namespace_intent =
-        NamespaceIntentStore::new(
+    let namespace_intent = NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
@@ -445,8 +443,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         ),
         "expected deploy to complete, got {status:?}"
     );
-    let namespace_intent =
-        NamespaceIntentStore::new(
+    let namespace_intent = NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),

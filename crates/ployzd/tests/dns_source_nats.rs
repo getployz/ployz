@@ -152,7 +152,11 @@ async fn test_nats() -> TestNats {
     );
     let intent = start_intent_runtime(
         nats.controller.clone(),
-        MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store")),
+        MachineRosterStore::new(
+            ployzd::core_store::CoreStore::open_in_memory()
+                .await
+                .expect("open core store"),
+        ),
         namespace_intent.clone(),
         Duration::from_secs(30),
     )

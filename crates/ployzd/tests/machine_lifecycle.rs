@@ -117,6 +117,7 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
         .repository()
         .get(&operation_id("op_drain_ghost"))
         .await
+        .expect("status reads")
         .expect("status exists");
     let OperationStatus::MachineLifecycle { state, .. } = status else {
         panic!("expected machine lifecycle status, got {status:?}");
@@ -151,6 +152,7 @@ async fn assert_terminal_completed(controllers: &OperationControllers, operation
         .repository()
         .get(&operation_id(operation))
         .await
+        .expect("status reads")
         .expect("status exists");
     let OperationStatus::MachineLifecycle { state, .. } = status else {
         panic!("expected machine lifecycle status, got {status:?}");

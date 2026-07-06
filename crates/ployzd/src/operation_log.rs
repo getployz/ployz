@@ -7,7 +7,7 @@
 //! outcomes (a duplicate submit, a stale projection, a fingerprint conflict)
 //! travel back inside `Ok(...)`; only a genuine database failure is `Err`.
 
-use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json, query_json_list, to_json};
+use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json, to_json};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
@@ -17,10 +17,10 @@ use ployz_core::machine::{
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, MachineAddOperationState,
     MachineAddOperationStateName, MachineLifecycleTransition, MachineUpdateTransition,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationKind, OperationProjection,
-    OperationStatus, OperationStatusSnapshot, StatusProjectionError, project_operation_event,
-    validate_fresh_deploy_evidence,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey, OperationKind,
+    OperationProjection, OperationStatus, OperationStatusSnapshot, StatusProjectionError,
+    project_operation_event, validate_fresh_deploy_evidence,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
@@ -28,15 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// The machine-add working-record tables. Each is a `(key, json)` row store;
-/// the key is an idempotency key or a join-token fingerprint, whatever the
-/// caller passes.
 const DEPLOY_CLAIMS: &str = "deploy_claims";
-const MACHINE_ADD_CLAIMS: &str = "machine_add_claims";
-const MACHINE_ADD_SUBMISSIONS: &str = "machine_add_submissions";
-const MACHINE_ADD_SECRET_DELIVERIES: &str = "machine_add_secret_deliveries";
-const MACHINE_ADD_MINT_CLAIMS: &str = "machine_add_mint_claims";
-const MACHINE_ADD_JOIN_TOKENS: &str = "machine_add_join_tokens";
 
 #[derive(Debug, Clone)]
 pub struct OperationRepository {
@@ -66,12 +58,12 @@ impl OperationRepository {
         let key = idempotency_key.clone();
         let adopted = self
             .store
-            .call(move |conn| {
-                create_or_adopt(conn, DEPLOY_CLAIMS, key.as_str(), &claim, AdoptPolicy::FirstWriterWins)
-            })
+            .call(move |conn| create_or_adopt(conn, DEPLOY_CLAIMS, key.as_str(), &claim))
             .await
             .map_err(store_status)?;
-        let claim = adopted.into_value().map_err(SubmitOperationError::StoreStatus)?;
+        let claim = adopted
+            .into_value()
+            .map_err(SubmitOperationError::StoreStatus)?;
         Ok(DeployOperationSubmission {
             operation_id: claim.operation_id,
             idempotency_key,
@@ -216,13 +208,11 @@ impl OperationRepository {
                 Err(SubmitMachineAddError::DuplicateIdempotencyKey)
             }
             MachineAddTxn::JoinTokenMismatch => Err(SubmitMachineAddError::JoinTokenMismatch),
-            MachineAddTxn::Conflict(message) => {
-                Err(SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(
-                    OperationStatusStoreError::CasConflict {
-                        message: message.to_owned(),
-                    },
-                )))
-            }
+            MachineAddTxn::Conflict(message) => Err(SubmitMachineAddError::Operation(
+                SubmitOperationError::StoreStatus(OperationStatusStoreError::CasConflict {
+                    message: message.to_owned(),
+                }),
+            )),
             MachineAddTxn::Accepted { submitted, event } => {
                 if let Some(event) = event {
                     publish_progress(&self.progress, event).await;
@@ -383,23 +373,22 @@ impl OperationRepository {
     pub async fn operation_status_snapshot(
         &self,
         operation_id: &OperationId,
-    ) -> Option<OperationStatusSnapshot> {
+    ) -> Result<Option<OperationStatusSnapshot>, OperationStatusStoreError> {
         let operation_id = operation_id.clone();
-        // ponytail: a SELECT on the open core DB does not fail in practice; a
-        // hard database fault surfaces here as an absent operation.
         self.store
             .call(move |conn| select_status(conn, &operation_id))
             .await
-            .ok()
-            .flatten()
-            .map(OperationStatusSnapshot::new)
+            .map_err(|error| index_error(&error))
+            .map(|status| status.map(OperationStatusSnapshot::new))
     }
 
-    pub async fn operation_statuses(&self) -> Vec<OperationStatus> {
+    pub async fn operation_statuses(
+        &self,
+    ) -> Result<Vec<OperationStatus>, OperationStatusStoreError> {
         self.store
             .call(select_all_statuses)
             .await
-            .unwrap_or_default()
+            .map_err(|error| index_error(&error))
     }
 
     pub async fn replay_operation_events(
@@ -418,7 +407,9 @@ impl OperationRepository {
             .await
             .map_err(|error| ReplayOperationEventsError::ReadEvents(read_event_error(&error)))?;
         match outcome {
-            ReplayTxn::Missing => Err(ReplayOperationEventsError::MissingOperation { operation_id }),
+            ReplayTxn::Missing => {
+                Err(ReplayOperationEventsError::MissingOperation { operation_id })
+            }
             ReplayTxn::Invalid(error) => Err(ReplayOperationEventsError::ReadEvents(error)),
             ReplayTxn::Page(page) => Ok(page),
         }
@@ -428,7 +419,7 @@ impl OperationRepository {
         &self,
     ) -> Result<Vec<StoredMachineAddSubmission>, OperationStatusStoreError> {
         self.store
-            .call(|conn| select_all_json(conn, MACHINE_ADD_SUBMISSIONS))
+            .call(select_machine_add_submissions)
             .await
             .map_err(|error| index_error(&error))
     }
@@ -439,7 +430,7 @@ impl OperationRepository {
     ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
         let key = idempotency_key.clone();
         self.store
-            .call(move |conn| select_json(conn, MACHINE_ADD_SECRET_DELIVERIES, key.as_str()))
+            .call(move |conn| select_machine_add_secret_delivery(conn, &key))
             .await
             .map_err(|error| index_error(&error))
     }
@@ -453,15 +444,7 @@ impl OperationRepository {
         let claim = claim.clone();
         let adopted = self
             .store
-            .call(move |conn| {
-                create_or_adopt(
-                    conn,
-                    MACHINE_ADD_MINT_CLAIMS,
-                    key.as_str(),
-                    &claim,
-                    AdoptPolicy::FirstWriterWins,
-                )
-            })
+            .call(move |conn| put_machine_add_mint_claim_txn(conn, &key, &claim))
             .await
             .map_err(|error| index_error(&error))?;
         adopted.into_value()
@@ -476,31 +459,10 @@ impl OperationRepository {
         let delivery = secret_delivery.clone();
         let adopted = self
             .store
-            .call(move |conn| {
-                create_or_adopt(
-                    conn,
-                    MACHINE_ADD_SECRET_DELIVERIES,
-                    key.as_str(),
-                    &delivery,
-                    AdoptPolicy::RequireEqual {
-                        conflict_message: "machine add secret delivery is already assigned",
-                    },
-                )
-            })
+            .call(move |conn| put_machine_add_secret_delivery_txn(conn, &key, &delivery))
             .await
             .map_err(|error| index_error(&error))?;
         adopted.into_value()
-    }
-
-    pub async fn delete_machine_add_secret_delivery(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Result<(), OperationStatusStoreError> {
-        let key = idempotency_key.clone();
-        self.store
-            .call(move |conn| delete_json(conn, MACHINE_ADD_SECRET_DELIVERIES, key.as_str()))
-            .await
-            .map_err(|error| index_error(&error))
     }
 
     pub async fn redeem_machine_join_token(
@@ -513,7 +475,11 @@ impl OperationRepository {
             .await
             .map_err(RedeemMachineJoinTokenError::StoreStatus)?
             .ok_or(RedeemMachineJoinTokenError::UnknownJoinToken)?;
-        let Some(status) = self.get(&submission.operation_id).await else {
+        let Some(status) = self
+            .get(&submission.operation_id)
+            .await
+            .map_err(RedeemMachineJoinTokenError::StoreStatus)?
+        else {
             return Err(RedeemMachineJoinTokenError::MissingOperation {
                 operation_id: submission.operation_id,
             });
@@ -553,7 +519,10 @@ impl OperationRepository {
                         let Some(OperationStatus::MachineAdd {
                             last_event_sequence,
                             ..
-                        }) = self.get(&id).await
+                        }) = self
+                            .get(&id)
+                            .await
+                            .map_err(RedeemMachineJoinTokenError::StoreStatus)?
                         else {
                             return Err(RedeemMachineJoinTokenError::MissingOperation {
                                 operation_id: id,
@@ -621,9 +590,6 @@ impl OperationRepository {
             .record_machine_add_completed(&target.operation_id, &target.machine_id)
             .await
             .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
-        self.delete_machine_add_secret_delivery(&target.idempotency_key)
-            .await
-            .map_err(RecordMachineJoinReportError::StoreStatus)?;
         Ok(RecordedMachineJoinReport {
             operation_id: target.operation_id,
             machine_id: target.machine_id,
@@ -641,9 +607,6 @@ impl OperationRepository {
             .record_machine_add_failed(&target.operation_id, &target.machine_id, failure)
             .await
             .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
-        self.delete_machine_add_secret_delivery(&target.idempotency_key)
-            .await
-            .map_err(RecordMachineJoinReportError::StoreStatus)?;
         Ok(RecordedMachineJoinReport {
             operation_id: target.operation_id,
             machine_id: target.machine_id,
@@ -662,7 +625,6 @@ impl OperationRepository {
             .ok_or(RecordMachineJoinReportError::UnknownJoinToken)?;
         Ok(MachineJoinReportTarget {
             operation_id: submission.operation_id,
-            idempotency_key: submission.idempotency_key,
             machine_id: submission.machine_id,
         })
     }
@@ -686,15 +648,15 @@ impl OperationRepository {
         outcome.into_result()
     }
 
-    pub async fn get(&self, operation_id: &OperationId) -> Option<OperationStatus> {
+    pub async fn get(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<OperationStatus>, OperationStatusStoreError> {
         let operation_id = operation_id.clone();
-        // ponytail: see operation_status_snapshot — an open-DB read is
-        // effectively infallible; a hard fault reads as absence.
         self.store
             .call(move |conn| select_status(conn, &operation_id))
             .await
-            .ok()
-            .flatten()
+            .map_err(|error| index_error(&error))
     }
 }
 
@@ -703,8 +665,13 @@ impl OperationRepository {
 enum RecordTxn {
     Missing,
     Projection(StatusProjectionError),
-    AlreadySatisfied { current_sequence: EventSequence },
-    Stored { sequence: EventSequence, event: OperationEvent },
+    AlreadySatisfied {
+        current_sequence: EventSequence,
+    },
+    Stored {
+        sequence: EventSequence,
+        event: OperationEvent,
+    },
 }
 
 fn record_operation_event_txn(
@@ -737,12 +704,15 @@ fn record_operation_event_txn(
     };
     insert_event(&transaction, &event, sequence)?;
     upsert_status(&transaction, operation_id, &status)?;
+    scrub_terminal_machine_add_secrets(&transaction, &status)?;
     transaction.commit()?;
     Ok(RecordTxn::Stored { sequence, event })
 }
 
 enum SubmitTxn<P> {
-    DuplicateSequenceMismatch { sequence: EventSequence },
+    DuplicateSequenceMismatch {
+        sequence: EventSequence,
+    },
     Existing {
         start_sequence: EventSequence,
         payload: P,
@@ -801,7 +771,9 @@ fn submit_operation_txn<K: SubmitKind>(
 }
 
 enum MachineAddTxn {
-    KindMismatch { sequence: EventSequence },
+    KindMismatch {
+        sequence: EventSequence,
+    },
     DuplicateIdempotencyKey,
     JoinTokenMismatch,
     Conflict(&'static str),
@@ -818,31 +790,26 @@ fn submit_machine_add_txn(
     claim: StoredMachineAddClaim,
 ) -> Result<MachineAddTxn, rusqlite::Error> {
     let transaction = conn.transaction()?;
-    if let Some(current) = select_status(&transaction, &operation_id)?
-        && current.kind() != OperationKind::MachineAdd
-    {
-        return Ok(MachineAddTxn::KindMismatch {
-            sequence: current.last_event_sequence(),
-        });
-    }
-    // A second idempotency key claiming the same operation id is a conflict.
-    // Probe by operation id without hydrating every submission blob.
-    let duplicate_operation: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM machine_add_submissions
-             WHERE json_extract(json, '$.operation_id') = ?1 AND key <> ?2)",
-        params![operation_id.as_str(), idempotency_key.as_str()],
-        |row| row.get(0),
-    )?;
-    if duplicate_operation {
+    let current = select_status(&transaction, &operation_id)?;
+    if let Some(current) = &current {
+        if current.kind() != OperationKind::MachineAdd {
+            return Ok(MachineAddTxn::KindMismatch {
+                sequence: current.last_event_sequence(),
+            });
+        }
+        if let Some(existing) = select_machine_add_submission(&transaction, &idempotency_key)? {
+            transaction.commit()?;
+            return Ok(MachineAddTxn::Accepted {
+                submitted: Box::new(existing),
+                event: None,
+            });
+        }
         return Ok(MachineAddTxn::DuplicateIdempotencyKey);
     }
-    let claim = match create_or_adopt(
-        &transaction,
-        MACHINE_ADD_CLAIMS,
-        idempotency_key.as_str(),
-        &claim,
-        AdoptPolicy::FirstWriterWins,
-    )? {
+    if !claim_machine_add_idempotency(&transaction, &operation_id, &idempotency_key)? {
+        return Ok(MachineAddTxn::DuplicateIdempotencyKey);
+    }
+    let claim = match create_or_adopt_machine_add_claim(&transaction, &idempotency_key, &claim)? {
         AdoptResult::Value(claim) => claim,
         AdoptResult::Conflict(message) => return Ok(MachineAddTxn::Conflict(message)),
     };
@@ -855,31 +822,15 @@ fn submit_machine_add_txn(
     if !claim.join_token.matches(&fingerprint) {
         return Ok(MachineAddTxn::JoinTokenMismatch);
     }
-    if let AdoptResult::Conflict(message) = create_or_adopt(
+    if let AdoptResult::Conflict(message) = create_or_adopt_machine_add_join_token(
         &transaction,
-        MACHINE_ADD_JOIN_TOKENS,
-        fingerprint.as_str(),
+        &fingerprint,
         &StoredMachineAddJoinToken {
             operation_id: claim.operation_id.clone(),
             idempotency_key: idempotency_key.clone(),
         },
-        AdoptPolicy::RequireEqual {
-            conflict_message: "join token fingerprint is already assigned",
-        },
     )? {
         return Ok(MachineAddTxn::Conflict(message));
-    }
-
-    // A prior submission for this operation means the accept already happened;
-    // adopt it and skip re-emitting the submitted event.
-    if let Some(existing) =
-        select_json::<StoredMachineAddSubmission>(&transaction, MACHINE_ADD_SUBMISSIONS, idempotency_key.as_str())?
-    {
-        transaction.commit()?;
-        return Ok(MachineAddTxn::Accepted {
-            submitted: Box::new(existing),
-            event: None,
-        });
     }
 
     let sequence = EventSequence::first();
@@ -901,15 +852,9 @@ fn submit_machine_add_txn(
         join_token: claim.join_token.clone(),
         raw_join_token: claim.raw_join_token.clone(),
     };
-    if let AdoptResult::Conflict(message) = create_or_adopt(
-        &transaction,
-        MACHINE_ADD_SUBMISSIONS,
-        idempotency_key.as_str(),
-        &submitted,
-        AdoptPolicy::RequireEqual {
-            conflict_message: "machine add submission is already assigned",
-        },
-    )? {
+    if let AdoptResult::Conflict(message) =
+        create_or_adopt_machine_add_submission(&transaction, &idempotency_key, &submitted)?
+    {
         return Ok(MachineAddTxn::Conflict(message));
     }
     let status = OperationStatus::machine_add_pending(
@@ -971,15 +916,23 @@ fn replay_operation_events_txn(
         let event = match serde_json::from_str(&event_json) {
             Ok(event) => event,
             Err(error) => {
-                return Ok(ReplayTxn::Invalid(OperationEventLogError::DecodeEvent(error)));
+                return Ok(ReplayTxn::Invalid(OperationEventLogError::DecodeEvent(
+                    error,
+                )));
             }
         };
         events.push(ployz_core::ops::ReplayedOperationEvent { sequence, event });
     }
     if events.len() < page_limit {
-        return finish_replay_page(OperationEventReplayPage::caught_up(events), status.is_terminal());
+        return finish_replay_page(
+            OperationEventReplayPage::caught_up(events),
+            status.is_terminal(),
+        );
     }
-    let Some(next) = events.last().and_then(|event| event.sequence.get().checked_add(1)) else {
+    let Some(next) = events
+        .last()
+        .and_then(|event| event.sequence.get().checked_add(1))
+    else {
         return Ok(ReplayTxn::Invalid(
             OperationEventLogError::InvalidNextReplaySequence { sequence: u64::MAX },
         ));
@@ -1024,9 +977,7 @@ enum TokenSubmission {
 }
 
 impl TokenSubmission {
-    fn into_result(
-        self,
-    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
+    fn into_result(self) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
         match self {
             Self::None => Ok(None),
             Self::Found(submission) => Ok(Some(*submission)),
@@ -1042,14 +993,10 @@ fn submission_for_token_txn(
     fingerprint: &JoinTokenFingerprint,
     token: &RawJoinToken,
 ) -> Result<TokenSubmission, rusqlite::Error> {
-    let Some(index): Option<StoredMachineAddJoinToken> =
-        select_json(conn, MACHINE_ADD_JOIN_TOKENS, fingerprint.as_str())?
-    else {
+    let Some(index) = select_machine_add_join_token(conn, fingerprint)? else {
         return Ok(TokenSubmission::None);
     };
-    let Some(submission): Option<StoredMachineAddSubmission> =
-        select_json(conn, MACHINE_ADD_SUBMISSIONS, index.idempotency_key.as_str())?
-    else {
+    let Some(submission) = select_machine_add_submission(conn, &index.idempotency_key)? else {
         return Ok(TokenSubmission::None);
     };
     if submission.operation_id != index.operation_id
@@ -1059,6 +1006,268 @@ fn submission_for_token_txn(
         return Ok(TokenSubmission::Corrupt);
     }
     Ok(TokenSubmission::Found(Box::new(submission)))
+}
+
+fn claim_machine_add_idempotency(
+    conn: &Connection,
+    operation_id: &OperationId,
+    idempotency_key: &OperationIdempotencyKey,
+) -> Result<bool, rusqlite::Error> {
+    if let Some(owner) = conn
+        .query_row(
+            "SELECT operation_id FROM machine_add_idempotency WHERE idempotency_key = ?1",
+            [idempotency_key.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok(owner == operation_id.as_str());
+    }
+    let operation_claimed_by_other_key: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM machine_add_idempotency
+            WHERE operation_id = ?1 AND idempotency_key <> ?2
+        )",
+        params![operation_id.as_str(), idempotency_key.as_str()],
+        |row| row.get(0),
+    )?;
+    if operation_claimed_by_other_key {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO machine_add_idempotency (idempotency_key, operation_id) VALUES (?1, ?2)",
+        params![idempotency_key.as_str(), operation_id.as_str()],
+    )?;
+    Ok(true)
+}
+
+fn create_or_adopt_machine_add_claim(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+    claim: &StoredMachineAddClaim,
+) -> Result<AdoptResult<StoredMachineAddClaim>, rusqlite::Error> {
+    if let Some(existing) = select_machine_add_claim(conn, idempotency_key)? {
+        return Ok(AdoptResult::Value(existing));
+    }
+    conn.execute(
+        "INSERT INTO machine_add_claims
+         (idempotency_key, operation_id, machine_id, raw_join_token, claim_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            idempotency_key.as_str(),
+            claim.operation_id.as_str(),
+            claim.machine_id.as_str(),
+            claim.raw_join_token.as_str(),
+            to_json(claim)?,
+        ],
+    )?;
+    Ok(AdoptResult::Value(claim.clone()))
+}
+
+fn select_machine_add_claim(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+) -> Result<Option<StoredMachineAddClaim>, rusqlite::Error> {
+    query_json(
+        conn,
+        "SELECT claim_json FROM machine_add_claims WHERE idempotency_key = ?1",
+        idempotency_key.as_str(),
+    )
+}
+
+fn create_or_adopt_machine_add_join_token(
+    conn: &Connection,
+    fingerprint: &JoinTokenFingerprint,
+    index: &StoredMachineAddJoinToken,
+) -> Result<AdoptResult<StoredMachineAddJoinToken>, rusqlite::Error> {
+    if let Some(existing) = select_machine_add_join_token(conn, fingerprint)? {
+        return Ok(if existing == *index {
+            AdoptResult::Value(existing)
+        } else {
+            AdoptResult::Conflict("join token fingerprint is already assigned")
+        });
+    }
+    conn.execute(
+        "INSERT INTO machine_add_join_tokens
+         (fingerprint, operation_id, idempotency_key)
+         VALUES (?1, ?2, ?3)",
+        params![
+            fingerprint.as_str(),
+            index.operation_id.as_str(),
+            index.idempotency_key.as_str(),
+        ],
+    )?;
+    Ok(AdoptResult::Value(index.clone()))
+}
+
+fn select_machine_add_join_token(
+    conn: &Connection,
+    fingerprint: &JoinTokenFingerprint,
+) -> Result<Option<StoredMachineAddJoinToken>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT operation_id, idempotency_key
+         FROM machine_add_join_tokens WHERE fingerprint = ?1",
+        [fingerprint.as_str()],
+        |row| {
+            Ok(StoredMachineAddJoinToken {
+                operation_id: OperationId::try_new(row.get::<_, String>(0)?)
+                    .map_err(subject_token_conversion)?,
+                idempotency_key: OperationIdempotencyKey::try_new(row.get::<_, String>(1)?)
+                    .map_err(subject_token_conversion)?,
+            })
+        },
+    )
+    .optional()
+}
+
+fn create_or_adopt_machine_add_submission(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+    submission: &StoredMachineAddSubmission,
+) -> Result<AdoptResult<StoredMachineAddSubmission>, rusqlite::Error> {
+    if let Some(existing) = select_machine_add_submission(conn, idempotency_key)? {
+        return Ok(if existing == *submission {
+            AdoptResult::Value(existing)
+        } else {
+            AdoptResult::Conflict("machine add submission is already assigned")
+        });
+    }
+    conn.execute(
+        "INSERT INTO machine_add_submissions
+         (idempotency_key, operation_id, machine_id, raw_join_token, submission_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            idempotency_key.as_str(),
+            submission.operation_id.as_str(),
+            submission.machine_id.as_str(),
+            submission.raw_join_token.as_str(),
+            to_json(submission)?,
+        ],
+    )?;
+    Ok(AdoptResult::Value(submission.clone()))
+}
+
+fn select_machine_add_submission(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+) -> Result<Option<StoredMachineAddSubmission>, rusqlite::Error> {
+    query_json(
+        conn,
+        "SELECT submission_json FROM machine_add_submissions WHERE idempotency_key = ?1",
+        idempotency_key.as_str(),
+    )
+}
+
+fn select_machine_add_submissions(
+    conn: &mut Connection,
+) -> Result<Vec<StoredMachineAddSubmission>, rusqlite::Error> {
+    let mut statement =
+        conn.prepare("SELECT submission_json FROM machine_add_submissions ORDER BY operation_id")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut submissions = Vec::new();
+    for row in rows {
+        submissions.push(from_json(&row?)?);
+    }
+    Ok(submissions)
+}
+
+fn put_machine_add_secret_delivery_txn(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+    delivery: &StoredMachineAddSecretDelivery,
+) -> Result<AdoptResult<StoredMachineAddSecretDelivery>, rusqlite::Error> {
+    if let Some(existing) = select_machine_add_secret_delivery(conn, idempotency_key)? {
+        return Ok(if existing == *delivery {
+            AdoptResult::Value(existing)
+        } else {
+            AdoptResult::Conflict("machine add secret delivery is already assigned")
+        });
+    }
+    conn.execute(
+        "INSERT INTO machine_add_secret_deliveries
+         (idempotency_key, operation_id, secret_delivery_json)
+         VALUES (?1, ?2, ?3)",
+        params![
+            idempotency_key.as_str(),
+            delivery.operation_id.as_str(),
+            to_json(delivery)?,
+        ],
+    )?;
+    Ok(AdoptResult::Value(delivery.clone()))
+}
+
+fn select_machine_add_secret_delivery(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+) -> Result<Option<StoredMachineAddSecretDelivery>, rusqlite::Error> {
+    query_json(
+        conn,
+        "SELECT secret_delivery_json FROM machine_add_secret_deliveries WHERE idempotency_key = ?1",
+        idempotency_key.as_str(),
+    )
+}
+
+fn put_machine_add_mint_claim_txn(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+    claim: &StoredMachineAddMintClaim,
+) -> Result<AdoptResult<StoredMachineAddMintClaim>, rusqlite::Error> {
+    if let Some(existing) = select_machine_add_mint_claim(conn, idempotency_key)? {
+        return Ok(AdoptResult::Value(existing));
+    }
+    conn.execute(
+        "INSERT INTO machine_add_mint_claims
+         (idempotency_key, operation_id, nkey_public, mint_claim_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            idempotency_key.as_str(),
+            claim.operation_id.as_str(),
+            claim.nkey_public.as_str(),
+            to_json(claim)?,
+        ],
+    )?;
+    Ok(AdoptResult::Value(claim.clone()))
+}
+
+fn select_machine_add_mint_claim(
+    conn: &Connection,
+    idempotency_key: &OperationIdempotencyKey,
+) -> Result<Option<StoredMachineAddMintClaim>, rusqlite::Error> {
+    query_json(
+        conn,
+        "SELECT mint_claim_json FROM machine_add_mint_claims WHERE idempotency_key = ?1",
+        idempotency_key.as_str(),
+    )
+}
+
+fn scrub_terminal_machine_add_secrets(
+    conn: &Connection,
+    status: &OperationStatus,
+) -> Result<(), rusqlite::Error> {
+    let OperationStatus::MachineAdd { id, state, .. } = status else {
+        return Ok(());
+    };
+    if !matches!(
+        state,
+        MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. }
+    ) {
+        return Ok(());
+    }
+    for table in [
+        "machine_add_claims",
+        "machine_add_submissions",
+        "machine_add_join_tokens",
+        "machine_add_secret_deliveries",
+        "machine_add_mint_claims",
+    ] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE operation_id = ?1"),
+            [id.as_str()],
+        )?;
+    }
+    Ok(())
 }
 
 // -------- SQLite row helpers --------
@@ -1075,8 +1284,7 @@ fn select_status(
 }
 
 fn select_all_statuses(conn: &mut Connection) -> Result<Vec<OperationStatus>, rusqlite::Error> {
-    let mut statement =
-        conn.prepare("SELECT status_json FROM operations ORDER BY operation_id")?;
+    let mut statement = conn.prepare("SELECT status_json FROM operations ORDER BY operation_id")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     let mut statuses = Vec::new();
     for row in rows {
@@ -1105,7 +1313,11 @@ fn insert_event(
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT INTO operation_events (operation_id, sequence, event_json) VALUES (?1, ?2, ?3)",
-        params![event.operation_id().as_str(), sequence.get(), to_json(event)?],
+        params![
+            event.operation_id().as_str(),
+            sequence.get(),
+            to_json(event)?
+        ],
     )?;
     Ok(())
 }
@@ -1134,14 +1346,11 @@ fn select_json<V: DeserializeOwned>(
     table: &str,
     key: &str,
 ) -> Result<Option<V>, rusqlite::Error> {
-    query_json(conn, &format!("SELECT json FROM {table} WHERE key = ?1"), key)
-}
-
-fn select_all_json<V: DeserializeOwned>(
-    conn: &Connection,
-    table: &str,
-) -> Result<Vec<V>, rusqlite::Error> {
-    query_json_list(conn, &format!("SELECT json FROM {table} ORDER BY 1"))
+    query_json(
+        conn,
+        &format!("SELECT json FROM {table} WHERE key = ?1"),
+        key,
+    )
 }
 
 fn insert_json<V: Serialize>(
@@ -1154,11 +1363,6 @@ fn insert_json<V: Serialize>(
         &format!("INSERT INTO {table} (key, json) VALUES (?1, ?2)"),
         params![key, to_json(value)?],
     )?;
-    Ok(())
-}
-
-fn delete_json(conn: &Connection, table: &str, key: &str) -> Result<(), rusqlite::Error> {
-    conn.execute(&format!("DELETE FROM {table} WHERE key = ?1"), [key])?;
     Ok(())
 }
 
@@ -1183,17 +1387,12 @@ fn create_or_adopt<V>(
     table: &str,
     key: &str,
     value: &V,
-    policy: AdoptPolicy,
 ) -> Result<AdoptResult<V>, rusqlite::Error>
 where
     V: Serialize + DeserializeOwned + Clone + PartialEq,
 {
     if let Some(existing) = select_json::<V>(conn, table, key)? {
-        return Ok(match policy {
-            AdoptPolicy::FirstWriterWins => AdoptResult::Value(existing),
-            AdoptPolicy::RequireEqual { .. } if existing == *value => AdoptResult::Value(existing),
-            AdoptPolicy::RequireEqual { conflict_message } => AdoptResult::Conflict(conflict_message),
-        });
+        return Ok(AdoptResult::Value(existing));
     }
     insert_json(conn, table, key, value)?;
     Ok(AdoptResult::Value(value.clone()))
@@ -1204,6 +1403,14 @@ fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::
         0,
         rusqlite::types::Type::Integer,
         format!("invalid event sequence: {error}").into(),
+    )
+}
+
+fn subject_token_conversion(error: ployz_core::ids::SubjectTokenError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        format!("invalid subject token: {error}").into(),
     )
 }
 
@@ -1611,7 +1818,6 @@ pub struct RecordedMachineJoinReport {
 
 struct MachineJoinReportTarget {
     operation_id: OperationId,
-    idempotency_key: OperationIdempotencyKey,
     machine_id: MachineId,
 }
 
@@ -1653,12 +1859,6 @@ pub enum RecordMachineJoinReportError {
     StoreStatus(OperationStatusStoreError),
     RecordMachineAddEvent(RecordMachineAddEventError),
     JoinTokenMismatch { operation_id: OperationId },
-}
-
-#[derive(Clone, Copy)]
-enum AdoptPolicy {
-    FirstWriterWins,
-    RequireEqual { conflict_message: &'static str },
 }
 
 fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> {

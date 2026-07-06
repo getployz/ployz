@@ -267,12 +267,11 @@ impl TestNats {
                 .await;
         let client = connected.controller.clone();
         let machine_client = connected.machine_client(&machine_id("machine_7")).await;
-        let namespace_intent =
-            NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open core store"),
-    );
+        let namespace_intent = NamespaceIntentStore::new(
+            ployzd::core_store::CoreStore::open_in_memory()
+                .await
+                .expect("open core store"),
+        );
 
         Self {
             _connected: connected,
@@ -285,7 +284,11 @@ impl TestNats {
     async fn start_intent(&self) -> RunningIntentRuntime {
         start_intent_runtime(
             self.client.clone(),
-            MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store")),
+            MachineRosterStore::new(
+                ployzd::core_store::CoreStore::open_in_memory()
+                    .await
+                    .expect("open core store"),
+            ),
             self.namespace_intent.clone(),
             Duration::from_millis(10),
         )

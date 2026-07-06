@@ -513,7 +513,11 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let machine_roster = MachineRosterStore::new(ployzd::core_store::CoreStore::open_in_memory().await.expect("open core store"));
+    let machine_roster = MachineRosterStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
     let intent = start_intent_runtime(
         connected.controller.clone(),
         machine_roster.clone(),
