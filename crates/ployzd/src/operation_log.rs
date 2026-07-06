@@ -152,10 +152,7 @@ impl OperationRepository {
             .await
             .map_err(store_status)?;
         match outcome {
-            SubmitTxn::KindMismatch { sequence } => {
-                Err(SubmitOperationError::DuplicateSequenceMismatch { sequence })
-            }
-            SubmitTxn::BadFirstEvent { sequence } => {
+            SubmitTxn::DuplicateSequenceMismatch { sequence } => {
                 Err(SubmitOperationError::DuplicateSequenceMismatch { sequence })
             }
             SubmitTxn::Existing {
@@ -261,7 +258,7 @@ impl OperationRepository {
         operation_id: &OperationId,
         evidence: DeployEvidence,
     ) -> Result<EventSequence, RecordDeployEvidenceError> {
-        self.record_deploy_event(operation_id, evidence.event(operation_id))
+        self.record_operation_event(operation_id, evidence.event(operation_id))
             .await
             .map(RecordOperationEventOutcome::sequence)
     }
@@ -356,14 +353,6 @@ impl OperationRepository {
         self.record_operation_event(operation_id, transition.event(operation_id, machine_id))
             .await
             .map(RecordOperationEventOutcome::into_status_write)
-    }
-
-    async fn record_deploy_event(
-        &self,
-        operation_id: &OperationId,
-        event: OperationEvent,
-    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
-        self.record_operation_event(operation_id, event).await
     }
 
     async fn record_operation_event(
@@ -754,8 +743,7 @@ fn record_operation_event_txn(
 }
 
 enum SubmitTxn<P> {
-    KindMismatch { sequence: EventSequence },
-    BadFirstEvent { sequence: EventSequence },
+    DuplicateSequenceMismatch { sequence: EventSequence },
     Existing {
         start_sequence: EventSequence,
         payload: P,
@@ -775,23 +763,23 @@ fn submit_operation_txn<K: SubmitKind>(
     let transaction = conn.transaction()?;
     if let Some(current) = select_status(&transaction, &operation_id)? {
         if current.kind() != K::KIND {
-            return Ok(SubmitTxn::KindMismatch {
+            return Ok(SubmitTxn::DuplicateSequenceMismatch {
                 sequence: current.last_event_sequence(),
             });
         }
         let Some((first_event, first_sequence)) = select_first_event(&transaction, &operation_id)?
         else {
-            return Ok(SubmitTxn::BadFirstEvent {
+            return Ok(SubmitTxn::DuplicateSequenceMismatch {
                 sequence: first_event_sequence(),
             });
         };
         let Some((stored_operation_id, payload)) = K::submitted_event_parts(first_event) else {
-            return Ok(SubmitTxn::BadFirstEvent {
+            return Ok(SubmitTxn::DuplicateSequenceMismatch {
                 sequence: first_sequence,
             });
         };
         if stored_operation_id != operation_id {
-            return Ok(SubmitTxn::BadFirstEvent {
+            return Ok(SubmitTxn::DuplicateSequenceMismatch {
                 sequence: first_sequence,
             });
         }
