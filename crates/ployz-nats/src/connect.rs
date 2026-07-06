@@ -190,7 +190,12 @@ pub async fn connect_authenticated_pool(
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
     let options = authenticated_connect_options(config);
-    match tokio::time::timeout(timeout, options.connect(servers.to_vec())).await {
+    // async-nats tries each server in order, each under its own connection timeout.
+    // `timeout` is the per-server budget; scale the total by the pool size so a
+    // black-holed seed can't burn the whole budget before a live candidate is tried.
+    let factor = u32::try_from(servers.len()).unwrap_or(1).max(1);
+    let total = timeout.saturating_mul(factor);
+    match tokio::time::timeout(total, options.connect(servers.to_vec())).await {
         Ok(Ok(client)) => Ok(client),
         Ok(Err(error)) => Err(NatsConnectError::Connect {
             url: servers.join(","),

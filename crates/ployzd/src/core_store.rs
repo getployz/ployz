@@ -196,6 +196,24 @@ impl CoreStore {
         .await
     }
 
+    /// The epoch if the store already has one, **without** minting. `None` means a
+    /// fresh store that has never served as a core — the only state a promotion
+    /// may seed. (Distinct from `control_plane_epoch`, which mints `initial` and so
+    /// cannot tell a fresh store from one promoted at the initial generation.)
+    pub async fn control_plane_epoch_if_present(
+        &self,
+    ) -> Result<Option<ControlPlaneEpoch>, CoreStoreError> {
+        self.call(|conn| {
+            let existing: Option<String> = conn
+                .query_row("SELECT json FROM control_plane WHERE id = 0", [], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            existing.map(|json| from_json(&json)).transpose()
+        })
+        .await
+    }
+
     /// Atomically raise the control-plane epoch above both `mirror` and this
     /// store's current value, returning the new epoch. Promotion fences the core
     /// it succeeds with this — the read-max-bump-write happens in one transaction,

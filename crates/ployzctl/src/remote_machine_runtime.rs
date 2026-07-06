@@ -326,8 +326,20 @@ pub(crate) async fn execute_machine_init(
         }
         .render(),
     );
+    // Surface keeper's install stderr: when PLOYZ_RECOVERY_SECRET is unset, keeper
+    // generates a one-time cluster recovery secret and prints it there, and the
+    // operator needs it to core-promote later (ADR 0031). The remote path would
+    // otherwise swallow it.
+    let install_stderr = install_output.stderr.text.trim();
+    if !install_stderr.is_empty() {
+        output.stderr = format!("{install_stderr}\n");
+    }
     if let Err(source) = save_cluster_context(&context_path, &context) {
-        output.stderr = machine_ssh_context_warning(&identity.machine_id, &target, &source);
+        output.stderr.push_str(&machine_ssh_context_warning(
+            &identity.machine_id,
+            &target,
+            &source,
+        ));
     }
 
     Ok(output)
