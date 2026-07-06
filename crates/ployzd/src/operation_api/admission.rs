@@ -3,9 +3,9 @@
 use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, DeployOperationSubmission,
     MachineAddOperationSubmission, MachineJoinIdentity, MachineJoinRedemption,
-    MachineLifecycleOperationSubmission,
-    MachineUpdateOperationSubmission, OperationRepository, OperationStatusStoreError,
-    RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
+    MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission, OperationRepository,
+    OperationStatusStoreError, RedeemMachineJoinTokenError, SubmitMachineAddError,
+    SubmitOperationError,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId};

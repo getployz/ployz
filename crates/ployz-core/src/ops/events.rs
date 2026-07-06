@@ -254,9 +254,11 @@ impl OperationEvent {
             Self::DeployPlanCreated { plan, .. } => {
                 Some(DeployEvidence::PlanCreated { plan: plan.clone() })
             }
-            Self::DeployDataplanePrepared { report, .. } => Some(DeployEvidence::DataplanePrepared {
-                report: report.clone(),
-            }),
+            Self::DeployDataplanePrepared { report, .. } => {
+                Some(DeployEvidence::DataplanePrepared {
+                    report: report.clone(),
+                })
+            }
             Self::DeployContainerStarted {
                 machine_id,
                 container_id,
