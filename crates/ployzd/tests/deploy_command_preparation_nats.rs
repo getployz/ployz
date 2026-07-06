@@ -16,22 +16,20 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, route_port,
     service_id,
 };
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::operations::deploy::{
     DeployMachineCandidates, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::client::NatsMachineFactsReader;
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::roles::machine::service::{
-    MachinePloyzNativeMeshPreparer, start_machine_role_service,
-};
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::roles::machine::service::{MachinePloyzNativeMeshPreparer, start_machine_role_service};
 use std::time::Duration;
 
 #[tokio::test]

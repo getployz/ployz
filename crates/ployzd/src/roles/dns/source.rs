@@ -1,10 +1,10 @@
 //! DNS projection source adapters.
 
+use crate::fact_cache::FactCache;
+use crate::intent::service::{IntentReadError, NatsIntentReader};
 use crate::roles::dns::projection::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
-use crate::intent::service::{IntentReadError, NatsIntentReader};
-use crate::fact_cache::FactCache;
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};
 use std::collections::{BTreeMap, BTreeSet};

@@ -4,14 +4,14 @@ use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
 };
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::roles::dns::projection::{
-    DnsAnswer, DnsProjectionUpdate, DnsRecordSet, DnsProjector, DnsServingState, project_dns,
-};
-use ployzd::roles::dns::source::load_dns_projection_update_from_nats;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::fact_cache::FactCache;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::fact_cache::FactCache;
+use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::roles::dns::projection::{
+    DnsAnswer, DnsProjectionUpdate, DnsProjector, DnsRecordSet, DnsServingState, project_dns,
+};
+use ployzd::roles::dns::source::load_dns_projection_update_from_nats;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 

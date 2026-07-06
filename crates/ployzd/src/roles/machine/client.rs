@@ -317,12 +317,10 @@ impl NatsMachineSubstrateUpdater {
         .await
         .map(|_| ())
         .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                MachineSubstrateUpdateError::Unavailable {
-                    machine_id: machine_id.clone(),
-                    reason,
-                }
-            }
+            MachineCallError::Unavailable(reason) => MachineSubstrateUpdateError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
     }
@@ -344,12 +342,10 @@ impl NatsMachineSubstrateUpdater {
         .await
         .map(|ok| ok.reported)
         .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                MachineSubstrateUpdateError::Unavailable {
-                    machine_id: machine_id.clone(),
-                    reason,
-                }
-            }
+            MachineCallError::Unavailable(reason) => MachineSubstrateUpdateError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
     }

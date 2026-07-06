@@ -1,7 +1,8 @@
 use ployz_test_support::ids::route_hostname;
 use ployzd::roles::dns::projection::{
     DnsAnswer, DnsProjection, DnsProjectionError, DnsProjectionInput, DnsProjectionState,
-    DnsProjectionUpdate, DnsRecordSet, DnsProjector, DnsServingState, apply_dns_update, project_dns,
+    DnsProjectionUpdate, DnsProjector, DnsRecordSet, DnsServingState, apply_dns_update,
+    project_dns,
 };
 
 #[test]

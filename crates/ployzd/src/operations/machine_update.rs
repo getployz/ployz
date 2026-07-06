@@ -1,9 +1,9 @@
 //! Operation-owned machine substrate updates.
 
 use crate::operation_api::admission::OperationControllers;
+use crate::operations::log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};
 use crate::roles::machine::client::NatsMachineSubstrateUpdater;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
-use crate::operations::log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;

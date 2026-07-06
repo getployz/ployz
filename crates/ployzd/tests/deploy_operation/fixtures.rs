@@ -776,7 +776,10 @@ pub(super) fn empty_deploy_command_with_running_container(
 fn namespace_cleanup_candidates(
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
-    ployzd::operations::deploy::namespace_cleanup_candidates(&namespace_id("default"), observed_machines)
+    ployzd::operations::deploy::namespace_cleanup_candidates(
+        &namespace_id("default"),
+        observed_machines,
+    )
 }
 
 fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {

@@ -5,23 +5,22 @@ use ployz_core::state::{
 };
 use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::roles::dns::projection::DnsAnswer;
+use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::dns::process::{
     DnsProcessAttempt, RunningDnsProcess, start_dns_process_with_client,
 };
-use ployzd::intent::service::{RunningIntentService, start_intent_service};
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::roles::dns::projection::DnsAnswer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start().await;
-    let runtime =
-        start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
-            .await
-            .expect("dns runtime starts before sources exist");
+    let runtime = start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
+        .await
+        .expect("dns runtime starts before sources exist");
 
     wait_until(Duration::from_secs(2), || {
         matches!(
@@ -38,10 +37,9 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
 async fn dns_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
-    let runtime =
-        start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
-            .await
-            .expect("dns runtime starts");
+    let runtime = start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
+        .await
+        .expect("dns runtime starts");
     wait_until(Duration::from_secs(2), || {
         runtime.health().last_attempt.is_some()
     })

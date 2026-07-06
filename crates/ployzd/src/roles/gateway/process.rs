@@ -1,22 +1,24 @@
 //! Process wiring for the gateway role.
 
-use crate::config::GatewayProcessConfig;
-use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
-use crate::roles::gateway::pingora::{
-    GatewayPingoraFailureRecorder, PingoraRouteRegistry, PingoraRouteRegistryError,
-    PloyzGatewayProxy,
+use crate::adapters::credentials::{
+    AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
-use crate::roles::gateway::route_table::{GatewayProjector, GatewayProjectorTick, GatewayServingState};
-use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
+use crate::config::GatewayProcessConfig;
+use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
-use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
-use crate::fact_cache::{
-    RunningFactCache, FactCache, FactCacheError, start_fact_cache,
+use crate::roles::gateway::pingora::{
+    GatewayPingoraFailureRecorder, PingoraRouteRegistry, PingoraRouteRegistryError,
+    PloyzGatewayProxy,
 };
+use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
+use crate::roles::gateway::route_table::{
+    GatewayProjector, GatewayProjectorTick, GatewayServingState,
+};
+use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
@@ -317,11 +319,12 @@ impl GatewayProcessSource {
             .map_err(|error| GatewayProcessError::PublishGatewayStatus {
                 message: error.to_string(),
             })?;
-        self.client.flush().await.map_err(|error| {
-            GatewayProcessError::PublishGatewayStatus {
+        self.client
+            .flush()
+            .await
+            .map_err(|error| GatewayProcessError::PublishGatewayStatus {
                 message: error.to_string(),
-            }
-        })?;
+            })?;
         self.facts.record_gateway_status(status.clone());
         Ok(())
     }
@@ -606,12 +609,13 @@ fn record_gateway_http_failure(health: &Mutex<GatewayProcessHealth>, failure: Ga
 async fn resolve_gateway_listen_addr(
     listen_addr: SocketAddr,
 ) -> Result<SocketAddr, GatewayProcessError> {
-    let listener = TcpListener::bind(listen_addr).await.map_err(|source| {
-        GatewayProcessError::BindHttp {
-            addr: listen_addr,
-            source,
-        }
-    })?;
+    let listener =
+        TcpListener::bind(listen_addr)
+            .await
+            .map_err(|source| GatewayProcessError::BindHttp {
+                addr: listen_addr,
+                source,
+            })?;
     let resolved = listener
         .local_addr()
         .map_err(GatewayProcessError::ReadHttpListenerAddr)?;

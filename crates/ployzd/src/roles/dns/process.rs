@@ -4,15 +4,17 @@
 //! state and gateway observations from NATS, keeps a last-known-good answer
 //! table, and exposes typed health. It owns no command surface.
 
-use crate::config::DnsProcessConfig;
-use crate::roles::dns::projection::{DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState};
-use crate::roles::dns::source::load_dns_projection_update_from_nats;
-use crate::intent::service::NatsIntentReader;
-use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
-use crate::fact_cache::{
-    RunningFactCache, FactCache, FactCacheError, start_fact_cache,
+use crate::adapters::credentials::{
+    AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
+use crate::config::DnsProcessConfig;
+use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
+use crate::intent::service::NatsIntentReader;
+use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::roles::dns::projection::{
+    DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
+};
+use crate::roles::dns::source::load_dns_projection_update_from_nats;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
@@ -241,9 +243,7 @@ fn dns_attempt_from_tick(tick: DnsProjectorTick) -> DnsProcessAttempt {
     }
 }
 
-pub async fn run_dns_until_shutdown(
-    config: &DnsProcessConfig,
-) -> Result<(), DnsProcessError> {
+pub async fn run_dns_until_shutdown(config: &DnsProcessConfig) -> Result<(), DnsProcessError> {
     let runtime = start_dns_process(config).await?;
     shutdown_signal()
         .await

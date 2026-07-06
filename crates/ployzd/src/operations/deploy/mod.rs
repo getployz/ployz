@@ -1,10 +1,10 @@
 //! Deploy operation execution over explicit ports.
 
+pub mod driver;
 mod facts;
 mod failure;
 mod ports;
 mod preparation;
-pub mod driver;
 mod types;
 
 use ployz_core::deploy::{

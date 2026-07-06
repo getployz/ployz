@@ -1,28 +1,26 @@
 //! Process wiring for the control role.
 
-use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
-use crate::config::ControlProcessConfig;
-use crate::operation_api::admission::OperationControllers;
-use crate::core_store::{CoreStore, CoreStoreError};
-use crate::operations::deploy::driver::DeployOperationDriver;
-use crate::operations::deploy::DeployMachineCandidates;
-use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
-use crate::operations::machine_lifecycle::MachineLifecycleOperation;
-use crate::intent::machine_roster::MachineRosterStore;
-use crate::roles::machine::client::{
-    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
-};
-use crate::operations::machine_update::MachineUpdateOperation;
-use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::adapters::nats_authorization::{
     MachineCredentialMint, MintResumeError, MintVerifyEndpoint, NatsAuthorizationWriter,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
+use crate::config::ControlProcessConfig;
+use crate::core_store::{CoreStore, CoreStoreError};
+use crate::fact_cache::{FactCacheError, RunningFactCache, start_fact_cache};
+use crate::intent::machine_roster::MachineRosterStore;
+use crate::intent::namespace_intent::NamespaceIntentStore;
+use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use crate::operation_api::OperationApiHandlers;
+use crate::operation_api::admission::OperationControllers;
+use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
+use crate::operations::deploy::DeployMachineCandidates;
+use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::log::OperationRepository;
+use crate::operations::machine_lifecycle::MachineLifecycleOperation;
+use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
-use crate::fact_cache::{
-    RunningFactCache, FactCacheError, start_fact_cache,
+use crate::roles::machine::client::{
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::tasks::TaskRegistry;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
