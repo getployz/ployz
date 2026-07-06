@@ -290,6 +290,9 @@ impl TestNats {
                     .expect("open core store"),
             ),
             self.namespace_intent.clone(),
+            ployzd::core_store::CoreStore::open_in_memory()
+                .await
+                .expect("core store opens"),
             Duration::from_millis(10),
         )
         .await

@@ -43,12 +43,37 @@ pub struct ActiveMachineState {
     pub lifecycle: MachineLifecycle,
 }
 
-/// Full operator intent visible to readers. Authorized users stay private to
-/// the core authorization renderer and are intentionally absent.
+/// Monotonic control-plane generation, advertised with intent. A machine tells a
+/// promoted core (higher epoch) from a healed old one (lower epoch) by comparing
+/// it, and a healed old core demotes itself on seeing a higher epoch. Owned by
+/// the core and bumped only on operator promotion (ADR 0030/0031) — NATS carries
+/// the value, it does not define it (core NATS has no epoch primitive; the ones
+/// that exist live in the JetStream we exited).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+pub struct ControlPlaneEpoch(u64);
+
+impl ControlPlaneEpoch {
+    /// The epoch a core mints before it has ever been promoted.
+    #[must_use]
+    pub const fn initial() -> Self {
+        Self(1)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Full operator intent visible to readers, stamped with the epoch it reflects.
+/// Authorized users stay private to the core authorization renderer and are
+/// intentionally absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IntentSnapshot {
+    pub epoch: ControlPlaneEpoch,
     pub active_machines: Vec<ActiveMachineState>,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,

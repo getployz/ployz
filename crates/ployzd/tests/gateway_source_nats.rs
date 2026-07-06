@@ -102,6 +102,9 @@ async fn test_nats() -> TestNats {
                 .expect("open core store"),
         ),
         namespace_intent.clone(),
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens"),
         Duration::from_secs(30),
     )
     .await

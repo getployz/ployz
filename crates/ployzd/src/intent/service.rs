@@ -1,5 +1,6 @@
 //! Core-owned operator intent service.
 
+use crate::core_store::CoreStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
@@ -90,16 +91,21 @@ pub async fn start_intent_service(
     client: async_nats::Client,
     machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
+    core_store: CoreStore,
     publish_interval: Duration,
 ) -> Result<RunningIntentService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
+    let service_core_store = core_store.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
             let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
-            async move { intent_get_response(request, &machine_roster, &namespace_intent).await }
+            let core_store = service_core_store.clone();
+            async move {
+                intent_get_response(request, &machine_roster, &namespace_intent, &core_store).await
+            }
         })
         .await?;
 
@@ -107,7 +113,8 @@ pub async fn start_intent_service(
         let mut interval = tokio::time::interval(publish_interval);
         loop {
             interval.tick().await;
-            let Ok(intent) = load_intent(&machine_roster, &namespace_intent).await else {
+            let Ok(intent) = load_intent(&machine_roster, &namespace_intent, &core_store).await
+            else {
                 continue;
             };
             let Ok(payload) = serde_json::to_vec(&intent) else {
@@ -124,12 +131,13 @@ async fn intent_get_response(
     request: NatsServiceRequest,
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
+    core_store: &CoreStore,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<IntentGetRequest>(&request) {
         return response;
     }
 
-    match load_intent(machine_roster, namespace_intent).await {
+    match load_intent(machine_roster, namespace_intent, core_store).await {
         Ok(intent) => NatsServiceResponse::json_ok(&intent),
         Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
     }
@@ -138,7 +146,12 @@ async fn intent_get_response(
 async fn load_intent(
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
+    core_store: &CoreStore,
 ) -> Result<IntentSnapshot, String> {
+    let epoch = core_store
+        .control_plane_epoch()
+        .await
+        .map_err(|error| error.to_string())?;
     let active_machines = machine_roster
         .active_machines()
         .await
@@ -149,6 +162,7 @@ async fn load_intent(
         .map_err(|error| error.to_string())?;
 
     Ok(IntentSnapshot {
+        epoch,
         active_machines,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,
