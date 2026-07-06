@@ -6,34 +6,36 @@
 //! controllers, machine-local services, and runtime adapters. Product policy stays
 //! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
 
+pub mod adapters {
+    pub(crate) mod atomic_file;
+    pub mod credentials;
+    pub mod docker;
+    pub mod host_dataplane;
+    pub mod nats_authorization;
+    pub mod nats_server;
+}
 pub mod api_runtime;
 pub mod config;
 pub mod control_runtime;
 pub mod controllers;
 pub mod core_store;
 pub mod dispatch;
-pub mod dataplane_runtime;
 pub mod deploy_runtime;
 pub mod deploy_worker;
 pub mod dns;
 pub mod dns_process_runtime;
 pub mod dns_source;
-pub mod docker;
-pub(crate) mod evidence_file;
 pub mod gateway;
 pub mod gateway_pingora;
 pub mod gateway_process_runtime;
 pub mod gateway_runtime;
 pub mod gateway_source;
 pub mod intent;
-pub mod machine_credentials;
 pub mod machine_lifecycle_runtime;
 pub mod machine_roster;
 pub mod machine_runtime;
 pub mod machine_update_runtime;
 pub mod namespace_intent;
-pub mod nats_authorization;
-pub mod nats_process;
 pub mod operation_api;
 pub mod operation_log;
 pub mod process_support;

@@ -8,7 +8,7 @@ use crate::config::DnsProcessConfig;
 use crate::dns::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
 use crate::dns_source::load_dns_projection_update_from_nats;
 use crate::intent::NatsIntentReader;
-use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use crate::fact_cache::{
     RunningRuntimeFactsCache, RuntimeFactsCache, RuntimeFactsCacheError, start_runtime_facts_cache,

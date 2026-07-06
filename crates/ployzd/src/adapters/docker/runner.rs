@@ -1,5 +1,5 @@
 use super::network::{ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
-use crate::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
+use crate::adapters::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
 use crate::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,

@@ -1,7 +1,7 @@
 use bollard::models::{Ipam, IpamConfig, NetworkCreateRequest};
 use std::collections::HashMap;
 
-use crate::docker::labels::MANAGED_LABEL;
+use crate::adapters::docker::labels::MANAGED_LABEL;
 
 pub(super) const ENDPOINT_NETWORK_NAME: &str = "ployz";
 

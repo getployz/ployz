@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use crate::machine_runtime::service::MachinePloyzNativeMeshPreparer;
 
-#[path = "dataplane_runtime/host_commands.rs"]
 mod host_commands;
-#[path = "dataplane_runtime/host_routes.rs"]
 mod host_routes;
 
 #[cfg(test)]

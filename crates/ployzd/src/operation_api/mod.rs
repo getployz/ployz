@@ -23,7 +23,7 @@ use crate::machine_lifecycle_runtime::MachineLifecycleOperationRuntime;
 use crate::machine_roster::MachineRosterStore;
 use crate::machine_runtime::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
-use crate::nats_authorization::MachineCredentialMintRuntime;
+use crate::adapters::nats_authorization::MachineCredentialMintRuntime;
 use crate::fact_cache::RuntimeFactsCache;
 use ployz_core::ids::MachineId;
 use std::sync::Arc;

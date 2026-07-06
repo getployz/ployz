@@ -2,7 +2,7 @@
 //! workflow that turns a freshly bootstrapped machine into the cluster's
 //! first active machine.
 
-use crate::nats_authorization::write_machine_seed_file;
+use crate::adapters::nats_authorization::write_machine_seed_file;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::plan_first_machine_activation;
 use ployz_core::state::ActiveMachineState;
@@ -85,7 +85,7 @@ async fn redeem_seed_and_report(
 }
 
 fn machine_seed_write_failure_message(
-    error: &crate::nats_authorization::MachineSeedWriteError,
+    error: &crate::adapters::nats_authorization::MachineSeedWriteError,
 ) -> ployz_core::ops::FailureMessage {
     match ployz_core::ops::FailureMessage::try_new(error.to_string()) {
         Ok(message) => message,

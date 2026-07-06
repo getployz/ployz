@@ -9,7 +9,7 @@ use crate::gateway_pingora::{
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
 use crate::intent::NatsIntentReader;
-use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,

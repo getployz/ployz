@@ -462,8 +462,8 @@ fn control_role_requires_a_readable_controller_seed_file() {
         panic!("machine role should produce machine config");
     };
     assert!(matches!(
-        ployzd::machine_credentials::observe_role_credentials(&machine.nats, 1),
-        ployzd::machine_credentials::MachineCredentialState::AwaitingSeedFile { attempts: 1, .. }
+        ployzd::adapters::credentials::observe_role_credentials(&machine.nats, 1),
+        ployzd::adapters::credentials::MachineCredentialState::AwaitingSeedFile { attempts: 1, .. }
     ));
 }
 
