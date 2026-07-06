@@ -2,7 +2,8 @@
 
 use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission, MachineJoinRedemption, MachineLifecycleOperationSubmission,
+    MachineAddOperationSubmission, MachineJoinIdentity, MachineJoinRedemption,
+    MachineLifecycleOperationSubmission,
     MachineUpdateOperationSubmission, OperationRepository, OperationStatusStoreError,
     RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
 };
@@ -196,12 +197,14 @@ impl OperationControllers {
             .repository
             .submit_machine_add(MachineAddOperationSubmission {
                 operation_id: command.operation_id,
-                machine_id: command.machine_id,
-                name: command.name,
-                roles: command.roles,
-                join_bundle: command.join_bundle,
-                join_token: command.join_token,
-                raw_join_token: command.raw_join_token,
+                identity: MachineJoinIdentity {
+                    machine_id: command.machine_id,
+                    name: command.name,
+                    roles: command.roles,
+                    join_bundle: command.join_bundle,
+                    join_token: command.join_token,
+                    raw_join_token: command.raw_join_token,
+                },
                 idempotency_key: command.idempotency_key,
             })
             .await?)
