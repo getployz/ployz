@@ -2,7 +2,7 @@
 //! errors. Actionable states stay typed; storage and transport plumbing renders
 //! as evidence text.
 
-use crate::controllers::{MachineAddSubmitCommandError, SubmitCommandError};
+use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
 use crate::operations::log::{
     RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
@@ -279,7 +279,7 @@ pub(super) fn ops_watch_error_from_replay_error(
 #[cfg(test)]
 mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
-    use crate::controllers::SubmitCommandError;
+    use crate::operation_api::admission::SubmitCommandError;
     use crate::operations::log::{
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitOperationError,

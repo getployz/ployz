@@ -1,6 +1,6 @@
 //! Runtime for operation-owned machine substrate updates.
 
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
 use crate::roles::machine::client::NatsMachineSubstrateUpdater;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::operations::log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};

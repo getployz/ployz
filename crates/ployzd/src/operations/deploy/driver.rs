@@ -1,6 +1,6 @@
 //! Owned deploy execution started by the control service.
 
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::{
     DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionOutcome,
     DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError, DeployHealthChecker,

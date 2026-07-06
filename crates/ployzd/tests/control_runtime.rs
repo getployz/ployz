@@ -37,7 +37,7 @@ use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
-use ployzd::controllers::MachineAddBootstrapConfig;
+use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::roles::gateway::process::start_gateway_process_runtime_with_client;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::roles::machine::protocol::{
