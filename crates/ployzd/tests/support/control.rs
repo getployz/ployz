@@ -13,10 +13,10 @@ use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::controllers::MachineAddBootstrapConfig;
-use ployzd::nats_authorization::{
+use ployzd::adapters::nats_authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };
-use ployzd::nats_process::NatsServerRuntime;
+use ployzd::adapters::nats_server::NatsServerRuntime;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

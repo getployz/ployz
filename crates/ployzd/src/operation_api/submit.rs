@@ -6,7 +6,7 @@ use crate::controllers::{
     MachineAddSubmitCommand, MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand,
     OperationControllers,
 };
-use crate::nats_authorization::MintRequest;
+use crate::adapters::nats_authorization::MintRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::op_watch;

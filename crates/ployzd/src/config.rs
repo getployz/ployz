@@ -18,7 +18,7 @@ use ployz_nats::connect::{
 use std::time::Duration;
 
 use crate::controllers::MachineAddBootstrapConfig;
-use crate::nats_process::NatsServerRuntime;
+use crate::adapters::nats_server::NatsServerRuntime;
 use crate::role_cli::DaemonProcessRole;
 pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 

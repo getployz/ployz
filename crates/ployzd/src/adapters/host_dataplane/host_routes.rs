@@ -181,7 +181,7 @@ fn wireguard_host_cidr(endpoint_subnet: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataplane_runtime::HostCommandAction;
+    use crate::adapters::host_dataplane::HostCommandAction;
 
     #[test]
     fn route_programming_adds_only_peer_endpoint_subnets() {

@@ -1,9 +1,9 @@
 //! Runtime wiring for the machine role.
 
 use crate::config::MachineProcessConfig;
-use crate::dataplane_runtime::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
-use crate::docker::runner::DockerManagedContainerRunner;
-use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
+use crate::adapters::docker::runner::DockerManagedContainerRunner;
+use crate::adapters::credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::machine_runtime::runner::{MachineContainerRunner, MachineLogReader};
 use crate::machine_runtime::service::{
     MachineFactsReadError, MachineServiceRuntimeError, current_unix_ms,

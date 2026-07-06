@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ployz_core::nats_config::{NatsListener, NatsServerTlsFiles};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
 use ployz_test_support::ids::machine_id;
-use ployzd::nats_process::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
+use ployzd::adapters::nats_server::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
 
 #[test]
 fn single_machine_config_enables_tls_and_disables_jetstream_on_loopback() {

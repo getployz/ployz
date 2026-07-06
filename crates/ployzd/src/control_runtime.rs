@@ -14,7 +14,7 @@ use crate::machine_runtime::client::{
 };
 use crate::machine_update_runtime::MachineUpdateOperationRuntime;
 use crate::namespace_intent::NamespaceIntentStore;
-use crate::nats_authorization::{
+use crate::adapters::nats_authorization::{
     MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::evidence_file::write_file_atomically;
+use crate::adapters::atomic_file::write_file_atomically;
 use ployz_core::nats_config::{
     AuthorizedUsersParseError, NatsAuthorizedUser, parse_authorized_users, render_authorized_users,
 };
