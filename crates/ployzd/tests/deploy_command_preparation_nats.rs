@@ -520,6 +520,9 @@ async fn test_nats() -> TestNats {
         connected.controller.clone(),
         machine_roster.clone(),
         namespace_intent.clone(),
+        ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens"),
         Duration::from_secs(30),
     )
     .await
@@ -614,6 +617,7 @@ fn managed_observation_with_entry(
 
 fn active_machine(machine_id: &str) -> ActiveMachineState {
     ActiveMachineState {
+        public_endpoint: None,
         lifecycle: MachineLifecycle::Active,
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),
