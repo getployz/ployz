@@ -14,7 +14,7 @@ use ployz_core::ops::{
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
 
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
 
 use super::writer::{NatsAuthorizationHandle, RenderFailure};
 use crate::tasks::TaskRegistry;

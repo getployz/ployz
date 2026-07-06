@@ -12,7 +12,7 @@ use ployz_test_support::fixtures::machine_join_material;
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::controllers::MachineAddBootstrapConfig;
+use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::adapters::nats_authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };

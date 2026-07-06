@@ -1,7 +1,7 @@
 //! Read-only query runtimes behind the operation API: machine, service,
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
 use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{
     MachineLogsTailRuntimeError, NatsMachineFactsReader, NatsMachineLogsTailer,

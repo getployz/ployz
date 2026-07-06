@@ -1,5 +1,7 @@
 //! User-facing operation service handlers.
 
+pub mod admission;
+pub mod service;
 mod error_map;
 mod first_machine;
 mod machine_join;
@@ -16,7 +18,7 @@ pub use submit::{
     deploy_submit, machine_add, machine_drain, machine_resume, machine_update, owned_operation,
 };
 
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::driver::DeployOperationRuntime;
 use crate::intent::service::NatsIntentReader;
 use crate::operations::machine_lifecycle::MachineLifecycleOperationRuntime;

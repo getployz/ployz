@@ -1,7 +1,7 @@
 //! Submit handlers: accept the operation quickly, start the owned worker,
 //! and return the operation id + watch subject.
 
-use crate::controllers::{
+use crate::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError,
     MachineAddSubmitCommand, MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand,
     OperationControllers,

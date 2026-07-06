@@ -1,8 +1,8 @@
 //! Runtime wiring for the control role.
 
-use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
+use crate::operation_api::service::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
 use crate::config::ControlProcessConfig;
-use crate::controllers::OperationControllers;
+use crate::operation_api::admission::OperationControllers;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::operations::deploy::driver::DeployOperationRuntime;
 use crate::operations::deploy::DeployMachineCandidates;

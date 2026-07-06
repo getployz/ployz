@@ -14,9 +14,7 @@ pub mod adapters {
     pub mod nats_authorization;
     pub mod nats_server;
 }
-pub mod api_runtime;
 pub mod config;
-pub mod controllers;
 pub mod roles {
     pub mod control;
     pub mod dns {

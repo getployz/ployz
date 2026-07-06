@@ -13,7 +13,7 @@ use ployz_core::ops::{
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
-use ployzd::controllers::{
+use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
 use ployzd::operations::deploy::driver::{
