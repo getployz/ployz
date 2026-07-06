@@ -101,6 +101,33 @@ pub struct IntentSnapshot {
     pub serving_target_entries: Vec<ServingTargetEntry>,
 }
 
+impl IntentSnapshot {
+    /// The `(machine, nkey public)` grants a promoted core re-renders
+    /// authorized-users from (ADR 0031). Machines with no recorded public are
+    /// skipped — there is nothing to authorize until they re-join.
+    #[must_use]
+    pub fn authorized_machine_publics(&self) -> Vec<(MachineId, NatsUserPublicKey)> {
+        self.active_machines
+            .iter()
+            .filter_map(|machine| {
+                machine
+                    .nkey_public
+                    .clone()
+                    .map(|public| (machine.machine_id.clone(), public))
+            })
+            .collect()
+    }
+
+    /// A specific machine's advertised public endpoint, if the core recorded one.
+    #[must_use]
+    pub fn public_endpoint_of(&self, machine_id: &MachineId) -> Option<IpAddr> {
+        self.active_machines
+            .iter()
+            .find(|machine| &machine.machine_id == machine_id)
+            .and_then(|machine| machine.public_endpoint)
+    }
+}
+
 /// The durable operator-intent state of a current machine identity. Controls
 /// placement policy; runtime readiness comes from observations, never from
 /// lifecycle.

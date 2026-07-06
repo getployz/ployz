@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
+use ployz_core::ids::MachineId;
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
 pub const JOIN_NATS_CREDENTIALS_FILE: &str = "nats.creds";
@@ -60,4 +61,30 @@ pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8>
         material.trusted_nats_ca_sha256,
     )
     .into_bytes()
+}
+
+/// Recover this machine's id from the redacted join-material file written at join
+/// (`machine_id=<id>` on the first line, see [`render_redacted_join_material`]).
+/// Lets `core-promote` identify the machine it runs on without an operator flag.
+#[must_use]
+pub fn parse_machine_id_from_join_material(contents: &str) -> Option<MachineId> {
+    let value = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("machine_id="))?;
+    MachineId::try_new(value).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_machine_id_from_join_material;
+
+    #[test]
+    fn parses_machine_id_from_redacted_material() {
+        let contents = "machine_id=machine_7\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256=abc\n";
+        assert_eq!(
+            parse_machine_id_from_join_material(contents).map(|id| id.as_str().to_owned()),
+            Some("machine_7".to_owned())
+        );
+        assert!(parse_machine_id_from_join_material("cluster_name=prod\n").is_none());
+    }
 }

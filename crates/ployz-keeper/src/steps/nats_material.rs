@@ -247,6 +247,25 @@ pub struct NatsAuthorizedUsersTarget {
     rendered: String,
 }
 
+/// The new core's own control-plane principals, the base of every rendered
+/// authorized-users set (first-machine install and promotion alike).
+fn core_principal_users(identity: &ClusterNatsIdentity) -> Vec<NatsAuthorizedUser> {
+    vec![
+        NatsAuthorizedUser {
+            principal: NatsPrincipal::Controller,
+            nkey_public: identity.controller.public.clone(),
+        },
+        NatsAuthorizedUser {
+            principal: NatsPrincipal::User,
+            nkey_public: identity.operator.public.clone(),
+        },
+        NatsAuthorizedUser {
+            principal: NatsPrincipal::Join,
+            nkey_public: identity.join.public.clone(),
+        },
+    ]
+}
+
 impl NatsAuthorizedUsersTarget {
     /// The install-time user set: Controller, operator User, and Join.
     /// Machine users are minted later by `ployzd` control.
@@ -256,20 +275,7 @@ impl NatsAuthorizedUsersTarget {
         identity: &ClusterNatsIdentity,
         additional_user_public_keys: &[NatsUserPublicKey],
     ) -> Self {
-        let mut users = vec![
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Controller,
-                nkey_public: identity.controller.public.clone(),
-            },
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::User,
-                nkey_public: identity.operator.public.clone(),
-            },
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Join,
-                nkey_public: identity.join.public.clone(),
-            },
-        ];
+        let mut users = core_principal_users(identity);
         users.extend(
             additional_user_public_keys
                 .iter()
@@ -297,20 +303,7 @@ impl NatsAuthorizedUsersTarget {
         identity: &ClusterNatsIdentity,
         machines: &[(MachineId, NatsUserPublicKey)],
     ) -> Self {
-        let mut users = vec![
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Controller,
-                nkey_public: identity.controller.public.clone(),
-            },
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::User,
-                nkey_public: identity.operator.public.clone(),
-            },
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Join,
-                nkey_public: identity.join.public.clone(),
-            },
-        ];
+        let mut users = core_principal_users(identity);
         users.extend(machines.iter().cloned().map(|(machine_id, nkey_public)| {
             NatsAuthorizedUser {
                 principal: NatsPrincipal::Machine { machine_id },
