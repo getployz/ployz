@@ -110,7 +110,6 @@ impl MachineUpdateOperationRuntime {
                         },
                     )
                     .await;
-                    return;
                 }
             }
             Err(error) => {

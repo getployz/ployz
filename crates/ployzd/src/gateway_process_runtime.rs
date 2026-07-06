@@ -648,9 +648,11 @@ fn run_pingora_gateway_server(
     health: Arc<Mutex<GatewayProcessHealth>>,
     shutdown: watch::Receiver<bool>,
 ) {
-    let mut conf = ServerConf::default();
-    conf.grace_period_seconds = Some(0);
-    conf.graceful_shutdown_timeout_seconds = Some(1);
+    let conf = ServerConf {
+        grace_period_seconds: Some(0),
+        graceful_shutdown_timeout_seconds: Some(1),
+        ..Default::default()
+    };
 
     let mut server = Server::new_with_opt_and_conf(None, conf);
     server.bootstrap();

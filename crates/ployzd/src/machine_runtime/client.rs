@@ -356,6 +356,7 @@ impl NatsMachineSubstrateUpdater {
 }
 
 impl MachineSubstrateUpdateRuntimeError {
+    #[must_use]
     pub fn into_operation_failure(self) -> MachineUpdateFailure {
         match self {
             Self::Unavailable { machine_id, reason } => MachineUpdateFailure::MachineUnavailable {

@@ -3,6 +3,13 @@
 use crate::gateway::GatewayProjection;
 use async_trait::async_trait;
 use pingora::Error;
+use pingora::ErrorType::{
+    AcceptError, BindError, ConnectError, ConnectNoRoute, ConnectProxyFailure, ConnectRefused,
+    ConnectTimedout, ConnectionClosed, Custom, CustomCode, FileCreateError, FileOpenError,
+    FileReadError, FileWriteError, H1Error, H2Downgrade, H2Error, HandshakeError, InvalidCert,
+    InvalidH2, InvalidHTTPHeader, ReadError, ReadTimedout, SocketError, TLSHandshakeFailure,
+    TLSHandshakeTimedout, TLSWantX509Lookup, UnknownError, WriteError, WriteTimedout,
+};
 use pingora::ErrorType::{HTTPStatus, InternalError};
 use pingora::Result as PingoraResult;
 use pingora::lb::health_check::TcpHealthCheck;
@@ -284,7 +291,13 @@ impl ProxyHttp for PloyzGatewayProxy {
         self.record_failure(error.to_string());
         let code = match error.etype() {
             HTTPStatus(code) => *code,
-            _ => 503,
+            ConnectTimedout | ConnectRefused | ConnectNoRoute | TLSWantX509Lookup
+            | TLSHandshakeFailure | TLSHandshakeTimedout | InvalidCert | HandshakeError
+            | ConnectError | BindError | AcceptError | SocketError | ConnectProxyFailure
+            | InvalidHTTPHeader | H1Error | H2Error | H2Downgrade | InvalidH2 | ReadError
+            | WriteError | ReadTimedout | WriteTimedout | ConnectionClosed | FileOpenError
+            | FileCreateError | FileReadError | FileWriteError | InternalError | UnknownError
+            | Custom(_) | CustomCode(..) => 503,
         };
         if code > 0 {
             let _ = session.respond_error(code).await;

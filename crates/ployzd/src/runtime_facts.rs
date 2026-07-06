@@ -125,6 +125,7 @@ impl RunningRuntimeFactsCache {
         let _ = self.task.await;
     }
 
+    #[must_use]
     pub fn into_task(self) -> JoinHandle<()> {
         self.task
     }

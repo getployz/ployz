@@ -46,6 +46,7 @@ pub struct OperationApiHandlers {
 
 impl OperationApiHandlers {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_operations(
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,

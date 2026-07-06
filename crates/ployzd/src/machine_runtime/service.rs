@@ -515,7 +515,7 @@ where
                 error: MachineContainerRunDomainError::OperationStepConflict {
                     container_id: conflict.container_id,
                     expected: conflict.expected,
-                    actual: conflict.actual,
+                    actual: Box::new(conflict.actual),
                 },
             })
         }

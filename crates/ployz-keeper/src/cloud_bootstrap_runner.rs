@@ -472,141 +472,6 @@ fn release_manifest_url() -> String {
         .unwrap_or_else(default_release_manifest_url)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
-        public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
-    };
-    use ployz_core::install::MachineJoinRuntimeNatsUrl;
-    use ployz_core::ops::FailureMessage;
-    use ployz_keeper::executor::KeeperPlanFailure;
-    use ployz_keeper::steps::{KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel};
-    use ployz_sdk_types::{
-        CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
-        CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
-        CloudBootstrapRedemptionId,
-    };
-
-    #[test]
-    fn persisted_release_env_supplies_manifest_url() {
-        let path = std::env::temp_dir().join(format!(
-            "ployz-release-env-{}-{}.env",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock is after unix epoch")
-                .as_nanos()
-        ));
-        std::fs::write(
-            &path,
-            "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env\n",
-        )
-        .expect("release env can be written");
-
-        assert_eq!(
-            persisted_release_manifest_url(&path).expect("manifest URL loads"),
-            "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env"
-        );
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn founder_public_ip_comes_from_runtime_nats_url() {
-        let url =
-            MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").expect("valid nats URL");
-
-        assert_eq!(
-            public_ip_from_runtime_nats_url(&url)
-                .expect("public IP parses")
-                .to_string(),
-            "203.0.113.10"
-        );
-    }
-
-    #[test]
-    fn founder_public_ipv6_comes_from_runtime_nats_url() {
-        let url =
-            MachineJoinRuntimeNatsUrl::try_new("tls://[2001:db8::1]:4222").expect("valid nats URL");
-
-        assert_eq!(
-            public_ip_from_runtime_nats_url(&url)
-                .expect("public IP parses")
-                .to_string(),
-            "2001:db8::1"
-        );
-    }
-
-    #[test]
-    fn founder_runtime_nats_url_rejects_hostname_for_v1() {
-        let url =
-            MachineJoinRuntimeNatsUrl::try_new("tls://core.example.com:4222").expect("valid URL");
-
-        assert!(public_ip_from_runtime_nats_url(&url).is_err());
-    }
-
-    #[test]
-    fn pending_decision_updates_next_poll_delay() {
-        let mut poll_after_seconds = 2;
-        let decision = ployz_sdk_types::CloudBootstrapDecision::Pending {
-            retry_after_seconds: 9,
-        };
-
-        assert!(update_poll_delay_from_pending(
-            &decision,
-            &mut poll_after_seconds
-        ));
-        assert_eq!(poll_after_seconds, 9);
-    }
-
-    #[test]
-    fn join_report_failure_preserves_success_callback_when_join_was_installed() {
-        let envelope = CloudBootstrapEnvelope {
-            attempt_id: CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id"),
-            redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
-                .expect("valid redemption id"),
-            callback_url: "https://cloud.example.com/api/bootstrap/redemptions/pcbr_123/callback"
-                .to_owned(),
-            callback_token: CloudBootstrapCallbackToken::try_new("pcbc_123")
-                .expect("valid callback token"),
-            intent: CloudBootstrapIntent::WaitForFounder {
-                retry_after_seconds: 1,
-            },
-        };
-        let failure = KeeperPlanFailure::Step(KeeperStepFailure {
-            step: KeeperStepLabel::ReportJoinResult,
-            reason: KeeperStepFailureReason::JoinReportFailed,
-            message: FailureMessage::try_new("report failed").expect("valid message"),
-        });
-
-        let success_callback = CloudBootstrapCallbackRequest {
-            attempt_id: envelope.attempt_id.clone(),
-            redemption_id: envelope.redemption_id.clone(),
-            outcome: CloudBootstrapOutcome::JoinerSucceeded {
-                result: ployz_sdk_types::CloudJoinerBootstrapResult {
-                    operation_id: ployz_core::ids::OperationId::try_new("op_machine")
-                        .expect("valid operation id"),
-                    machine_id: ployz_core::ids::MachineId::try_new("machine_2")
-                        .expect("valid machine id"),
-                    name: ployz_core::machine::MachineName::try_new("edge_2")
-                        .expect("valid machine name"),
-                    last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
-                        .expect("valid sequence"),
-                    result: ployz_sdk_types::MachineJoinRedeemResult::Joined,
-                },
-            },
-        };
-
-        let callback =
-            cloud_joiner_failed_terminal_callback(&envelope, &failure, Some(success_callback));
-
-        assert!(matches!(
-            callback.outcome,
-            CloudBootstrapOutcome::JoinerSucceeded { .. }
-        ));
-    }
-}
-
 fn run_cloud_joiner_bootstrap(
     joiner: CloudJoinerBootstrap,
     envelope: &CloudBootstrapEnvelope,
@@ -853,5 +718,140 @@ fn cloud_machine_facts() -> CloudBootstrapMachineFacts {
         candidate_runtime_nats_url: std::env::var("PLOYZ_CANDIDATE_RUNTIME_NATS_URL")
             .ok()
             .and_then(|value| MachineJoinRuntimeNatsUrl::try_new(value).ok()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
+        public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
+    };
+    use ployz_core::install::MachineJoinRuntimeNatsUrl;
+    use ployz_core::ops::FailureMessage;
+    use ployz_keeper::executor::KeeperPlanFailure;
+    use ployz_keeper::steps::{KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel};
+    use ployz_sdk_types::{
+        CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
+        CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
+        CloudBootstrapRedemptionId,
+    };
+
+    #[test]
+    fn persisted_release_env_supplies_manifest_url() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-release-env-{}-{}.env",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "PLOYZ_RELEASE_MANIFEST_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env\n",
+        )
+        .expect("release env can be written");
+
+        assert_eq!(
+            persisted_release_manifest_url(&path).expect("manifest URL loads"),
+            "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn founder_public_ip_comes_from_runtime_nats_url() {
+        let url =
+            MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").expect("valid nats URL");
+
+        assert_eq!(
+            public_ip_from_runtime_nats_url(&url)
+                .expect("public IP parses")
+                .to_string(),
+            "203.0.113.10"
+        );
+    }
+
+    #[test]
+    fn founder_public_ipv6_comes_from_runtime_nats_url() {
+        let url =
+            MachineJoinRuntimeNatsUrl::try_new("tls://[2001:db8::1]:4222").expect("valid nats URL");
+
+        assert_eq!(
+            public_ip_from_runtime_nats_url(&url)
+                .expect("public IP parses")
+                .to_string(),
+            "2001:db8::1"
+        );
+    }
+
+    #[test]
+    fn founder_runtime_nats_url_rejects_hostname_for_v1() {
+        let url =
+            MachineJoinRuntimeNatsUrl::try_new("tls://core.example.com:4222").expect("valid URL");
+
+        assert!(public_ip_from_runtime_nats_url(&url).is_err());
+    }
+
+    #[test]
+    fn pending_decision_updates_next_poll_delay() {
+        let mut poll_after_seconds = 2;
+        let decision = ployz_sdk_types::CloudBootstrapDecision::Pending {
+            retry_after_seconds: 9,
+        };
+
+        assert!(update_poll_delay_from_pending(
+            &decision,
+            &mut poll_after_seconds
+        ));
+        assert_eq!(poll_after_seconds, 9);
+    }
+
+    #[test]
+    fn join_report_failure_preserves_success_callback_when_join_was_installed() {
+        let envelope = CloudBootstrapEnvelope {
+            attempt_id: CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id"),
+            redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
+                .expect("valid redemption id"),
+            callback_url: "https://cloud.example.com/api/bootstrap/redemptions/pcbr_123/callback"
+                .to_owned(),
+            callback_token: CloudBootstrapCallbackToken::try_new("pcbc_123")
+                .expect("valid callback token"),
+            intent: CloudBootstrapIntent::WaitForFounder {
+                retry_after_seconds: 1,
+            },
+        };
+        let failure = KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::ReportJoinResult,
+            reason: KeeperStepFailureReason::JoinReportFailed,
+            message: FailureMessage::try_new("report failed").expect("valid message"),
+        });
+
+        let success_callback = CloudBootstrapCallbackRequest {
+            attempt_id: envelope.attempt_id.clone(),
+            redemption_id: envelope.redemption_id.clone(),
+            outcome: CloudBootstrapOutcome::JoinerSucceeded {
+                result: ployz_sdk_types::CloudJoinerBootstrapResult {
+                    operation_id: ployz_core::ids::OperationId::try_new("op_machine")
+                        .expect("valid operation id"),
+                    machine_id: ployz_core::ids::MachineId::try_new("machine_2")
+                        .expect("valid machine id"),
+                    name: ployz_core::machine::MachineName::try_new("edge_2")
+                        .expect("valid machine name"),
+                    last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+                        .expect("valid sequence"),
+                    result: ployz_sdk_types::MachineJoinRedeemResult::Joined,
+                },
+            },
+        };
+
+        let callback =
+            cloud_joiner_failed_terminal_callback(&envelope, &failure, Some(success_callback));
+
+        assert!(matches!(
+            callback.outcome,
+            CloudBootstrapOutcome::JoinerSucceeded { .. }
+        ));
     }
 }
