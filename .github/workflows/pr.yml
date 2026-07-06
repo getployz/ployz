@@ -16,6 +16,12 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Install nats-server
+        run: |
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-linux-amd64.tar.gz \
+            | tar -xz
+          sudo install nats-server-v2.14.2-linux-amd64/nats-server /usr/local/bin/nats-server
+          nats-server --version
       - run: cargo test --workspace
 
   sdk:
