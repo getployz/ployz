@@ -171,11 +171,21 @@ async fn activate_reported_machine(
     machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
+    let nkey_public = handlers
+        .controllers
+        .repository()
+        .machine_add_mint_claim_by_operation_id(operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+        .map(|claim| claim.nkey_public);
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
         ployz_core::ops::MachineAddOperationState::Completed,
+        nkey_public,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
         message: corrupt("completed machine-add did not produce active machine"),

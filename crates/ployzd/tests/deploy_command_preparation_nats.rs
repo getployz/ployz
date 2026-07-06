@@ -618,6 +618,7 @@ fn managed_observation_with_entry(
 fn active_machine(machine_id: &str) -> ActiveMachineState {
     ActiveMachineState {
         public_endpoint: None,
+        nkey_public: None,
         lifecycle: MachineLifecycle::Active,
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),

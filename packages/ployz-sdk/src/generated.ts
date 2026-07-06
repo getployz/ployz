@@ -266,7 +266,14 @@ lifecycle: MachineLifecycle,
  * advertised one; never cleared on a transient disconnect — reachability is
  * a durable address property, not live liveness.
  */
-public_endpoint: string | null, };
+public_endpoint: string | null,
+/**
+ * The machine's NATS nkey public, minted at machine-add. Rides intent to
+ * every mirror so a promoted core can regenerate `authorized-users.conf`
+ * from the roster alone (ADR 0031). `None` for machines activated before
+ * this field existed — they must re-join to become promotable auth entries.
+ */
+nkey_public: NatsUserPublicKey | null, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 

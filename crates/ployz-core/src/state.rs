@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
+use crate::nats_config::NatsUserPublicKey;
 use crate::ops::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
 
@@ -48,6 +49,12 @@ pub struct ActiveMachineState {
     /// a durable address property, not live liveness.
     #[serde(default)]
     pub public_endpoint: Option<IpAddr>,
+    /// The machine's NATS nkey public, minted at machine-add. Rides intent to
+    /// every mirror so a promoted core can regenerate `authorized-users.conf`
+    /// from the roster alone (ADR 0031). `None` for machines activated before
+    /// this field existed — they must re-join to become promotable auth entries.
+    #[serde(default)]
+    pub nkey_public: Option<NatsUserPublicKey>,
 }
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a

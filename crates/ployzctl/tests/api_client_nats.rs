@@ -646,6 +646,7 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
             public_endpoint: None,
+            nkey_public: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),

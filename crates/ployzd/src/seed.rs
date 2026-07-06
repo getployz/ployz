@@ -87,6 +87,7 @@ mod tests {
                 activated_by: operation_id("op_activate"),
                 lifecycle: MachineLifecycle::Active,
                 public_endpoint: None,
+                nkey_public: None,
             }],
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
