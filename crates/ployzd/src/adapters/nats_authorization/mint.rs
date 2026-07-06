@@ -186,7 +186,7 @@ impl MachineCredentialMint {
             }
             let request = MintRequest {
                 operation_id: submission.operation_id,
-                machine_id: submission.machine_id,
+                machine_id: submission.identity.machine_id,
                 idempotency_key: submission.idempotency_key,
             };
             self.start(request.clone());
