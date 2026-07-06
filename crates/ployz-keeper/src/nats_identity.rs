@@ -194,6 +194,27 @@ fn sign_server_certificate<S: rcgen::SigningKey>(
     })
 }
 
+/// Reconstruct the cluster identity for a promotion (ADR 0031): keep the fleet's
+/// existing CA (cert + the unwrapped signing key), self-issue a fresh server cert
+/// for this core's own address, and mint fresh control-plane principals. Machines
+/// keep trusting the same CA and re-authenticate under the re-rendered
+/// authorized-users; only the core principals rotate.
+pub fn promoted_core_identity(
+    ca: NatsCaCertificatePem,
+    ca_key_pem: String,
+    sans: &ServerCertificateSans,
+) -> Result<ClusterNatsIdentity, NatsIdentityError> {
+    let server_cert = issue_server_certificate(&ca_key_pem, sans)?;
+    Ok(ClusterNatsIdentity {
+        ca,
+        ca_key: NatsCaKeyPem::new(ca_key_pem),
+        server_cert,
+        controller: mint_nkey_user()?,
+        operator: mint_nkey_user()?,
+        join: mint_nkey_user()?,
+    })
+}
+
 fn mint_nkey_user() -> Result<MintedNatsUser, NatsIdentityError> {
     MintedNatsUser::generate().map_err(NatsIdentityError::InvalidGeneratedMaterial)
 }
@@ -218,7 +239,7 @@ pub enum NatsIdentityError {
 mod tests {
     use super::{
         ClusterNatsIdentity, NatsIdentityError, ServerCertificateSans,
-        generate_cluster_nats_identity, issue_server_certificate,
+        generate_cluster_nats_identity, issue_server_certificate, promoted_core_identity,
     };
 
     #[test]
@@ -338,5 +359,37 @@ mod tests {
             reissued.key_pem.secret(),
             identity.server_cert.key_pem.secret()
         );
+    }
+
+    #[test]
+    fn promoted_core_identity_keeps_the_ca_and_rotates_principals() {
+        let original = generate_cluster_nats_identity(
+            &ServerCertificateSans::try_new(None, None).expect("sans"),
+        )
+        .expect("original identity");
+
+        let promoted = promoted_core_identity(
+            original.ca.clone(),
+            original.ca_key.secret().to_owned(),
+            &ServerCertificateSans::try_new(Some("203.0.113.50".parse().expect("ip")), None)
+                .expect("sans"),
+        )
+        .expect("promoted identity");
+
+        // The fleet's trust anchor (CA cert) is unchanged.
+        assert_eq!(promoted.ca, original.ca);
+        // A fresh server cert is issued for the new address.
+        assert!(
+            promoted
+                .server_cert
+                .cert_pem
+                .as_str()
+                .trim_start()
+                .starts_with("-----BEGIN CERTIFICATE-----")
+        );
+        // The control-plane principals rotate.
+        assert_ne!(promoted.controller.public, original.controller.public);
+        assert_ne!(promoted.operator.public, original.operator.public);
+        assert_ne!(promoted.join.public, original.join.public);
     }
 }

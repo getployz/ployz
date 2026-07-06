@@ -34,6 +34,7 @@ const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
+const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
 const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +574,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     machine_join_template_file: Option<AbsoluteInstallPath>,
     ebpf_bytecode_path: Option<PathBuf>,
     ebpf_ctl_path: Option<PathBuf>,
+    seed_from_mirror: Option<PathBuf>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -593,6 +595,7 @@ impl PloyzdRoleEnvironmentTarget {
             machine_join_template_file: None,
             ebpf_bytecode_path: None,
             ebpf_ctl_path: None,
+            seed_from_mirror: None,
         }
     }
 
@@ -671,6 +674,15 @@ impl PloyzdRoleEnvironmentTarget {
         self
     }
 
+    /// Point the Control process at a promotion mirror to seed a fresh core store
+    /// from at startup (ADR 0031); rendered as `PLOYZ_SEED_FROM_MIRROR` for the
+    /// Control role only.
+    #[must_use]
+    pub fn with_seed_from_mirror(mut self, path: PathBuf) -> Self {
+        self.seed_from_mirror = Some(path);
+        self
+    }
+
     #[must_use]
     pub fn render_for_role(&self, role: &DaemonProcessRole) -> String {
         let mut output = format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str());
@@ -694,6 +706,14 @@ impl PloyzdRoleEnvironmentTarget {
             && let Some(path) = self.nats_credentials.join_seed_file()
         {
             output.push_str(PLOYZ_JOIN_NKEY_SEED_FILE_ENV);
+            output.push('=');
+            output.push_str(&path.display().to_string());
+            output.push('\n');
+        }
+        if matches!(role, DaemonProcessRole::Control)
+            && let Some(path) = &self.seed_from_mirror
+        {
+            output.push_str(PLOYZ_SEED_FROM_MIRROR_ENV);
             output.push('=');
             output.push_str(&path.display().to_string());
             output.push('\n');
@@ -822,6 +842,72 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
     }
 
     steps
+}
+
+/// Everything `core-promote` needs to render + start a replacement core on an
+/// already-joined machine (ADR 0031). The identity keeps the fleet's CA and
+/// carries a self-issued server cert + fresh core principals; the machine
+/// authorized publics come from the mirrored roster.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorePromoteTarget {
+    pub machine_id: MachineId,
+    pub nats_server_artifact: ArtifactTarget,
+    pub ployzd_artifact: ArtifactTarget,
+    pub nats_identity: ClusterNatsIdentity,
+    pub recovery_key_wrapped: WrappedCaKey,
+    pub machine_authorized_publics: Vec<(MachineId, NatsUserPublicKey)>,
+    pub nats_material: NatsMachineMaterialPaths,
+    pub machine_public_ip: Option<IpAddr>,
+    pub nats_server_unit: NatsServerUnitTarget,
+    pub role_environment: PloyzdRoleEnvironmentTarget,
+}
+
+/// The promotion plan: install `nats-server`, write the TLS material (self-issued
+/// cert under the kept CA) + a from-scratch authorized-users off the roster +
+/// fresh core credentials + the server config, start the core `nats-server`, then
+/// add the `Control` process (its env points `PLOYZ_SEED_FROM_MIRROR` at the local
+/// mirror so it self-seeds). The machine keeps its existing Machine/dataplane
+/// units — this plan only adds the core, so it does not re-install ployzd/ebpf.
+#[must_use]
+pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
+    let nats_server_config = NatsServerConfigTarget::for_first_machine(
+        target.machine_id.clone(),
+        &target.nats_server_unit,
+        &target.nats_material,
+        first_machine_listener(target.machine_public_ip),
+    );
+    let control = DaemonProcessRole::Control;
+    KeeperStepPlan::new(vec![
+        KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        KeeperStep::InstallArtifact(target.nats_server_artifact.clone()),
+        KeeperStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
+            target.nats_material.clone(),
+            &target.nats_identity,
+            target.recovery_key_wrapped.clone(),
+        )),
+        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::for_promotion(
+            nats_server_config.config_dir().to_path_buf(),
+            &target.nats_identity,
+            &target.machine_authorized_publics,
+        )),
+        KeeperStep::WriteNatsClientCredentials(NatsClientCredentialsTarget::new(
+            target.nats_material.clone(),
+            &target.nats_identity,
+        )),
+        KeeperStep::WriteNatsServerConfig(nats_server_config),
+        KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
+        KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
+        KeeperStep::WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentStep {
+            role: control.clone(),
+            target: target.role_environment.clone(),
+        }),
+        KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::PloyzdRole {
+            role: control.clone(),
+            artifact: target.ployzd_artifact.clone(),
+            environment_file: target.role_environment.file_for_role(&control),
+        }),
+        KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::PloyzdRole(control)),
+    ])
 }
 
 #[must_use]
