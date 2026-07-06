@@ -11,12 +11,21 @@ new core.
 Recovery is **N independent, idempotent, epoch-gated reconnections**, not a
 coordinated cutover:
 
-- **Reachability is an observed fact, never a declared setting.** A machine is
-  a Reachable Machine when it accepts inbound control connections at a public
-  address, observed from connection source addresses — the install asks for no
-  stability flag. This one fact selects promotion candidates, WireGuard
-  dial-targets, and later public-role suitability (e.g. DNS answers); the
-  install stays trivially simple.
+- **Reachability is a declared endpoint the transport corrects, not a
+  core-observed source address.** A machine auto-detects and advertises its own
+  reachable public endpoint as machine testimony (the public-IP fact it already
+  broadcasts) — no operator stability flag, and no source-address observation
+  infrastructure, which the flat NATS authorization model cannot cheaply give
+  (no `system_account` for `$SYS`; `/connz` is an HTTP side-channel). The core
+  records it, and this one fact selects promotion candidates, WireGuard
+  dial-targets, and later public-role suitability (e.g. DNS answers); the install
+  stays trivially simple. The trust model carries the declaration: a machine that
+  misdeclares its address only makes itself a promotion candidate that cannot be
+  reached — a failed promotion, surfaced, never silent corruption. When anti-spoof
+  matters the correction is added NATS-natively via auth callout — the server
+  handing an authorization service each connection's real source IP at connect
+  time, the NATS analog of WireGuard learning a peer's real endpoint from its
+  handshakes — never a trusted-forever flag.
 - **Every machine holds a candidate list and re-points itself.** A machine's
   NATS client is configured with the Reachable Machines from its cached roster,
   not a single hub URL. On core loss it cycles them; the promoted core comes up
@@ -45,11 +54,11 @@ coordinated cutover:
   self-hosted clusters free of any cloud-held credential.
 
 This rejects: automatic promotion or leader election (the coordination problem
-the disposable-core model exists to avoid); a declared stability classification
-(the operator would not read the manual, and reachability is observable); a
-standing machine→Cloud heartbeat channel (SSH-at-bootstrap is simpler given the
-callback-only install and needs no new outbound protocol); and Cloud as
-recovery authority (it holds only a promotion-scoped key).
+the disposable-core model exists to avoid); a manual stability classification
+(the operator would not read the manual; the machine auto-advertises its
+endpoint instead); a standing machine→Cloud heartbeat channel (SSH-at-bootstrap
+is simpler given the callback-only install and needs no new outbound protocol);
+and Cloud as recovery authority (it holds only a promotion-scoped key).
 
 Consequences, stated plainly:
 
