@@ -30,7 +30,7 @@ use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
 use ployzd::core_store::CoreStore;
-use ployzd::operation_log::{OperationRepository, OperationStatusWrite};
+use ployzd::operations::log::{OperationRepository, OperationStatusWrite};
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 

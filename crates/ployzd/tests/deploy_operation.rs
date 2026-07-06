@@ -9,7 +9,7 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_test_support::ids::{failure_message, namespace_id};
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     DataplanePreparer, DeployCleanupResult, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
@@ -1223,7 +1223,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         } if matches!(
             *source,
             DeployExecutionError::CommitNamespaceState(
-                ployzd::deploy_worker::NamespaceCommitError::ServingTargetLockLost { .. }
+                ployzd::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
             )
         )
     ));

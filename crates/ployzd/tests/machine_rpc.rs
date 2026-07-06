@@ -7,7 +7,7 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
 };
-use ployzd::deploy_worker::{
+use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};

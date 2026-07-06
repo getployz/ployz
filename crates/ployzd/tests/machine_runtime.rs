@@ -6,7 +6,7 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
-use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
+use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineRunContainerOutcome,

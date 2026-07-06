@@ -6,7 +6,7 @@ use ployz_core::dataplane::{
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
-use ployzd::deploy_worker::{DataplanePreparer, MachineContainerRuntime};
+use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;

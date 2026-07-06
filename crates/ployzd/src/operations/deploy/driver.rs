@@ -1,7 +1,7 @@
 //! Owned deploy execution started by the control service.
 
 use crate::controllers::OperationControllers;
-use crate::deploy_worker::{
+use crate::operations::deploy::{
     DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionOutcome,
     DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError, DeployHealthChecker,
     DeployMachineCandidates, MachineContainerRuntime, NamespaceCommitError,
@@ -14,7 +14,7 @@ use crate::roles::machine::client::{
     NatsMachineFactsReader,
 };
 use crate::namespace_intent::NamespaceIntentStore;
-use crate::operation_log::{
+use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
 };

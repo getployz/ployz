@@ -1,6 +1,6 @@
 //! Request-side adapter for the built-in Ployz Native Mesh provider.
 
-use crate::deploy_worker::DataplanePreparer;
+use crate::operations::deploy::DataplanePreparer;
 use crate::roles::machine::client::{
     MachineCallError, MachineFactsReadRuntimeError, NatsMachineDataplanePreparer, call_machine,
 };

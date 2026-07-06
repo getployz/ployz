@@ -33,17 +33,18 @@ pub mod roles {
     }
     pub mod machine;
 }
+pub mod operations {
+    pub mod deploy;
+    pub mod log;
+    pub mod machine_lifecycle;
+    pub mod machine_update;
+}
 pub mod core_store;
 pub mod dispatch;
-pub mod deploy_runtime;
-pub mod deploy_worker;
 pub mod intent;
-pub mod machine_lifecycle_runtime;
 pub mod machine_roster;
-pub mod machine_update_runtime;
 pub mod namespace_intent;
 pub mod operation_api;
-pub mod operation_log;
 pub mod process_support;
 pub mod role_cli;
 pub mod fact_cache;

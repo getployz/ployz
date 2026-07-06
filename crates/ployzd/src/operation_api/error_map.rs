@@ -3,7 +3,7 @@
 //! as evidence text.
 
 use crate::controllers::{MachineAddSubmitCommandError, SubmitCommandError};
-use crate::operation_log::{
+use crate::operations::log::{
     RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
@@ -280,7 +280,7 @@ pub(super) fn ops_watch_error_from_replay_error(
 mod tests {
     use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
     use crate::controllers::SubmitCommandError;
-    use crate::operation_log::{
+    use crate::operations::log::{
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitOperationError,
     };
