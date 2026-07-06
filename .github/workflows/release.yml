@@ -9,12 +9,47 @@ on:
   push:
     tags:
       - "v*"
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
 
 jobs:
+  precheck-sdk-publish:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - run: corepack enable
+      - name: Precheck SDK publish
+        working-directory: packages/ployz-sdk
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          npm version --no-git-tag-version "${version}"
+          if npm view "@ployz/sdk@${version}" version >/dev/null 2>&1; then
+            echo "@ployz/sdk@${version} is already published" >&2
+            exit 1
+          fi
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          npm publish --dry-run --access public
+
   package-linux:
+    if: github.event_name == 'push'
+    needs:
+      - precheck-sdk-publish
     permissions:
       contents: read
       id-token: write
@@ -53,6 +88,9 @@ jobs:
           if-no-files-found: error
 
   package-macos:
+    if: github.event_name == 'push'
+    needs:
+      - precheck-sdk-publish
     permissions:
       contents: read
       id-token: write
@@ -84,6 +122,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.event_name == 'push'
     permissions:
       contents: write
     needs:
@@ -141,3 +180,40 @@ jobs:
             gh release create "${tag}" --draft --verify-tag --title "${tag}" --notes "Ployz ${tag}"
           fi
           gh release upload "${tag}" dist/assets/* --clobber
+
+  publish-sdk:
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - run: corepack enable
+      - name: Install SDK dependencies
+        working-directory: packages/ployz-sdk
+        run: pnpm install --frozen-lockfile
+      - name: Verify SDK
+        working-directory: packages/ployz-sdk
+        run: |
+          pnpm typecheck
+          pnpm test
+      - name: Publish SDK to npm
+        working-directory: packages/ployz-sdk
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          publish_args=(--access public)
+          if [ "${RELEASE_PRERELEASE}" = "true" ]; then
+            publish_args+=(--tag alpha)
+          fi
+          npm version --no-git-tag-version "${RELEASE_TAG#v}"
+          npm publish "${publish_args[@]}"
