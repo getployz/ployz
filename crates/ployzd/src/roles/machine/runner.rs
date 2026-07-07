@@ -123,7 +123,6 @@ pub enum MachineContainerRunDecision {
         container_id: ContainerId,
         state: ExistingManagedContainerState,
     },
-    Conflict(MachineContainerRunConflict),
     Ambiguous {
         operation_id: ployz_core::ids::OperationId,
         step_id: ployz_core::ids::StepId,
@@ -131,22 +130,14 @@ pub enum MachineContainerRunDecision {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineContainerRunConflict {
-    pub container_id: ContainerId,
-    pub expected: ManagedContainerIdentity,
-    pub actual: ManagedContainerIdentity,
-}
-
 #[must_use]
 pub fn decide_container_run(
     expected: &ManagedContainerIdentity,
     existing: impl IntoIterator<Item = ExistingManagedContainer>,
 ) -> MachineContainerRunDecision {
-    let mut matches = existing.into_iter().filter(|container| {
-        container.identity.operation_id == expected.operation_id
-            && container.identity.step_id == expected.step_id
-    });
+    let mut matches = existing
+        .into_iter()
+        .filter(|container| container.identity == *expected);
 
     let Some(first) = matches.next() else {
         return MachineContainerRunDecision::Create {
@@ -168,30 +159,22 @@ pub fn decide_container_run(
 
     let ExistingManagedContainer {
         container_id,
-        identity,
         state,
+        ..
     } = first;
 
-    if identity == *expected {
-        return match state {
-            ExistingManagedContainerState::Running { .. } => {
-                MachineContainerRunDecision::ReuseRunning { container_id }
+    match state {
+        ExistingManagedContainerState::Running { .. } => {
+            MachineContainerRunDecision::ReuseRunning { container_id }
+        }
+        ExistingManagedContainerState::StartableStopped => {
+            MachineContainerRunDecision::StartExisting { container_id }
+        }
+        ExistingManagedContainerState::NotStartable { .. } => {
+            MachineContainerRunDecision::NotStartable {
+                container_id,
+                state,
             }
-            ExistingManagedContainerState::StartableStopped => {
-                MachineContainerRunDecision::StartExisting { container_id }
-            }
-            ExistingManagedContainerState::NotStartable { .. } => {
-                MachineContainerRunDecision::NotStartable {
-                    container_id,
-                    state,
-                }
-            }
-        };
+        }
     }
-
-    MachineContainerRunDecision::Conflict(MachineContainerRunConflict {
-        container_id,
-        expected: expected.clone(),
-        actual: identity,
-    })
 }

@@ -15,19 +15,18 @@ use crate::operations::log::{
     RecordOperationEventError,
 };
 use crate::roles::machine::client::{
-    MachineFactsReadError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
+    MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
     NatsMachineFactsReader,
 };
+use crate::roles::machine::protocol::MachineContainerInspectRpcRequest;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
 use ployz_core::subjects::INTENT_CHANGED;
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 pub async fn run_deploy_operation<D, N, H>(
     accepted: AcceptedDeploySubmission,
@@ -297,8 +296,10 @@ impl DeployOperationDriver {
             .with_request_timeout(self.step_timeout);
         let facts_reader = NatsMachineFactsReader::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
+        let health_runtime = NatsMachineContainerRuntime::new(self.client.clone())
+            .with_request_timeout(self.step_timeout);
         let mut health_checker =
-            MachineFactsHealthChecker::new(facts_reader.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
+            LiveContainerHealthChecker::new(health_runtime, DEPLOY_HEALTH_POLL_INTERVAL);
         let intent_reader =
             NatsIntentReader::new(self.client.clone()).with_request_timeout(self.step_timeout);
 
@@ -350,49 +351,47 @@ async fn claim_deploy_execution(
     }
 }
 
-pub struct MachineFactsHealthChecker {
-    facts_reader: NatsMachineFactsReader,
+pub struct LiveContainerHealthChecker {
+    runtime: NatsMachineContainerRuntime,
     poll_interval: Duration,
 }
 
-impl MachineFactsHealthChecker {
+impl LiveContainerHealthChecker {
     #[must_use]
-    pub fn new(facts_reader: NatsMachineFactsReader, poll_interval: Duration) -> Self {
+    pub fn new(runtime: NatsMachineContainerRuntime, poll_interval: Duration) -> Self {
         Self {
-            facts_reader,
+            runtime,
             poll_interval,
         }
     }
 }
 
-impl DeployHealthChecker for MachineFactsHealthChecker {
+impl DeployHealthChecker for LiveContainerHealthChecker {
     async fn wait_healthy(
         &mut self,
         containers: &[DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
-        let mut memory = HealthObservationMemory::default();
         loop {
             let mut all_running = true;
             for container in containers {
-                match self.facts_reader.machine_facts(&container.machine_id).await {
-                    Ok(facts) => match facts.containers().container(&container.container_id) {
-                        Some(observation) => match observed_container_health(observation) {
-                            ObservedContainerHealth::Healthy => {
-                                memory.record_running(container);
-                            }
-                            ObservedContainerHealth::Failed(message) => {
-                                if memory.should_wait_for_fresh_start_observation(container) {
-                                    all_running = false;
-                                    continue;
-                                }
-                                return Err(unhealthy_container(container, message));
-                            }
+                let observation = self
+                    .runtime
+                    .inspect_container(
+                        &container.machine_id,
+                        MachineContainerInspectRpcRequest {
+                            container_id: container.container_id.clone(),
                         },
-                        None => all_running = false,
+                    )
+                    .await
+                    .map_err(|error| unhealthy_container(container, health_read_error(error)))?;
+                match observation {
+                    Some(observation) => match observed_container_health(&observation) {
+                        ObservedContainerHealth::Healthy => {}
+                        ObservedContainerHealth::Failed(message) => {
+                            return Err(unhealthy_container(container, message));
+                        }
                     },
-                    Err(error) => {
-                        return Err(unhealthy_container(container, health_read_error(error)));
-                    }
+                    None => all_running = false,
                 }
             }
 
@@ -403,37 +402,6 @@ impl DeployHealthChecker for MachineFactsHealthChecker {
             tokio::time::sleep(self.poll_interval).await;
         }
     }
-}
-
-#[derive(Default)]
-struct HealthObservationMemory {
-    seen_running: BTreeSet<HealthContainerKey>,
-    initial_exit_seen_at: BTreeMap<HealthContainerKey, Instant>,
-}
-
-impl HealthObservationMemory {
-    fn record_running(&mut self, container: &DeployContainer) {
-        let key = health_container_key(container);
-        self.seen_running.insert(key.clone());
-        self.initial_exit_seen_at.remove(&key);
-    }
-
-    fn should_wait_for_fresh_start_observation(&mut self, container: &DeployContainer) -> bool {
-        let key = health_container_key(container);
-        if self.seen_running.contains(&key) {
-            return false;
-        }
-
-        let now = Instant::now();
-        let first_seen = self.initial_exit_seen_at.entry(key).or_insert(now);
-        now.duration_since(*first_seen) < DEPLOY_HEALTH_INITIAL_EXIT_GRACE
-    }
-}
-
-type HealthContainerKey = (ployz_core::ids::MachineId, ployz_core::ids::ContainerId);
-
-fn health_container_key(container: &DeployContainer) -> HealthContainerKey {
-    (container.machine_id.clone(), container.container_id.clone())
 }
 
 /// Running is healthy: deploy input defines no healthchecks yet, and when it
@@ -470,8 +438,18 @@ fn unhealthy_container(
     }
 }
 
-fn health_read_error(error: MachineFactsReadError) -> String {
-    format!("machine facts could not be read: {error}")
+fn health_read_error(error: MachineContainerInspectError) -> String {
+    match error {
+        MachineContainerInspectError::InspectFailed { message, .. } => {
+            format!("container status could not be read: {}", message.as_str())
+        }
+        MachineContainerInspectError::Unavailable { reason, .. } => {
+            format!(
+                "container status unavailable: {}",
+                reason.failure_message().as_str()
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -531,28 +509,6 @@ mod tests {
             )),
             ObservedContainerHealth::Failed("container exited")
         );
-    }
-
-    #[test]
-    fn health_graces_initial_exited_observation_until_running_is_seen() {
-        let container = deploy_container("machine_a", "ctr_1");
-        let mut memory = HealthObservationMemory::default();
-
-        assert!(memory.should_wait_for_fresh_start_observation(&container));
-
-        memory.record_running(&container);
-
-        assert!(!memory.should_wait_for_fresh_start_observation(&container));
-    }
-
-    fn deploy_container(machine_id_value: &str, container_id_value: &str) -> DeployContainer {
-        DeployContainer {
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_target"),
-            machine_id: machine_id(machine_id_value),
-            container_id: container_id(container_id_value),
-            step_id: step_id("run_1"),
-        }
     }
 
     fn observation(

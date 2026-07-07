@@ -170,6 +170,11 @@ pub fn machine_facts(machine_id: &MachineId) -> String {
 }
 
 #[must_use]
+pub fn machine_facts_delta(machine_id: &MachineId) -> String {
+    format!("plz.v1.facts.machine.{}.delta", machine_id.as_str())
+}
+
+#[must_use]
 pub fn machine_facts_scope() -> String {
     "plz.v1.facts.machine.>".to_owned()
 }
@@ -203,6 +208,7 @@ pub enum MachineServiceEndpoint {
     Inspect,
     FactsGet,
     ContainerEnsureEndpointNetwork,
+    ContainerInspect,
     ContainerRun,
     ContainerStop,
     ContainerRemove,
@@ -219,6 +225,7 @@ impl MachineServiceEndpoint {
             Self::Inspect => "inspect",
             Self::FactsGet => "facts.get",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
+            Self::ContainerInspect => "container.inspect",
             Self::ContainerRun => "container.run",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",

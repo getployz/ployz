@@ -12,7 +12,7 @@ use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     API_INIT_FIRST_MACHINE_ACTIVATE, MachineServiceEndpoint, gateway_status, machine_facts,
-    machine_service, machine_service_scope,
+    machine_facts_delta, machine_service, machine_service_scope,
 };
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
@@ -180,6 +180,10 @@ async fn machine_fact_writes_are_fenced_to_its_own_subjects() {
         .await
         .expect("machine publishes its own facts");
     machine_client
+        .publish(machine_facts_delta(&machine_id), "delta".into())
+        .await
+        .expect("machine publishes its own fact delta");
+    machine_client
         .publish(gateway_status(&machine_id), "status".into())
         .await
         .expect("machine publishes its own gateway status");
@@ -187,7 +191,7 @@ async fn machine_fact_writes_are_fenced_to_its_own_subjects() {
     assert_no_permission_violation(&mut events).await;
 
     machine_client
-        .publish(machine_facts(&other_machine_id), "facts".into())
+        .publish(machine_facts_delta(&other_machine_id), "delta".into())
         .await
         .expect("publish is accepted client-side");
     machine_client.flush().await.expect("flush");

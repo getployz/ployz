@@ -4,20 +4,24 @@ use crate::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest, MachineContainerRpcOk,
-    MachineContainerRunDomainError, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
-    MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
+    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
+    MachineContainerRemoveRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
+    MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerStopDomainError,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkDomainError,
+    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
+    MachineFactsGetDomainError, MachineFactsGetRpcOk, MachineFactsGetRpcRequest,
+    MachineLogsTailDomainError, MachineLogsTailResult, MachineLogsTailRpcOk,
+    MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse, MachineRunContainerOutcome,
+    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::machine_runtime::{
+    MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
+};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
@@ -98,6 +102,19 @@ pub enum MachineLogsTailError {
 pub enum MachineFactsReadError {
     GatherFailed {
         machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerInspectError {
+    InspectFailed {
+        machine_id: MachineId,
+        container_id: ployz_core::ids::ContainerId,
         message: ployz_core::ops::FailureMessage,
     },
     Unavailable {
@@ -425,6 +442,29 @@ impl NatsMachineContainerRuntime {
         self.request_timeout = request_timeout;
         self
     }
+
+    pub async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        request: MachineContainerInspectRpcRequest,
+    ) -> Result<Option<ManagedContainerObservation>, MachineContainerInspectError> {
+        call_machine::<MachineContainerInspectRpcOk, MachineContainerInspectDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerInspect,
+            &request,
+        )
+        .await
+        .map(|ok| ok.observation)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineContainerInspectError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
 }
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
@@ -560,16 +600,6 @@ impl MachineSubstrateUpdateDomainError {
 impl MachineContainerRunDomainError {
     fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
         match self {
-            Self::OperationStepConflict {
-                container_id,
-                expected,
-                actual,
-            } => MachineContainerRuntimeError::OperationStepConflict {
-                machine_id,
-                container_id,
-                expected,
-                actual,
-            },
             Self::OperationStepAmbiguous {
                 operation_id,
                 step_id,
@@ -622,6 +652,21 @@ impl MachineEnsureEndpointNetworkDomainError {
                 reason: MachineRuntimeUnavailableReason::ServiceUnavailable {
                     message: message.as_str().to_owned(),
                 },
+            },
+        }
+    }
+}
+
+impl MachineContainerInspectDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerInspectError {
+        match self {
+            Self::InspectFailed {
+                container_id,
+                message,
+            } => MachineContainerInspectError::InspectFailed {
+                machine_id,
+                container_id,
+                message,
             },
         }
     }

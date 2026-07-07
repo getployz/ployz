@@ -1,6 +1,8 @@
 //! NATS Service API wiring for machine-local commands.
 
 use crate::roles::machine::protocol::{
+    MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
+    MachineContainerInspectRpcRequest, MachineContainerInspectRpcResponse,
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
@@ -32,12 +34,12 @@ use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, MachineFactsSnapshot, MachineFactsSnapshotError,
-    ManagedContainerObservation,
+    MachineContainerObservationSnapshotError, MachineFactDelta, MachineFactsSnapshot,
+    MachineFactsSnapshotError, ManagedContainerObservation,
 };
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use ployz_core::state::MachinePublicIpObservation;
-use ployz_core::subjects::MachineServiceEndpoint;
+use ployz_core::subjects::{MachineServiceEndpoint, machine_facts_delta};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,
@@ -83,6 +85,10 @@ where
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
     let spec = machine_role_service_base(&machine_id);
+    let mutation_state = MachineContainerState {
+        runner: runner.clone(),
+        client: client.clone(),
+    };
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(MachineServiceError::Nats)?;
@@ -109,8 +115,16 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
-        MachineServiceEndpoint::ContainerRun,
+        MachineServiceEndpoint::ContainerInspect,
         runner.clone(),
+        handle_container_inspect,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ContainerRun,
+        mutation_state.clone(),
         handle_container_run,
     )
     .await?;
@@ -118,7 +132,7 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::ContainerStop,
-        runner.clone(),
+        mutation_state.clone(),
         handle_container_stop,
     )
     .await?;
@@ -126,7 +140,7 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::ContainerRemove,
-        runner.clone(),
+        mutation_state,
         handle_container_remove,
     )
     .await?;
@@ -170,6 +184,12 @@ where
 struct MachineFactsState<R> {
     runner: R,
     public_ip: Option<IpAddr>,
+}
+
+#[derive(Clone)]
+struct MachineContainerState<R> {
+    runner: R,
+    client: ployz_nats::service_runtime::NatsClient,
 }
 
 /// Bind one machine-scoped endpoint, handing every request the machine id and a
@@ -426,7 +446,7 @@ where
 
 async fn handle_container_run<R>(
     machine_id: MachineId,
-    runner: R,
+    state: MachineContainerState<R>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
@@ -436,24 +456,31 @@ where
         Ok(request) => request,
         Err(response) => return response,
     };
-    let existing = match runner.existing_managed_containers().await {
+    let existing = match state.runner.existing_managed_containers().await {
         Ok(existing) => existing,
         Err(error) => return runner_error(error),
     };
     match decide_container_run(&request.container, existing) {
         MachineContainerRunDecision::Create { identity } => {
-            match runner
+            match state
+                .runner
                 .create_managed_container(CreateManagedContainer {
                     image: request.image,
                     identity,
                 })
                 .await
             {
-                Ok(container_id) => match runner.start_managed_container(&container_id).await {
-                    Ok(()) => machine_success(container_run_ok(
-                        machine_id,
-                        MachineRunContainerOutcome::Created { container_id },
-                    )),
+                Ok(container_id) => match state.runner.start_managed_container(&container_id).await
+                {
+                    Ok(()) => {
+                        container_run_success(
+                            machine_id,
+                            &state.runner,
+                            &state.client,
+                            MachineRunContainerOutcome::Created { container_id },
+                        )
+                        .await
+                    }
                     Err(error) => container_start_error(
                         machine_id,
                         container_id,
@@ -471,17 +498,25 @@ where
             }
         }
         MachineContainerRunDecision::ReuseRunning { container_id } => {
-            machine_success(container_run_ok(
+            container_run_success(
                 machine_id,
+                &state.runner,
+                &state.client,
                 MachineRunContainerOutcome::ReusedRunning { container_id },
-            ))
+            )
+            .await
         }
         MachineContainerRunDecision::StartExisting { container_id } => {
-            match runner.start_managed_container(&container_id).await {
-                Ok(()) => machine_success(container_run_ok(
-                    machine_id,
-                    MachineRunContainerOutcome::StartedExisting { container_id },
-                )),
+            match state.runner.start_managed_container(&container_id).await {
+                Ok(()) => {
+                    container_run_success(
+                        machine_id,
+                        &state.runner,
+                        &state.client,
+                        MachineRunContainerOutcome::StartedExisting { container_id },
+                    )
+                    .await
+                }
                 Err(error) => container_start_error(
                     machine_id,
                     container_id,
@@ -509,16 +544,6 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        MachineContainerRunDecision::Conflict(conflict) => {
-            machine_domain_error(MachineContainerRunRpcResponse::DomainError {
-                machine_id,
-                error: MachineContainerRunDomainError::OperationStepConflict {
-                    container_id: conflict.container_id,
-                    expected: conflict.expected,
-                    actual: Box::new(conflict.actual),
-                },
-            })
-        }
         MachineContainerRunDecision::Ambiguous {
             operation_id,
             step_id,
@@ -534,9 +559,47 @@ where
     }
 }
 
-async fn handle_container_remove<R>(
+async fn handle_container_inspect<R>(
     machine_id: MachineId,
     runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineContainerInspectRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    match live_container_observation(&machine_id, &runner, &request.container_id).await {
+        Some(observation) => machine_success(MachineContainerInspectRpcResponse::Ok(
+            MachineContainerInspectRpcOk {
+                machine_id,
+                observation: Some(observation),
+            },
+        )),
+        None => match runner.existing_managed_containers().await {
+            Ok(_) => machine_success(MachineContainerInspectRpcResponse::Ok(
+                MachineContainerInspectRpcOk {
+                    machine_id,
+                    observation: None,
+                },
+            )),
+            Err(error) => machine_domain_error(MachineContainerInspectRpcResponse::DomainError {
+                machine_id,
+                error: MachineContainerInspectDomainError::InspectFailed {
+                    container_id: request.container_id,
+                    message: failure_message(format!("container inspect failed: {error:?}")),
+                },
+            }),
+        },
+    }
+}
+
+async fn handle_container_remove<R>(
+    machine_id: MachineId,
+    state: MachineContainerState<R>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
@@ -547,16 +610,25 @@ where
         Err(response) => return response,
     };
 
-    match runner
+    match state
+        .runner
         .remove_managed_container(&request.container_id, &request.expected_identity)
         .await
     {
-        Ok(()) => machine_success(MachineContainerRemoveRpcResponse::Ok(
-            MachineContainerRpcOk {
-                machine_id,
-                container_id: request.container_id,
-            },
-        )),
+        Ok(()) => {
+            publish_container_removed_delta(
+                &state.client,
+                &machine_id,
+                request.container_id.clone(),
+            )
+            .await;
+            machine_success(MachineContainerRemoveRpcResponse::Ok(
+                MachineContainerRpcOk {
+                    machine_id,
+                    container_id: request.container_id,
+                },
+            ))
+        }
         Err(MachineContainerRunnerError::Remove {
             container_id,
             message,
@@ -574,7 +646,7 @@ where
 
 async fn handle_container_stop<R>(
     machine_id: MachineId,
-    runner: R,
+    state: MachineContainerState<R>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
@@ -585,14 +657,24 @@ where
         Err(response) => return response,
     };
 
-    match runner
+    match state
+        .runner
         .stop_managed_container(&request.container_id, &request.expected_identity)
         .await
     {
-        Ok(()) => machine_success(MachineContainerStopRpcResponse::Ok(MachineContainerRpcOk {
-            machine_id,
-            container_id: request.container_id,
-        })),
+        Ok(()) => {
+            publish_container_observed_delta(
+                &state.client,
+                &machine_id,
+                &state.runner,
+                &request.container_id,
+            )
+            .await;
+            machine_success(MachineContainerStopRpcResponse::Ok(MachineContainerRpcOk {
+                machine_id,
+                container_id: request.container_id,
+            }))
+        }
         Err(MachineContainerRunnerError::Stop {
             container_id,
             message,
@@ -680,6 +762,86 @@ fn container_run_ok(
         machine_id,
         outcome,
     })
+}
+
+async fn container_run_success<R>(
+    machine_id: MachineId,
+    runner: &R,
+    client: &ployz_nats::service_runtime::NatsClient,
+    outcome: MachineRunContainerOutcome,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    publish_container_observed_delta(client, &machine_id, runner, outcome.container_id()).await;
+    machine_success(container_run_ok(machine_id, outcome))
+}
+
+async fn publish_container_observed_delta<R>(
+    client: &ployz_nats::service_runtime::NatsClient,
+    machine_id: &MachineId,
+    runner: &R,
+    container_id: &ContainerId,
+) where
+    R: MachineContainerRunner,
+{
+    let Some(observation) = live_container_observation(machine_id, runner, container_id).await
+    else {
+        return;
+    };
+    let delta = MachineFactDelta::ContainerObserved {
+        observed_at_unix_ms: current_unix_ms(),
+        observation,
+    };
+    publish_machine_fact_delta(client, machine_id, &delta).await;
+}
+
+async fn publish_container_removed_delta(
+    client: &ployz_nats::service_runtime::NatsClient,
+    machine_id: &MachineId,
+    container_id: ContainerId,
+) {
+    let delta = MachineFactDelta::ContainerRemoved {
+        machine_id: machine_id.clone(),
+        container_id,
+        observed_at_unix_ms: current_unix_ms(),
+    };
+    publish_machine_fact_delta(client, machine_id, &delta).await;
+}
+
+async fn publish_machine_fact_delta(
+    client: &ployz_nats::service_runtime::NatsClient,
+    machine_id: &MachineId,
+    delta: &MachineFactDelta,
+) {
+    let Ok(payload) = serde_json::to_vec(delta) else {
+        return;
+    };
+    let _ = client
+        .publish(machine_facts_delta(machine_id), payload.into())
+        .await;
+}
+
+async fn live_container_observation<R>(
+    machine_id: &MachineId,
+    runner: &R,
+    container_id: &ContainerId,
+) -> Option<ManagedContainerObservation>
+where
+    R: MachineContainerRunner,
+{
+    runner
+        .existing_managed_containers()
+        .await
+        .ok()?
+        .into_iter()
+        .find(|container| &container.container_id == container_id)
+        .map(|container| ManagedContainerObservation {
+            machine_id: machine_id.clone(),
+            container_id: container.container_id,
+            identity: container.identity,
+            state: observation_state(container.state),
+        })
 }
 
 fn machine_success(response: impl serde::Serialize) -> NatsServiceResponse {

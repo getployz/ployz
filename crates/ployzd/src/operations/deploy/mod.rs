@@ -505,10 +505,6 @@ fn cleanup_evidence(cleanup: &[DeployCleanupResult]) -> DeployEvidence {
 fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessage {
     match error {
         MachineContainerRuntimeError::Unavailable { reason, .. } => reason.failure_message(),
-        MachineContainerRuntimeError::OperationStepConflict { .. } => {
-            FailureMessage::try_new("cleanup found a conflicting operation-step container")
-                .expect("generated cleanup failure message is non-empty")
-        }
         MachineContainerRuntimeError::OperationStepAmbiguous { .. } => {
             FailureMessage::try_new("cleanup found multiple operation-step containers")
                 .expect("generated cleanup failure message is non-empty")
