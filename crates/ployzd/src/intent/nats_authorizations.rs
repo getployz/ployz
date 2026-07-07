@@ -74,9 +74,6 @@ impl NatsAuthorizationStore {
         &self,
         conf_path: &Path,
     ) -> Result<(), NatsAuthorizationStoreError> {
-        if !self.is_empty().await? {
-            return Ok(());
-        }
         let contents = match std::fs::read_to_string(conf_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -90,11 +87,32 @@ impl NatsAuthorizationStore {
             parse_authorized_users(&contents).map_err(|error| NatsAuthorizationStoreError {
                 message: format!("parse {}: {error}", conf_path.display()),
             })?;
-        for grant in &grants {
-            self.upsert(grant).await?;
-        }
-        Ok(())
+        // Import all grants in one transaction, re-checking emptiness inside it: a
+        // partial import (a mid-loop error) would otherwise leave the table non-empty,
+        // so the next start skips the import and renders a truncated conf that drops
+        // principals. All-or-nothing keeps the table empty until the whole set lands.
+        self.store
+            .call(move |conn| seed_grants_if_empty(conn, &grants))
+            .await
+            .map_err(store_error)
     }
+}
+
+fn seed_grants_if_empty(
+    conn: &mut Connection,
+    grants: &[NatsAuthorizedUser],
+) -> Result<(), rusqlite::Error> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM nats_authorizations", [], |row| {
+        row.get(0)
+    })?;
+    if count != 0 {
+        return Ok(());
+    }
+    let transaction = conn.transaction()?;
+    for grant in grants {
+        put_authorization(&transaction, grant)?;
+    }
+    transaction.commit()
 }
 
 fn put_authorization(conn: &Connection, user: &NatsAuthorizedUser) -> Result<(), rusqlite::Error> {

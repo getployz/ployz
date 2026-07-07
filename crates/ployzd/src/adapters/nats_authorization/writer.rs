@@ -236,12 +236,14 @@ async fn handle_render_request(
             message: error.to_string(),
         })
     };
-    // The store is the source of truth: persist the new grant, then render the whole
-    // set from it. The on-disk file is read only to skip a needless reload.
-    if let Some(user) = authorize {
-        store.upsert(&user).await.map_err(store_prepare)?;
+    // Render from the store PLUS the pending grant, held in memory: the grant is only
+    // persisted after the render and reload succeed (see the tail), so a failed
+    // machine-add leaves no durable grant behind. The on-disk file is read only to
+    // skip a needless reload.
+    let mut desired = store.list().await.map_err(store_prepare)?;
+    if let Some(user) = &authorize {
+        upsert_in_place(&mut desired, user.clone());
     }
-    let desired = store.list().await.map_err(store_prepare)?;
     let current_contents = read_authorized_users_contents(path)
         .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
 
@@ -292,10 +294,30 @@ async fn handle_render_request(
         verify_credential(&config).await?;
     }
 
+    // The render + reload (+ verify) succeeded — only now make the grant durable, so
+    // a grant that never reached the running server is never left in the store.
+    if let Some(user) = authorize {
+        store.upsert(&user).await.map_err(store_prepare)?;
+    }
+
     Ok(RenderedAuthorization {
         user_count: desired.len(),
         reload: Some(evidence),
     })
+}
+
+/// In-memory upsert by authority key: the pending grant is folded into the rendered
+/// set before it is persisted, so a failed render never leaves it in the store.
+fn upsert_in_place(users: &mut Vec<NatsAuthorizedUser>, user: NatsAuthorizedUser) {
+    let key = user.authority_record_key();
+    if let Some(existing) = users
+        .iter_mut()
+        .find(|existing| existing.authority_record_key() == key)
+    {
+        *existing = user;
+    } else {
+        users.push(user);
+    }
 }
 
 async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailure> {
