@@ -161,6 +161,7 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
             .expect("default bootstrap url is valid"),
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         installer_script: None,
+        public_ip: None,
     }
 }
 

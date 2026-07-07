@@ -893,6 +893,7 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
+        machine_public_ip: None,
     };
 
     let rendered = command.render();
@@ -933,6 +934,7 @@ fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
+        machine_public_ip: None,
     };
 
     let rendered = command.render();

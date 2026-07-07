@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Args;
@@ -116,6 +117,9 @@ pub struct MachineInitCommand {
     /// `--installer-script`: run an installer already on the remote machine
     /// instead of piping the bootstrap URL through `sh` (test seam).
     pub installer_script: Option<String>,
+    /// `--public-ip` override for the first machine's reachable address. `None`
+    /// lets the machine self-discover it at install (the common cloud-VM case).
+    pub public_ip: Option<IpAddr>,
 }
 
 impl MachineInitCommand {
@@ -552,6 +556,7 @@ pub(crate) fn machine_init_command(
         bootstrap_url,
         cluster_name,
         installer_script,
+        public_ip,
     } = parsed;
 
     let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
@@ -593,6 +598,16 @@ pub(crate) fn machine_init_command(
     )
     .map_err(|error| invalid_value("--cluster-name", error))?;
 
+    let public_ip = match public_ip {
+        Some(value) => Some(
+            value
+                .trim()
+                .parse()
+                .map_err(|error| invalid_value("--public-ip", error))?,
+        ),
+        None => None,
+    };
+
     Ok(MachineInitCommand {
         target,
         identity_override,
@@ -603,6 +618,7 @@ pub(crate) fn machine_init_command(
         bootstrap_url,
         cluster_name,
         installer_script: validate_installer_script(installer_script)?,
+        public_ip,
     })
 }
 
@@ -641,6 +657,9 @@ pub(crate) struct MachineInitCli {
     cluster_name: Option<String>,
     #[arg(long)]
     installer_script: Option<String>,
+    /// Override the first machine's public IP instead of self-discovering it.
+    #[arg(long)]
+    public_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

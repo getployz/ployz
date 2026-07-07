@@ -276,6 +276,7 @@ pub(crate) async fn execute_machine_init(
         bootstrap_url: command.bootstrap_url.clone(),
         cluster_name: command.cluster_name.clone(),
         runtime_nats_url: runtime_nats_url_for_target(&target)?,
+        machine_public_ip: command.public_ip,
     }
     .render();
     let install_output = installer

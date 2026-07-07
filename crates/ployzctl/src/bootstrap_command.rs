@@ -9,6 +9,7 @@ use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName, MachineJo
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 use ployz_sdk_types::MachineJoinToken;
+use std::net::IpAddr;
 
 use crate::shell::shell_quote;
 
@@ -128,6 +129,9 @@ pub struct FounderBootstrapCommand {
     pub bootstrap_url: MachineBootstrapUrl,
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
+    /// The operator's `--public-ip` override. When absent, the first machine
+    /// self-discovers its public address at install (the common cloud-VM case).
+    pub machine_public_ip: Option<IpAddr>,
 }
 
 impl FounderBootstrapCommand {
@@ -147,6 +151,12 @@ impl FounderBootstrapCommand {
             shell_quote(self.cluster_name.as_str()),
             shell_quote(self.runtime_nats_url.as_str()),
         ));
+        if let Some(public_ip) = &self.machine_public_ip {
+            env.push_str(&format!(
+                " PLOYZ_MACHINE_PUBLIC_IP={}",
+                shell_quote(&public_ip.to_string()),
+            ));
+        }
 
         match &self.installer {
             BootstrapInstaller::BootstrapUrl(url) => format!(

@@ -332,10 +332,13 @@ pub fn first_machine_install_target_from_spec(
         nats_server_artifact.install_path().to_path_buf(),
         PathBuf::from(nats_config.as_str()),
     )?;
-    // Magic init: a first machine must be publicly reachable to serve as a core, so if
-    // the operator didn't pass an address, self-discover the machine's public interface
-    // address. Binding the NATS listener external and the cert SANs both follow from it.
-    let machine_public_ip = machine_public_ip.or_else(discover_machine_public_ip);
+    // Precedence for the first-machine public address: an explicit spec value, then a
+    // `--public-ip` override the founder command passed via env, then magic
+    // self-discovery. A first machine must be publicly reachable to serve as a core;
+    // binding the NATS listener external and the cert SANs both follow from this.
+    let machine_public_ip = machine_public_ip
+        .or_else(public_ip_env_override)
+        .or_else(discover_machine_public_ip);
     let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
     let recovery_secret = resolve_recovery_secret();
@@ -383,6 +386,16 @@ fn discover_machine_public_ip() -> Option<std::net::IpAddr> {
         .into_iter()
         .map(|(_, ip)| ip)
         .find(|ip| ployz_core::reachability::is_public(*ip))
+}
+
+/// The operator's `--public-ip` override, delivered by the founder command as the
+/// `PLOYZ_MACHINE_PUBLIC_IP` environment variable (inherited by this process).
+fn public_ip_env_override() -> Option<std::net::IpAddr> {
+    std::env::var("PLOYZ_MACHINE_PUBLIC_IP")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// The operator's cluster recovery secret: `PLOYZ_RECOVERY_SECRET` if set, else
