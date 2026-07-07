@@ -22,7 +22,7 @@ agent can call with the same guarantees.
 1. Bootstrap your first machine:
 
    ```bash
-   curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap
+   ployzctl init root@your-server-ip
    ```
 
 2. Add more machines:

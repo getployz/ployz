@@ -103,7 +103,7 @@ impl JoinBootstrapCommand {
             shell_quote(self.join_seed.secret()),
         );
         let keeper = format!(
-            "ca_file=\"$(mktemp)\"; trap 'rm -f \"$ca_file\"' EXIT; printf '%s' {} | base64 -d > \"$ca_file\"; {env} ployz-keeper bootstrap join --join-token {}",
+            "ca_file=\"$(mktemp)\"; trap 'rm -f \"$ca_file\"' EXIT; printf '%s' {} | base64 -d > \"$ca_file\"; {env} ployz-keeper bootstrap join {}",
             shell_quote(&self.trusted_ca_b64),
             shell_quote(self.join_token.as_str()),
         );

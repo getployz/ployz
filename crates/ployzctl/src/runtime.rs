@@ -13,8 +13,8 @@ use crate::commands::init::{
 use crate::config::{ClusterContext, ClusterContextError, load_cluster_context};
 use crate::keeper_install::{LocalKeeperInstallError, run_keeper_first_machine_install};
 use crate::remote_machine_runtime::{
-    RemoteMachineExecutionError, execute_core_replace_remote, execute_machine_add_remote,
-    execute_machine_init,
+    RemoteMachineExecutionError, execute_core_promote_remote, execute_core_replace_remote,
+    execute_machine_add_remote, execute_machine_init,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
@@ -206,6 +206,7 @@ pub async fn execute_command(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     match command {
+        PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::Deploy(command) => {
             let detach = command.detach;
