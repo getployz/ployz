@@ -16,7 +16,8 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let machine_roster = temp_machine_roster().await;
     machine_roster
         .replace_active_machine(&ActiveMachineState {
-            public_endpoint: None,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
@@ -93,7 +94,8 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let machine_roster = temp_machine_roster().await;
     machine_roster
         .replace_active_machine(&ActiveMachineState {
-            public_endpoint: None,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),

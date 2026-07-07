@@ -1,7 +1,7 @@
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
+    GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation, RouteBindingState,
 };
 use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
@@ -173,9 +173,10 @@ fn gateway_machine_facts(machine_id_value: &str, address: [u8; 4]) -> MachineFac
         machine_id.clone(),
         MachineContainerObservationSnapshot::try_new(machine_id.clone(), Vec::new())
             .expect("empty container facts are valid"),
-        Some(MachinePublicIpObservation {
+        Some(MachineEndpointObservation {
             machine_id,
-            public_ip: IpAddr::V4(Ipv4Addr::from(address)),
+            control_endpoints: vec![IpAddr::V4(Ipv4Addr::from(address))],
+            mesh_endpoints: Vec::new(),
         }),
         1,
     )

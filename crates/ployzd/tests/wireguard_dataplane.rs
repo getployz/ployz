@@ -231,7 +231,8 @@ fn edge_peer_with_public_key(public_key: WireGuardPublicKey) -> WireGuardPeer {
     WireGuardPeer {
         machine_id: machine_id("edge_2"),
         endpoint_subnet: "10.42.2.0/24".to_owned(),
-        public_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
+        active_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
+        candidate_endpoints: vec!["203.0.113.2:51820".parse().expect("valid endpoint")],
         public_key,
     }
 }

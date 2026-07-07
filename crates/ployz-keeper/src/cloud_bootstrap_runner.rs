@@ -41,8 +41,7 @@ use ployz_sdk_types::{
 use super::{
     CLOUD_BOOTSTRAP_MAX_POLLS, CloudJoinTokenConsumer, DEFAULT_NATS_CONNECT_TIMEOUT, JoinRedeemer,
     JoinReporter, KEEPER_STATE_DIR, failure_message, failure_summary,
-    load_machine_public_ip_from_env, read_cloud_founder_bootstrap_result,
-    run_first_machine_install,
+    read_cloud_founder_bootstrap_result, run_first_machine_install,
 };
 
 const CLOUD_FOUNDER_ACTIVATION_ATTEMPTS: u32 = 60;
@@ -511,20 +510,7 @@ fn run_cloud_joiner_bootstrap(
             );
         }
     };
-    let machine_public_ip = match load_machine_public_ip_from_env() {
-        Ok(public_ip) => public_ip,
-        Err(error) => {
-            return persist_post_failed_callback(
-                envelope,
-                client,
-                CloudBootstrapFailure::BootstrapFailed {
-                    message: failure_message(&error.to_string()),
-                },
-            );
-        }
-    };
-
-    let mut redeemer = JoinRedeemer::new(Ok(connect.clone()), Ok(machine_public_ip));
+    let mut redeemer = JoinRedeemer::new(Ok(connect.clone()));
     let mut reporter = JoinReporter::new(Ok(connect), join_token.clone());
     let mut token_consumer = CloudJoinTokenConsumer;
     let mut effects = KeeperLocalEffects::new(

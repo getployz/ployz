@@ -6,7 +6,7 @@ use ployz_core::machine_runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerObservation,
 };
-use ployz_core::state::{GatewayStatusObservation, MachinePublicIpObservation};
+use ployz_core::state::{GatewayStatusObservation, MachineEndpointObservation};
 use ployz_core::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -107,10 +107,10 @@ impl FactCache {
     }
 
     #[must_use]
-    pub fn machine_public_ips(&self) -> Vec<MachinePublicIpObservation> {
+    pub fn machine_endpoint_observations(&self) -> Vec<MachineEndpointObservation> {
         self.machine_facts_all()
             .into_iter()
-            .filter_map(|facts| facts.public_ip().cloned())
+            .filter_map(|facts| facts.endpoints().cloned())
             .collect()
     }
 
@@ -355,7 +355,7 @@ mod tests {
             .machine_facts(&machine_id("machine_a"))
             .expect("facts stored");
         assert_eq!(facts.observed_at_unix_ms(), 7);
-        assert!(facts.public_ip().is_none());
+        assert!(facts.endpoints().is_none());
         assert!(
             facts
                 .containers()

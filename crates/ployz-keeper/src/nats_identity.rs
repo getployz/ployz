@@ -144,13 +144,20 @@ impl fmt::Debug for NatsServerKeyPem {
 /// known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerCertificateSans {
-    machine_public_ip: Option<IpAddr>,
+    machine_public_ips: Vec<IpAddr>,
     hostname: Option<String>,
 }
 
 impl ServerCertificateSans {
     pub fn try_new(
         machine_public_ip: Option<IpAddr>,
+        hostname: Option<String>,
+    ) -> Result<Self, NatsIdentityError> {
+        Self::try_new_many(machine_public_ip.into_iter().collect(), hostname)
+    }
+
+    pub fn try_new_many(
+        machine_public_ips: Vec<IpAddr>,
         hostname: Option<String>,
     ) -> Result<Self, NatsIdentityError> {
         if let Some(hostname) = &hostname
@@ -161,7 +168,7 @@ impl ServerCertificateSans {
             });
         }
         Ok(Self {
-            machine_public_ip,
+            machine_public_ips,
             hostname,
         })
     }
@@ -169,7 +176,7 @@ impl ServerCertificateSans {
     #[must_use]
     pub fn subject_alt_names(&self) -> Vec<String> {
         let mut names = vec![LOOPBACK_SAN.to_owned()];
-        if let Some(ip) = self.machine_public_ip {
+        for ip in &self.machine_public_ips {
             let rendered = ip.to_string();
             if !names.contains(&rendered) {
                 names.push(rendered);

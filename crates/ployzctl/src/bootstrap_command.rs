@@ -4,8 +4,6 @@
 //! envelope. This module owns the command string so those delivery paths use
 //! the same shell shape.
 
-use std::net::IpAddr;
-
 use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 use ployz_core::nats_config::NatsUserSeed;
@@ -92,26 +90,18 @@ pub struct JoinBootstrapCommand {
     pub trusted_ca_b64: String,
     pub join_seed: NatsUserSeed,
     pub join_token: MachineJoinToken,
-    pub machine_public_ip: Option<IpAddr>,
 }
 
 impl JoinBootstrapCommand {
     #[must_use]
     pub fn render(&self) -> String {
-        let mut env = String::new();
-        if let Some(public_ip) = self.machine_public_ip {
-            env.push_str(&format!(
-                "PLOYZ_MACHINE_PUBLIC_IP={} ",
-                shell_quote(&public_ip.to_string())
-            ));
-        }
-        env.push_str(&format!(
+        let env = format!(
             "PLOYZ_VERSION={} PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={}",
             shell_quote(&self.version),
             shell_quote(self.runtime_nats_url.as_str()),
             shell_quote(&self.trusted_ca_b64),
             shell_quote(self.join_seed.secret()),
-        ));
+        );
 
         match &self.installer {
             BootstrapInstaller::BootstrapUrl(url) => format!(
@@ -138,7 +128,6 @@ pub struct FounderBootstrapCommand {
     pub bootstrap_url: MachineBootstrapUrl,
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
-    pub machine_public_ip: Option<IpAddr>,
 }
 
 impl FounderBootstrapCommand {
@@ -148,12 +137,6 @@ impl FounderBootstrapCommand {
         let mut env = format!("{release_key}={}", shell_quote(release_value));
         if let Some(url) = &self.release_manifest_url {
             env.push_str(&format!(" PLOYZ_RELEASE_MANIFEST_URL={}", shell_quote(url)));
-        }
-        if let Some(public_ip) = self.machine_public_ip {
-            env.push_str(&format!(
-                " PLOYZ_MACHINE_PUBLIC_IP={}",
-                shell_quote(&public_ip.to_string())
-            ));
         }
         env.push_str(&format!(
             " PLOYZ_MACHINE_ID={} PLOYZ_GATEWAY={} PLOYZ_DNS={} PLOYZ_MACHINE_BOOTSTRAP_URL={} PLOYZ_MACHINE_JOIN_CLUSTER_NAME={} PLOYZ_MACHINE_JOIN_NATS_URL={}",

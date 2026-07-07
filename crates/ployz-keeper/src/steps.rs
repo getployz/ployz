@@ -31,7 +31,6 @@ pub use nats_material::{
 use nats_material::{DEFAULT_NATS_PORT, first_machine_listener, tls_loopback_nats_url};
 
 const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
-const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
@@ -535,7 +534,6 @@ impl FirstMachineInstallTarget {
     #[must_use]
     pub fn with_machine_public_ip(mut self, public_ip: IpAddr) -> Self {
         self.machine_public_ip = Some(public_ip);
-        self.role_environment = self.role_environment.with_machine_public_ip(public_ip);
         self
     }
 }
@@ -588,7 +586,6 @@ pub struct PloyzdRoleEnvironmentTarget {
     machine_id: MachineId,
     nats_url: NatsClientUrl,
     nats_credentials: RoleNatsCredentials,
-    machine_public_ip: Option<IpAddr>,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
     machine_join_template_file: Option<AbsoluteInstallPath>,
     ebpf_bytecode_path: Option<PathBuf>,
@@ -609,7 +606,6 @@ impl PloyzdRoleEnvironmentTarget {
             machine_id,
             nats_url,
             nats_credentials,
-            machine_public_ip: None,
             machine_bootstrap_url: None,
             machine_join_template_file: None,
             ebpf_bytecode_path: None,
@@ -666,12 +662,6 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_machine_bootstrap_url(mut self, url: MachineBootstrapUrl) -> Self {
         self.machine_bootstrap_url = Some(url);
-        self
-    }
-
-    #[must_use]
-    pub fn with_machine_public_ip(mut self, public_ip: IpAddr) -> Self {
-        self.machine_public_ip = Some(public_ip);
         self
     }
 
@@ -735,12 +725,6 @@ impl PloyzdRoleEnvironmentTarget {
             output.push_str(PLOYZ_SEED_FROM_MIRROR_ENV);
             output.push('=');
             output.push_str(&path.display().to_string());
-            output.push('\n');
-        }
-        if let Some(public_ip) = self.machine_public_ip {
-            output.push_str(PLOYZ_MACHINE_PUBLIC_IP_ENV);
-            output.push('=');
-            output.push_str(&public_ip.to_string());
             output.push('\n');
         }
         if matches!(role, DaemonProcessRole::Gateway) {
@@ -907,15 +891,12 @@ impl CorePromoteTarget {
                 .to_path_buf(),
         )
         .expect("validated nats-server artifact install path is a valid unit path");
-        let mut role_environment = PloyzdRoleEnvironmentTarget::default_path(
+        let role_environment = PloyzdRoleEnvironmentTarget::default_path(
             machine_id.clone(),
             tls_loopback_nats_url(DEFAULT_NATS_PORT),
             RoleNatsCredentials::cluster(&nats_material),
         )
         .with_seed_from_mirror(seed_from_mirror);
-        if let Some(public_ip) = machine_public_ip {
-            role_environment = role_environment.with_machine_public_ip(public_ip);
-        }
         Self {
             machine_id,
             nats_server_artifact,

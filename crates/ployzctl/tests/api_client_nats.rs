@@ -8,7 +8,7 @@ use ployz_core::ops::{
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
     ServingTargetEntry,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
@@ -655,11 +655,13 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
-            public_endpoint: None,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
         },
-        public_ip: Some(MachinePublicIpObservation {
+        endpoints: Some(MachineEndpointObservation {
             machine_id: machine_id.clone(),
-            public_ip: "203.0.113.10".parse().expect("valid public ip"),
+            control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
+            mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
         }),
         gateway: Some(GatewayStatusObservation {
             machine_id,

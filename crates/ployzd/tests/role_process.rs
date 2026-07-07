@@ -11,8 +11,8 @@ use ployzd::config::{
     PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_MACHINES_ENV,
     PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV,
     PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV,
-    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_MACHINE_PUBLIC_IP_ENV, PLOYZ_NATS_CA_FILE_ENV,
-    PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, load_daemon_process_config,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
+    PLOYZ_NATS_URL_ENV, load_daemon_process_config,
 };
 use ployzd::role_cli::{DaemonProcessRole, parse_role_args};
 
@@ -98,7 +98,6 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
             PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV => Some("br-ployz".to_owned()),
             PLOYZ_DATAPLANE_WG_IFNAME_ENV => Some("wg-ployz".to_owned()),
             PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("10.77.2.0/24".to_owned()),
-            PLOYZ_MACHINE_PUBLIC_IP_ENV => Some("203.0.113.7".to_owned()),
             _ => None,
         },
     )
@@ -134,10 +133,6 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
     assert_eq!(config.ployz_native_mesh.bridge_ifname, "br-ployz");
     assert_eq!(config.ployz_native_mesh.wg_ifname, "wg-ployz");
     assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.77.2.0/24");
-    assert_eq!(
-        config.public_ip,
-        Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
-    );
 }
 
 #[test]
@@ -159,24 +154,6 @@ fn machine_role_derives_endpoint_subnet_from_machine_id() {
         panic!("machine role should produce machine config");
     };
     assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.42.2.0/24");
-}
-
-#[test]
-fn machine_role_rejects_invalid_public_ip() {
-    assert!(matches!(
-        load_daemon_process_config(
-            DaemonProcessRole::Machine(machine_id("machine_7")),
-            |name| match name {
-                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
-                PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
-                PLOYZ_NATS_NKEY_SEED_FILE_ENV =>
-                    Some("/var/lib/ployz/nats/machine.seed".to_owned()),
-                PLOYZ_MACHINE_PUBLIC_IP_ENV => Some("not-an-ip".to_owned()),
-                _ => None,
-            }
-        ),
-        Err(DaemonProcessConfigError::InvalidMachinePublicIp { .. })
-    ));
 }
 
 #[test]

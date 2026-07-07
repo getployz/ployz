@@ -260,25 +260,28 @@ export type ActiveMachineState = { machine_id: MachineId, name: MachineName, act
  */
 lifecycle: MachineLifecycle,
 /**
- * The machine's advertised reachable public endpoint, recorded by the core
- * from the machine's own public-IP testimony (ADR 0030). Selects promotion
- * candidates and rides intent to every mirror. `None` until the machine has
- * advertised one; never cleared on a transient disconnect — reachability is
- * a durable address property, not live liveness.
+ * Public NATS/operator endpoints recorded from machine testimony. Promotion
+ * requires at least one of these; mesh-private addresses never become
+ * promotion authority.
  */
-public_endpoint: string | null, };
+control_endpoints: Array<string>,
+/**
+ * WireGuard dial candidates recorded from machine testimony. The first is
+ * programmed initially; later candidates are for endpoint rotation.
+ */
+mesh_endpoints: Array<string>, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 
 export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, };
 
-export type MachinePublicIpObservation = { machine_id: MachineId, public_ip: string, };
+export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
 
 export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
 
 export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
-export type MachineSnapshot = { active: ActiveMachineState, public_ip: MachinePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number,
+export type MachineSnapshot = { active: ActiveMachineState, endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number,
 /**
  * When this machine last self-reported, as display evidence for the
  * operator. Never an input to behavior: liveness surfaces at the point

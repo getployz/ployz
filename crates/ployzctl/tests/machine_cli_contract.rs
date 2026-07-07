@@ -10,7 +10,7 @@ use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
 };
 use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
@@ -139,7 +139,7 @@ fn machine_list_renders_machine_summaries() {
 
     assert_eq!(
         output,
-        "machine_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
+        "machine_1 edge_1 control-endpoints 203.0.113.10 mesh-endpoints 203.0.113.10:51820 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
     );
 }
 
@@ -163,20 +163,20 @@ fn machine_inspect_renders_machine_detail() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
     );
 }
 
 #[test]
 fn machine_inspect_renders_missing_observations_as_unknown() {
     let mut machine = machine_snapshot("machine_1", None);
-    machine.public_ip = None;
+    machine.endpoints = None;
 
     let output = MachineInspectOutput::new(machine).render();
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\n"
     );
 }
 
@@ -197,11 +197,13 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
-            public_endpoint: None,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
         },
-        public_ip: Some(MachinePublicIpObservation {
+        endpoints: Some(MachineEndpointObservation {
             machine_id: machine_id.clone(),
-            public_ip: "203.0.113.10".parse().expect("valid public ip"),
+            control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
+            mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
         }),
         gateway: gateway.map(|serving| GatewayStatusObservation {
             machine_id,
@@ -891,7 +893,6 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
-        machine_public_ip: Some("203.0.113.10".parse().expect("valid IP")),
     };
 
     let rendered = command.render();
@@ -900,7 +901,6 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         "curl -fsSL -- 'https://ployz.sh'",
         "PLOYZ_VERSION='v0.0.1-alpha.1'",
         "PLOYZ_RELEASE_MANIFEST_URL='file:///tmp/manifest.env'",
-        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.10'",
         "PLOYZ_MACHINE_ID='sg-core-1'",
         "PLOYZ_GATEWAY='skip'",
         "PLOYZ_DNS='skip'",
@@ -914,6 +914,7 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
             "rendered command missing {expected}: {rendered}"
         );
     }
+    assert!(!rendered.contains("PLOYZ_MACHINE_PUBLIC_IP="));
     assert!(!rendered.contains("first-machine-spec"));
 }
 
@@ -932,7 +933,6 @@ fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
-        machine_public_ip: None,
     };
 
     let rendered = command.render();
@@ -957,19 +957,14 @@ fn remote_join_install_command_matches_the_printed_install_line() {
     };
 
     let rendered = output.render();
-    let command = output.install_command(&MachineAddInstaller::FromAcceptedBootstrapUrl, None);
+    let command = output.install_command(&MachineAddInstaller::FromAcceptedBootstrapUrl);
     assert!(rendered.contains(&format!("install {command}\n")));
 
-    let with_ip = output.install_command(
-        &MachineAddInstaller::FromAcceptedBootstrapUrl,
-        Some("203.0.113.11".parse().expect("valid ip")),
-    );
-    assert!(with_ip.contains("| PLOYZ_MACHINE_PUBLIC_IP='203.0.113.11' PLOYZ_VERSION="));
+    assert!(!command.contains("PLOYZ_MACHINE_PUBLIC_IP="));
 
-    let scripted = output.install_command(
-        &MachineAddInstaller::RemoteScript("/tmp/ployz-install.sh".to_owned()),
-        None,
-    );
+    let scripted = output.install_command(&MachineAddInstaller::RemoteScript(
+        "/tmp/ployz-install.sh".to_owned(),
+    ));
     assert!(scripted.contains("sh '/tmp/ployz-install.sh' --join-token 'join_once_123'"));
     assert!(!scripted.contains("curl"));
 }

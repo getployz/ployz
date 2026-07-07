@@ -390,7 +390,6 @@ async fn machine_init_installs_activates_and_writes_local_context() {
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
-        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.10'",
         "--first-machine",
     ] {
         assert!(
@@ -398,6 +397,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
             "install missing {expected}: {install}"
         );
     }
+    assert!(!install.contains("PLOYZ_MACHINE_PUBLIC_IP="));
     assert!(
         commands
             .iter()
@@ -673,7 +673,6 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("join installer ran remotely");
     for expected in [
         "curl -fsSL -- 'https://get.ployz.sh'",
-        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.11'",
         "PLOYZ_NATS_URL='tls://203.0.113.10:4222'",
         "PLOYZ_JOIN_NKEY_SEED=",
         "--join-token 'join_once_123'",
@@ -683,6 +682,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
             "install missing {expected}: {install}"
         );
     }
+    assert!(!install.contains("PLOYZ_MACHINE_PUBLIC_IP="));
 }
 
 /// Installer failure after token redemption keeps the operation id visible

@@ -80,8 +80,8 @@ pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
 pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineLifecycle,
-    MachinePublicIpObservation, RouteBindingState, ServingTargetEntry,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
+    MachineLifecycle, RouteBindingState, ServingTargetEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -401,7 +401,7 @@ pub enum RuntimeDerivedCollectionStatus {
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub active: ActiveMachineState,
-    pub public_ip: Option<MachinePublicIpObservation>,
+    pub endpoints: Option<MachineEndpointObservation>,
     pub gateway: Option<GatewayStatusObservation>,
     pub observed_container_count: usize,
     /// When this machine last self-reported, as display evidence for the

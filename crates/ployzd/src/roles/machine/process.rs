@@ -20,7 +20,7 @@ use ployz_core::subjects::{INTENT_CHANGED, machine_facts};
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -98,7 +98,6 @@ pub async fn start_machine_process(
         runner.clone(),
         preparer,
         runner,
-        config.public_ip,
         intent_mirror,
         seed,
         MACHINE_OBSERVATION_INTERVAL,
@@ -115,7 +114,6 @@ pub async fn start_machine_process_with_ports<R, P, L>(
     runner: R,
     preparer: P,
     log_reader: L,
-    public_ip: Option<IpAddr>,
     intent_mirror: MachineIntentMirror,
     seed: NatsClientUrl,
     observation_interval: Duration,
@@ -135,13 +133,11 @@ where
         runner.clone(),
         preparer,
         log_reader,
-        public_ip,
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
     let intent_mirror = start_intent_mirror(client.clone(), intent_mirror, seed);
-    let observer =
-        start_machine_observer(machine_id, runner, client, public_ip, observation_interval);
+    let observer = start_machine_observer(machine_id, runner, client, observation_interval);
 
     Ok(RunningMachineProcess {
         machine_service,
@@ -172,10 +168,10 @@ impl RunningTask {
 fn reachable_machine_urls(snapshot: &IntentSnapshot) -> Vec<String> {
     let mut urls = Vec::new();
     for machine in &snapshot.active_machines {
-        if let Some(endpoint) = machine.public_endpoint {
+        for endpoint in &machine.control_endpoints {
             // SocketAddr's Display brackets IPv6 (`[::1]:4222`); a bare interpolation
             // would emit an invalid `tls://::1:4222`.
-            let url = format!("tls://{}", SocketAddr::new(endpoint, CORE_NATS_PORT));
+            let url = format!("tls://{}", SocketAddr::new(*endpoint, CORE_NATS_PORT));
             if !urls.contains(&url) {
                 urls.push(url);
             }
@@ -317,7 +313,6 @@ fn start_machine_observer<R>(
     machine_id: MachineId,
     runner: R,
     client: NatsClient,
-    public_ip: Option<IpAddr>,
     interval: Duration,
 ) -> RunningTask
 where
@@ -334,7 +329,7 @@ where
         let mut publisher = MachineObservationPublisher::new(client);
         loop {
             let attempt = publisher
-                .publish_with_timeout(&machine_id, &runner, public_ip, MACHINE_OBSERVATION_TIMEOUT)
+                .publish_with_timeout(&machine_id, &runner, MACHINE_OBSERVATION_TIMEOUT)
                 .await;
             backoff = record_observer_attempt(&task_health, attempt, interval, backoff);
             tokio::select! {
@@ -392,13 +387,12 @@ impl MachineObservationPublisher {
         &mut self,
         machine_id: &MachineId,
         runner: &R,
-        public_ip: Option<IpAddr>,
         timeout: Duration,
     ) -> Result<(), MachineProcessError>
     where
         R: MachineContainerRunner,
     {
-        tokio::time::timeout(timeout, self.publish(machine_id, runner, public_ip))
+        tokio::time::timeout(timeout, self.publish(machine_id, runner))
             .await
             .map_err(|_| MachineProcessError::ObservationTimedOut { timeout })?
     }
@@ -407,12 +401,11 @@ impl MachineObservationPublisher {
         &mut self,
         machine_id: &MachineId,
         runner: &R,
-        public_ip: Option<IpAddr>,
     ) -> Result<(), MachineProcessError>
     where
         R: MachineContainerRunner,
     {
-        let facts = read_machine_facts_snapshot(machine_id, runner, public_ip, current_unix_ms())
+        let facts = read_machine_facts_snapshot(machine_id, runner, current_unix_ms())
             .await
             .map_err(MachineProcessError::ReadFacts)?;
         let payload = serde_json::to_vec(&facts).map_err(MachineProcessError::EncodeFacts)?;
@@ -536,7 +529,10 @@ mod tests {
             name: ployz_core::machine::MachineName::try_new(id).expect("machine name"),
             activated_by: ployz_test_support::ids::operation_id("op_activate"),
             lifecycle: ployz_core::state::MachineLifecycle::Active,
-            public_endpoint: endpoint.map(|ip| ip.parse().expect("ip")),
+            control_endpoints: endpoint
+                .map(|ip| vec![ip.parse().expect("ip")])
+                .unwrap_or_default(),
+            mesh_endpoints: Vec::new(),
         }
     }
 
@@ -617,7 +613,6 @@ mod tests {
             runner.clone(),
             ReadyWireGuardEbpf,
             runner,
-            None,
             MachineIntentMirror::new(mirror_dir.path().join("intent-mirror.json")),
             NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
             Duration::from_secs(60),
@@ -788,12 +783,7 @@ mod tests {
 
         let mut publisher = MachineObservationPublisher::new(nats.client.clone());
         publisher
-            .publish_with_timeout(
-                &machine_id("machine_a"),
-                &runner,
-                None,
-                Duration::from_secs(1),
-            )
+            .publish_with_timeout(&machine_id("machine_a"), &runner, Duration::from_secs(1))
             .await
             .expect("snapshot publishes");
 
@@ -807,67 +797,6 @@ mod tests {
                 .state,
             ContainerRuntimeState::running_unroutable()
         );
-    }
-
-    #[tokio::test]
-    async fn machine_observation_publish_records_configured_public_ip() {
-        let nats = TestNats::start_bootstrapped().await;
-        let runner = StaticRunner::new([]);
-        let mut facts_sub = nats
-            .client
-            .subscribe(machine_facts(&machine_id("machine_a")))
-            .await
-            .expect("subscribe machine facts");
-
-        let mut publisher = MachineObservationPublisher::new(nats.client.clone());
-        publisher
-            .publish_with_timeout(
-                &machine_id("machine_a"),
-                &runner,
-                Some("203.0.113.7".parse::<IpAddr>().expect("valid public ip")),
-                Duration::from_secs(1),
-            )
-            .await
-            .expect("snapshot publishes");
-
-        assert_eq!(
-            next_published_facts(&mut facts_sub)
-                .await
-                .public_ip()
-                .expect("public ip exists")
-                .public_ip,
-            "203.0.113.7".parse::<IpAddr>().expect("valid public ip")
-        );
-    }
-
-    #[tokio::test]
-    async fn machine_observation_publish_clears_public_ip_when_unset() {
-        let nats = TestNats::start_bootstrapped().await;
-        let runner = StaticRunner::new([]);
-        let mut publisher = MachineObservationPublisher::new(nats.client.clone());
-        let machine_id = machine_id("machine_a");
-        let mut facts_sub = nats
-            .client
-            .subscribe(machine_facts(&machine_id))
-            .await
-            .expect("subscribe machine facts");
-
-        publisher
-            .publish_with_timeout(
-                &machine_id,
-                &runner,
-                Some("203.0.113.7".parse::<IpAddr>().expect("valid public ip")),
-                Duration::from_secs(1),
-            )
-            .await
-            .expect("public ip publishes");
-        publisher
-            .publish_with_timeout(&machine_id, &runner, None, Duration::from_secs(1))
-            .await
-            .expect("public ip clears");
-
-        let _with_public_ip = next_published_facts(&mut facts_sub).await;
-        assert_eq!(next_published_facts(&mut facts_sub).await.public_ip(), None);
     }
 
     async fn next_published_facts(facts_sub: &mut async_nats::Subscriber) -> MachineFactsSnapshot {

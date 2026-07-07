@@ -18,7 +18,7 @@ use ployz_core::ops::{
     OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
     RouteTarget,
 };
-use ployz_core::state::MachinePublicIpObservation;
+use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest, ServiceInspectRequest};
 use ployzctl::api_client::OperationApiClient;
@@ -288,7 +288,6 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         runner.clone(),
         ReadyWireGuardEbpf,
         runner.clone(),
-        Some(public_ip(7)),
     )
     .await?;
     let gateway_runtime = start_gateway_process_with_client(
@@ -374,7 +373,6 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         runner.clone(),
         ReadyWireGuardEbpf,
         runner.clone(),
-        Some(public_ip(7)),
     )
     .await?;
     let gateway_runtime = start_gateway_process_with_client(
@@ -466,7 +464,6 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         runner.clone(),
         ReadyWireGuardEbpf,
         runner.clone(),
-        Some(public_ip(7)),
     )
     .await?;
     let gateway_runtime = start_gateway_process_with_client(
@@ -569,7 +566,6 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         core_runner.clone(),
         ReadyWireGuardEbpf,
         core_runner.clone(),
-        Some(public_ip(1)),
     )
     .await?;
     let edge_machine_runtime = start_machine_role_service_with_public_ip(
@@ -578,7 +574,6 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         edge_runner.clone(),
         ReadyWireGuardEbpf,
         edge_runner.clone(),
-        Some(public_ip(2)),
     )
     .await?;
     let core_gateway_runtime = start_gateway_process_with_client(
@@ -794,9 +789,13 @@ async fn publish_machine_facts(
     let facts = MachineFactsSnapshot::try_new(
         machine_id.clone(),
         containers,
-        public_ip.map(|public_ip| MachinePublicIpObservation {
+        public_ip.map(|public_ip| MachineEndpointObservation {
             machine_id: machine_id.clone(),
-            public_ip,
+            control_endpoints: vec![public_ip],
+            mesh_endpoints: vec![std::net::SocketAddr::new(
+                public_ip,
+                ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+            )],
         }),
         1,
     )

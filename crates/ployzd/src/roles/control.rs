@@ -63,18 +63,22 @@ impl RunningControlProcess {
     }
 }
 
-/// Record each machine's advertised public endpoint onto the roster from the
-/// public-IP testimony in the fact cache (ADR 0030). Runs on a slow tick; only
-/// writes on change, never clears on a machine's silence — reachability is a
-/// durable address property — and relies on the intent drumbeat to propagate the
-/// update to every mirror.
+/// Record each machine's advertised endpoints onto the roster from the machine
+/// testimony in the fact cache (ADR 0030). Runs on a slow tick; only writes on
+/// change, never clears on a machine's silence — reachability is a durable
+/// address property — and relies on the intent drumbeat to propagate the update
+/// to every mirror.
 async fn reconcile_reachability_loop(facts: FactCache, roster: MachineRosterStore) {
     let mut interval = tokio::time::interval(REACHABILITY_RECONCILE_INTERVAL);
     loop {
         interval.tick().await;
-        for observation in facts.machine_public_ips() {
+        for observation in facts.machine_endpoint_observations() {
             let _ = roster
-                .set_public_endpoint(&observation.machine_id, observation.public_ip)
+                .set_endpoints(
+                    &observation.machine_id,
+                    observation.control_endpoints,
+                    observation.mesh_endpoints,
+                )
                 .await;
         }
     }

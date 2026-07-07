@@ -609,7 +609,7 @@ async fn wait_for_settled_snapshot(core: &CoreContext, machine: &MachineId) -> M
         Duration::from_secs(60),
         "never settled after the deploy",
         |snapshot| {
-            snapshot.public_ip.is_some()
+            snapshot.endpoints.is_some()
                 && snapshot.gateway.is_some()
                 && snapshot.observed_container_count == 1
         },
@@ -618,7 +618,7 @@ async fn wait_for_settled_snapshot(core: &CoreContext, machine: &MachineId) -> M
 }
 
 /// Polls until the machine snapshot matches the pre-restart truth again:
-/// same active state, same public ip, same observed container count.
+/// same active state, same endpoints, same observed container count.
 async fn wait_for_matching_snapshot(
     core: &CoreContext,
     machine: &MachineId,
@@ -632,13 +632,13 @@ async fn wait_for_matching_snapshot(
         |snapshot| {
             let MachineSnapshot {
                 active,
-                public_ip,
+                endpoints,
                 gateway,
                 observed_container_count,
                 last_observed_at_unix_seconds: _,
             } = snapshot;
             *active == before.active
-                && *public_ip == before.public_ip
+                && *endpoints == before.endpoints
                 && gateway.is_some()
                 && *observed_container_count == before.observed_container_count
         },

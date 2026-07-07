@@ -493,7 +493,10 @@ mod tests {
                 peers: vec![WireGuardPeer {
                     machine_id: machine_id("machine_a"),
                     endpoint_subnet: "10.42.1.0/24".to_owned(),
-                    public_endpoint: "203.0.113.1:51820".parse().expect("valid socket address"),
+                    active_endpoint: "203.0.113.1:51820".parse().expect("valid socket address"),
+                    candidate_endpoints: vec![
+                        "203.0.113.1:51820".parse().expect("valid socket address"),
+                    ],
                     public_key: wireguard_public_key("public-key"),
                 }],
             },
@@ -510,7 +513,8 @@ mod tests {
                     {
                         "machine_id": "machine_a",
                         "endpoint_subnet": "10.42.1.0/24",
-                        "public_endpoint": "203.0.113.1:51820",
+                        "active_endpoint": "203.0.113.1:51820",
+                        "candidate_endpoints": ["203.0.113.1:51820"],
                         "public_key": "public-key",
                     },
                 ],

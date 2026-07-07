@@ -20,7 +20,7 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
     RouteBindingState, ServingTargetEntry,
 };
 use ployz_core::subjects::{
@@ -217,10 +217,10 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     assert_eq!(inspected.active.name.as_str(), "edge_2");
     assert_eq!(
         inspected
-            .public_ip
+            .endpoints
             .as_ref()
-            .expect("public ip exists")
-            .public_ip,
+            .expect("endpoints exist")
+            .control_endpoints[0],
         IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2))
     );
     assert_eq!(
@@ -709,7 +709,8 @@ async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> Machin
 
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
-        public_endpoint: None,
+        control_endpoints: Vec::new(),
+        mesh_endpoints: Vec::new(),
         lifecycle: MachineLifecycle::Active,
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
@@ -842,9 +843,10 @@ fn machine_facts(
     MachineFactsSnapshot::try_new(
         machine_id.clone(),
         containers,
-        public_ip.map(|public_ip| MachinePublicIpObservation {
+        public_ip.map(|public_ip| MachineEndpointObservation {
             machine_id: machine_id.clone(),
-            public_ip,
+            control_endpoints: vec![public_ip],
+            mesh_endpoints: Vec::new(),
         }),
         1,
     )

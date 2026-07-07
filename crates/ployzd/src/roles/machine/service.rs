@@ -1,5 +1,6 @@
 //! NATS Service API wiring for machine-local commands.
 
+use crate::roles::machine::endpoints::observe_machine_endpoints;
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerInspectRpcResponse,
@@ -38,7 +39,6 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
-use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -46,7 +46,6 @@ use ployz_nats::service_runtime::{
 };
 use serde::Deserialize;
 use std::future::Future;
-use std::net::IpAddr;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -65,10 +64,8 @@ where
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    start_machine_role_service_with_public_ip(
-        client, machine_id, runner, preparer, log_reader, None,
-    )
-    .await
+    start_machine_role_service_with_public_ip(client, machine_id, runner, preparer, log_reader)
+        .await
 }
 
 pub async fn start_machine_role_service_with_public_ip<R, P, L>(
@@ -77,7 +74,6 @@ pub async fn start_machine_role_service_with_public_ip<R, P, L>(
     runner: R,
     preparer: P,
     log_reader: L,
-    public_ip: Option<IpAddr>,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
@@ -99,7 +95,6 @@ where
         MachineServiceEndpoint::FactsGet,
         MachineFactsState {
             runner: runner.clone(),
-            public_ip,
         },
         handle_facts_get,
     )
@@ -183,7 +178,6 @@ where
 #[derive(Clone)]
 struct MachineFactsState<R> {
     runner: R,
-    public_ip: Option<IpAddr>,
 }
 
 #[derive(Clone)]
@@ -298,14 +292,7 @@ where
         return response;
     }
 
-    match read_machine_facts_snapshot(
-        &machine_id,
-        &state.runner,
-        state.public_ip,
-        current_unix_ms(),
-    )
-    .await
-    {
+    match read_machine_facts_snapshot(&machine_id, &state.runner, current_unix_ms()).await {
         Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
             facts,
         })),
@@ -321,7 +308,6 @@ where
 pub(crate) async fn read_machine_facts_snapshot<R>(
     machine_id: &MachineId,
     runner: &R,
-    public_ip: Option<IpAddr>,
     observed_at_unix_ms: u64,
 ) -> Result<MachineFactsSnapshot, MachineFactsReadError>
 where
@@ -341,15 +327,12 @@ where
         });
     let containers = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
         .map_err(MachineFactsReadError::BuildContainerSnapshot)?;
-    let public_ip = public_ip.map(|public_ip| MachinePublicIpObservation {
-        machine_id: machine_id.clone(),
-        public_ip,
-    });
+    let endpoints = observe_machine_endpoints(machine_id).await;
 
     MachineFactsSnapshot::try_new(
         machine_id.clone(),
         containers,
-        public_ip,
+        endpoints,
         observed_at_unix_ms,
     )
     .map_err(MachineFactsReadError::BuildFactsSnapshot)

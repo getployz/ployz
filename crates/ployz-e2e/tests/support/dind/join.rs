@@ -135,12 +135,10 @@ pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &Ins
                 "PLOYZ_KEEPER_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz-keeper \
                  PLOYZ_KEEPER_SHA256={keeper_sha} \
                  PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} \
-                 PLOYZ_MACHINE_PUBLIC_IP={} \
                  sh /tmp/ployz.sh --join-token {}",
                 shell_quote(&install.nats_url),
                 shell_quote(&install.nats_ca_b64),
                 shell_quote(&install.join_seed),
-                edge.bridge_ip,
                 shell_quote(&install.join_token),
             ),
         )

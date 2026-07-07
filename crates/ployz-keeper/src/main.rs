@@ -57,7 +57,6 @@ mod cloud_bootstrap_runner;
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 const PLOYZ_JOIN_NKEY_SEED_ENV: &str = "PLOYZ_JOIN_NKEY_SEED";
-const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounded redeem retry while the core mints this machine's credential:
 /// the join token TTL is 600 seconds, so stop well within it.
@@ -568,7 +567,7 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
 
 /// Read the promotion inputs from this machine's own state: the CA + wrapped
 /// recovery key from join material (decrypted with `PLOYZ_RECOVERY_SECRET`), and
-/// this machine's public IP + the fleet's machine publics from the local mirror.
+/// this machine's control endpoints from the local mirror.
 fn resolve_core_promote_target(
     nats_server_artifact: ArtifactTarget,
     ployzd_artifact: ArtifactTarget,
@@ -610,19 +609,26 @@ fn resolve_core_promote_target(
                 mirror_path.display()
             )
         })?;
-    // A promoted core must serve on a fleet-dialable address: without an advertised
-    // public endpoint the listener + cert would be loopback-only and every other
-    // machine's failover pool could never reach it. Require one.
-    let machine_public_ip = snapshot.public_endpoint_of(&machine_id).ok_or_else(|| {
-        "this machine has no advertised public endpoint in the mirror — the core \
+    // A promoted core must serve on a fleet-dialable address: without advertised
+    // control endpoints the listener + cert would be loopback-only and every other
+    // machine's failover pool could never reach it. Require at least one.
+    let control_endpoints = snapshot
+        .control_endpoints_of(&machine_id)
+        .ok_or_else(|| {
+            "this machine has no advertised control endpoint in the mirror — the core \
          never recorded its reachability, so it cannot be promoted to a core the \
          fleet can dial"
-            .to_owned()
-    })?;
+                .to_owned()
+        })?
+        .to_vec();
+    let machine_public_ip = control_endpoints
+        .first()
+        .copied()
+        .expect("control endpoint list is non-empty");
 
     let hostname = gethostname::gethostname().into_string().ok();
-    let sans = ployz_keeper::nats_identity::ServerCertificateSans::try_new(
-        Some(machine_public_ip),
+    let sans = ployz_keeper::nats_identity::ServerCertificateSans::try_new_many(
+        control_endpoints.clone(),
         hostname,
     )
     .map_err(|error| format!("{error}"))?;
@@ -636,7 +642,10 @@ fn resolve_core_promote_target(
     // credential still authenticates — it only needs the promoted core's new address.
     let access = PromotedCoreAccess {
         ca_pem: nats_identity.ca.as_str().to_owned(),
-        nats_url: format!("tls://{}", SocketAddr::new(machine_public_ip, 4222)),
+        nats_urls: control_endpoints
+            .iter()
+            .map(|endpoint| format!("tls://{}", SocketAddr::new(*endpoint, 4222)))
+            .collect(),
     };
 
     let target = CorePromoteTarget::assemble(
@@ -658,12 +667,12 @@ fn resolve_core_promote_target(
 /// this block alone.
 struct PromotedCoreAccess {
     ca_pem: String,
-    nats_url: String,
+    nats_urls: Vec<String>,
 }
 
 fn print_core_promote_result(access: &PromotedCoreAccess) {
     let result = serde_json::json!({
-        "nats_url": access.nats_url,
+        "nats_urls": access.nats_urls,
         "ca_pem": access.ca_pem,
     });
     println!("{CORE_PROMOTE_RESULT_BEGIN}");
@@ -706,24 +715,16 @@ fn failure_summary(failure: &KeeperPlanFailure) -> &str {
 
 struct JoinRedeemer {
     connect: Result<NatsConnectConfig, FailureMessage>,
-    machine_public_ip: Result<Option<std::net::IpAddr>, FailureMessage>,
 }
 
 impl JoinRedeemer {
-    fn new(
-        connect: Result<NatsConnectConfig, FailureMessage>,
-        machine_public_ip: Result<Option<std::net::IpAddr>, FailureMessage>,
-    ) -> Self {
-        Self {
-            connect,
-            machine_public_ip,
-        }
+    fn new(connect: Result<NatsConnectConfig, FailureMessage>) -> Self {
+        Self { connect }
     }
 
     fn from_env() -> Self {
         Self::new(
             load_join_connect_from_env().map_err(|error| failure_message(&format!("{error}"))),
-            load_machine_public_ip_from_env().map_err(|error| failure_message(&format!("{error}"))),
         )
     }
 }
@@ -734,7 +735,6 @@ impl KeeperJoinRedeemer for JoinRedeemer {
         token: &JoinToken,
     ) -> Result<RedeemedKeeperJoin, FailureMessage> {
         let connect = self.connect.clone()?;
-        let machine_public_ip = self.machine_public_ip.clone()?;
         let join_token = MachineJoinToken::try_new(token.as_str())
             .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))?;
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -749,7 +749,7 @@ impl KeeperJoinRedeemer for JoinRedeemer {
             redeem_until_material_ready(&OperationApiClient::new(client), join_token).await
         })?;
 
-        keeper_join_target_with_public_ip(redeemed, machine_public_ip)
+        keeper_join_target(redeemed)
     }
 }
 
@@ -893,20 +893,6 @@ fn load_join_connect_from_env() -> Result<NatsConnectConfig, KeeperNatsConnectEr
     })
 }
 
-fn load_machine_public_ip_from_env() -> Result<Option<std::net::IpAddr>, KeeperMachinePublicIpError>
-{
-    let Some(value) = std::env::var(PLOYZ_MACHINE_PUBLIC_IP_ENV)
-        .ok()
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-    value
-        .parse()
-        .map(Some)
-        .map_err(|source| KeeperMachinePublicIpError::Invalid { value, source })
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 enum KeeperNatsConnectError {
     #[error("{PLOYZ_NATS_URL_ENV} is required")]
@@ -925,20 +911,7 @@ enum KeeperNatsConnectError {
     InvalidJoinSeed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-enum KeeperMachinePublicIpError {
-    #[error("{PLOYZ_MACHINE_PUBLIC_IP_ENV}={value:?} is invalid")]
-    Invalid {
-        value: String,
-        #[source]
-        source: std::net::AddrParseError,
-    },
-}
-
-fn keeper_join_target_with_public_ip(
-    redeemed: MachineJoinRedeemed,
-    machine_public_ip: Option<std::net::IpAddr>,
-) -> Result<RedeemedKeeperJoin, FailureMessage> {
+fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoin, FailureMessage> {
     let callback_result = redeemed.clone();
     let machine_id = redeemed.machine_id.clone();
     let material = KeeperJoinMaterial::from_join_payload(
@@ -970,14 +943,11 @@ fn keeper_join_target_with_public_ip(
         NatsClientUrl::try_new(redeemed.join_bundle.material.runtime_nats_url.as_str())
             .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
     let join_material_dir = PathBuf::from(KEEPER_STATE_DIR).join(JOIN_MATERIAL_DIR);
-    let mut role_environment = PloyzdRoleEnvironmentTarget::default_path(
+    let role_environment = PloyzdRoleEnvironmentTarget::default_path(
         machine_id.clone(),
         runtime_nats_client_url,
         RoleNatsCredentials::joined(&join_material_dir),
     );
-    if let Some(public_ip) = machine_public_ip {
-        role_environment = role_environment.with_machine_public_ip(public_ip);
-    }
 
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
@@ -1014,7 +984,7 @@ mod tests {
     use std::fs;
 
     use super::{
-        InstalledUpdateUnit, installed_update_units, keeper_join_target_with_public_ip,
+        InstalledUpdateUnit, installed_update_units, keeper_join_target,
         read_cloud_founder_bootstrap_result,
     };
     use ployz_core::ids::{MachineId, OperationId};
@@ -1063,7 +1033,7 @@ mod tests {
             result: MachineJoinRedeemResult::Joined,
         };
 
-        let target = keeper_join_target_with_public_ip(redeemed, None)
+        let target = keeper_join_target(redeemed)
             .expect("redeemed bundle converts")
             .target;
 
@@ -1078,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn keeper_join_target_can_carry_machine_public_ip_from_bootstrap_env() {
+    fn keeper_join_target_does_not_render_machine_public_ip_env() {
         let redeemed = MachineJoinRedeemed {
             operation_id: OperationId::try_new("op_machine").expect("valid operation id"),
             machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
@@ -1092,19 +1062,14 @@ mod tests {
             result: MachineJoinRedeemResult::Joined,
         };
 
-        let target = keeper_join_target_with_public_ip(
-            redeemed,
-            Some("203.0.113.20".parse().expect("valid IP")),
-        )
-        .expect("redeemed bundle converts")
-        .target;
+        let target = keeper_join_target(redeemed)
+            .expect("redeemed bundle converts")
+            .target;
 
-        assert!(
-            target
-                .role_environment
-                .render_for_role(&ployz_core::roles::DaemonProcessRole::Gateway)
-                .contains("PLOYZ_MACHINE_PUBLIC_IP=203.0.113.20\n")
-        );
+        let rendered = target
+            .role_environment
+            .render_for_role(&ployz_core::roles::DaemonProcessRole::Gateway);
+        assert!(!rendered.contains("PLOYZ_MACHINE_PUBLIC_IP="));
     }
 
     #[test]
