@@ -25,13 +25,16 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 local-ip-address = "0.6"
 public-ip-address = { version = "0.4", default-features = false, features = ["blocking"] }
+defguard_wireguard_rs = "0.10"
 ployz-core = { path = "crates/ployz-core" }
 ployz-nats = { path = "crates/ployz-nats" }
 ployz-sdk-types = { path = "crates/ployz-sdk-types" }
 ployz-test-support = { path = "crates/ployz-test-support" }
+rtnetlink = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sysctl = "0.7"
 nuid = "0.5"
 thiserror = "2"
 tokio = "1"

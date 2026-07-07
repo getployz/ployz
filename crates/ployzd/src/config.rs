@@ -47,6 +47,7 @@ pub const PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_BRIDGE_IFNA
 pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "br-ployz";
 pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
 pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
+pub const PLOYZ_DATAPLANE_WG_MTU_ENV: &str = "PLOYZ_DATAPLANE_WG_MTU";
 pub const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -102,6 +103,7 @@ pub fn load_daemon_process_config(
             let ployz_native_mesh = MachinePloyzNativeMeshConfig::new(
                 load_dataplane_bridge_ifname(&env),
                 load_dataplane_wg_ifname(&env),
+                load_dataplane_wg_mtu(&env)?,
                 load_dataplane_endpoint_subnet(&env, machine_id),
             );
             Ok(DaemonProcessConfig::Machine(MachineProcessConfig::new(
@@ -323,6 +325,18 @@ fn load_dataplane_wg_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
         .unwrap_or_else(|| DEFAULT_DATAPLANE_WG_IFNAME.to_owned())
 }
 
+fn load_dataplane_wg_mtu(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<u32>, DaemonProcessConfigError> {
+    env_value(env, PLOYZ_DATAPLANE_WG_MTU_ENV)
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|source| DaemonProcessConfigError::InvalidDataplaneWgMtu { value, source })
+        })
+        .transpose()
+}
+
 fn load_dataplane_endpoint_subnet(
     env: &impl Fn(&str) -> Option<String>,
     machine_id: &MachineId,
@@ -516,6 +530,10 @@ pub enum DaemonProcessConfigError {
         value: String,
         source: std::net::AddrParseError,
     },
+    InvalidDataplaneWgMtu {
+        value: String,
+        source: std::num::ParseIntError,
+    },
 }
 
 impl fmt::Display for DaemonProcessConfigError {
@@ -604,6 +622,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_GATEWAY_LISTEN_ADDR_ENV
+            ),
+            Self::InvalidDataplaneWgMtu { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_DATAPLANE_WG_MTU_ENV
             ),
         }
     }
@@ -717,15 +740,22 @@ impl MachineProcessArtifacts {
 pub struct MachinePloyzNativeMeshConfig {
     pub bridge_ifname: String,
     pub wg_ifname: String,
+    pub wg_mtu: Option<u32>,
     pub endpoint_subnet: String,
 }
 
 impl MachinePloyzNativeMeshConfig {
     #[must_use]
-    pub fn new(bridge_ifname: String, wg_ifname: String, endpoint_subnet: String) -> Self {
+    pub fn new(
+        bridge_ifname: String,
+        wg_ifname: String,
+        wg_mtu: Option<u32>,
+        endpoint_subnet: String,
+    ) -> Self {
         Self {
             bridge_ifname,
             wg_ifname,
+            wg_mtu,
             endpoint_subnet,
         }
     }

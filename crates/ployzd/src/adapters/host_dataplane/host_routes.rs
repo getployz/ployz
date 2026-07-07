@@ -1,9 +1,7 @@
-use ipnet::Ipv4Net;
 use ployz_core::dataplane::{
     PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
 };
 use ployz_core::ids::MachineId;
-use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
 use super::host_commands::{HostCommandPlan, ebpf_ctl_args, unavailable};
@@ -32,49 +30,26 @@ impl HostDataplaneRouteProgramming {
                     "local endpoint route is missing".to_owned(),
                 )
             })?;
-        let local_host_cidr =
-            wireguard_host_cidr(&local_route.endpoint_subnet).map_err(|message| {
-                unavailable(machine_id, PloyzNativeMeshComponent::WireGuard, message)
-            })?;
-        let local_host_ip = local_host_cidr
-            .split_once('/')
-            .expect("generated wireguard host CIDR includes prefix")
-            .0
-            .to_owned();
         let mut requirements = vec![
-            HostCommandPlan::provisioning_command(
+            HostCommandPlan::provisioning_sysctl(
                 PloyzNativeMeshComponent::WireGuard,
-                "ip",
-                [
-                    "addr".to_owned(),
-                    "replace".to_owned(),
-                    local_host_cidr,
-                    "dev".to_owned(),
-                    self.wg_ifname.clone(),
-                ],
+                "net.ipv4.ip_forward",
+                "1",
             ),
-            HostCommandPlan::provisioning_command(
+            HostCommandPlan::provisioning_sysctl(
                 PloyzNativeMeshComponent::WireGuard,
-                "sysctl",
-                ["-w", "net.ipv4.ip_forward=1"],
+                "net.ipv4.conf.all.rp_filter",
+                "0",
             ),
-            HostCommandPlan::provisioning_command(
+            HostCommandPlan::provisioning_sysctl(
                 PloyzNativeMeshComponent::WireGuard,
-                "sysctl",
-                ["-w", "net.ipv4.conf.all.rp_filter=0"],
+                "net.ipv4.conf.default.rp_filter",
+                "0",
             ),
-            HostCommandPlan::provisioning_command(
+            HostCommandPlan::provisioning_sysctl(
                 PloyzNativeMeshComponent::WireGuard,
-                "sysctl",
-                ["-w", "net.ipv4.conf.default.rp_filter=0"],
-            ),
-            HostCommandPlan::provisioning_command(
-                PloyzNativeMeshComponent::WireGuard,
-                "sysctl",
-                [
-                    "-w".to_owned(),
-                    format!("net.ipv4.conf.{}.rp_filter=0", self.wg_ifname),
-                ],
+                format!("net.ipv4.conf.{}.rp_filter", self.wg_ifname),
+                "0",
             ),
             HostCommandPlan::provisioning_command(
                 PloyzNativeMeshComponent::WireGuard,
@@ -124,58 +99,24 @@ impl HostDataplaneRouteProgramming {
             endpoint_routes
                 .iter()
                 .filter(|route| route.machine_id != *machine_id)
-                .flat_map(|route| {
-                    [
-                        HostCommandPlan::provisioning_command(
-                            PloyzNativeMeshComponent::WireGuard,
-                            "ip",
+                .map(|route| {
+                    HostCommandPlan::provisioning_command(
+                        PloyzNativeMeshComponent::EbpfForwarding,
+                        self.ebpf_ctl_program.clone(),
+                        ebpf_ctl_args(
+                            &self.ebpf_pin_path,
                             [
                                 "route".to_owned(),
-                                "replace".to_owned(),
+                                "add-ifname".to_owned(),
                                 route.endpoint_subnet.clone(),
-                                "dev".to_owned(),
                                 self.wg_ifname.clone(),
-                                "src".to_owned(),
-                                local_host_ip.clone(),
                             ],
                         ),
-                        HostCommandPlan::provisioning_command(
-                            PloyzNativeMeshComponent::EbpfForwarding,
-                            self.ebpf_ctl_program.clone(),
-                            ebpf_ctl_args(
-                                &self.ebpf_pin_path,
-                                [
-                                    "route".to_owned(),
-                                    "add-ifname".to_owned(),
-                                    route.endpoint_subnet.clone(),
-                                    self.wg_ifname.clone(),
-                                ],
-                            ),
-                        ),
-                    ]
+                    )
                 }),
         );
         Ok(requirements)
     }
-}
-
-fn wireguard_host_cidr(endpoint_subnet: &str) -> Result<String, String> {
-    let subnet = endpoint_subnet.parse::<Ipv4Net>().map_err(|source| {
-        format!("endpoint subnet is not IPv4 CIDR: {endpoint_subnet}: {source}")
-    })?;
-    if subnet.prefix_len() != 24 {
-        return Err(format!(
-            "endpoint subnet must be an IPv4 /24 for host WireGuard addressing: {endpoint_subnet}"
-        ));
-    }
-    if subnet.network() != subnet.addr() {
-        return Err(format!(
-            "endpoint subnet must start at the network address: {endpoint_subnet}"
-        ));
-    }
-    let mut octets = subnet.network().octets();
-    octets[3] = 254;
-    Ok(format!("{}/32", Ipv4Addr::from(octets)))
 }
 
 #[cfg(test)]
@@ -207,28 +148,11 @@ mod tests {
             )
             .expect("route requirements are generated");
 
-        assert!(
-            requirements.contains(&HostCommandPlan::provisioning_command(
-                PloyzNativeMeshComponent::WireGuard,
-                "ip",
-                ["addr", "replace", "10.42.1.254/32", "dev", "ployz-wg0"]
-            ))
-        );
-        assert!(
-            requirements.contains(&HostCommandPlan::provisioning_command(
-                PloyzNativeMeshComponent::WireGuard,
-                "ip",
-                [
-                    "route",
-                    "replace",
-                    "10.42.2.0/24",
-                    "dev",
-                    "ployz-wg0",
-                    "src",
-                    "10.42.1.254"
-                ]
-            ))
-        );
+        assert!(requirements.contains(&HostCommandPlan::provisioning_sysctl(
+            PloyzNativeMeshComponent::WireGuard,
+            "net.ipv4.ip_forward",
+            "1"
+        )));
         assert!(requirements.contains(&HostCommandPlan::provisioning_command(
             PloyzNativeMeshComponent::WireGuard,
             "sh",
@@ -308,16 +232,6 @@ mod tests {
                 ..
             } if machine_id == self::machine_id("machine_a")
         ));
-    }
-
-    #[test]
-    fn wireguard_host_cidr_uses_last_host_in_endpoint_subnet() {
-        assert_eq!(
-            wireguard_host_cidr("10.42.7.0/24").expect("host CIDR derives"),
-            "10.42.7.254/32"
-        );
-        assert!(wireguard_host_cidr("10.42.7.0/25").is_err());
-        assert!(wireguard_host_cidr("10.42.7.12/24").is_err());
     }
 
     fn machine_id(value: &str) -> MachineId {
