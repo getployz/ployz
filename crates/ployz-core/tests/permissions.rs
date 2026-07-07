@@ -67,7 +67,6 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             JOIN_MACHINE_REPORT.to_owned(),
             CORE_RPC_QUERY_SCOPE.to_owned(),
             MACHINE_RPC_QUERY_SCOPE.to_owned(),
-            MACHINE_RPC_COMMAND_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_GET.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),

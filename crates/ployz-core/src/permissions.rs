@@ -130,7 +130,6 @@ fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
         JOIN_MACHINE_REPORT.to_owned(),
         CORE_RPC_QUERY_SCOPE.to_owned(),
         MACHINE_RPC_QUERY_SCOPE.to_owned(),
-        MACHINE_RPC_COMMAND_SCOPE.to_owned(),
         INTENT_GET.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
