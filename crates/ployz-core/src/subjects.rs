@@ -13,6 +13,7 @@ pub const MACHINE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.>";
 pub const MACHINE_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.>";
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
 pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
+pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
 pub const OPERATOR_OPS_LIST: &str = "plz.v1.rpc.operator.query.ops.list";

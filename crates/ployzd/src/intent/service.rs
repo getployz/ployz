@@ -4,9 +4,10 @@ use crate::core_store::CoreStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
+use crate::operations::log::OperationRepository;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
-use ployz_core::state::IntentSnapshot;
-use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET};
+use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -99,6 +100,7 @@ pub async fn start_intent_service(
     // The grant set is a projection of the same store; a thin wrapper over it reads
     // the grants the authorization writer persists there.
     let nats_authorizations = NatsAuthorizationStore::new(core_store.clone());
+    let operation_repository = OperationRepository::open(core_store.clone(), client.clone());
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
     let service_core_store = core_store.clone();
@@ -140,6 +142,8 @@ pub async fn start_intent_service(
                 continue;
             };
             let _ = client.publish(INTENT_CHANGED, payload.into()).await;
+            let _ =
+                publish_pending_machine_joins(&client, &operation_repository, &core_store).await;
         }
     });
 
@@ -200,4 +204,25 @@ async fn load_intent(
         serving_target_entries: namespace_intent.serving_target_entries,
         authorized_users,
     })
+}
+
+pub async fn publish_pending_machine_joins(
+    client: &async_nats::Client,
+    operation_repository: &OperationRepository,
+    core_store: &CoreStore,
+) -> Result<(), String> {
+    let pending = operation_repository
+        .pending_machine_adds_for_mirror()
+        .await
+        .map_err(|error| error.to_string())?;
+    let epoch = core_store
+        .control_plane_epoch()
+        .await
+        .map_err(|error| error.to_string())?;
+    let payload = serde_json::to_vec(&PendingMachineJoinRecoverySnapshot { epoch, pending })
+        .map_err(|error| error.to_string())?;
+    client
+        .publish(PENDING_MACHINE_JOINS_CHANGED, payload.into())
+        .await
+        .map_err(|error| error.to_string())
 }

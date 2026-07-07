@@ -127,6 +127,12 @@ pub async fn machine_add(
         machine_id: accepted.identity.machine_id.clone(),
         idempotency_key,
     });
+    tokio::spawn({
+        let handlers = handlers.clone();
+        async move {
+            handlers.publish_pending_machine_joins().await;
+        }
+    });
 
     Ok(MachineAddAccepted {
         accepted: owned_machine_operation(

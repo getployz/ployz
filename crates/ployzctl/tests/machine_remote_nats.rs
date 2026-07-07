@@ -327,10 +327,11 @@ async fn core_replace_remote_runs_keeper_command() {
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
+    let expected_successor_url = server.server.client_url().clone();
     runtime
-        .bind_endpoint(
-            &endpoint(&spec, CoreReplaceApi::ENDPOINT),
-            |request| async move {
+        .bind_endpoint(&endpoint(&spec, CoreReplaceApi::ENDPOINT), move |request| {
+            let expected_successor_url = expected_successor_url.clone();
+            async move {
                 let request: CoreReplaceRequest =
                     serde_json::from_slice(&request.payload).expect("core replace decodes");
                 assert_eq!(request.machine_id, machine_id("machine_2"));
@@ -342,14 +343,14 @@ async fn core_replace_remote_runs_keeper_command() {
                 );
                 assert_eq!(
                     request.successor_nats_url.as_str(),
-                    "tls://203.0.113.20:4222"
+                    expected_successor_url.as_str()
                 );
                 let response: CoreReplaceResponse = OperationApiResponse::Ok {
                     value: accepted_operation(&request.operation_id, &request.machine_id),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            },
-        )
+            }
+        })
         .await
         .expect("core replace endpoint binds");
     runtime
@@ -417,10 +418,7 @@ async fn core_replace_remote_runs_keeper_command() {
     let output = execute_command(
         PloyzctlCommand::CoreReplace(CoreReplaceCommand {
             target: SshTarget::parse("root@203.0.113.10").expect("target parses"),
-            successor_nats_url: ployz_nats::connect::NatsClientUrl::try_new(
-                "tls://203.0.113.20:4222",
-            )
-            .expect("valid url"),
+            successor_nats_url: None,
         }),
         &config,
     )
@@ -431,8 +429,11 @@ async fn core_replace_remote_runs_keeper_command() {
     assert_eq!(
         ssh.commands(),
         vec![
-            "sudo cat /var/lib/ployz/join-material",
-            "sudo ployz-keeper internal-core-demote --successor-nats-url 'tls://203.0.113.20:4222'"
+            "sudo cat /var/lib/ployz/join-material".to_owned(),
+            format!(
+                "sudo ployz-keeper internal-core-demote --successor-nats-url '{}'",
+                server.server.client_url().as_str()
+            )
         ]
     );
 }

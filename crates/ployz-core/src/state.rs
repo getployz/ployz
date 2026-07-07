@@ -3,9 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
-use crate::machine::MachineName;
+use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizedUser;
 use crate::ops::{RoutePort, RouteTarget};
+use crate::roles::InstallRolePolicy;
 use std::net::{IpAddr, SocketAddr};
 
 /// Core-owned serving-target intent value.
@@ -49,6 +50,25 @@ pub struct ActiveMachineState {
     /// WireGuard dial candidates recorded from machine testimony. The first is
     /// programmed initially; later candidates are for endpoint rotation.
     pub mesh_endpoints: Vec<SocketAddr>,
+}
+
+/// Epoch-stamped non-secret pending machine-add recovery hints mirrored for
+/// core promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingMachineJoinRecoverySnapshot {
+    pub epoch: ControlPlaneEpoch,
+    pub pending: Vec<PendingMachineJoinRecovery>,
+}
+
+/// Non-secret pending machine-add recovery hint mirrored for core promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingMachineJoinRecovery {
+    pub machine_id: MachineId,
+    pub name: MachineName,
+    pub roles: InstallRolePolicy,
+    pub join_token: IssuedJoinToken,
 }
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a

@@ -12,11 +12,13 @@ use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
+use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, PendingMachineJoinRecoverySnapshot};
 use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinReportOutcome, MachineJoinReportRequest, OpsStatusError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,
+    MachineJoinReportRequest, MachineJoinToken, MachineListRequest, OpsStatusError,
     OpsStatusRequest,
 };
 use std::sync::{Arc, OnceLock};
@@ -31,6 +33,7 @@ use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
 use ployzd::core_store::CoreStore;
 use ployzd::operations::log::{OperationRepository, OperationStatusWrite};
+use ployzd::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
@@ -40,6 +43,27 @@ async fn lock_machine_add_mint_test() -> OwnedMutexGuard<()> {
         .clone()
         .lock_owned()
         .await
+}
+
+async fn report_join_completed_with_retry(nats: &TestNats, join_token: MachineJoinToken) {
+    for _ in 0..10 {
+        let join_report_api = OperationApiClient::new(nats.connected.join.clone())
+            .with_request_timeout(Duration::from_secs(2));
+        match join_report_api
+            .machine_join_report(&MachineJoinReportRequest {
+                join_token: join_token.clone(),
+                outcome: MachineJoinReportOutcome::Completed,
+            })
+            .await
+        {
+            Ok(_) => return,
+            Err(OperationApiClientError::Request { .. }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("join report failed: {error:?}"),
+        }
+    }
+    panic!("join report did not complete");
 }
 
 /// The machine-add handler returns its operation id + join material before
@@ -115,7 +139,8 @@ async fn machine_add_mints_unique_credentials_per_machine() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
-    let join_api = nats.join_api();
+    let join_api = OperationApiClient::new(nats.connected.join.clone())
+        .with_request_timeout(Duration::from_secs(5));
 
     let first = machine_add(&api, "op_machine_a", "idem_machine_a", "machine_a").await;
     let second = machine_add(&api, "op_machine_b", "idem_machine_b", "machine_b").await;
@@ -388,6 +413,87 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn promoted_core_recovers_pending_join_without_old_operation_log() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_recover_join", "idem_recover_join", "machine_rj").await;
+    runtime
+        .shutdown()
+        .await
+        .expect("original control runtime shuts down");
+
+    let source_store = CoreStore::open(config.core_db_path.clone())
+        .await
+        .expect("source store opens");
+    let source_repository =
+        OperationRepository::open(source_store, nats.connected.controller.clone());
+    let pending = source_repository
+        .pending_machine_adds_for_mirror()
+        .await
+        .expect("pending joins mirror");
+
+    let mirror_dir = tempfile::tempdir().expect("mirror dir");
+    let intent_mirror = mirror_dir.path().join("intent-mirror.json");
+    MachineIntentMirror::new(intent_mirror.clone())
+        .store(&IntentSnapshot {
+            epoch: ControlPlaneEpoch::initial().next(),
+            active_machines: Vec::new(),
+            route_bindings: Vec::new(),
+            serving_target_entries: Vec::new(),
+            authorized_users: Vec::new(),
+        })
+        .expect("intent mirror stores");
+    MachinePendingJoinMirror::new(mirror_dir.path().join("pending-machine-joins.json"))
+        .store(&PendingMachineJoinRecoverySnapshot {
+            epoch: ControlPlaneEpoch::initial().next(),
+            pending,
+        })
+        .expect("pending join mirror stores");
+
+    let promoted_db = tempfile::tempdir().expect("promoted db dir");
+    let promoted_config = nats
+        .control_config()
+        .with_core_db_path(promoted_db.path().join("ployz-core.db"))
+        .with_seed_from_mirror(Some(intent_mirror));
+    let promoted_runtime = nats.start_control(&promoted_config).await;
+    let join_api = nats.join_api();
+
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    assert_eq!(redeemed.result, MachineJoinRedeemResult::Joined);
+    assert_eq!(redeemed.machine_id, machine_id("machine_rj"));
+    assert!(
+        redeemed
+            .secret_delivery
+            .nats_credentials
+            .secret()
+            .starts_with("SU"),
+        "promoted core minted fresh machine credentials"
+    );
+
+    report_join_completed_with_retry(&nats, accepted.join_token).await;
+
+    let machines = api
+        .machine_list(&MachineListRequest {})
+        .await
+        .expect("operator can list after recovered join");
+    assert!(
+        machines
+            .machines
+            .iter()
+            .any(|machine| { machine.active.machine_id == machine_id("machine_rj") })
+    );
+
+    promoted_runtime
+        .shutdown()
+        .await
+        .expect("promoted runtime shuts down");
 }
 
 /// Redeem before the mint worker reaches material-ready is the typed

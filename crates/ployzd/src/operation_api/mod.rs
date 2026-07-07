@@ -22,9 +22,10 @@ pub use submit::{
 };
 
 use crate::adapters::nats_authorization::MachineCredentialMint;
+use crate::core_store::CoreStore;
 use crate::fact_cache::FactCache;
 use crate::intent::machine_roster::MachineRosterStore;
-use crate::intent::service::NatsIntentReader;
+use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
@@ -49,6 +50,7 @@ pub struct OperationApiHandlers {
     machine_update: Arc<MachineUpdateOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
     machine_mint: Arc<MachineCredentialMint>,
+    core_store: CoreStore,
     local_machine_id: MachineId,
     intent_change_client: async_nats::Client,
     machine_roster: MachineRosterStore,
@@ -64,6 +66,7 @@ impl OperationApiHandlers {
     pub fn execute_operations(
         controllers: OperationControllers,
         workers: OperationWorkers,
+        core_store: CoreStore,
         local_machine_id: MachineId,
         intent_change_client: async_nats::Client,
         machine_roster: MachineRosterStore,
@@ -93,6 +96,7 @@ impl OperationApiHandlers {
             machine_update: Arc::new(machine_update),
             machine_lifecycle: Arc::new(machine_lifecycle),
             machine_mint: Arc::new(machine_mint),
+            core_store,
             local_machine_id,
             intent_change_client,
             machine_roster,
@@ -134,5 +138,14 @@ impl OperationApiHandlers {
 
     pub(crate) fn local_machine_id(&self) -> &MachineId {
         &self.local_machine_id
+    }
+
+    pub(crate) async fn publish_pending_machine_joins(&self) {
+        let _ = publish_pending_machine_joins(
+            &self.intent_change_client,
+            self.controllers.repository(),
+            &self.core_store,
+        )
+        .await;
     }
 }

@@ -1,12 +1,23 @@
 use futures_util::StreamExt;
+use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
-    ActiveMachineState, IntentSnapshot, MachineLifecycle, RouteBindingState, ServingTargetEntry,
+    ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
+    PendingMachineJoinRecoverySnapshot, RouteBindingState, ServingTargetEntry,
 };
-use ployz_core::subjects::INTENT_CHANGED;
-use ployz_test_support::ids::{machine_id, namespace_revision_entry_id, operation_id, service_id};
+use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
+use ployz_test_support::fixtures::machine_join_bundle;
+use ployz_test_support::ids::{
+    idempotency_key, machine_id, machine_name, namespace_revision_entry_id, operation_id,
+    service_id,
+};
+use ployzd::core_store::CoreStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, start_intent_service};
+use ployzd::operations::log::{
+    MachineAddOperationSubmission, MachineJoinIdentity, OperationRepository,
+};
 use std::time::Duration;
 
 #[tokio::test]
@@ -86,6 +97,69 @@ async fn intent_reader_gets_current_intent() {
     assert!(intent.active_machines.is_empty());
     assert!(intent.route_bindings.is_empty());
     assert!(intent.serving_target_entries.is_empty());
+}
+
+#[tokio::test]
+async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
+    let raw_join_token = RawJoinToken::try_new("join_pending_machine_a").expect("valid token");
+    let join_token = IssuedJoinToken::new(
+        raw_join_token.fingerprint().expect("fingerprint"),
+        JoinTokenExpiresAt::try_new(4_102_444_800).expect("expiry"),
+    );
+    let operation_id = operation_id("op_add_machine_a");
+    let idempotency_key = idempotency_key("idem_add_machine_a");
+    repository
+        .submit_machine_add(MachineAddOperationSubmission {
+            operation_id: operation_id.clone(),
+            idempotency_key: idempotency_key.clone(),
+            identity: MachineJoinIdentity {
+                machine_id: machine_id("machine_a"),
+                name: machine_name("machine-a"),
+                roles: InstallRolePolicy::install_all(),
+                join_bundle: machine_join_bundle(),
+                join_token,
+                raw_join_token,
+            },
+        })
+        .await
+        .expect("machine-add submits");
+    let mut pending_changed = nats
+        .machine_client(&machine_id("machine_a"))
+        .await
+        .subscribe(PENDING_MACHINE_JOINS_CHANGED)
+        .await
+        .expect("subscribe pending joins");
+    let _runtime = start_intent_service(
+        nats.controller.clone(),
+        temp_machine_roster().await,
+        temp_namespace_intent().await,
+        core_store,
+        Duration::from_millis(10),
+    )
+    .await
+    .expect("intent runtime starts");
+
+    let message = tokio::time::timeout(Duration::from_secs(1), pending_changed.next())
+        .await
+        .expect("pending join signal arrives")
+        .expect("pending join message exists");
+    let snapshot: PendingMachineJoinRecoverySnapshot =
+        serde_json::from_slice(&message.payload).expect("pending joins decode");
+
+    assert_eq!(snapshot.epoch, ControlPlaneEpoch::initial());
+    assert_eq!(snapshot.pending.len(), 1);
+    assert_eq!(
+        snapshot
+            .pending
+            .first()
+            .expect("one pending join")
+            .machine_id,
+        machine_id("machine_a")
+    );
 }
 
 #[tokio::test]

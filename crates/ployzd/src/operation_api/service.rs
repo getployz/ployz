@@ -29,9 +29,6 @@ pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
     handlers: OperationApiHandlers,
 ) -> Result<RunningNatsService, ApiServiceError> {
-    if !handlers.controllers().has_machine_join_template() {
-        return Err(ApiServiceError::MissingMachineJoinTemplate);
-    }
     let spec = api_service();
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -179,7 +176,7 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move {
-                    machine_join_redeem(handlers.controllers(), request).await
+                    machine_join_redeem(&handlers, request).await
                 },
             )
             .await

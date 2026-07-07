@@ -15,9 +15,11 @@ use ployz_core::install::{
 };
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
+    redeem_pending_join_token,
 };
 use ployz_core::ops::{OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::InstallRolePolicy;
+use ployz_core::state::PendingMachineJoinRecovery;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -137,6 +139,7 @@ pub struct OperationControllers {
     /// half-held lock. Do not reintroduce a durable lock here.
     namespace_locks: Arc<Mutex<BTreeMap<NamespaceId, OperationId>>>,
     machine_bootstrap: MachineAddBootstrapConfig,
+    pending_join_recovery: Arc<Mutex<Vec<PendingMachineJoinRecovery>>>,
 }
 
 impl OperationControllers {
@@ -149,6 +152,21 @@ impl OperationControllers {
             repository,
             namespace_locks: Arc::default(),
             machine_bootstrap,
+            pending_join_recovery: Arc::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_pending_join_recovery(
+        repository: OperationRepository,
+        machine_bootstrap: MachineAddBootstrapConfig,
+        pending_join_recovery: Vec<PendingMachineJoinRecovery>,
+    ) -> Self {
+        Self {
+            repository,
+            namespace_locks: Arc::default(),
+            machine_bootstrap,
+            pending_join_recovery: Arc::new(Mutex::new(pending_join_recovery)),
         }
     }
 
@@ -267,6 +285,48 @@ impl OperationControllers {
         self.repository
             .redeem_machine_join_token(token, current_join_time()?)
             .await
+    }
+
+    pub async fn recover_machine_join_submission(
+        &self,
+        token: &RawJoinToken,
+    ) -> Result<Option<MachineAddSubmitCommand>, RedeemMachineJoinTokenError> {
+        let fingerprint = token
+            .fingerprint()
+            .map_err(|_| RedeemMachineJoinTokenError::InvalidJoinToken)?;
+        let now = current_join_time()?;
+        let pending = self.pending_join_recovery.lock().await;
+        for recovery in pending.iter() {
+            if redeem_pending_join_token(&recovery.join_token, &fingerprint, now).is_ok() {
+                let Some(join_material) = self.machine_bootstrap.join_material.as_ref() else {
+                    return Ok(None);
+                };
+                let suffix = fingerprint.as_str().chars().take(16).collect::<String>();
+                let operation_id = OperationId::try_new(format!(
+                    "op_recover_join_{}_{}",
+                    recovery.machine_id.as_str(),
+                    suffix
+                ))
+                .map_err(|_| RedeemMachineJoinTokenError::InvalidJoinToken)?;
+                let idempotency_key = IdempotencyKey::try_new(format!(
+                    "idem_recover_join_{}_{}",
+                    recovery.machine_id.as_str(),
+                    suffix
+                ))
+                .map_err(|_| RedeemMachineJoinTokenError::InvalidJoinToken)?;
+                return Ok(Some(MachineAddSubmitCommand {
+                    operation_id,
+                    idempotency_key,
+                    machine_id: recovery.machine_id.clone(),
+                    name: recovery.name.clone(),
+                    roles: recovery.roles,
+                    join_bundle: join_material.join_template.join_bundle.clone(),
+                    join_token: recovery.join_token.clone(),
+                    raw_join_token: token.clone(),
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// The repository this controller submits into. Record/read paths that

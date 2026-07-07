@@ -2,8 +2,10 @@
 //! the operation event first and then activates the machine in cluster
 //! truth (record-then-activate).
 
-use crate::operation_api::admission::OperationControllers;
-use crate::operations::log::{MachineJoinRedemption, RecordMachineJoinReportError};
+use crate::adapters::nats_authorization::MintRequest;
+use crate::operations::log::{
+    MachineJoinRedemption, RecordMachineJoinReportError, RedeemMachineJoinTokenError,
+};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::OperationStatus;
@@ -21,16 +23,50 @@ use super::error_map::{
 };
 
 pub async fn machine_join_redeem(
-    controllers: &OperationControllers,
+    handlers: &OperationApiHandlers,
     request: MachineJoinRedeemRequest,
 ) -> Result<MachineJoinRedeemed, MachineJoinRedeemError> {
     let raw_token = RawJoinToken::try_new(request.join_token.as_str())
         .map_err(|_| MachineJoinRedeemError::InvalidJoinToken)?;
-    let redeemed = controllers
+    match handlers
+        .controllers
         .redeem_machine_join_token(&raw_token)
         .await
-        .map_err(machine_join_redeem_error_from_repository_error)?;
-    Ok(machine_join_redeemed(redeemed))
+    {
+        Ok(redeemed) => Ok(machine_join_redeemed(redeemed)),
+        Err(RedeemMachineJoinTokenError::UnknownJoinToken) => {
+            let Some(command) = handlers
+                .controllers
+                .recover_machine_join_submission(&raw_token)
+                .await
+                .map_err(machine_join_redeem_error_from_repository_error)?
+            else {
+                return Err(MachineJoinRedeemError::UnknownJoinToken);
+            };
+            let operation_id = command.operation_id.clone();
+            let idempotency_key = command.idempotency_key.clone();
+            let accepted = handlers
+                .controllers
+                .submit_machine_add(command)
+                .await
+                .map_err(|error| MachineJoinRedeemError::Unavailable {
+                    message: format!("{error:?}"),
+                })?;
+            handlers.machine_mint.start(MintRequest {
+                operation_id: accepted.operation_id.clone(),
+                machine_id: accepted.identity.machine_id,
+                idempotency_key,
+            });
+            tokio::spawn({
+                let handlers = handlers.clone();
+                async move {
+                    handlers.publish_pending_machine_joins().await;
+                }
+            });
+            Err(MachineJoinRedeemError::MaterialNotReady { operation_id })
+        }
+        Err(error) => Err(machine_join_redeem_error_from_repository_error(error)),
+    }
 }
 
 pub async fn machine_join_report(

@@ -6,8 +6,8 @@ use ployz_core::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
     OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
-    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
-    machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
+    PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope, machine_container_facts,
+    machine_facts, machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -33,6 +33,7 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
             machine_service_query_scope(&machine_id),
             machine_service_command_scope(&machine_id),
             INTENT_CHANGED.to_owned(),
+            PENDING_MACHINE_JOINS_CHANGED.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),
             "$SRV.>".to_owned(),
@@ -56,6 +57,7 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             CORE_RPC_QUERY_SCOPE.to_owned(),
             OPERATION_PROGRESS_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
+            PENDING_MACHINE_JOINS_CHANGED.to_owned(),
         ]
     );
     assert_eq!(

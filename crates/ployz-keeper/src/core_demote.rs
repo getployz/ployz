@@ -43,7 +43,7 @@ pub fn demote_local_core(
     runner.systemctl(&["disable", "--now", &control, &nats])
 }
 
-fn repoint_non_core_roles(
+pub fn repoint_non_core_roles(
     env_dir: &Path,
     successor: &NatsClientUrl,
     runner: &mut impl KeeperCommandRunner,
@@ -241,6 +241,40 @@ mod tests {
             fs::read_to_string(env.path().join("ployzd-machine.env"))
                 .expect("machine env reads")
                 .starts_with("PLOYZ_NATS_URL=tls://new:4222\n")
+        );
+    }
+
+    #[test]
+    fn repoint_non_core_roles_updates_only_nats_url_and_restarts_roles() {
+        let env = tempfile::tempdir().expect("env dir");
+        fs::write(
+            env.path().join("ployzd-machine.env"),
+            "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE=/machine.seed\nPLOYZ_MACHINE_ID=machine_1\n",
+        )
+        .expect("write machine env");
+        fs::write(
+            env.path().join("ployzd-dns.env"),
+            "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE=/machine.seed\n",
+        )
+        .expect("write dns env");
+        let successor = NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("valid url");
+        let mut runner = RecordingRunner::default();
+
+        repoint_non_core_roles(env.path(), &successor, &mut runner).expect("repoint succeeds");
+
+        assert_eq!(
+            runner.systemctl_calls,
+            vec![
+                vec![
+                    "restart".to_owned(),
+                    "ployzd-machine-machine_1.service".to_owned(),
+                ],
+                vec!["restart".to_owned(), "ployzd-dns.service".to_owned(),],
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(env.path().join("ployzd-machine.env")).expect("machine env reads"),
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE=/machine.seed\nPLOYZ_MACHINE_ID=machine_1\n",
         );
     }
 }

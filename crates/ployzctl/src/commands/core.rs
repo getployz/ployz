@@ -7,14 +7,14 @@ use crate::ssh::SshTarget;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreReplaceCommand {
     pub target: SshTarget,
-    pub successor_nats_url: NatsClientUrl,
+    pub successor_nats_url: Option<NatsClientUrl>,
 }
 
 #[derive(Debug, Args)]
 pub struct CoreReplaceCli {
     pub target: String,
-    #[arg(long = "successor-nats-url", value_name = "url", required = true, value_parser = parse_nats_client_url)]
-    pub successor_nats_url: NatsClientUrl,
+    #[arg(long = "successor-nats-url", value_name = "url", value_parser = parse_nats_client_url)]
+    pub successor_nats_url: Option<NatsClientUrl>,
 }
 
 pub fn core_replace_command(
