@@ -290,6 +290,7 @@ async fn product_init_core(
         cluster_name: MachineJoinClusterName::try_new("dind-e2e").expect("valid cluster name"),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
         detach: false,
+        public_ip: None,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await
