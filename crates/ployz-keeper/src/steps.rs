@@ -856,6 +856,7 @@ pub struct CorePromoteTarget {
     pub machine_id: MachineId,
     pub nats_server_artifact: ArtifactTarget,
     pub ployzd_artifact: ArtifactTarget,
+    pub dataplane_artifacts: DataplaneArtifactTargets,
     pub nats_identity: ClusterNatsIdentity,
     pub recovery_key_wrapped: WrappedCaKey,
     pub core_seeds_wrapped: WrappedCoreSeeds,
@@ -863,6 +864,9 @@ pub struct CorePromoteTarget {
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
+    pub machine_join_template_file: AbsoluteInstallPath,
+    pub machine_join_cluster_name: MachineJoinClusterName,
+    pub machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
 }
 
 impl CorePromoteTarget {
@@ -877,11 +881,15 @@ impl CorePromoteTarget {
         machine_id: MachineId,
         nats_server_artifact: ArtifactTarget,
         ployzd_artifact: ArtifactTarget,
+        dataplane_artifacts: DataplaneArtifactTargets,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
         core_seeds_wrapped: WrappedCoreSeeds,
         machine_public_ip: Option<IpAddr>,
         seed_from_mirror: PathBuf,
+        machine_join_template_file: AbsoluteInstallPath,
+        machine_join_cluster_name: MachineJoinClusterName,
+        machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
     ) -> Self {
         let nats_material = NatsMachineMaterialPaths::in_default_state_dir();
         let nats_server_unit = NatsServerUnitTarget::new(
@@ -896,11 +904,13 @@ impl CorePromoteTarget {
             tls_loopback_nats_url(DEFAULT_NATS_PORT),
             RoleNatsCredentials::cluster(&nats_material),
         )
-        .with_seed_from_mirror(seed_from_mirror);
+        .with_seed_from_mirror(seed_from_mirror)
+        .with_machine_join_template_file(machine_join_template_file.clone());
         Self {
             machine_id,
             nats_server_artifact,
             ployzd_artifact,
+            dataplane_artifacts,
             nats_identity,
             recovery_key_wrapped,
             core_seeds_wrapped,
@@ -908,6 +918,9 @@ impl CorePromoteTarget {
             machine_public_ip,
             nats_server_unit,
             role_environment,
+            machine_join_template_file,
+            machine_join_cluster_name,
+            machine_join_runtime_nats_url,
         }
     }
 }
@@ -950,6 +963,25 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
         KeeperStep::WriteNatsServerConfig(nats_server_config),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
+        KeeperStep::WriteMachineJoinTemplate(MachineJoinTemplateTarget::new(
+            target.machine_join_template_file,
+            MachineJoinTemplate {
+                join_bundle: MachineJoinBundle {
+                    material: MachineJoinMaterial {
+                        cluster_name: target.machine_join_cluster_name,
+                        runtime_nats_url: target.machine_join_runtime_nats_url,
+                        trusted_nats: MachineJoinTrustedNats {
+                            ca_pem: target.nats_identity.ca.clone(),
+                        },
+                        recovery_key_wrapped: target.recovery_key_wrapped.clone(),
+                        core_seeds_wrapped: target.core_seeds_wrapped.clone(),
+                        ployzd: target.ployzd_artifact.install_spec(),
+                        ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
+                        ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
+                    },
+                },
+            },
+        )),
         KeeperStep::WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentStep {
             role: control.clone(),
             target: target.role_environment.clone(),

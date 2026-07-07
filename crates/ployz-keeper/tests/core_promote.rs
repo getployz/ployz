@@ -1,6 +1,9 @@
 mod support;
 
-use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
+use ployz_core::install::{
+    AbsoluteInstallPath, MachineJoinClusterName, MachineJoinRuntimeNatsUrl, WrappedCaKey,
+    WrappedCoreSeeds,
+};
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::ArtifactKind;
 use ployz_keeper::steps::{
@@ -33,15 +36,30 @@ fn promote_target() -> CorePromoteTarget {
         machine_id: first_machine.machine_id.clone(),
         nats_server_artifact: first_machine.nats_server_artifact.clone(),
         ployzd_artifact: first_machine.ployzd_artifact.clone(),
+        dataplane_artifacts: first_machine.dataplane_artifacts.clone(),
         nats_identity: first_machine.nats_identity.clone(),
         recovery_key_wrapped: first_machine.recovery_key_wrapped.clone(),
         core_seeds_wrapped: first_machine.core_seeds_wrapped.clone(),
         nats_material: first_machine.nats_material.clone(),
         machine_public_ip: Some("203.0.113.9".parse().expect("valid ip")),
         nats_server_unit: first_machine.nats_server_unit.clone(),
-        role_environment: first_machine.role_environment.with_seed_from_mirror(
-            std::path::PathBuf::from("/var/lib/ployz/nats/intent-mirror.json"),
-        ),
+        role_environment: first_machine
+            .role_environment
+            .with_seed_from_mirror(std::path::PathBuf::from(
+                "/var/lib/ployz/nats/intent-mirror.json",
+            ))
+            .with_machine_join_template_file(
+                AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
+                    .expect("valid template path"),
+            ),
+        machine_join_template_file: AbsoluteInstallPath::try_new(
+            "/etc/ployz/machine-join-template.json",
+        )
+        .expect("valid template path"),
+        machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
+            .expect("valid cluster name"),
+        machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.9:4222")
+            .expect("valid nats url"),
     }
 }
 
@@ -68,6 +86,11 @@ fn core_promote_plan_adds_the_core_without_reinstalling_machine_units() {
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
         SupervisorUnitTarget::NatsServer
     )));
+    assert!(
+        plan.steps()
+            .iter()
+            .any(|step| matches!(step, KeeperStep::WriteMachineJoinTemplate(_)))
+    );
 
     // Adds only the Control process — the machine's own Machine unit is untouched.
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
@@ -120,5 +143,9 @@ fn core_promote_control_env_points_at_the_seed_mirror() {
         .render_for_role(&DaemonProcessRole::Control);
     assert!(
         control_env.contains("PLOYZ_SEED_FROM_MIRROR=/var/lib/ployz/nats/intent-mirror.json\n")
+    );
+    assert!(
+        control_env
+            .contains("PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/etc/ployz/machine-join-template.json\n")
     );
 }
