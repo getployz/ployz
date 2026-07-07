@@ -141,6 +141,7 @@ enum MachineCli {
 
 #[derive(Debug, Subcommand)]
 enum CoreCli {
+    Demote(core::CoreReplaceCli),
     Replace(core::CoreReplaceCli),
 }
 
@@ -170,6 +171,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
         }
         CommandCli::Core { command } => match command {
+            CoreCli::Demote(command) => {
+                core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
+            }
             CoreCli::Replace(command) => {
                 core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
             }

@@ -418,14 +418,13 @@ async fn core_replace_remote_runs_keeper_command() {
     let output = execute_command(
         PloyzctlCommand::CoreReplace(CoreReplaceCommand {
             target: SshTarget::parse("root@203.0.113.10").expect("target parses"),
-            successor_nats_url: None,
         }),
         &config,
     )
     .await
     .expect("remote core replace succeeds");
 
-    assert_eq!(output.stdout, "core replaced on root@203.0.113.10\n");
+    assert_eq!(output.stdout, "core demoted on root@203.0.113.10\n");
     assert_eq!(
         ssh.commands(),
         vec![
