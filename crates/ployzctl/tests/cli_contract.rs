@@ -259,31 +259,6 @@ fn cli_dispatches_ops_status_request() {
 
 #[test]
 fn cli_dispatches_core_replace_remote() {
-    let command = parse_command(
-        [
-            "core",
-            "replace",
-            "root@203.0.113.10",
-            "--successor-nats-url",
-            "tls://203.0.113.20:4222",
-        ]
-        .map(str::to_owned),
-    )
-    .expect("core replace command parses");
-
-    let PloyzctlCommand::CoreReplace(command) = command else {
-        panic!("expected core replace command");
-    };
-
-    assert_eq!(command.target.destination(), "root@203.0.113.10");
-    assert_eq!(
-        command.successor_nats_url.expect("override set").as_str(),
-        "tls://203.0.113.20:4222"
-    );
-}
-
-#[test]
-fn cli_dispatches_core_replace_remote_with_context_successor() {
     let command = parse_command(["core", "replace", "root@203.0.113.10"].map(str::to_owned))
         .expect("core replace command parses");
 
@@ -292,7 +267,35 @@ fn cli_dispatches_core_replace_remote_with_context_successor() {
     };
 
     assert_eq!(command.target.destination(), "root@203.0.113.10");
-    assert!(command.successor_nats_url.is_none());
+}
+
+#[test]
+fn cli_dispatches_core_demote_remote() {
+    let command = parse_command(["core", "demote", "root@203.0.113.10"].map(str::to_owned))
+        .expect("core demote command parses");
+
+    let PloyzctlCommand::CoreReplace(command) = command else {
+        panic!("expected core replace command");
+    };
+
+    assert_eq!(command.target.destination(), "root@203.0.113.10");
+}
+
+#[test]
+fn cli_core_replace_rejects_successor_nats_url_override() {
+    assert!(
+        parse_command(
+            [
+                "core",
+                "replace",
+                "root@203.0.113.10",
+                "--successor-nats-url",
+                "tls://203.0.113.20:4222",
+            ]
+            .map(str::to_owned),
+        )
+        .is_err()
+    );
 }
 
 #[test]

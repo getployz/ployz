@@ -79,15 +79,10 @@ pub(crate) async fn execute_core_replace_remote(
     let operation_id = crate::client_ids::generate_client_core_replace_id(&machine_id)
         .map_err(|error| client_generated_ids_error(error.to_string()))?
         .operation_id;
-    let successor_nats_url = command
-        .successor_nats_url
-        .clone()
-        .or_else(|| {
-            config
-                .nats_url
-                .as_deref()
-                .and_then(|url| NatsClientUrl::try_new(url).ok())
-        })
+    let successor_nats_url = config
+        .nats_url
+        .as_deref()
+        .and_then(|url| NatsClientUrl::try_new(url).ok())
         .ok_or(PloyzctlExecutionError::MissingNatsUrl)?;
     let successor_runtime_nats_url =
         MachineJoinRuntimeNatsUrl::try_new(successor_nats_url.as_str()).map_err(|error| {
@@ -146,7 +141,7 @@ pub(crate) async fn execute_core_replace_remote(
     .await?;
 
     Ok(PloyzctlExecutionOutput::stdout(format!(
-        "core replaced on {}\n",
+        "core demoted on {}\n",
         command.target.destination()
     )))
 }
