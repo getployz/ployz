@@ -864,9 +864,9 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
 }
 
 /// Everything `core-promote` needs to render + start a replacement core on an
-/// already-joined machine (ADR 0031). The identity keeps the fleet's CA and
-/// carries a self-issued server cert + fresh core principals; the machine
-/// authorized publics come from the mirrored roster.
+/// already-joined machine (ADR 0031). The identity keeps the fleet's CA and reuses
+/// the old core's principals from their pre-positioned seeds; the full grant set is
+/// seeded into the store from the local mirror by control at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorePromoteTarget {
     pub machine_id: MachineId,
@@ -874,7 +874,6 @@ pub struct CorePromoteTarget {
     pub ployzd_artifact: ArtifactTarget,
     pub nats_identity: ClusterNatsIdentity,
     pub recovery_key_wrapped: WrappedCaKey,
-    pub machine_authorized_publics: Vec<(MachineId, NatsUserPublicKey)>,
     pub nats_material: NatsMachineMaterialPaths,
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
@@ -885,19 +884,13 @@ impl CorePromoteTarget {
     /// Assemble a promote target from the resolved inputs, constructing the core
     /// material paths, the `nats-server` unit, and the Control role environment
     /// (pointed at `seed_from_mirror`) the same way first-machine install does.
-    // ponytail: a constructor for a 10-field target from cohesive promotion inputs
-    // that needs steps.rs-private helpers (the TLS loopback URL); bundling the args
-    // into an intermediate struct just to satisfy the lint would be a sparse option
-    // bag. Bundle only if a second caller wants a different subset.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn assemble(
         machine_id: MachineId,
         nats_server_artifact: ArtifactTarget,
         ployzd_artifact: ArtifactTarget,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
-        machine_authorized_publics: Vec<(MachineId, NatsUserPublicKey)>,
         machine_public_ip: Option<IpAddr>,
         seed_from_mirror: PathBuf,
     ) -> Self {
@@ -924,7 +917,6 @@ impl CorePromoteTarget {
             ployzd_artifact,
             nats_identity,
             recovery_key_wrapped,
-            machine_authorized_publics,
             nats_material,
             machine_public_ip,
             nats_server_unit,
@@ -934,11 +926,13 @@ impl CorePromoteTarget {
 }
 
 /// The promotion plan: install `nats-server`, write the TLS material (self-issued
-/// cert under the kept CA) + a from-scratch authorized-users off the roster +
-/// fresh core credentials + the server config, start the core `nats-server`, then
-/// add the `Control` process (its env points `PLOYZ_SEED_FROM_MIRROR` at the local
-/// mirror so it self-seeds). The machine keeps its existing Machine/dataplane
-/// units — this plan only adds the core, so it does not re-install ployzd/ebpf.
+/// cert under the kept CA) + a bootstrap authorized-users of just the reused core
+/// principals (enough for nats-server to start and control to connect) + the reused
+/// core credentials + the server config, start the core `nats-server`, then add the
+/// `Control` process (its env points `PLOYZ_SEED_FROM_MIRROR` at the local mirror,
+/// so control seeds the full grant set — machines, operator, Cloud — into the store
+/// and renders it). The machine keeps its existing Machine/dataplane units — this
+/// plan only adds the core, so it does not re-install ployzd/ebpf.
 #[must_use]
 pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
     let nats_server_config = NatsServerConfigTarget::for_first_machine(
@@ -956,10 +950,10 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
             &target.nats_identity,
             target.recovery_key_wrapped.clone(),
         )),
-        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::for_promotion(
+        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),
             &target.nats_identity,
-            &target.machine_authorized_publics,
+            &[],
         )),
         KeeperStep::WriteNatsClientCredentials(NatsClientCredentialsTarget::new(
             target.nats_material.clone(),

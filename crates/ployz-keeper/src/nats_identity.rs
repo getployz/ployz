@@ -262,19 +262,33 @@ fn sign_server_certificate<S: rcgen::SigningKey>(
 /// for this core's own address, and mint fresh control-plane principals. Machines
 /// keep trusting the same CA and re-authenticate under the re-rendered
 /// authorized-users; only the core principals rotate.
-pub fn promoted_core_identity(
+/// Reconstruct the promoted core's identity by REUSING the succeeded core's
+/// principals from their pre-positioned seeds (ADR 0031), not rotating them. The CA
+/// is kept and a fresh server cert self-issued for this machine's SANs; the
+/// controller/operator/join principals are rebuilt from `core_seeds` so the
+/// operator, Cloud, and every machine keep working with their existing credentials.
+pub fn resurrect_core_identity(
     ca: NatsCaCertificatePem,
     ca_key_pem: String,
+    core_seeds: CoreSeeds,
     sans: &ServerCertificateSans,
 ) -> Result<ClusterNatsIdentity, NatsIdentityError> {
     let server_cert = issue_server_certificate(&ca_key_pem, sans)?;
+    let CoreSeeds {
+        controller,
+        operator,
+        join,
+    } = core_seeds;
     Ok(ClusterNatsIdentity {
         ca,
         ca_key: NatsCaKeyPem::new(ca_key_pem),
         server_cert,
-        controller: mint_nkey_user()?,
-        operator: mint_nkey_user()?,
-        join: mint_nkey_user()?,
+        controller: MintedNatsUser::from_seed(controller)
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
+        operator: MintedNatsUser::from_seed(operator)
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
+        join: MintedNatsUser::from_seed(join)
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
     })
 }
 
@@ -301,8 +315,8 @@ pub enum NatsIdentityError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClusterNatsIdentity, NatsIdentityError, ServerCertificateSans,
-        generate_cluster_nats_identity, issue_server_certificate, promoted_core_identity,
+        ClusterNatsIdentity, CoreSeeds, NatsIdentityError, ServerCertificateSans,
+        generate_cluster_nats_identity, issue_server_certificate, resurrect_core_identity,
     };
 
     #[test]
@@ -425,15 +439,16 @@ mod tests {
     }
 
     #[test]
-    fn promoted_core_identity_keeps_the_ca_and_rotates_principals() {
+    fn resurrect_core_identity_keeps_the_ca_and_reuses_principals() {
         let original = generate_cluster_nats_identity(
             &ServerCertificateSans::try_new(None, None).expect("sans"),
         )
         .expect("original identity");
 
-        let promoted = promoted_core_identity(
+        let promoted = resurrect_core_identity(
             original.ca.clone(),
             original.ca_key.secret().to_owned(),
+            CoreSeeds::from_identity(&original),
             &ServerCertificateSans::try_new(Some("203.0.113.50".parse().expect("ip")), None)
                 .expect("sans"),
         )
@@ -450,9 +465,10 @@ mod tests {
                 .trim_start()
                 .starts_with("-----BEGIN CERTIFICATE-----")
         );
-        // The control-plane principals rotate.
-        assert_ne!(promoted.controller.public, original.controller.public);
-        assert_ne!(promoted.operator.public, original.operator.public);
-        assert_ne!(promoted.join.public, original.join.public);
+        // The control-plane principals are REUSED, not rotated — so the operator,
+        // Cloud, and machines keep working with their existing credentials.
+        assert_eq!(promoted.controller.public, original.controller.public);
+        assert_eq!(promoted.operator.public, original.operator.public);
+        assert_eq!(promoted.join.public, original.join.public);
     }
 }

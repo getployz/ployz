@@ -431,6 +431,18 @@ impl MintedNatsUser {
             seed: NatsUserSeed::try_new(seed)?,
         })
     }
+
+    /// Reconstruct a user from its seed, deriving the matching public key. Used to
+    /// resurrect a promoted core's principals from their pre-positioned seeds
+    /// (ADR 0031) rather than minting fresh ones.
+    pub fn from_seed(seed: NatsUserSeed) -> Result<Self, NatsServerConfigError> {
+        let pair = nkeys::KeyPair::from_seed(seed.secret())
+            .map_err(|_| NatsServerConfigError::InvalidUserSeed)?;
+        Ok(Self {
+            public: NatsUserPublicKey::try_new(pair.public_key())?,
+            seed,
+        })
+    }
 }
 
 /// The cluster CA certificate in PEM form. Public material distributed in
