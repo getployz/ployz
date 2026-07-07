@@ -170,8 +170,8 @@ pub fn machine_facts(machine_id: &MachineId) -> String {
 }
 
 #[must_use]
-pub fn machine_facts_delta(machine_id: &MachineId) -> String {
-    format!("plz.v1.facts.machine.{}.delta", machine_id.as_str())
+pub fn machine_container_facts(machine_id: &MachineId) -> String {
+    format!("plz.v1.facts.machine.{}.containers", machine_id.as_str())
 }
 
 #[must_use]

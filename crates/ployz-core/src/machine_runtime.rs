@@ -133,7 +133,7 @@ pub enum MachineFactsSnapshotError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "delta", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineFactDelta {
+pub enum MachineContainerFactDelta {
     ContainerObserved {
         observed_at_unix_ms: u64,
         observation: ManagedContainerObservation,

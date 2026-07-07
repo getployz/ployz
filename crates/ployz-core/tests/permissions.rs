@@ -5,7 +5,8 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
     INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status,
-    gateway_status_scope, machine_facts, machine_facts_scope, machine_service_scope,
+    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
+    machine_service_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -20,6 +21,7 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
         "_INBOX_machine_machine_7.>".to_owned(),
         INTENT_GET.to_owned(),
         machine_facts(&machine_id),
+        machine_container_facts(&machine_id),
         gateway_status(&machine_id),
     ];
     assert_eq!(profile.publish.allowed_subjects(), expected_publish);

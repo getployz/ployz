@@ -8,9 +8,9 @@ use ployz_core::dataplane::{
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineFactDelta, ManagedContainerIdentity,
+    ContainerRuntimeState, MachineContainerFactDelta, ManagedContainerIdentity,
 };
-use ployz_core::subjects::{MachineServiceEndpoint, machine_facts_delta, machine_service};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts, machine_service};
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
@@ -286,7 +286,7 @@ async fn machine_role_service_publishes_observed_delta_after_run() {
     let nats = test_nats().await;
     let mut deltas = nats
         .client
-        .subscribe(machine_facts_delta(&machine_id("machine_a")))
+        .subscribe(machine_container_facts(&machine_id("machine_a")))
         .await
         .expect("subscribe deltas");
     let state = RecordingRunnerState::default();
@@ -311,8 +311,8 @@ async fn machine_role_service_publishes_observed_delta_after_run() {
         .await
         .expect("container run succeeds");
 
-    match next_delta(&mut deltas).await {
-        MachineFactDelta::ContainerObserved { observation, .. } => {
+    match next_container_fact_delta(&mut deltas).await {
+        MachineContainerFactDelta::ContainerObserved { observation, .. } => {
             assert_eq!(observation.container_id, container_id("ctr_existing"));
             assert_eq!(
                 observation.state,
@@ -589,7 +589,7 @@ async fn machine_role_service_publishes_removed_delta_after_remove() {
     let nats = test_nats().await;
     let mut deltas = nats
         .client
-        .subscribe(machine_facts_delta(&machine_id("machine_a")))
+        .subscribe(machine_container_facts(&machine_id("machine_a")))
         .await
         .expect("subscribe deltas");
     let _service = start_machine_role_service(
@@ -619,8 +619,8 @@ async fn machine_role_service_publishes_removed_delta_after_remove() {
         .await
         .expect("remove succeeds");
 
-    match next_delta(&mut deltas).await {
-        MachineFactDelta::ContainerRemoved {
+    match next_container_fact_delta(&mut deltas).await {
+        MachineContainerFactDelta::ContainerRemoved {
             machine_id: observed_machine_id,
             container_id: observed_container_id,
             ..
@@ -637,7 +637,7 @@ async fn machine_role_service_publishes_observed_delta_after_stop() {
     let nats = test_nats().await;
     let mut deltas = nats
         .client
-        .subscribe(machine_facts_delta(&machine_id("machine_a")))
+        .subscribe(machine_container_facts(&machine_id("machine_a")))
         .await
         .expect("subscribe deltas");
     let _service = start_machine_role_service(
@@ -673,8 +673,8 @@ async fn machine_role_service_publishes_observed_delta_after_stop() {
         .await
         .expect("stop succeeds");
 
-    match next_delta(&mut deltas).await {
-        MachineFactDelta::ContainerObserved { observation, .. } => {
+    match next_container_fact_delta(&mut deltas).await {
+        MachineContainerFactDelta::ContainerObserved { observation, .. } => {
             assert_eq!(observation.container_id, container_id("ctr_old"));
             assert_eq!(observation.state, ContainerRuntimeState::Exited);
         }
@@ -976,7 +976,9 @@ struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
 }
 
-async fn next_delta(subscriber: &mut async_nats::Subscriber) -> MachineFactDelta {
+async fn next_container_fact_delta(
+    subscriber: &mut async_nats::Subscriber,
+) -> MachineContainerFactDelta {
     let message = tokio::time::timeout(Duration::from_secs(1), subscriber.next())
         .await
         .expect("delta arrives")

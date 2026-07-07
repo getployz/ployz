@@ -33,13 +33,13 @@ use ployz_core::dataplane::{
 use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, MachineFactDelta, MachineFactsSnapshot,
-    MachineFactsSnapshotError, ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerFactDelta, MachineContainerObservationSnapshot,
+    MachineContainerObservationSnapshotError, MachineFactsSnapshot, MachineFactsSnapshotError,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use ployz_core::state::MachinePublicIpObservation;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_facts_delta};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,
@@ -789,11 +789,11 @@ async fn publish_container_observed_delta<R>(
     else {
         return;
     };
-    let delta = MachineFactDelta::ContainerObserved {
+    let delta = MachineContainerFactDelta::ContainerObserved {
         observed_at_unix_ms: current_unix_ms(),
         observation,
     };
-    publish_machine_fact_delta(client, machine_id, &delta).await;
+    publish_machine_container_fact(client, machine_id, &delta).await;
 }
 
 async fn publish_container_removed_delta(
@@ -801,24 +801,24 @@ async fn publish_container_removed_delta(
     machine_id: &MachineId,
     container_id: ContainerId,
 ) {
-    let delta = MachineFactDelta::ContainerRemoved {
+    let delta = MachineContainerFactDelta::ContainerRemoved {
         machine_id: machine_id.clone(),
         container_id,
         observed_at_unix_ms: current_unix_ms(),
     };
-    publish_machine_fact_delta(client, machine_id, &delta).await;
+    publish_machine_container_fact(client, machine_id, &delta).await;
 }
 
-async fn publish_machine_fact_delta(
+async fn publish_machine_container_fact(
     client: &ployz_nats::service_runtime::NatsClient,
     machine_id: &MachineId,
-    delta: &MachineFactDelta,
+    delta: &MachineContainerFactDelta,
 ) {
     let Ok(payload) = serde_json::to_vec(delta) else {
         return;
     };
     let _ = client
-        .publish(machine_facts_delta(machine_id), payload.into())
+        .publish(machine_container_facts(machine_id), payload.into())
         .await;
 }
 

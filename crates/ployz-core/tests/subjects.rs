@@ -6,8 +6,8 @@ use ployz_core::ops::{
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{
-    MachineServiceEndpoint, cert_renewal_job, cert_renewal_schedule, machine_facts,
-    machine_service, op_watch,
+    MachineServiceEndpoint, cert_renewal_job, cert_renewal_schedule, machine_container_facts,
+    machine_facts, machine_service, op_watch,
 };
 use ployz_test_support::ids::{container_id, machine_id, operation_id};
 
@@ -110,6 +110,10 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.svc.machine.machine_7.dataplane.prepare"
     );
     assert_eq!(machine_facts(&machine_id), "plz.v1.facts.machine.machine_7");
+    assert_eq!(
+        machine_container_facts(&machine_id),
+        "plz.v1.facts.machine.machine_7.containers"
+    );
 }
 
 #[test]

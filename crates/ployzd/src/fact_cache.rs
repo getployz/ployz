@@ -3,7 +3,7 @@
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot, MachineFactDelta, MachineFactsSnapshot,
+    MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerObservation,
 };
 use ployz_core::state::{GatewayStatusObservation, MachinePublicIpObservation};
@@ -33,13 +33,13 @@ impl FactCache {
             .insert(facts.machine_id().clone(), facts);
     }
 
-    pub fn record_machine_fact_delta(&self, delta: MachineFactDelta) {
+    pub fn record_machine_container_fact(&self, delta: MachineContainerFactDelta) {
         let mut state = self
             .state
             .write()
             .expect("runtime facts cache lock is not poisoned");
         match delta {
-            MachineFactDelta::ContainerObserved {
+            MachineContainerFactDelta::ContainerObserved {
                 observed_at_unix_ms,
                 observation,
             } => {
@@ -54,7 +54,7 @@ impl FactCache {
                     state.machine_facts.insert(machine_id, facts);
                 }
             }
-            MachineFactDelta::ContainerRemoved {
+            MachineContainerFactDelta::ContainerRemoved {
                 machine_id,
                 container_id,
                 observed_at_unix_ms,
@@ -206,8 +206,8 @@ async fn consume_facts(
             Some(message) = machine_facts.next() => {
                 if let Ok(facts) = serde_json::from_slice::<MachineFactsSnapshot>(&message.payload) {
                     cache.record_machine_facts(facts);
-                } else if let Ok(delta) = serde_json::from_slice::<MachineFactDelta>(&message.payload) {
-                    cache.record_machine_fact_delta(delta);
+                } else if let Ok(delta) = serde_json::from_slice::<MachineContainerFactDelta>(&message.payload) {
+                    cache.record_machine_container_fact(delta);
                 }
             }
             Some(message) = gateway_statuses.next() => {
@@ -287,7 +287,7 @@ mod tests {
         let cache = FactCache::default();
         cache.record_machine_facts(machine_facts("machine_a", 1, [observation("ctr_1")]));
 
-        cache.record_machine_fact_delta(MachineFactDelta::ContainerObserved {
+        cache.record_machine_container_fact(MachineContainerFactDelta::ContainerObserved {
             observed_at_unix_ms: 2,
             observation: ManagedContainerObservation {
                 state: ContainerRuntimeState::Exited,
@@ -318,7 +318,7 @@ mod tests {
             [observation("ctr_1"), observation("ctr_2")],
         ));
 
-        cache.record_machine_fact_delta(MachineFactDelta::ContainerRemoved {
+        cache.record_machine_container_fact(MachineContainerFactDelta::ContainerRemoved {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_1"),
             observed_at_unix_ms: 2,
@@ -346,7 +346,7 @@ mod tests {
     fn observed_delta_before_snapshot_creates_minimal_machine_facts() {
         let cache = FactCache::default();
 
-        cache.record_machine_fact_delta(MachineFactDelta::ContainerObserved {
+        cache.record_machine_container_fact(MachineContainerFactDelta::ContainerObserved {
             observed_at_unix_ms: 7,
             observation: observation("ctr_1"),
         });
