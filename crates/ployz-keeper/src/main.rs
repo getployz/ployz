@@ -24,8 +24,8 @@ use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::fsx::{FileMode, write_durable_file};
 use ployz_keeper::join::{
-    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE,
-    parse_machine_id_from_join_material,
+    JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
+    JOIN_TRUSTED_CA_FILE, parse_machine_id_from_join_material,
 };
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
@@ -585,6 +585,10 @@ fn resolve_core_promote_target(
     let wrapped = std::fs::read(join_dir.join(JOIN_RECOVERY_KEY_FILE)).map_err(|error| {
         format!("cannot read the wrapped CA key (was this machine joined with recovery material?): {error}")
     })?;
+    let wrapped_seeds = ployz_core::install::WrappedCoreSeeds::new(
+        std::fs::read(join_dir.join(JOIN_CORE_SEEDS_FILE))
+            .map_err(|error| format!("cannot read the wrapped core seeds: {error}"))?,
+    );
     let secret = read_recovery_secret()?;
     let ca_key_pem = String::from_utf8(
         ployz_keeper::recovery_secret::unwrap(&secret, &wrapped).map_err(|error| {
@@ -592,6 +596,8 @@ fn resolve_core_promote_target(
         })?,
     )
     .map_err(|_| "decrypted CA key is not valid UTF-8".to_owned())?;
+    let core_seeds = ployz_keeper::nats_identity::unwrap_core_seeds(&secret, &wrapped_seeds)
+        .map_err(|error| format!("{error}"))?;
 
     // The machine persists its mirror beside its seed file; on a joined machine
     // that seed lives in the join-material directory (nats.creds), so the mirror is
@@ -613,7 +619,6 @@ fn resolve_core_promote_target(
          fleet can dial"
             .to_owned()
     })?;
-    let machine_authorized_publics = snapshot.authorized_machine_publics();
 
     let hostname = gethostname::gethostname().into_string().ok();
     let sans = ployz_keeper::nats_identity::ServerCertificateSans::try_new(
@@ -621,15 +626,15 @@ fn resolve_core_promote_target(
         hostname,
     )
     .map_err(|error| format!("{error}"))?;
-    let nats_identity = ployz_keeper::nats_identity::promoted_core_identity(ca, ca_key_pem, &sans)
-        .map_err(|error| format!("{error}"))?;
+    // Reuse the old core's principals from the pre-positioned seeds; the grant set is
+    // seeded into the store from the mirror by control at startup (ADR 0031).
+    let nats_identity =
+        ployz_keeper::nats_identity::resurrect_core_identity(ca, ca_key_pem, core_seeds, &sans)
+            .map_err(|error| format!("{error}"))?;
 
-    // The operator's existing ployzctl context authenticates with the old core's
-    // operator seed, which the promoted core no longer authorizes (its principals
-    // rotate on promotion). Capture the fresh operator credential + the new core's
-    // address so the caller can surface them for the operator to reconnect.
+    // Promotion reuses the old core's principals, so the operator's existing ployzctl
+    // credential still authenticates — it only needs the promoted core's new address.
     let access = PromotedCoreAccess {
-        operator_seed: nats_identity.operator.seed.secret().to_owned(),
         ca_pem: nats_identity.ca.as_str().to_owned(),
         nats_url: format!("tls://{}", SocketAddr::new(machine_public_ip, 4222)),
     };
@@ -640,18 +645,18 @@ fn resolve_core_promote_target(
         ployzd_artifact,
         nats_identity,
         ployz_core::install::WrappedCaKey::new(wrapped),
-        machine_authorized_publics,
+        wrapped_seeds,
         Some(machine_public_ip),
         mirror_path,
     );
     Ok((target, access))
 }
 
-/// What an operator needs to point their `ployzctl` context at a freshly promoted
-/// core: the rotated operator seed and the new core's TLS address (the CA is
-/// unchanged, but printed so a fresh context can be built from this block alone).
+/// Where the operator points their existing `ployzctl` context after promotion: the
+/// promoted core's new TLS address. Its principals are reused, so the operator's
+/// credential still works; the CA is printed so a fresh context can be built from
+/// this block alone.
 struct PromotedCoreAccess {
-    operator_seed: String,
     ca_pem: String,
     nats_url: String,
 }
@@ -659,7 +664,6 @@ struct PromotedCoreAccess {
 fn print_core_promote_result(access: &PromotedCoreAccess) {
     let result = serde_json::json!({
         "nats_url": access.nats_url,
-        "operator_seed": access.operator_seed.trim(),
         "ca_pem": access.ca_pem,
     });
     println!("{CORE_PROMOTE_RESULT_BEGIN}");
@@ -1152,7 +1156,8 @@ mod tests {
                     )
                     .expect("valid ca pem"),
                 },
-                recovery_key_wrapped: None,
+                recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
+                core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
                 ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
                 ebpf_bytecode: join_artifact(
                     "/tmp/ployz-ebpf-tc",

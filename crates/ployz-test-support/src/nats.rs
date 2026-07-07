@@ -301,10 +301,13 @@ impl TestNats {
         }
     }
 
-    /// The operator-facing operation API client (User principal).
+    /// The operator-facing operation API client (User principal). The request
+    /// timeout is generous: CI runs many nats-server-backed test binaries in
+    /// parallel, and a saturated runner can stall a reply well past the production
+    /// default without anything being wrong.
     #[must_use]
     pub fn api(&self) -> OperationApiClient {
-        OperationApiClient::new(self.user.clone())
+        OperationApiClient::new(self.user.clone()).with_request_timeout(Duration::from_secs(30))
     }
 
     /// A client authenticated as the machine's Machine user. Machine runtimes,

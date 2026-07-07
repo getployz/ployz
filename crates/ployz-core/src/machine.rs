@@ -222,7 +222,6 @@ pub fn active_machine_from_completed_add(
     machine_id: MachineId,
     name: MachineName,
     operation: MachineAddOperationState,
-    nkey_public: Option<crate::nats_config::NatsUserPublicKey>,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
     let MachineAddOperationState::Completed = operation else {
         return Err(MachineTransitionRejected {
@@ -236,7 +235,6 @@ pub fn active_machine_from_completed_add(
         name,
         activated_by: operation_id,
         public_endpoint: None,
-        nkey_public,
     })
 }
 

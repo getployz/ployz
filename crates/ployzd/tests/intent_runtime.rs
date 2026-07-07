@@ -16,7 +16,6 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     machine_roster
         .replace_active_machine(&ActiveMachineState {
             public_endpoint: None,
-            nkey_public: None,
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
@@ -93,7 +92,6 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
     machine_roster
         .replace_active_machine(&ActiveMachineState {
             public_endpoint: None,
-            nkey_public: None,
             machine_id: machine_id("machine_a"),
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),

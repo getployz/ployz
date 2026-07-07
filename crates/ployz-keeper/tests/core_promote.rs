@@ -1,7 +1,6 @@
 mod support;
 
-use ployz_core::install::WrappedCaKey;
-use ployz_core::nats_config::NatsUserPublicKey;
+use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::ArtifactKind;
 use ployz_keeper::steps::{
@@ -28,6 +27,7 @@ fn promote_target() -> CorePromoteTarget {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     );
     CorePromoteTarget {
         machine_id: first_machine.machine_id.clone(),
@@ -35,10 +35,7 @@ fn promote_target() -> CorePromoteTarget {
         ployzd_artifact: first_machine.ployzd_artifact.clone(),
         nats_identity: first_machine.nats_identity.clone(),
         recovery_key_wrapped: first_machine.recovery_key_wrapped.clone(),
-        machine_authorized_publics: vec![(
-            machine_id("machine_9"),
-            NatsUserPublicKey::try_new(MIRRORED_MACHINE_PUBLIC).expect("valid public"),
-        )],
+        core_seeds_wrapped: first_machine.core_seeds_wrapped.clone(),
         nats_material: first_machine.nats_material.clone(),
         machine_public_ip: Some("203.0.113.9".parse().expect("valid ip")),
         nats_server_unit: first_machine.nats_server_unit.clone(),
@@ -82,7 +79,7 @@ fn core_promote_plan_adds_the_core_without_reinstalling_machine_units() {
 }
 
 #[test]
-fn core_promote_authorized_users_carries_the_mirrored_machine_publics() {
+fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
     let plan = core_promote_plan(promote_target());
     let rendered = plan
         .steps()
@@ -106,10 +103,13 @@ fn core_promote_authorized_users_carries_the_mirrored_machine_publics() {
         })
         .expect("promote plan writes authorized users");
 
-    // The new core's freshly-minted principals plus the mirrored machine's public.
+    // The reused core principals only — enough for nats-server to start and control
+    // to connect. The mirrored machine grants are NOT written by keeper; control
+    // seeds the full grant set into the store from the mirror at startup (ADR 0031).
     assert!(rendered.contains(test_identity().controller.public.as_str()));
     assert!(rendered.contains(test_identity().operator.public.as_str()));
-    assert!(rendered.contains(MIRRORED_MACHINE_PUBLIC));
+    assert!(rendered.contains(test_identity().join.public.as_str()));
+    assert!(!rendered.contains(MIRRORED_MACHINE_PUBLIC));
 }
 
 #[test]

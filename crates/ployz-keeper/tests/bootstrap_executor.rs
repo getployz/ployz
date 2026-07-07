@@ -1,6 +1,6 @@
 mod support;
 
-use ployz_core::install::WrappedCaKey;
+use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use std::path::PathBuf;
 
 use ployz_core::roles::InstallRolePolicy;
@@ -43,6 +43,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     ));
     let mut effects = RecordingEffects::default();
     let mut recorder = RecordingRecorder::default();

@@ -10,7 +10,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey,
+    MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
@@ -184,7 +184,8 @@ pub struct KeeperJoinMaterial {
     redacted: RedactedJoinMaterial,
     nats_credentials: NatsUserSeed,
     trusted_ca_pem: NatsCaCertificatePem,
-    recovery_key_wrapped: Option<WrappedCaKey>,
+    recovery_key_wrapped: WrappedCaKey,
+    core_seeds_wrapped: WrappedCoreSeeds,
 }
 
 impl KeeperJoinMaterial {
@@ -199,6 +200,7 @@ impl KeeperJoinMaterial {
             secret_delivery.nats_credentials.clone(),
             join_bundle.material.trusted_nats.ca_pem.clone(),
             join_bundle.material.recovery_key_wrapped.clone(),
+            join_bundle.material.core_seeds_wrapped.clone(),
         )
     }
 
@@ -207,7 +209,8 @@ impl KeeperJoinMaterial {
         cluster_name: impl Into<String>,
         nats_credentials: NatsUserSeed,
         trusted_ca_pem: NatsCaCertificatePem,
-        recovery_key_wrapped: Option<WrappedCaKey>,
+        recovery_key_wrapped: WrappedCaKey,
+        core_seeds_wrapped: WrappedCoreSeeds,
     ) -> Result<Self, JoinMaterialError> {
         let redacted = RedactedJoinMaterial::new(
             machine_id,
@@ -219,6 +222,7 @@ impl KeeperJoinMaterial {
             nats_credentials,
             trusted_ca_pem,
             recovery_key_wrapped,
+            core_seeds_wrapped,
         })
     }
 
@@ -241,11 +245,18 @@ impl KeeperJoinMaterial {
         &self.trusted_ca_pem
     }
 
-    /// The wrapped cluster CA signing key (ADR 0031), `None` when the material
-    /// predates recovery. Written 0600 so this candidate can be core-promoted.
+    /// The wrapped cluster CA signing key (ADR 0031). Written 0600 so this
+    /// candidate can be core-promoted.
     #[must_use]
-    pub fn recovery_key_wrapped(&self) -> Option<&WrappedCaKey> {
-        self.recovery_key_wrapped.as_ref()
+    pub fn recovery_key_wrapped(&self) -> &WrappedCaKey {
+        &self.recovery_key_wrapped
+    }
+
+    /// The wrapped core principal seeds (ADR 0031). Written 0600 so a promoted
+    /// core reuses the old core's principals verbatim.
+    #[must_use]
+    pub fn core_seeds_wrapped(&self) -> &WrappedCoreSeeds {
+        &self.core_seeds_wrapped
     }
 }
 
@@ -375,6 +386,9 @@ pub struct FirstMachineInstallTarget {
     /// The CA signing key wrapped with the recovery secret (ADR 0031), persisted
     /// beside the TLS material so a promotion can decrypt and self-issue.
     pub recovery_key_wrapped: WrappedCaKey,
+    /// The core principal seeds wrapped with the recovery secret (ADR 0031),
+    /// pre-positioned so a promotion reuses them instead of rotating.
+    pub core_seeds_wrapped: WrappedCoreSeeds,
     pub nats_material: NatsMachineMaterialPaths,
     pub additional_user_public_keys: Vec<NatsUserPublicKey>,
     pub machine_public_ip: Option<IpAddr>,
@@ -386,6 +400,9 @@ pub struct FirstMachineInstallTarget {
 }
 
 impl FirstMachineInstallTarget {
+    // ponytail: the distinct first-machine install inputs — ids, artifacts, identity,
+    // and the two wrapped recovery blobs. Bundling them would be a sparse option bag.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         machine_id: MachineId,
@@ -395,6 +412,7 @@ impl FirstMachineInstallTarget {
         roles: InstallRolePolicy,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
+        core_seeds_wrapped: WrappedCoreSeeds,
     ) -> Self {
         let nats_server_unit = NatsServerUnitTarget::new(
             nats_server_artifact.install_path().to_path_buf(),
@@ -424,6 +442,7 @@ impl FirstMachineInstallTarget {
             roles,
             nats_identity,
             recovery_key_wrapped,
+            core_seeds_wrapped,
             nats_material,
             additional_user_public_keys: Vec::new(),
             machine_public_ip: None,
@@ -845,9 +864,9 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
 }
 
 /// Everything `core-promote` needs to render + start a replacement core on an
-/// already-joined machine (ADR 0031). The identity keeps the fleet's CA and
-/// carries a self-issued server cert + fresh core principals; the machine
-/// authorized publics come from the mirrored roster.
+/// already-joined machine (ADR 0031). The identity keeps the fleet's CA and reuses
+/// the old core's principals from their pre-positioned seeds; the full grant set is
+/// seeded into the store from the local mirror by control at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorePromoteTarget {
     pub machine_id: MachineId,
@@ -855,7 +874,7 @@ pub struct CorePromoteTarget {
     pub ployzd_artifact: ArtifactTarget,
     pub nats_identity: ClusterNatsIdentity,
     pub recovery_key_wrapped: WrappedCaKey,
-    pub machine_authorized_publics: Vec<(MachineId, NatsUserPublicKey)>,
+    pub core_seeds_wrapped: WrappedCoreSeeds,
     pub nats_material: NatsMachineMaterialPaths,
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
@@ -866,10 +885,8 @@ impl CorePromoteTarget {
     /// Assemble a promote target from the resolved inputs, constructing the core
     /// material paths, the `nats-server` unit, and the Control role environment
     /// (pointed at `seed_from_mirror`) the same way first-machine install does.
-    // ponytail: a constructor for a 10-field target from cohesive promotion inputs
-    // that needs steps.rs-private helpers (the TLS loopback URL); bundling the args
-    // into an intermediate struct just to satisfy the lint would be a sparse option
-    // bag. Bundle only if a second caller wants a different subset.
+    // ponytail: the distinct resolved promotion inputs; bundling into an intermediate
+    // struct just for the lint would be a sparse option bag.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn assemble(
@@ -878,7 +895,7 @@ impl CorePromoteTarget {
         ployzd_artifact: ArtifactTarget,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
-        machine_authorized_publics: Vec<(MachineId, NatsUserPublicKey)>,
+        core_seeds_wrapped: WrappedCoreSeeds,
         machine_public_ip: Option<IpAddr>,
         seed_from_mirror: PathBuf,
     ) -> Self {
@@ -905,7 +922,7 @@ impl CorePromoteTarget {
             ployzd_artifact,
             nats_identity,
             recovery_key_wrapped,
-            machine_authorized_publics,
+            core_seeds_wrapped,
             nats_material,
             machine_public_ip,
             nats_server_unit,
@@ -915,11 +932,13 @@ impl CorePromoteTarget {
 }
 
 /// The promotion plan: install `nats-server`, write the TLS material (self-issued
-/// cert under the kept CA) + a from-scratch authorized-users off the roster +
-/// fresh core credentials + the server config, start the core `nats-server`, then
-/// add the `Control` process (its env points `PLOYZ_SEED_FROM_MIRROR` at the local
-/// mirror so it self-seeds). The machine keeps its existing Machine/dataplane
-/// units — this plan only adds the core, so it does not re-install ployzd/ebpf.
+/// cert under the kept CA) + a bootstrap authorized-users of just the reused core
+/// principals (enough for nats-server to start and control to connect) + the reused
+/// core credentials + the server config, start the core `nats-server`, then add the
+/// `Control` process (its env points `PLOYZ_SEED_FROM_MIRROR` at the local mirror,
+/// so control seeds the full grant set — machines, operator, Cloud — into the store
+/// and renders it). The machine keeps its existing Machine/dataplane units — this
+/// plan only adds the core, so it does not re-install ployzd/ebpf.
 #[must_use]
 pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
     let nats_server_config = NatsServerConfigTarget::for_first_machine(
@@ -936,11 +955,12 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
             target.nats_material.clone(),
             &target.nats_identity,
             target.recovery_key_wrapped.clone(),
+            target.core_seeds_wrapped.clone(),
         )),
-        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::for_promotion(
+        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),
             &target.nats_identity,
-            &target.machine_authorized_publics,
+            &[],
         )),
         KeeperStep::WriteNatsClientCredentials(NatsClientCredentialsTarget::new(
             target.nats_material.clone(),
@@ -984,6 +1004,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
             target.nats_material.clone(),
             &target.nats_identity,
             target.recovery_key_wrapped.clone(),
+            target.core_seeds_wrapped.clone(),
         )),
         KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),
@@ -1008,7 +1029,8 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
                     trusted_nats: MachineJoinTrustedNats {
                         ca_pem: target.nats_identity.ca.clone(),
                     },
-                    recovery_key_wrapped: Some(target.recovery_key_wrapped.clone()),
+                    recovery_key_wrapped: target.recovery_key_wrapped.clone(),
+                    core_seeds_wrapped: target.core_seeds_wrapped.clone(),
                     ployzd: target.ployzd_artifact.install_spec(),
                     ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
                     ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),

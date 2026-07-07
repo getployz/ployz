@@ -61,6 +61,7 @@ mod tests {
             "active_machines": [],
             "route_bindings": [],
             "serving_target_entries": [],
+            "authorized_users": [],
         }))
         .expect("snapshot deserializes")
     }

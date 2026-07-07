@@ -267,7 +267,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 ca_pem: NatsCaCertificatePem::try_new(format!("{TEST_CA}\n"))
                     .expect("valid ca pem"),
             },
-            recovery_key_wrapped: None,
+            recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
+            core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
             ployzd: artifact("https://example.invalid/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: artifact(
                 "https://example.invalid/ployz-ebpf-tc",

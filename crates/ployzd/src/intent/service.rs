@@ -3,6 +3,7 @@
 use crate::core_store::CoreStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
+use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET};
@@ -95,16 +96,28 @@ pub async fn start_intent_service(
     publish_interval: Duration,
 ) -> Result<RunningIntentService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
+    // The grant set is a projection of the same store; a thin wrapper over it reads
+    // the grants the authorization writer persists there.
+    let nats_authorizations = NatsAuthorizationStore::new(core_store.clone());
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
     let service_core_store = core_store.clone();
+    let service_authorizations = nats_authorizations.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
             let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
             let core_store = service_core_store.clone();
+            let nats_authorizations = service_authorizations.clone();
             async move {
-                intent_get_response(request, &machine_roster, &namespace_intent, &core_store).await
+                intent_get_response(
+                    request,
+                    &machine_roster,
+                    &namespace_intent,
+                    &core_store,
+                    &nats_authorizations,
+                )
+                .await
             }
         })
         .await?;
@@ -113,7 +126,13 @@ pub async fn start_intent_service(
         let mut interval = tokio::time::interval(publish_interval);
         loop {
             interval.tick().await;
-            let Ok(intent) = load_intent(&machine_roster, &namespace_intent, &core_store).await
+            let Ok(intent) = load_intent(
+                &machine_roster,
+                &namespace_intent,
+                &core_store,
+                &nats_authorizations,
+            )
+            .await
             else {
                 continue;
             };
@@ -132,12 +151,20 @@ async fn intent_get_response(
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     core_store: &CoreStore,
+    nats_authorizations: &NatsAuthorizationStore,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<IntentGetRequest>(&request) {
         return response;
     }
 
-    match load_intent(machine_roster, namespace_intent, core_store).await {
+    match load_intent(
+        machine_roster,
+        namespace_intent,
+        core_store,
+        nats_authorizations,
+    )
+    .await
+    {
         Ok(intent) => NatsServiceResponse::json_ok(&intent),
         Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
     }
@@ -147,6 +174,7 @@ async fn load_intent(
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     core_store: &CoreStore,
+    nats_authorizations: &NatsAuthorizationStore,
 ) -> Result<IntentSnapshot, String> {
     let epoch = core_store
         .control_plane_epoch()
@@ -160,11 +188,16 @@ async fn load_intent(
         .load()
         .await
         .map_err(|error| error.to_string())?;
+    let authorized_users = nats_authorizations
+        .list()
+        .await
+        .map_err(|error| error.to_string())?;
 
     Ok(IntentSnapshot {
         epoch,
         active_machines,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,
+        authorized_users,
     })
 }

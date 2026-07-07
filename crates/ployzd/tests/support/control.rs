@@ -188,8 +188,9 @@ impl NatsReloadRunner for RecordingReload {
     }
 }
 
-/// Keeper-style bounded redeem retry: not-ready is retried, anything else
-/// is a test failure.
+/// Keeper-style bounded redeem retry: not-ready and transient transport timeouts
+/// are retried (a redeem racing the mint churn can momentarily time out); a genuine
+/// domain error is a test failure. Still bounded — it gives up after ~20s.
 pub async fn redeem_when_ready(
     api: &OperationApiClient,
     join_token: &MachineJoinToken,
@@ -205,7 +206,8 @@ pub async fn redeem_when_ready(
             Err(OperationApiClientError::Domain {
                 error: MachineJoinRedeemError::MaterialNotReady { .. },
                 ..
-            }) => {
+            })
+            | Err(OperationApiClientError::Request { .. }) => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("redeem failed: {error:?}"),

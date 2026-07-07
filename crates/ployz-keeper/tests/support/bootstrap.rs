@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use ployz_core::install::WrappedCaKey;
+use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -120,7 +120,8 @@ pub fn keeper_join_material() -> KeeperJoinMaterial {
         NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
             .expect("valid nats credentials"),
         test_ca_pem(),
-        Some(WrappedCaKey::new(b"wrapped-ca-key".to_vec())),
+        WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     )
     .expect("valid join material")
 }
@@ -253,6 +254,7 @@ pub fn first_machine_plan() -> ployz_keeper::steps::KeeperStepPlan {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     ))
 }
 

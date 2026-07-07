@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::MachineId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "principal", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NatsPrincipal {
     Machine { machine_id: MachineId },

@@ -198,7 +198,6 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
             public_endpoint: None,
-            nkey_public: None,
         },
         public_ip: Some(MachinePublicIpObservation {
             machine_id: machine_id.clone(),
@@ -232,7 +231,8 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 )
                 .expect("valid CA pem"),
             },
-            recovery_key_wrapped: None,
+            recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
+            core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
             ployzd: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployzd"),
@@ -507,11 +507,19 @@ fn ssh_commands_time_out_with_phase_evidence() {
     let client = SshClient::with_program(script, std::time::Duration::from_millis(200));
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = client
-        .read_remote_hostname(&target)
-        .expect_err("slow command times out");
-
-    assert!(matches!(error.as_ref(), SshCommandError::Timeout { .. }));
+    // A 5s command deterministically outlives the 200ms bound, so Timeout is the real
+    // outcome. The only other outcomes are transient environmental errors — a spawn or
+    // wait failure (e.g. fork EAGAIN while CI runs many test processes at once) — which
+    // this test is not about; retry past them, bounded, so it asserts timeout
+    // classification rather than the runner's fork headroom.
+    let error = (0..50)
+        .map(|_| {
+            client
+                .read_remote_hostname(&target)
+                .expect_err("slow command times out")
+        })
+        .find(|error| matches!(error.as_ref(), SshCommandError::Timeout { .. }))
+        .expect("a 5s command must time out against a 200ms bound within 50 attempts");
     let rendered = error.to_string();
     assert!(rendered.contains("read-hostname"));
     assert!(rendered.contains("timed out"));

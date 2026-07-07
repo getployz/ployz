@@ -11,6 +11,7 @@
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
+use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use ployz_core::state::IntentSnapshot;
 
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +20,8 @@ pub enum SeedCoreError {
     Roster(#[from] MachineRosterStoreError),
     #[error("seeding namespace intent: {0}")]
     Namespace(#[from] NamespaceIntentStoreError),
+    #[error("seeding authorization grants: {0}")]
+    Authorizations(#[from] NatsAuthorizationStoreError),
     #[error("seeding control-plane epoch: {0}")]
     Epoch(#[from] CoreStoreError),
 }
@@ -64,6 +67,14 @@ pub async fn seed_core_from_snapshot(
             .await?;
     }
 
+    // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
+    // the same operator, Cloud, and machine credentials, so nothing is locked out
+    // (ADR 0031).
+    let authorizations = NatsAuthorizationStore::new(core_store.clone());
+    for grant in &snapshot.authorized_users {
+        authorizations.upsert(grant).await?;
+    }
+
     // Fence the succeeded core in one atomic step, strictly above the mirror's
     // epoch (the store is fresh past the guard, so this lands at mirror.next()).
     core_store
@@ -79,6 +90,8 @@ mod tests {
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn snapshot_at_epoch(epoch: ControlPlaneEpoch) -> IntentSnapshot {
+        use ployz_core::nats_config::{MintedNatsUser, NatsAuthorizedUser};
+        use ployz_core::security::NatsPrincipal;
         IntentSnapshot {
             epoch,
             active_machines: vec![ActiveMachineState {
@@ -87,10 +100,13 @@ mod tests {
                 activated_by: operation_id("op_activate"),
                 lifecycle: MachineLifecycle::Active,
                 public_endpoint: None,
-                nkey_public: None,
             }],
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
+            authorized_users: vec![NatsAuthorizedUser {
+                principal: NatsPrincipal::User,
+                nkey_public: MintedNatsUser::generate().expect("mint").public,
+            }],
         }
     }
 
@@ -107,6 +123,9 @@ mod tests {
         assert_eq!(outcome, SeedOutcome::Seeded);
         let roster = MachineRosterStore::new(store.clone());
         assert_eq!(roster.active_machines().await.expect("roster").len(), 1);
+        // The grant set is reused verbatim so the promoted core locks no one out.
+        let grants = NatsAuthorizationStore::new(store.clone());
+        assert_eq!(grants.list().await.expect("grants").len(), 1);
         // max(mirror=3, existing=1) + 1 = 4 — strictly above the succeeded core.
         assert_eq!(store.control_plane_epoch().await.expect("epoch").get(), 4);
     }

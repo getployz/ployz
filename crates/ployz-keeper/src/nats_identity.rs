@@ -7,10 +7,14 @@
 use std::fmt;
 use std::net::IpAddr;
 
+use ployz_core::install::WrappedCoreSeeds;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsCaCertificatePem, NatsServerCertificatePem, NatsServerConfigError,
-    is_valid_host_syntax,
+    NatsUserSeed, is_valid_host_syntax,
 };
+use serde::{Deserialize, Serialize};
+
+use crate::recovery_secret::{self, RecoverySecretError};
 
 const CA_COMMON_NAME: &str = "ployz-cluster-ca";
 const LOOPBACK_SAN: &str = "127.0.0.1";
@@ -50,6 +54,65 @@ impl fmt::Debug for NatsCaKeyPem {
         formatter.write_str("NatsCaKeyPem([redacted])")
     }
 }
+
+/// The core's three principal seeds — the plaintext that [`WrappedCoreSeeds`]
+/// encrypts. Secret material; pre-positioned on candidates so promotion reuses the
+/// old core's principals rather than rotating them (ADR 0031).
+#[derive(Serialize, Deserialize)]
+pub struct CoreSeeds {
+    pub controller: NatsUserSeed,
+    pub operator: NatsUserSeed,
+    pub join: NatsUserSeed,
+}
+
+impl CoreSeeds {
+    #[must_use]
+    pub fn from_identity(identity: &ClusterNatsIdentity) -> Self {
+        Self {
+            controller: identity.controller.seed.clone(),
+            operator: identity.operator.seed.clone(),
+            join: identity.join.seed.clone(),
+        }
+    }
+}
+
+/// Wrap the core seeds with the operator recovery secret for pre-positioning.
+pub fn wrap_core_seeds(
+    secret: &str,
+    seeds: &CoreSeeds,
+) -> Result<WrappedCoreSeeds, RecoverySecretError> {
+    let plaintext = serde_json::to_vec(seeds).expect("core seeds serialize");
+    Ok(WrappedCoreSeeds::new(recovery_secret::wrap(
+        secret, &plaintext,
+    )?))
+}
+
+/// Decrypt pre-positioned core seeds at promotion.
+pub fn unwrap_core_seeds(
+    secret: &str,
+    wrapped: &WrappedCoreSeeds,
+) -> Result<CoreSeeds, CoreSeedsError> {
+    let plaintext =
+        recovery_secret::unwrap(secret, wrapped.as_bytes()).map_err(CoreSeedsError::Decrypt)?;
+    serde_json::from_slice(&plaintext).map_err(|_| CoreSeedsError::Malformed)
+}
+
+#[derive(Debug)]
+pub enum CoreSeedsError {
+    Decrypt(RecoverySecretError),
+    Malformed,
+}
+
+impl fmt::Display for CoreSeedsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decrypt(error) => write!(formatter, "cannot decrypt core seeds: {error}"),
+            Self::Malformed => formatter.write_str("decrypted core seeds are malformed"),
+        }
+    }
+}
+
+impl std::error::Error for CoreSeedsError {}
 
 /// The server's TLS certificate plus its private key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,24 +257,33 @@ fn sign_server_certificate<S: rcgen::SigningKey>(
     })
 }
 
-/// Reconstruct the cluster identity for a promotion (ADR 0031): keep the fleet's
-/// existing CA (cert + the unwrapped signing key), self-issue a fresh server cert
-/// for this core's own address, and mint fresh control-plane principals. Machines
-/// keep trusting the same CA and re-authenticate under the re-rendered
-/// authorized-users; only the core principals rotate.
-pub fn promoted_core_identity(
+/// Reconstruct the promoted core's identity by REUSING the succeeded core's
+/// principals from their pre-positioned seeds (ADR 0031), not rotating them. The CA
+/// is kept and a fresh server cert self-issued for this machine's SANs; the
+/// controller/operator/join principals are rebuilt from `core_seeds` so the
+/// operator, Cloud, and every machine keep working with their existing credentials.
+pub fn resurrect_core_identity(
     ca: NatsCaCertificatePem,
     ca_key_pem: String,
+    core_seeds: CoreSeeds,
     sans: &ServerCertificateSans,
 ) -> Result<ClusterNatsIdentity, NatsIdentityError> {
     let server_cert = issue_server_certificate(&ca_key_pem, sans)?;
+    let CoreSeeds {
+        controller,
+        operator,
+        join,
+    } = core_seeds;
     Ok(ClusterNatsIdentity {
         ca,
         ca_key: NatsCaKeyPem::new(ca_key_pem),
         server_cert,
-        controller: mint_nkey_user()?,
-        operator: mint_nkey_user()?,
-        join: mint_nkey_user()?,
+        controller: MintedNatsUser::from_seed(controller)
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
+        operator: MintedNatsUser::from_seed(operator)
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
+        join: MintedNatsUser::from_seed(join)
+            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
     })
 }
 
@@ -238,8 +310,8 @@ pub enum NatsIdentityError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClusterNatsIdentity, NatsIdentityError, ServerCertificateSans,
-        generate_cluster_nats_identity, issue_server_certificate, promoted_core_identity,
+        ClusterNatsIdentity, CoreSeeds, NatsIdentityError, ServerCertificateSans,
+        generate_cluster_nats_identity, issue_server_certificate, resurrect_core_identity,
     };
 
     #[test]
@@ -362,15 +434,16 @@ mod tests {
     }
 
     #[test]
-    fn promoted_core_identity_keeps_the_ca_and_rotates_principals() {
+    fn resurrect_core_identity_keeps_the_ca_and_reuses_principals() {
         let original = generate_cluster_nats_identity(
             &ServerCertificateSans::try_new(None, None).expect("sans"),
         )
         .expect("original identity");
 
-        let promoted = promoted_core_identity(
+        let promoted = resurrect_core_identity(
             original.ca.clone(),
             original.ca_key.secret().to_owned(),
+            CoreSeeds::from_identity(&original),
             &ServerCertificateSans::try_new(Some("203.0.113.50".parse().expect("ip")), None)
                 .expect("sans"),
         )
@@ -387,9 +460,10 @@ mod tests {
                 .trim_start()
                 .starts_with("-----BEGIN CERTIFICATE-----")
         );
-        // The control-plane principals rotate.
-        assert_ne!(promoted.controller.public, original.controller.public);
-        assert_ne!(promoted.operator.public, original.operator.public);
-        assert_ne!(promoted.join.public, original.join.public);
+        // The control-plane principals are REUSED, not rotated — so the operator,
+        // Cloud, and machines keep working with their existing credentials.
+        assert_eq!(promoted.controller.public, original.controller.public);
+        assert_eq!(promoted.operator.public, original.operator.public);
+        assert_eq!(promoted.join.public, original.join.public);
     }
 }

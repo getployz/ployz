@@ -97,6 +97,15 @@ const MIGRATIONS: &[&str] = &[
         json TEXT NOT NULL
     );
     ",
+    // Authorized-users grants: the durable source of truth that
+    // `authorized-users.conf` is now a rendered projection of. One row per grant,
+    // keyed by its `authority_record_key` so operator and Cloud User grants coexist.
+    "
+    CREATE TABLE nats_authorizations (
+        authority_key TEXT PRIMARY KEY,
+        json          TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one

@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::MachineId;
-use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey};
+use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
     NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
@@ -189,6 +189,7 @@ pub struct NatsTlsMaterialTarget {
     material: NatsMachineMaterialPaths,
     identity: ClusterNatsIdentity,
     recovery_key_wrapped: WrappedCaKey,
+    core_seeds_wrapped: WrappedCoreSeeds,
 }
 
 impl NatsTlsMaterialTarget {
@@ -197,11 +198,13 @@ impl NatsTlsMaterialTarget {
         material: NatsMachineMaterialPaths,
         identity: &ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
+        core_seeds_wrapped: WrappedCoreSeeds,
     ) -> Self {
         Self {
             material,
             identity: identity.clone(),
             recovery_key_wrapped,
+            core_seeds_wrapped,
         }
     }
 
@@ -233,6 +236,11 @@ impl NatsTlsMaterialTarget {
     #[must_use]
     pub fn recovery_key_wrapped(&self) -> &WrappedCaKey {
         &self.recovery_key_wrapped
+    }
+
+    #[must_use]
+    pub fn core_seeds_wrapped(&self) -> &WrappedCoreSeeds {
+        &self.core_seeds_wrapped
     }
 }
 
@@ -285,31 +293,6 @@ impl NatsAuthorizedUsersTarget {
                     nkey_public,
                 }),
         );
-        Self {
-            config_dir,
-            file_name: AUTHORIZED_USERS_FILE_NAME.to_owned(),
-            rendered: render_authorized_users(&users),
-        }
-    }
-
-    /// The full authorized-user set for a promoted core (ADR 0031): the new core's
-    /// freshly-minted Controller/operator/Join principals, plus one Machine grant
-    /// per mirrored active machine that carries an nkey public. Unlike the control
-    /// writer's incremental disk-merge, this renders from scratch off the roster,
-    /// so a promotion needs no prior authorized-users file.
-    #[must_use]
-    pub fn for_promotion(
-        config_dir: PathBuf,
-        identity: &ClusterNatsIdentity,
-        machines: &[(MachineId, NatsUserPublicKey)],
-    ) -> Self {
-        let mut users = core_principal_users(identity);
-        users.extend(machines.iter().cloned().map(|(machine_id, nkey_public)| {
-            NatsAuthorizedUser {
-                principal: NatsPrincipal::Machine { machine_id },
-                nkey_public,
-            }
-        }));
         Self {
             config_dir,
             file_name: AUTHORIZED_USERS_FILE_NAME.to_owned(),

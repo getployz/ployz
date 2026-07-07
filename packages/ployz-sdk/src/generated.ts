@@ -266,14 +266,7 @@ lifecycle: MachineLifecycle,
  * advertised one; never cleared on a transient disconnect — reachability is
  * a durable address property, not live liveness.
  */
-public_endpoint: string | null,
-/**
- * The machine's NATS nkey public, minted at machine-add. Rides intent to
- * every mirror so a promoted core can regenerate `authorized-users.conf`
- * from the roster alone (ADR 0031). `None` for machines activated before
- * this field existed — they must re-join to become promotable auth entries.
- */
-nkey_public: NatsUserPublicKey | null, };
+public_endpoint: string | null, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 
@@ -364,10 +357,16 @@ export type MachineJoinRuntimeNatsUrl = string;
 export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats,
 /**
  * The cluster CA signing key wrapped with the recovery secret (ADR 0031),
- * delivered so a joined promotion candidate can decrypt it and self-issue
- * the trusted NATS server cert. `None` for material minted before recovery.
+ * delivered so a joined promotion candidate can decrypt it and self-issue the
+ * trusted NATS server cert.
  */
-recovery_key_wrapped?: WrappedCaKey | null, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
+recovery_key_wrapped: WrappedCaKey,
+/**
+ * The core's controller/operator/join principal seeds wrapped with the recovery
+ * secret (ADR 0031), delivered so a promoted core reuses them verbatim rather
+ * than rotating (which would lock out the operator and Cloud).
+ */
+core_seeds_wrapped: WrappedCoreSeeds, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
 
 export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
@@ -383,11 +382,17 @@ export type NatsUserSeed = string;
 
 export type NatsUserPublicKey = string;
 
+export type NatsPrincipal = { "principal": "machine", machine_id: MachineId, } | { "principal": "controller" } | { "principal": "user" } | { "principal": "join" } | { "principal": "system" };
+
+export type NatsAuthorizedUser = { principal: NatsPrincipal, nkey_public: NatsUserPublicKey, };
+
 export type NatsCaCertificatePem = string;
 
 export type MachineJoinTrustedNats = { ca_pem: NatsCaCertificatePem, };
 
 export type WrappedCaKey = Array<number>;
+
+export type WrappedCoreSeeds = Array<number>;
 
 export type InstallArtifactVersion = string;
 

@@ -854,7 +854,6 @@ function defaultFixture(): OperationFixture {
           name: machineName("edge_2"),
           activated_by: operationId("op_machine"),
           public_endpoint: null,
-          nkey_public: null,
         },
         public_ip: null,
         gateway: null,
@@ -893,7 +892,6 @@ function defaultFixture(): OperationFixture {
             name: machineName("edge_2"),
             activated_by: operationId("op_machine"),
             public_endpoint: null,
-            nkey_public: null,
           },
           public_ip: null,
           gateway: null,
@@ -996,6 +994,8 @@ function machineJoinBundle(): MachineJoinBundle {
         ca_pem:
           "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
       },
+      recovery_key_wrapped: [1, 2, 3],
+      core_seeds_wrapped: [4, 5, 6],
       ployzd: {
         version: "0.1.0",
         source: "/tmp/ployzd",

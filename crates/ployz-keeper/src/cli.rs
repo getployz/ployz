@@ -10,7 +10,8 @@ use crate::artifacts::{
 };
 use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
-    NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
+    CoreSeeds, NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
+    wrap_core_seeds,
 };
 use crate::recovery_secret::{self, RecoverySecretError};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
@@ -338,6 +339,9 @@ pub fn first_machine_install_target_from_spec(
         recovery_secret::wrap(&recovery_secret, nats_identity.ca_key.secret().as_bytes())
             .map_err(KeeperCliError::RecoverySecret)?,
     );
+    let core_seeds_wrapped =
+        wrap_core_seeds(&recovery_secret, &CoreSeeds::from_identity(&nats_identity))
+            .map_err(KeeperCliError::RecoverySecret)?;
 
     let mut target = FirstMachineInstallTarget::new(
         machine_id,
@@ -347,6 +351,7 @@ pub fn first_machine_install_target_from_spec(
         roles,
         nats_identity,
         recovery_key_wrapped,
+        core_seeds_wrapped,
     )
     .with_nats_server_unit(nats_server_unit);
     if let Some(url) = machine_bootstrap_url {

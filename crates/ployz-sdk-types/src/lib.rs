@@ -45,7 +45,7 @@ pub use ployz_core::install::{
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallContractError,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey,
+    MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
@@ -56,7 +56,9 @@ pub use ployz_core::machine_runtime::{
     ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation,
 };
-pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
+pub use ployz_core::nats_config::{
+    NatsAuthorizedUser, NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed,
+};
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
     FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
@@ -75,6 +77,7 @@ pub use ployz_core::ops::{
     DeployRunningStage,
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+pub use ployz_core::security::NatsPrincipal;
 pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineLifecycle,
