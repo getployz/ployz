@@ -16,11 +16,12 @@ use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target,
 };
 use ployz_keeper::cli::{
-    KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperCorePromote, KeeperSubstrateUpdate,
-    load_command,
+    KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperCoreDemote, KeeperCorePromote,
+    KeeperSubstrateUpdate, load_command,
 };
 use ployz_keeper::cloud_client::get_text_url;
 use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
+use ployz_keeper::core_demote::{CoreDemoteTarget, demote_local_core};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::fsx::{FileMode, write_durable_file};
 use ployz_keeper::join::{
@@ -123,12 +124,25 @@ fn main() -> ExitCode {
             }
         }
         Ok(KeeperCommand::CorePromote(promote)) => run_core_promote_command(promote),
+        Ok(KeeperCommand::CoreDemote(demote)) => run_core_demote_command(demote),
         Err(error) if error.is_help_requested() => {
             print!("{error}");
             ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_core_demote_command(demote: KeeperCoreDemote) -> ExitCode {
+    let mut runner = SystemKeeperCommandRunner::default();
+    let target = CoreDemoteTarget::new(demote.successor_nats_url);
+    match demote_local_core(&target, &mut runner) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("ployz-keeper core-demote failed: {error}");
             ExitCode::FAILURE
         }
     }

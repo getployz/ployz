@@ -217,6 +217,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
+        OperationKind::CoreReplace => "core-replace",
     }
 }
 
@@ -256,6 +257,15 @@ fn operation_subject(status: &OperationStatus) -> String {
             machine_id.as_str(),
             machine_lifecycle_name(*target)
         ),
+        OperationStatus::CoreReplace {
+            machine_id,
+            successor_nats_url,
+            ..
+        } => format!(
+            "machine {} successor {}",
+            machine_id.as_str(),
+            successor_nats_url.as_str()
+        ),
     }
 }
 
@@ -286,6 +296,16 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::MachineLifecycle { state, .. } => {
             machine_lifecycle_state(state).to_owned()
         }
+        OperationStatus::CoreReplace { state, .. } => core_replace_state(state).to_owned(),
+    }
+}
+
+const fn core_replace_state(state: &ployz_sdk_types::CoreReplaceOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::CoreReplaceOperationState::Accepted => "accepted",
+        ployz_sdk_types::CoreReplaceOperationState::Completed => "completed",
+        ployz_sdk_types::CoreReplaceOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::CoreReplaceOperationState::Cancelled { .. } => "cancelled",
     }
 }
 
@@ -436,6 +456,9 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::MachineLifecycleSubmitted { .. } => "machine.lifecycle.submitted",
         OperationEvent::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed",
         OperationEvent::MachineLifecycleFailed { .. } => "machine.lifecycle.failed",
+        OperationEvent::CoreReplaceSubmitted { .. } => "core.replace.submitted",
+        OperationEvent::CoreReplaceCompleted { .. } => "core.replace.completed",
+        OperationEvent::CoreReplaceFailed { .. } => "core.replace.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

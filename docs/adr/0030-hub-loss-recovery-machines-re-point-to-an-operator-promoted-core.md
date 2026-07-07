@@ -32,7 +32,9 @@ coordinated cutover:
   advertising a higher Control-Plane Epoch; the machine connects, adopts it,
   and persists it. Nothing is pushed to N machines — each pulls its way back,
   which is exactly why the bus being down does not block recovery. The Epoch
-  fences a healed old core: it sees a higher Epoch and demotes itself.
+  fences clients and machines away from a healed old core. If that old core
+  comes back online, resolving the partition is an explicit operator core
+  replacement command, not automatic role shutdown.
 - **Promotion is a deliberate operator act, and instant.** Per ADR 0019 the
   operator promotes one chosen Reachable Machine; nothing auto-elects, so two
   candidates are a healthy choice, never a race. Promotion is instant rather

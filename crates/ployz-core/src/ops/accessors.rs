@@ -10,7 +10,8 @@ impl OperationStatus {
             | Self::Cert { id, .. }
             | Self::MachineAdd { id, .. }
             | Self::MachineUpdate { id, .. }
-            | Self::MachineLifecycle { id, .. } => id,
+            | Self::MachineLifecycle { id, .. }
+            | Self::CoreReplace { id, .. } => id,
         }
     }
 
@@ -22,6 +23,7 @@ impl OperationStatus {
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
             Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
+            Self::CoreReplace { .. } => OperationKind::CoreReplace,
         }
     }
 
@@ -34,7 +36,8 @@ impl OperationStatus {
             Self::Cert { .. } => OperationProgressScope::Cluster,
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
-            | Self::MachineLifecycle { machine_id, .. } => OperationProgressScope::Machine {
+            | Self::MachineLifecycle { machine_id, .. }
+            | Self::CoreReplace { machine_id, .. } => OperationProgressScope::Machine {
                 machine_id: machine_id.clone(),
             },
         }
@@ -56,6 +59,10 @@ impl OperationStatus {
                 ..
             }
             | Self::MachineLifecycle {
+                last_event_sequence,
+                ..
+            }
+            | Self::CoreReplace {
                 last_event_sequence,
                 ..
             }

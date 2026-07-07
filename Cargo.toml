@@ -23,6 +23,7 @@ license = "MIT"
 atomic-write-file = "0.3"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
+getifs = "0.6"
 local-ip-address = "0.6"
 public-ip-address = { version = "0.4", default-features = false, features = ["blocking"] }
 defguard_wireguard_rs = "0.10"

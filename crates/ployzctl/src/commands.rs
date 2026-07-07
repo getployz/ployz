@@ -5,6 +5,7 @@ use std::fmt;
 use clap::{Args, Parser, Subcommand};
 use ployz_core::state::MachineLifecycle;
 
+pub mod core;
 pub mod deploy;
 pub mod init;
 pub mod logs;
@@ -21,6 +22,7 @@ pub struct PloyzctlInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
+    CoreReplace(core::CoreReplaceCommand),
     Deploy(deploy::DeployCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
@@ -82,6 +84,10 @@ pub fn parse_command(
 #[derive(Debug, Subcommand)]
 enum CommandCli {
     Deploy(deploy::DeployCli),
+    Core {
+        #[command(subcommand)]
+        command: CoreCli,
+    },
     #[command(name = "ls", alias = "list")]
     List(service::EmptyCli),
     Inspect(service::ServiceInspectCli),
@@ -133,6 +139,11 @@ enum MachineCli {
 }
 
 #[derive(Debug, Subcommand)]
+enum CoreCli {
+    Replace(core::CoreReplaceCli),
+}
+
+#[derive(Debug, Subcommand)]
 enum ServiceCli {
     List(service::EmptyCli),
     Inspect(service::ServiceInspectCli),
@@ -154,6 +165,11 @@ enum InternalCli {
 
 fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliError> {
     match command {
+        CommandCli::Core { command } => match command {
+            CoreCli::Replace(command) => {
+                core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
+            }
+        },
         CommandCli::Deploy(command) => deploy::deploy_command(command).map(PloyzctlCommand::Deploy),
         CommandCli::List(command) => Ok(PloyzctlCommand::ServiceList(
             service::service_list_command(command),

@@ -79,8 +79,6 @@ import type {
   ServiceListResponse,
   ServiceListRequest,
   ServiceSnapshot,
-  OperationApiRequestByEndpoint,
-  OperationApiResponseByEndpoint,
 } from "../src/index.ts";
 
 const fixturePath = join(
@@ -545,6 +543,24 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineResumeResponse",
     },
     {
+      name: "core.replace",
+      subject: "plz.v1.rpc.operator.command.core.replace",
+      execution: "accepts_operation",
+      request: "CoreReplaceRequest",
+      success: "AcceptedOperation",
+      error: "CoreReplaceError",
+      response: "CoreReplaceResponse",
+    },
+    {
+      name: "core.replace.report",
+      subject: "plz.v1.rpc.operator.command.core.replace.report",
+      execution: "mutates_operation",
+      request: "CoreReplaceReportRequest",
+      success: "CoreReplaceReported",
+      error: "CoreReplaceReportError",
+      response: "CoreReplaceReportResponse",
+    },
+    {
       name: "machine.list",
       subject: "plz.v1.rpc.operator.query.machine.list",
       execution: "query",
@@ -717,47 +733,47 @@ class RecordingTransport implements PloyzOperationTransport {
     this.replay = fixture.operation_event_replay_page;
   }
 
-  async request<E extends PloyzApiEndpoint>(
-    endpoint: E,
-    request: OperationApiRequestByEndpoint[E],
-  ): Promise<OperationApiResponseByEndpoint[E]> {
+  async request(endpoint: PloyzApiEndpoint, request: unknown): Promise<any> {
     switch (endpoint) {
       case "deploy.submit":
         this.deployRequests.push(request as DeploySubmitRequest);
-        return (this.deployResponse ?? { status: "ok", value: this.accepted }) as OperationApiResponseByEndpoint[E];
+        return (this.deployResponse ?? { status: "ok", value: this.accepted }) as any;
       case "init.first_machine.activate":
         this.initFirstMachineActivateRequests.push(request as InitFirstMachineActivateRequest);
         return (this.initFirstMachineActivateResponse ?? {
           status: "ok",
           value: this.firstMachineActivated,
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "machine.add":
         this.machineAddRequests.push(request as MachineAddRequest);
-        return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as OperationApiResponseByEndpoint[E];
+        return (this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted }) as any;
       case "machine.drain":
       case "machine.resume":
-        return { status: "ok", value: this.accepted } as OperationApiResponseByEndpoint[E];
+        return { status: "ok", value: this.accepted } as any;
+      case "core.replace":
+      case "core.replace.report":
+        throw new Error("core replace is not used by ergonomic client tests");
       case "machine.update":
         this.machineUpdateRequests.push(request as MachineUpdateRequest);
-        return (this.machineUpdateResponse ?? { status: "ok", value: this.accepted }) as OperationApiResponseByEndpoint[E];
+        return (this.machineUpdateResponse ?? { status: "ok", value: this.accepted }) as any;
       case "machine.list":
         this.machineListRequests.push(request as MachineListRequest);
         return (this.machineListResponse ?? {
           status: "ok",
           value: { machines: this.machineSnapshots },
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "machine.inspect":
         this.machineInspectRequests.push(request as MachineInspectRequest);
         return (this.machineInspectResponse ?? {
           status: "ok",
           value: this.machineSnapshots[0],
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "machine.redeem":
         this.machineJoinRedeemRequests.push(request as MachineJoinRedeemRequest);
         return (this.machineJoinRedeemResponse ?? {
           status: "ok",
           value: this.machineJoinRedeemed,
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "machine.report":
         throw new Error("machine join report is not used by ergonomic client tests");
       case "service.list":
@@ -765,19 +781,19 @@ class RecordingTransport implements PloyzOperationTransport {
         return (this.serviceListResponse ?? {
           status: "ok",
           value: { services: this.serviceSnapshots },
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "service.inspect":
         this.serviceInspectRequests.push(request as ServiceInspectRequest);
         return (this.serviceInspectResponse ?? {
           status: "ok",
           value: this.serviceSnapshots[0],
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "runtime.snapshot":
         this.runtimeSnapshotRequests.push(request as RuntimeSnapshotRequest);
         return (this.runtimeSnapshotResponse ?? {
           status: "ok",
           value: { snapshot: this.runtimeSnapshot },
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       case "logs.tail": {
         const logsRequest = request as LogsTailRequest;
         this.logsTailRequests.push(logsRequest);
@@ -789,23 +805,23 @@ class RecordingTransport implements PloyzOperationTransport {
             text: "hello\n",
             truncated: false,
           },
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
       }
       case "ops.list":
         this.opsListRequests.push(request as OpsListRequest);
         return ({
           status: "ok",
           value: { operations: [] },
-        } as unknown) as OperationApiResponseByEndpoint[E];
+        } as any);
       case "ops.status":
         this.statusRequests.push(request as OpsStatusRequest);
-        return (this.statusResponse ?? { status: "ok", value: this.status }) as OperationApiResponseByEndpoint[E];
+        return (this.statusResponse ?? { status: "ok", value: this.status }) as any;
       case "ops.watch":
         this.watchRequests.push(request as OpsWatchRequest);
         return (this.watchResponse ?? {
           status: "ok",
           value: this.replayPages.shift() ?? this.replay,
-        }) as OperationApiResponseByEndpoint[E];
+        }) as any;
     }
   }
 }

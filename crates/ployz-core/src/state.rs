@@ -53,10 +53,10 @@ pub struct ActiveMachineState {
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a
 /// promoted core (higher epoch) from a healed old one (lower epoch) by comparing
-/// it, and a healed old core demotes itself on seeing a higher epoch. Owned by
-/// the core and bumped only on operator promotion (ADR 0030/0031) — NATS carries
-/// the value, it does not define it (core NATS has no epoch primitive; the ones
-/// that exist live in the JetStream we exited).
+/// it; the old core is repaired by an explicit operator core replacement command
+/// after a partition. Owned by the core and bumped only on operator promotion (ADR
+/// 0030/0031) — NATS carries the value, it does not define it (core NATS has no
+/// epoch primitive; the ones that exist live in the JetStream we exited).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct ControlPlaneEpoch(u64);

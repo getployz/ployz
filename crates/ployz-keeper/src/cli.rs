@@ -23,6 +23,7 @@ use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
     NatsServerInstallSpec, WrappedCaKey,
 };
+use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperCommand {
@@ -30,6 +31,7 @@ pub enum KeeperCommand {
     Bootstrap(KeeperBootstrap),
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
     CorePromote(KeeperCorePromote),
+    CoreDemote(KeeperCoreDemote),
     SubstrateUpdate(KeeperSubstrateUpdate),
 }
 
@@ -144,6 +146,11 @@ pub struct KeeperCorePromote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperCoreDemote {
+    pub successor_nats_url: NatsClientUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupJoinToken {
     pub token: JoinToken,
     pub file: PathBuf,
@@ -170,6 +177,11 @@ pub fn load_command(
         }
         Some(KeeperSubcommand::CorePromote { version }) => {
             Ok(KeeperCommand::CorePromote(KeeperCorePromote { version }))
+        }
+        Some(KeeperSubcommand::CoreDemote { successor_nats_url }) => {
+            Ok(KeeperCommand::CoreDemote(KeeperCoreDemote {
+                successor_nats_url,
+            }))
         }
         Some(KeeperSubcommand::SubstrateUpdate {
             operation_id,
@@ -222,6 +234,11 @@ enum KeeperSubcommand {
         #[arg(long, value_name = "version")]
         version: Option<ExactPloyzVersion>,
     },
+    #[command(name = "internal-core-demote", hide = true)]
+    CoreDemote {
+        #[arg(long = "successor-nats-url", value_name = "url", value_parser = parse_nats_client_url)]
+        successor_nats_url: NatsClientUrl,
+    },
     SubstrateUpdate {
         #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
         operation_id: Option<OperationId>,
@@ -232,6 +249,10 @@ enum KeeperSubcommand {
 
 fn parse_operation_id(value: &str) -> Result<OperationId, String> {
     OperationId::try_new(value).map_err(|error| error.to_string())
+}
+
+fn parse_nats_client_url(value: &str) -> Result<NatsClientUrl, NatsClientUrlError> {
+    NatsClientUrl::try_new(value)
 }
 
 fn load_bootstrap(cloud_host: Option<CloudHost>) -> KeeperBootstrap {
@@ -520,10 +541,11 @@ mod tests {
 
     use clap::Parser;
     use ployz_core::ids::OperationId;
+    use ployz_nats::connect::NatsClientUrl;
 
     use super::{
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
-        KeeperStartup, KeeperSubstrateUpdate, SpecSource, load_command,
+        KeeperCoreDemote, KeeperStartup, KeeperSubstrateUpdate, SpecSource, load_command,
     };
 
     fn load_startup(
@@ -675,6 +697,24 @@ mod tests {
                     OperationId::try_new("op_update_1").expect("valid operation id")
                 ),
                 version: "v0.0.2-alpha.16".parse().expect("exact version parses"),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_core_demote() {
+        let command = load_command([
+            "internal-core-demote".into(),
+            "--successor-nats-url".into(),
+            "tls://203.0.113.10:4222".into(),
+        ])
+        .expect("internal core demote command loads");
+
+        assert_eq!(
+            command,
+            KeeperCommand::CoreDemote(KeeperCoreDemote {
+                successor_nats_url: NatsClientUrl::try_new("tls://203.0.113.10:4222")
+                    .expect("valid url"),
             })
         );
     }

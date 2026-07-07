@@ -20,6 +20,7 @@ use ployz_core::subjects::operation_progress_subject;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 mod action;
+mod core_replace;
 mod deploy;
 mod machine_add;
 mod machine_lifecycle;

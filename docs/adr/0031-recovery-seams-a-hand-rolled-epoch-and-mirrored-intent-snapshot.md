@@ -12,8 +12,10 @@ The decision, seam by seam:
 - **The Control-Plane Epoch is a hand-rolled monotonic `u64` carried on the intent
   drumbeat — not a NATS primitive.** The core persists it and advertises it on
   `intent.changed` (and echoes it in the `intent.get` reply); a machine persists
-  the highest epoch it has seen and rejects a lower one, which is what fences a
-  healed old core. NATS's only epoch-shaped primitives — JetStream KV revision,
+  the highest epoch it has seen and rejects a lower one, which is what fences it
+  away from a healed old core. The old core is repaired by an explicit core
+  replacement command after the operator has resolved the partition. NATS's only
+  epoch-shaped primitives — JetStream KV revision,
   stream sequence, the meta-group's Raft term — all live in the JetStream we
   exited (ADR 0029), and leaning on them re-imports the exact consensus the
   disposable-core model exists to avoid (ADR 0030). So the epoch is ours: a

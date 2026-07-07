@@ -4,6 +4,7 @@
 //! that kind's module.
 
 use super::cert::{self, CertOperationState};
+use super::core_replace::{self, CoreReplaceOperationState};
 use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
@@ -83,6 +84,7 @@ pub enum ProjectionOperationState {
     MachineAdd(MachineAddOperationState),
     MachineUpdate(MachineUpdateOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
+    CoreReplace(CoreReplaceOperationState),
 }
 
 impl ProjectionOperationState {
@@ -94,6 +96,7 @@ impl ProjectionOperationState {
             Self::MachineAdd(_) => OperationKind::MachineAdd,
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
+            Self::CoreReplace(_) => OperationKind::CoreReplace,
         }
     }
 }
@@ -105,6 +108,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
+        OperationKind::CoreReplace => "core-replace",
     }
 }
 
@@ -119,6 +123,9 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         }
         OperationSubjectRef::MachineLifecycle(machine_id) => {
             format!("machine-lifecycle {}", machine_id.as_str())
+        }
+        OperationSubjectRef::CoreReplace(machine_id) => {
+            format!("core-replace {}", machine_id.as_str())
         }
     }
 }
@@ -287,6 +294,26 @@ pub fn project_operation_event(
                 return Err(kind_mismatch(current, OperationKind::MachineLifecycle));
             };
             machine_lifecycle::project_event(id, machine_id, *target, state, event, event_sequence)
+        }
+        ClassifiedOperationEvent::CoreReplace { event, .. } => {
+            let OperationStatus::CoreReplace {
+                id,
+                machine_id,
+                successor_nats_url,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::CoreReplace));
+            };
+            core_replace::project_event(
+                id,
+                machine_id,
+                successor_nats_url,
+                state,
+                event,
+                event_sequence,
+            )
         }
     }
 }

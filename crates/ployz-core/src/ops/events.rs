@@ -8,7 +8,7 @@ use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
-use crate::install::InstallArtifactVersion;
+use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
     MachineName,
@@ -17,6 +17,7 @@ use crate::roles::InstallRolePolicy;
 use crate::state::MachineLifecycle;
 
 use super::cert::{CertEvent, CertTransition};
+use super::core_replace::{CoreReplaceEvent, CoreReplaceFailure, CoreReplaceTransition};
 use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
@@ -36,6 +37,7 @@ pub enum OperationSubject {
     Cert { cert_id: CertId },
     MachineAdd { machine_id: MachineId },
     MachineUpdate { machine_id: MachineId },
+    CoreReplace { machine_id: MachineId },
 }
 
 /// Local operation evidence event and plain NATS progress payload.
@@ -166,6 +168,20 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: MachineLifecycleFailure,
     },
+    CoreReplaceSubmitted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        successor_nats_url: MachineJoinRuntimeNatsUrl,
+    },
+    CoreReplaceCompleted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    CoreReplaceFailed {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: CoreReplaceFailure,
+    },
     Cancelled {
         operation_id: OperationId,
         kind: OperationKind,
@@ -204,6 +220,9 @@ impl OperationEvent {
             | Self::MachineLifecycleSubmitted { operation_id, .. }
             | Self::MachineLifecycleCompleted { operation_id, .. }
             | Self::MachineLifecycleFailed { operation_id, .. }
+            | Self::CoreReplaceSubmitted { operation_id, .. }
+            | Self::CoreReplaceCompleted { operation_id, .. }
+            | Self::CoreReplaceFailed { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -242,6 +261,9 @@ impl OperationEvent {
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
+            | Self::CoreReplaceSubmitted { .. }
+            | Self::CoreReplaceCompleted { .. }
+            | Self::CoreReplaceFailed { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -296,6 +318,9 @@ impl OperationEvent {
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
+            | Self::CoreReplaceSubmitted { .. }
+            | Self::CoreReplaceCompleted { .. }
+            | Self::CoreReplaceFailed { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -344,6 +369,9 @@ impl OperationEvent {
             },
             Self::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed".to_owned(),
             Self::MachineLifecycleFailed { .. } => "machine.lifecycle.failed".to_owned(),
+            Self::CoreReplaceSubmitted { .. } => "core.replace.submitted".to_owned(),
+            Self::CoreReplaceCompleted { .. } => "core.replace.completed".to_owned(),
+            Self::CoreReplaceFailed { .. } => "core.replace.failed".to_owned(),
             Self::Cancelled { .. } => "cancelled".to_owned(),
         }
     }
@@ -370,6 +398,7 @@ pub enum OperationSubjectRef {
     MachineAdd(MachineId),
     MachineUpdate(MachineId),
     MachineLifecycle(MachineId),
+    CoreReplace(MachineId),
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -393,6 +422,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: MachineLifecycleEvent,
     },
+    CoreReplace {
+        operation_id: OperationId,
+        event: CoreReplaceEvent,
+    },
 }
 
 impl ClassifiedOperationEvent {
@@ -402,7 +435,8 @@ impl ClassifiedOperationEvent {
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
-            | Self::MachineLifecycle { operation_id, .. } => operation_id,
+            | Self::MachineLifecycle { operation_id, .. }
+            | Self::CoreReplace { operation_id, .. } => operation_id,
         }
     }
 }
@@ -657,6 +691,35 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: MachineLifecycleTransition::Failed { failure },
                 },
             },
+            OperationEvent::CoreReplaceSubmitted {
+                operation_id,
+                machine_id,
+                ..
+            } => Self::CoreReplace {
+                operation_id,
+                event: CoreReplaceEvent::Submitted { machine_id },
+            },
+            OperationEvent::CoreReplaceCompleted {
+                operation_id,
+                machine_id,
+            } => Self::CoreReplace {
+                operation_id,
+                event: CoreReplaceEvent::Transition {
+                    machine_id,
+                    transition: CoreReplaceTransition::Completed,
+                },
+            },
+            OperationEvent::CoreReplaceFailed {
+                operation_id,
+                machine_id,
+                failure,
+            } => Self::CoreReplace {
+                operation_id,
+                event: CoreReplaceEvent::Transition {
+                    machine_id,
+                    transition: CoreReplaceTransition::Failed { failure },
+                },
+            },
             // A cancel classifies by the kind it claims, so a cancel whose
             // kind disagrees with the status record surfaces as a kind
             // mismatch in projection instead of silently cancelling.
@@ -684,6 +747,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::MachineLifecycle => Self::MachineLifecycle {
                     operation_id,
                     event: MachineLifecycleEvent::Cancelled(reason),
+                },
+                OperationKind::CoreReplace => Self::CoreReplace {
+                    operation_id,
+                    event: CoreReplaceEvent::Cancelled(reason),
                 },
             },
         }

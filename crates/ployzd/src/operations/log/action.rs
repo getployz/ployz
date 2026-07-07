@@ -1,6 +1,7 @@
 use super::{
-    DeployOperationSubmission, MachineLifecycleOperationSubmission, MachineLifecyclePayload,
-    MachineUpdateOperationSubmission, MachineUpdatePayload,
+    CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationSubmission,
+    MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
+    MachineUpdatePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -130,6 +131,50 @@ impl OperationAction for MachineLifecycleOperationSubmission {
             operation_id,
             payload.machine_id.clone(),
             payload.target,
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for CoreReplaceOperationSubmission {
+    type Payload = CoreReplacePayload;
+    const KIND: OperationKind = OperationKind::CoreReplace;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::CoreReplaceSubmitted {
+            operation_id,
+            machine_id: payload.machine_id,
+            successor_nats_url: payload.successor_nats_url,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::CoreReplaceSubmitted {
+            operation_id,
+            machine_id,
+            successor_nats_url,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            CoreReplacePayload {
+                machine_id,
+                successor_nats_url,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::core_replace_accepted(
+            operation_id,
+            payload.machine_id.clone(),
+            payload.successor_nats_url.clone(),
             sequence,
         )
     }
