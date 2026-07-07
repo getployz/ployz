@@ -465,12 +465,26 @@ fn default_machine_join_template_file() -> Result<AbsoluteInstallPath, String> {
 }
 
 fn load_local_release_manifest() -> Result<ReleaseManifest, String> {
-    let url = optional_env(PLOYZ_RELEASE_MANIFEST_URL_ENV)
-        .or_else(|| persisted_release_manifest_url(Path::new("/etc/ployz/release.env")).ok())
-        .unwrap_or_else(default_release_manifest_url);
+    let url = local_release_manifest_url(Path::new("/etc/ployz/release.env"));
     let contents = get_text_url(&url)
         .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
     ReleaseManifest::parse(&contents)
+}
+
+fn local_release_manifest_url(release_env_path: &Path) -> String {
+    release_manifest_url_from_sources(
+        optional_env(PLOYZ_RELEASE_MANIFEST_URL_ENV),
+        release_env_path,
+    )
+}
+
+fn release_manifest_url_from_sources(
+    env_manifest_url: Option<String>,
+    release_env_path: &Path,
+) -> String {
+    env_manifest_url
+        .or_else(|| persisted_release_manifest_url(release_env_path).ok())
+        .unwrap_or_else(default_release_manifest_url)
 }
 
 fn optional_env(name: &str) -> Option<String> {
@@ -637,12 +651,11 @@ fn run_first_machine_install(
 }
 
 fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
-    // The release supplies the core nats-server + ployzd binaries; it defaults to
-    // this keeper binary's own version (the cluster release on a joined machine),
-    // with --version as an override. Everything else is read from machine state.
+    // The installed release supplies the core nats-server + ployzd binaries;
+    // --version is an explicit operator override.
     let manifest_url = match &promote.version {
         Some(version) => release_manifest_url(version),
-        None => default_release_manifest_url(),
+        None => local_release_manifest_url(Path::new("/etc/ployz/release.env")),
     };
     let manifest = match load_versioned_release_manifest(&manifest_url) {
         Ok(manifest) => manifest,
@@ -1136,7 +1149,7 @@ mod tests {
 
     use super::{
         InstalledUpdateUnit, default_machine_join_template_file, installed_update_units,
-        keeper_join_target, read_cloud_founder_bootstrap_result,
+        keeper_join_target, read_cloud_founder_bootstrap_result, release_manifest_url_from_sources,
     };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
@@ -1157,6 +1170,29 @@ mod tests {
                 .expect("default machine join template path is valid")
                 .as_str(),
             "/etc/ployz/machine-join-template.json"
+        );
+    }
+
+    #[test]
+    fn local_release_manifest_url_uses_persisted_release_when_env_is_absent() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let release_env = root.path().join("release.env");
+        fs::write(
+            &release_env,
+            "PLOYZ_RELEASE_MANIFEST_URL=https://example.test/ployz-release-linux-amd64.env\n",
+        )
+        .expect("write release env");
+
+        assert_eq!(
+            release_manifest_url_from_sources(None, &release_env),
+            "https://example.test/ployz-release-linux-amd64.env"
+        );
+        assert_eq!(
+            release_manifest_url_from_sources(
+                Some("https://override.test/manifest.env".to_owned()),
+                &release_env
+            ),
+            "https://override.test/manifest.env"
         );
     }
 
