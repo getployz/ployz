@@ -13,6 +13,8 @@ async-nats = { version = "0.49.0", default-features = false, features = ["servic
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 clap.workspace = true
 futures-util.workspace = true
+local-ip-address.workspace = true
+public-ip-address.workspace = true
 ipnet = "2"
 async-trait = "0.1"
 pingora = { version = "0.8.1", features = ["lb", "proxy"] }
@@ -28,7 +30,6 @@ nuid.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 ployz-test-support.workspace = true

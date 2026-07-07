@@ -17,6 +17,7 @@ pub mod machine_runtime;
 pub mod nats_config;
 pub mod ops;
 pub mod permissions;
+pub mod reachability;
 pub mod roles;
 pub mod security;
 pub mod state;

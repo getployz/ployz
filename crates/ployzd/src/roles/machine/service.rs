@@ -1,6 +1,6 @@
 //! NATS Service API wiring for machine-local commands.
 
-use crate::roles::machine::endpoints::observe_machine_endpoints;
+use crate::roles::machine::endpoints::{observe_interface_endpoints, observe_machine_endpoints};
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerInspectRpcResponse,
@@ -304,13 +304,13 @@ where
         return response;
     }
 
-    // Serve the observation task's cached endpoints; if it hasn't populated them yet
-    // (process startup, or a test with no observer), discover once so mesh peer
-    // discovery never sees missing endpoints. Steady state is a cache hit, so the
-    // external probes stay off the per-RPC path.
+    // Serve the observation task's cached endpoints. Until it has populated them
+    // (process startup, or a test with no observer), fall back to interface-only
+    // discovery — a syscall, no network — so mesh peer discovery never sees missing
+    // endpoints and the public-IP echo stays off the per-RPC path.
     let endpoints = match state.endpoint_cache.latest() {
         Some(observation) => Some(observation),
-        None => refresh_machine_endpoints(&machine_id, &state.endpoint_cache).await,
+        None => observe_interface_endpoints(&machine_id).await,
     };
     match read_machine_facts_snapshot(&machine_id, &state.runner, endpoints, current_unix_ms())
         .await
