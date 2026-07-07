@@ -268,10 +268,9 @@ lifecycle: MachineLifecycle,
  */
 public_endpoint: string | null,
 /**
- * The machine's NATS nkey public, minted at machine-add. Rides intent to
- * every mirror so a promoted core can regenerate `authorized-users.conf`
- * from the roster alone (ADR 0031). `None` for machines activated before
- * this field existed — they must re-join to become promotable auth entries.
+ * The machine's NATS nkey public, minted at machine-add. Legacy: superseded by
+ * the mirrored `authorized_users` grant set (ADR 0031); pending deletion once
+ * promotion no longer reads the roster for auth.
  */
 nkey_public: NatsUserPublicKey | null, };
 
@@ -382,6 +381,10 @@ export type NatsServerInstallSpec = { version: InstallArtifactVersion, source: I
 export type NatsUserSeed = string;
 
 export type NatsUserPublicKey = string;
+
+export type NatsPrincipal = { "principal": "machine", machine_id: MachineId, } | { "principal": "controller" } | { "principal": "user" } | { "principal": "join" } | { "principal": "system" };
+
+export type NatsAuthorizedUser = { principal: NatsPrincipal, nkey_public: NatsUserPublicKey, };
 
 export type NatsCaCertificatePem = string;
 

@@ -121,6 +121,7 @@ impl NatsServerConfig {
 /// Public keys plus permissions are non-secret recovery evidence; seeds
 /// never appear in the authorization file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct NatsAuthorizedUser {
     pub principal: NatsPrincipal,

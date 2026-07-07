@@ -368,6 +368,7 @@ mod tests {
             active_machines: Vec::new(),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
+            authorized_users: Vec::new(),
         }
     }
 

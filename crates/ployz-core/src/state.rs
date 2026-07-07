@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
-use crate::nats_config::NatsUserPublicKey;
+use crate::nats_config::{NatsAuthorizedUser, NatsUserPublicKey};
 use crate::ops::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
 
@@ -49,10 +49,9 @@ pub struct ActiveMachineState {
     /// a durable address property, not live liveness.
     #[serde(default)]
     pub public_endpoint: Option<IpAddr>,
-    /// The machine's NATS nkey public, minted at machine-add. Rides intent to
-    /// every mirror so a promoted core can regenerate `authorized-users.conf`
-    /// from the roster alone (ADR 0031). `None` for machines activated before
-    /// this field existed — they must re-join to become promotable auth entries.
+    /// The machine's NATS nkey public, minted at machine-add. Legacy: superseded by
+    /// the mirrored `authorized_users` grant set (ADR 0031); pending deletion once
+    /// promotion no longer reads the roster for auth.
     #[serde(default)]
     pub nkey_public: Option<NatsUserPublicKey>,
 }
@@ -89,8 +88,8 @@ impl ControlPlaneEpoch {
 }
 
 /// Full operator intent visible to readers, stamped with the epoch it reflects.
-/// Authorized users stay private to the core authorization renderer and are
-/// intentionally absent.
+/// The authorized-users grant set rides here too (ADR 0031): a promoted core
+/// reuses it verbatim rather than re-deriving grants from the roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -99,12 +98,13 @@ pub struct IntentSnapshot {
     pub active_machines: Vec<ActiveMachineState>,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
+    pub authorized_users: Vec<NatsAuthorizedUser>,
 }
 
 impl IntentSnapshot {
     /// The `(machine, nkey public)` grants a promoted core re-renders
-    /// authorized-users from (ADR 0031). Machines with no recorded public are
-    /// skipped — there is nothing to authorize until they re-join.
+    /// authorized-users from (ADR 0031). Legacy: pending deletion once promotion
+    /// reuses the mirrored `authorized_users` grant set instead.
     #[must_use]
     pub fn authorized_machine_publics(&self) -> Vec<(MachineId, NatsUserPublicKey)> {
         self.active_machines
