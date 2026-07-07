@@ -534,6 +534,21 @@ fn parse(args: &[&str]) -> PloyzctlCommand {
 }
 
 #[test]
+fn top_level_init_is_the_friendly_machine_init_form() {
+    let PloyzctlCommand::MachineInit(command) = parse(&["init", "root@203.0.113.10"]) else {
+        panic!("expected machine init command");
+    };
+
+    assert_eq!(command.target.destination(), "root@203.0.113.10");
+    assert_eq!(command.identity_override, None);
+    assert_eq!(command.roles, InstallRolePolicy::install_all());
+    assert_eq!(
+        command.release,
+        BootstrapRelease::Channel(DEFAULT_RELEASE_CHANNEL.to_owned())
+    );
+}
+
+#[test]
 fn machine_init_parses_target_with_default_roles_and_release() {
     let PloyzctlCommand::MachineInit(command) = parse(&["machine", "init", "root@203.0.113.10"])
     else {

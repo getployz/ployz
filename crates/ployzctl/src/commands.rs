@@ -83,6 +83,7 @@ pub fn parse_command(
 
 #[derive(Debug, Subcommand)]
 enum CommandCli {
+    Init(machine::MachineInitCli),
     Deploy(deploy::DeployCli),
     Core {
         #[command(subcommand)]
@@ -165,6 +166,9 @@ enum InternalCli {
 
 fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliError> {
     match command {
+        CommandCli::Init(command) => {
+            machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
+        }
         CommandCli::Core { command } => match command {
             CoreCli::Replace(command) => {
                 core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)

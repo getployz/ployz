@@ -675,7 +675,7 @@ impl fmt::Display for PloyzctlExecutionError {
         match self {
             Self::MissingNatsUrl => write!(
                 formatter,
-                "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set {PLOYZ_NATS_URL_ENV}"
+                "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set {PLOYZ_NATS_URL_ENV}"
             ),
             Self::InvalidNatsUrl(error) => {
                 write!(
@@ -701,7 +701,7 @@ impl fmt::Display for PloyzctlExecutionError {
             ),
             Self::MissingJoinSeedFile => write!(
                 formatter,
-                "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployzctl machine init USER@HOST` with the current CLI to refresh the context"
+                "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployzctl init USER@HOST` with the current CLI to refresh the context"
             ),
             Self::ReadJoinSeedFile { path, message } => write!(
                 formatter,

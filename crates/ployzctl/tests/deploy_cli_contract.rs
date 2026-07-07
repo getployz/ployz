@@ -323,7 +323,7 @@ fn binary_quick_start_deploy_without_context_points_at_machine_init() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 
@@ -361,7 +361,7 @@ fn binary_deploy_requires_nats_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 

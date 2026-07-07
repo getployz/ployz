@@ -704,7 +704,7 @@ fn binary_machine_add_requires_nats_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 
@@ -722,7 +722,7 @@ fn binary_ops_watch_requires_nats_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 
@@ -740,7 +740,7 @@ fn binary_ops_status_requires_nats_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 
@@ -758,7 +758,7 @@ fn binary_machine_list_requires_nats_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 
@@ -826,7 +826,7 @@ fn binary_machine_inspect_requires_nats_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
     );
 }
 
