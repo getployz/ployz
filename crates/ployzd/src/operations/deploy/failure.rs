@@ -11,8 +11,6 @@ use ployz_core::ops::{
 use std::future::Future;
 use std::time::Duration;
 
-use ployz_core::machine_runtime::ManagedContainerIdentity;
-
 use super::{
     DeployContainer, DeployExecutionCommand, DeployOperationRecorder, NamespaceCommitError,
 };
@@ -414,12 +412,6 @@ pub enum MachineContainerRuntimeError {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
     },
-    OperationStepConflict {
-        machine_id: MachineId,
-        container_id: ContainerId,
-        expected: ManagedContainerIdentity,
-        actual: Box<ManagedContainerIdentity>,
-    },
     OperationStepAmbiguous {
         machine_id: MachineId,
         operation_id: OperationId,
@@ -469,15 +461,6 @@ impl MachineContainerRuntimeError {
                 DeployOperationFailure::RuntimeUnavailable {
                     machine_id: machine_id.clone(),
                     message: reason.failure_message(),
-                    retained_artifacts,
-                }
-            }
-            Self::OperationStepConflict { machine_id, .. } => {
-                DeployOperationFailure::RuntimeUnavailable {
-                    machine_id: machine_id.clone(),
-                    message: failure_message(
-                        "machine runtime found a conflicting container for the operation step",
-                    ),
                     retained_artifacts,
                 }
             }

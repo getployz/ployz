@@ -1,9 +1,9 @@
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_test_support::containers;
-use ployz_test_support::ids::{container_id, namespace_revision_entry_id, operation_id, step_id};
+use ployz_test_support::ids::{container_id, operation_id, step_id};
 use ployzd::roles::machine::runner::{
-    ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunConflict,
-    MachineContainerRunDecision, decide_container_run,
+    ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunDecision,
+    decide_container_run,
 };
 
 #[test]
@@ -22,24 +22,20 @@ fn matching_operation_step_and_request_labels_reuse_existing_container() {
 }
 
 #[test]
-fn same_operation_step_with_different_request_metadata_conflicts() {
+fn same_operation_step_with_different_service_creates_container() {
     let expected = run_identity("op_123", "step_1");
-    let mut conflicting_labels = expected.clone();
-    conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_2");
+    let sibling_service = containers::identity("svc_worker")
+        .entry("entry_worker")
+        .operation("op_123")
+        .step("step_1")
+        .build();
 
     assert_eq!(
         decide_container_run(
             &expected,
-            [existing_container(
-                "ctr_existing",
-                conflicting_labels.clone()
-            )]
+            [existing_container("ctr_existing", sibling_service)]
         ),
-        MachineContainerRunDecision::Conflict(MachineContainerRunConflict {
-            container_id: container_id("ctr_existing"),
-            expected,
-            actual: conflicting_labels,
-        })
+        MachineContainerRunDecision::Create { identity: expected }
     );
 }
 

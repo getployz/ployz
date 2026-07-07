@@ -15,7 +15,7 @@ use crate::security::NatsPrincipal;
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
     INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status, gateway_status_scope,
-    machine_facts, machine_facts_scope, machine_service_scope,
+    machine_container_facts, machine_facts, machine_facts_scope, machine_service_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -60,6 +60,7 @@ impl NatsPermissionProfile {
                 let mut publish_allow = request_reply_publications(&principal);
                 publish_allow.push(INTENT_GET.to_owned());
                 publish_allow.push(machine_facts(machine_id));
+                publish_allow.push(machine_container_facts(machine_id));
                 publish_allow.push(gateway_status(machine_id));
                 Self {
                     principal: principal.clone(),

@@ -4,9 +4,7 @@ use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::containers;
-use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
-};
+use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id, step_id};
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
@@ -143,18 +141,15 @@ async fn nats_machine_runtime_reports_invalid_response_payload() {
 #[tokio::test]
 async fn nats_machine_runtime_preserves_domain_runtime_error() {
     let nats = test_nats().await;
-    let conflict = MachineContainerRunDomainError::OperationStepConflict {
-        container_id: container_id("ctr_existing"),
-        expected: managed_identity(),
-        actual: Box::new(ManagedContainerIdentity {
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
-            ..managed_identity()
-        }),
+    let ambiguity = MachineContainerRunDomainError::OperationStepAmbiguous {
+        operation_id: operation_id("op_123"),
+        step_id: step_id("run_1"),
+        container_ids: vec![container_id("ctr_a"), container_id("ctr_b")],
     };
     let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
-        let conflict = conflict.clone();
+        let ambiguity = ambiguity.clone();
         move |_request| MachineRunContainerResult::DomainError {
-            error: conflict.clone(),
+            error: ambiguity.clone(),
         }
     })
     .await;
@@ -167,14 +162,11 @@ async fn nats_machine_runtime_preserves_domain_runtime_error() {
 
     assert_eq!(
         error,
-        MachineContainerRuntimeError::OperationStepConflict {
+        MachineContainerRuntimeError::OperationStepAmbiguous {
             machine_id: machine_id("machine_a"),
-            container_id: container_id("ctr_existing"),
-            expected: managed_identity(),
-            actual: Box::new(ManagedContainerIdentity {
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_other"),
-                ..managed_identity()
-            }),
+            operation_id: operation_id("op_123"),
+            step_id: step_id("run_1"),
+            container_ids: vec![container_id("ctr_a"), container_id("ctr_b")],
         }
     );
 }

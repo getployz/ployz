@@ -75,6 +75,36 @@ impl MachineFactsSnapshot {
     pub const fn observed_at_unix_ms(&self) -> u64 {
         self.observed_at_unix_ms
     }
+
+    pub fn with_container_replaced(
+        &self,
+        observation: ManagedContainerObservation,
+        observed_at_unix_ms: u64,
+    ) -> Result<Self, MachineFactsSnapshotError> {
+        Self::try_new(
+            self.machine_id.clone(),
+            self.containers
+                .with_container_replaced(observation)
+                .map_err(MachineFactsSnapshotError::BuildContainers)?,
+            self.public_ip.clone(),
+            observed_at_unix_ms,
+        )
+    }
+
+    pub fn with_container_removed(
+        &self,
+        container_id: &ContainerId,
+        observed_at_unix_ms: u64,
+    ) -> Result<Self, MachineFactsSnapshotError> {
+        Self::try_new(
+            self.machine_id.clone(),
+            self.containers
+                .with_container_removed(container_id)
+                .map_err(MachineFactsSnapshotError::BuildContainers)?,
+            self.public_ip.clone(),
+            observed_at_unix_ms,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -96,6 +126,22 @@ pub enum MachineFactsSnapshotError {
     PublicIpMachineMismatch {
         expected: MachineId,
         actual: MachineId,
+    },
+    #[error("failed to build container snapshot: {0}")]
+    BuildContainers(MachineContainerObservationSnapshotError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "delta", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineContainerFactDelta {
+    ContainerObserved {
+        observed_at_unix_ms: u64,
+        observation: ManagedContainerObservation,
+    },
+    ContainerRemoved {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        observed_at_unix_ms: u64,
     },
 }
 
@@ -325,6 +371,16 @@ impl MachineContainerObservationSnapshot {
         let mut containers = self.containers.clone();
         containers.retain(|container| container.container_id != observation.container_id);
         containers.push(observation);
+
+        Self::try_new(self.machine_id.clone(), containers)
+    }
+
+    pub fn with_container_removed(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Self, MachineContainerObservationSnapshotError> {
+        let mut containers = self.containers.clone();
+        containers.retain(|container| &container.container_id != container_id);
 
         Self::try_new(self.machine_id.clone(), containers)
     }

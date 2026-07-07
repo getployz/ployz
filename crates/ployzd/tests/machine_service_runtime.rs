@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
     EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
@@ -6,13 +7,13 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
-use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerIdentity};
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerFactDelta, ManagedContainerIdentity,
+};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts, machine_service};
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
-use ployz_test_support::ids::{
-    container_id, failure_message, machine_id, namespace_revision_entry_id, operation_id,
-};
+use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
 use ployzd::operations::deploy::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
     MachineRuntimeUnavailableReason,
@@ -21,9 +22,9 @@ use ployzd::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
 };
 use ployzd::roles::machine::protocol::{
-    MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
-    MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
+    MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse, MachineContainerRpcOk,
+    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
@@ -235,6 +236,94 @@ async fn machine_role_service_reuses_existing_operation_step_container() {
 }
 
 #[tokio::test]
+async fn machine_role_service_creates_when_sibling_service_uses_same_operation_step() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let sibling_identity = containers::identity("svc_worker")
+        .entry("entry_worker")
+        .operation("op_123")
+        .step("run_1")
+        .build();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone())
+            .with_existing(existing_container("ctr_sibling", sibling_identity))
+            .with_next_container("ctr_created"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let outcome = client
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect("container run succeeds");
+
+    assert_eq!(
+        outcome,
+        MachineRunContainerOutcome::Created {
+            container_id: container_id("ctr_created"),
+        }
+    );
+    assert_eq!(
+        state.creates(),
+        vec![CreateManagedContainer {
+            image: image("registry.example/api:rev_2"),
+            identity: managed_identity(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn machine_role_service_publishes_observed_delta_after_run() {
+    let nats = test_nats().await;
+    let mut deltas = nats
+        .client
+        .subscribe(machine_container_facts(&machine_id("machine_a")))
+        .await
+        .expect("subscribe deltas");
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state)
+            .with_existing(existing_container("ctr_existing", managed_identity())),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client.clone());
+
+    client
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect("container run succeeds");
+
+    match next_container_fact_delta(&mut deltas).await {
+        MachineContainerFactDelta::ContainerObserved { observation, .. } => {
+            assert_eq!(observation.container_id, container_id("ctr_existing"));
+            assert_eq!(
+                observation.state,
+                ContainerRuntimeState::running_unroutable()
+            );
+        }
+        other => panic!("unexpected delta: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn machine_role_service_starts_existing_stopped_operation_step_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
@@ -270,6 +359,43 @@ async fn machine_role_service_starts_existing_stopped_operation_step_container()
     );
     assert_eq!(state.starts(), vec![container_id("ctr_existing")]);
     assert!(state.creates().is_empty());
+}
+
+#[tokio::test]
+async fn machine_role_service_inspects_live_container() {
+    let nats = test_nats().await;
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_existing(existing_container("ctr_existing", managed_identity())),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let client = NatsMachineContainerRuntime::new(nats.client);
+
+    let observation = client
+        .inspect_container(
+            &machine_id("machine_a"),
+            MachineContainerInspectRpcRequest {
+                container_id: container_id("ctr_existing"),
+            },
+        )
+        .await
+        .expect("inspect succeeds")
+        .expect("container exists");
+
+    assert_eq!(observation.container_id, container_id("ctr_existing"));
+    assert_eq!(
+        observation.state,
+        ContainerRuntimeState::running_unroutable()
+    );
 }
 
 #[tokio::test]
@@ -343,18 +469,15 @@ async fn machine_role_service_reports_existing_start_failure_without_created_evi
 }
 
 #[tokio::test]
-async fn machine_role_service_reports_operation_step_conflict_as_domain_error() {
+async fn machine_role_service_reports_duplicate_exact_run_identity_as_ambiguous() {
     let nats = test_nats().await;
-    let mut conflicting_labels = managed_identity();
-    conflicting_labels.namespace_revision_entry_id = namespace_revision_entry_id("entry_other");
     let state = RecordingRunnerState::default();
     let service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
-        RecordingRunner::new(state).with_existing(existing_container(
-            "ctr_conflict",
-            conflicting_labels.clone(),
-        )),
+        RecordingRunner::new(state)
+            .with_existing(existing_container("ctr_a", managed_identity()))
+            .with_existing(existing_container("ctr_b", managed_identity())),
         ready_wireguard_ebpf(),
         idle_logs(),
     )
@@ -369,15 +492,15 @@ async fn machine_role_service_reports_operation_step_conflict_as_domain_error() 
     let error = client
         .run_container(&machine_id("machine_a"), run_request())
         .await
-        .expect_err("container run reports conflict");
+        .expect_err("container run reports ambiguity");
 
     assert_eq!(
         error,
-        MachineContainerRuntimeError::OperationStepConflict {
+        MachineContainerRuntimeError::OperationStepAmbiguous {
             machine_id: machine_id("machine_a"),
-            container_id: container_id("ctr_conflict"),
-            expected: managed_identity(),
-            actual: Box::new(conflicting_labels),
+            operation_id: operation_id("op_123"),
+            step_id: ployz_test_support::ids::step_id("run_1"),
+            container_ids: vec![container_id("ctr_a"), container_id("ctr_b")],
         }
     );
     assert_eq!(service.health().domain_failures, 1);
@@ -459,6 +582,104 @@ async fn machine_role_service_removes_container() {
         })
     );
     assert_eq!(state.removes(), vec![container_id("ctr_old")]);
+}
+
+#[tokio::test]
+async fn machine_role_service_publishes_removed_delta_after_remove() {
+    let nats = test_nats().await;
+    let mut deltas = nats
+        .client
+        .subscribe(machine_container_facts(&machine_id("machine_a")))
+        .await
+        .expect("subscribe deltas");
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client.clone());
+
+    client
+        .remove_container(
+            &machine_id("machine_a"),
+            MachineContainerRemoveRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_old"),
+                expected_identity: managed_identity(),
+            },
+        )
+        .await
+        .expect("remove succeeds");
+
+    match next_container_fact_delta(&mut deltas).await {
+        MachineContainerFactDelta::ContainerRemoved {
+            machine_id: observed_machine_id,
+            container_id: observed_container_id,
+            ..
+        } => {
+            assert_eq!(observed_machine_id, machine_id("machine_a"));
+            assert_eq!(observed_container_id, container_id("ctr_old"));
+        }
+        other => panic!("unexpected delta: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn machine_role_service_publishes_observed_delta_after_stop() {
+    let nats = test_nats().await;
+    let mut deltas = nats
+        .client
+        .subscribe(machine_container_facts(&machine_id("machine_a")))
+        .await
+        .expect("subscribe deltas");
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default()).with_existing(
+            existing_container_with_state(
+                "ctr_old",
+                managed_identity(),
+                ExistingManagedContainerState::StartableStopped,
+            ),
+        ),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let mut client = NatsMachineContainerRuntime::new(nats.client.clone());
+
+    client
+        .stop_container(
+            &machine_id("machine_a"),
+            MachineContainerStopRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_old"),
+                expected_identity: managed_identity(),
+            },
+        )
+        .await
+        .expect("stop succeeds");
+
+    match next_container_fact_delta(&mut deltas).await {
+        MachineContainerFactDelta::ContainerObserved { observation, .. } => {
+            assert_eq!(observation.container_id, container_id("ctr_old"));
+            assert_eq!(observation.state, ContainerRuntimeState::Exited);
+        }
+        other => panic!("unexpected delta: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -753,6 +974,16 @@ async fn machine_wireguard_ebpf_service_preserves_prepare_failure() {
 #[derive(Clone, Default)]
 struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
+}
+
+async fn next_container_fact_delta(
+    subscriber: &mut async_nats::Subscriber,
+) -> MachineContainerFactDelta {
+    let message = tokio::time::timeout(Duration::from_secs(1), subscriber.next())
+        .await
+        .expect("delta arrives")
+        .expect("delta subscription stays open");
+    serde_json::from_slice(&message.payload).expect("delta decodes")
 }
 
 impl RecordingRunnerState {
