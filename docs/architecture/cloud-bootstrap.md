@@ -8,22 +8,22 @@ Cloud and custom-Cloud adoption; CLI-managed cluster creation stays owned by
 The human command is:
 
 ```sh
-curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap
+curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap cloud
 ```
 
 `ployz.sh` installs only the verified `ployz-keeper` binary. It does not carry
 Cloud tokens, install `ployzctl`, choose a Cloud org, decide founder vs joiner,
-or inspect machine bootstrap state. Keeper owns the prompt, optional Cloud
+or inspect machine bootstrap state. Keeper owns the explicit Cloud
 session, typed bootstrap envelope validation, local machine mutation, and
 terminal callback when bootstrap uses Cloud.
 
 The future automation command is:
 
 ```sh
-curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap --cloud-token pcbs_...
+curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap cloud --cloud-token pcbs_...
 ```
 
-`--cloud-host <host-or-https-url>` may select staging or self-hosted Cloud for
+`bootstrap cloud --cloud-host <host-or-https-url>` may select staging or self-hosted Cloud for
 Cloud bootstrap. It does not identify the target machine, org, or
 cluster.
 
@@ -72,11 +72,10 @@ URLs, or checksums.
 
 ## Continue Without Cloud
 
-`ployz-keeper bootstrap` does not create CLI-managed clusters. It still shows a
-visible `Use local CLI setup` choice so Cloud remains optional and
-discoverable. If the user chooses that path, keeper exits nonzero before
-machine mutation, creates no Cloud Bootstrap Session, Cloud Bootstrap
-Redemption, callback token, or Cloud Founder Claim, and tells the user to run:
+`ployz-keeper bootstrap` does not create CLI-managed clusters and does not
+start Cloud. It exits nonzero before machine mutation, creates no Cloud
+Bootstrap Session, Cloud Bootstrap Redemption, callback token, or Cloud Founder
+Claim, and tells the user to run:
 
 ```sh
 ployzctl machine init USER@HOST

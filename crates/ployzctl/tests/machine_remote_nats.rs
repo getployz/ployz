@@ -66,14 +66,17 @@ struct FakeSshMachine {
 
 impl FakeSshMachine {
     /// `hostname` is the reported remote hostname; `installer_exit` shapes
-    /// the `--first-machine` / `--join-token` phase outcome.
+    /// the keeper bootstrap phase outcome.
     fn new(hostname: &str, installer_body: &str) -> Self {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let log = dir.path().join("commands.log");
         let program = dir.path().join("fake-ssh");
         let script = format!(
             r#"#!/bin/sh
-cmd="$6"
+cmd=""
+for arg in "$@"; do
+  cmd="$arg"
+done
 printf '%s\n----\n' "$cmd" >> {log}
 case "$cmd" in
   hostname)
@@ -85,7 +88,7 @@ case "$cmd" in
   'mkdir -p '*)
     :
     ;;
-  *'--first-machine'* | *'--join-token'*)
+  *'ployz-keeper bootstrap core'* | *'ployz-keeper bootstrap join'*)
     {installer_body}
     ;;
   *'internal-core-demote --successor-nats-url'*)
@@ -517,7 +520,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     let commands = ssh.commands();
     let install = commands
         .iter()
-        .find(|command| command.contains("--first-machine"))
+        .find(|command| command.contains("ployz-keeper bootstrap core"))
         .expect("founder installer ran remotely");
     for expected in [
         "curl -fsSL -- 'https://ployz.sh'",
@@ -528,7 +531,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
-        "--first-machine",
+        "ployz-keeper bootstrap core",
     ] {
         assert!(
             install.contains(expected),
