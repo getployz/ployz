@@ -257,11 +257,6 @@ fn sign_server_certificate<S: rcgen::SigningKey>(
     })
 }
 
-/// Reconstruct the cluster identity for a promotion (ADR 0031): keep the fleet's
-/// existing CA (cert + the unwrapped signing key), self-issue a fresh server cert
-/// for this core's own address, and mint fresh control-plane principals. Machines
-/// keep trusting the same CA and re-authenticate under the re-rendered
-/// authorized-users; only the core principals rotate.
 /// Reconstruct the promoted core's identity by REUSING the succeeded core's
 /// principals from their pre-positioned seeds (ADR 0031), not rotating them. The CA
 /// is kept and a fresh server cert self-issued for this machine's SANs; the

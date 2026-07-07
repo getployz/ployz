@@ -51,21 +51,6 @@ impl NatsAuthorizationStore {
             .map_err(store_error)
     }
 
-    /// Whether the grant set has never been populated — the fresh-store signal the
-    /// bootstrap seed uses to import the keeper-written conf exactly once.
-    pub async fn is_empty(&self) -> Result<bool, NatsAuthorizationStoreError> {
-        self.store
-            .call(|conn| {
-                let count: i64 =
-                    conn.query_row("SELECT COUNT(*) FROM nats_authorizations", [], |row| {
-                        row.get(0)
-                    })?;
-                Ok(count == 0)
-            })
-            .await
-            .map_err(store_error)
-    }
-
     /// Import the keeper-written `authorized-users.conf` into the store exactly once,
     /// on first boot when the store is empty. Thereafter the store is authoritative
     /// and the conf is its rendered projection. A missing conf is a no-op (a fresh
@@ -159,7 +144,7 @@ mod tests {
     #[tokio::test]
     async fn upsert_lists_and_coexists_by_user_key() {
         let store = NatsAuthorizationStore::new(CoreStore::open_in_memory().await.expect("store"));
-        assert!(store.is_empty().await.expect("empty"));
+        assert!(store.list().await.expect("empty").is_empty());
 
         let operator = user_grant();
         let cloud = user_grant();
@@ -170,6 +155,5 @@ mod tests {
 
         let grants = store.list().await.expect("list");
         assert_eq!(grants.len(), 2);
-        assert!(!store.is_empty().await.expect("not empty"));
     }
 }

@@ -249,6 +249,14 @@ async fn handle_render_request(
 
     let rendered = render_authorized_users(&desired);
     if current_contents.as_deref() == Some(rendered.as_str()) {
+        // The conf already reflects the desired set, so no reload — but the grant
+        // must still be persisted: this is the path a resumed mint takes when a crash
+        // landed between a prior render's reload and its store write, and skipping it
+        // here would leave the machine authorized on the server yet absent from the
+        // store, so the next full render would strip it.
+        if let Some(user) = &authorize {
+            store.upsert(user).await.map_err(store_prepare)?;
+        }
         return Ok(RenderedAuthorization {
             user_count: desired.len(),
             reload: None,
