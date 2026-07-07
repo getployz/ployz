@@ -29,9 +29,7 @@ use ployzd::operations::deploy::{
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::client::NatsMachineContainerRuntime;
 use ployzd::roles::machine::protocol::MachineContainerRunRpcRequest;
-use ployzd::roles::machine::service::{
-    start_machine_role_service,
-};
+use ployzd::roles::machine::service::start_machine_role_service;
 
 mod support;
 
