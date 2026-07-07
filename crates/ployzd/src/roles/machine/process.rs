@@ -102,6 +102,7 @@ pub async fn start_machine_process(
         intent_mirror,
         seed,
         MACHINE_OBSERVATION_INTERVAL,
+        config.ployz_native_mesh.wg_ifname.clone(),
     )
     .await
 }
@@ -118,6 +119,7 @@ pub async fn start_machine_process_with_ports<R, P, L>(
     intent_mirror: MachineIntentMirror,
     seed: NatsClientUrl,
     observation_interval: Duration,
+    wg_ifname: String,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
@@ -128,7 +130,7 @@ where
         + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let endpoint_cache = MachineEndpointCache::default();
+    let endpoint_cache = MachineEndpointCache::new(wg_ifname);
     let machine_service = start_machine_role_service_with_endpoint_cache(
         client.clone(),
         machine_id.clone(),
@@ -631,6 +633,7 @@ mod tests {
             MachineIntentMirror::new(mirror_dir.path().join("intent-mirror.json")),
             NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
             Duration::from_secs(60),
+            "ployz-wg0".to_owned(),
         )
         .await
         .expect("runtime starts");

@@ -310,7 +310,7 @@ where
     // endpoints and the public-IP echo stays off the per-RPC path.
     let endpoints = match state.endpoint_cache.latest() {
         Some(observation) => Some(observation),
-        None => observe_interface_endpoints(&machine_id).await,
+        None => observe_interface_endpoints(&machine_id, state.endpoint_cache.wg_ifname()).await,
     };
     match read_machine_facts_snapshot(&machine_id, &state.runner, endpoints, current_unix_ms())
         .await
@@ -336,9 +336,23 @@ where
 #[derive(Clone, Default)]
 pub(crate) struct MachineEndpointCache {
     latest: Arc<Mutex<Option<MachineEndpointObservation>>>,
+    /// The configured WireGuard interface, excluded from discovery so its overlay
+    /// tunnel address is never advertised as a mesh candidate.
+    wg_ifname: String,
 }
 
 impl MachineEndpointCache {
+    pub(crate) fn new(wg_ifname: String) -> Self {
+        Self {
+            latest: Arc::default(),
+            wg_ifname,
+        }
+    }
+
+    fn wg_ifname(&self) -> &str {
+        &self.wg_ifname
+    }
+
     fn store(&self, observation: Option<MachineEndpointObservation>) {
         *self
             .latest
@@ -360,7 +374,7 @@ pub(crate) async fn refresh_machine_endpoints(
     machine_id: &MachineId,
     cache: &MachineEndpointCache,
 ) -> Option<MachineEndpointObservation> {
-    let observation = observe_machine_endpoints(machine_id).await;
+    let observation = observe_machine_endpoints(machine_id, cache.wg_ifname()).await;
     cache.store(observation.clone());
     observation
 }

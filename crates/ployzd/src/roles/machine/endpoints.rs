@@ -16,8 +16,9 @@ use std::net::{IpAddr, SocketAddr};
 /// still advertises a reachable control endpoint.
 pub async fn observe_machine_endpoints(
     machine_id: &MachineId,
+    wg_ifname: &str,
 ) -> Option<MachineEndpointObservation> {
-    observe(machine_id, PublicIpProbe::Echo).await
+    observe(machine_id, wg_ifname, PublicIpProbe::Echo).await
 }
 
 /// Cheap discovery for a cold-cache `FactsGet`: interface addresses only (a syscall,
@@ -25,8 +26,9 @@ pub async fn observe_machine_endpoints(
 /// observation task fills in the echoed public IP for NAT'd hosts.
 pub async fn observe_interface_endpoints(
     machine_id: &MachineId,
+    wg_ifname: &str,
 ) -> Option<MachineEndpointObservation> {
-    observe(machine_id, PublicIpProbe::InterfacesOnly).await
+    observe(machine_id, wg_ifname, PublicIpProbe::InterfacesOnly).await
 }
 
 enum PublicIpProbe {
@@ -36,10 +38,12 @@ enum PublicIpProbe {
 
 async fn observe(
     machine_id: &MachineId,
+    wg_ifname: &str,
     probe: PublicIpProbe,
 ) -> Option<MachineEndpointObservation> {
     let machine_id = machine_id.clone();
-    tokio::task::spawn_blocking(move || build_observation(&machine_id, probe))
+    let wg_ifname = wg_ifname.to_owned();
+    tokio::task::spawn_blocking(move || build_observation(&machine_id, &wg_ifname, probe))
         .await
         .ok()
         .flatten()
@@ -47,9 +51,10 @@ async fn observe(
 
 fn build_observation(
     machine_id: &MachineId,
+    wg_ifname: &str,
     probe: PublicIpProbe,
 ) -> Option<MachineEndpointObservation> {
-    let interface_ips = routable_interface_ips();
+    let interface_ips = routable_interface_ips(wg_ifname);
 
     let mut control = interface_ips
         .iter()
@@ -80,21 +85,23 @@ fn build_observation(
 }
 
 /// The machine's own routable interface addresses (a syscall, no network), excluding
-/// the WireGuard, Docker, and Tailscale interfaces we must not advertise as underlay.
-fn routable_interface_ips() -> Vec<IpAddr> {
+/// the WireGuard underlay (the configured `wg_ifname`), Docker, and Tailscale
+/// interfaces — advertising the WireGuard tunnel address as a mesh candidate would
+/// have peers dial the overlay through itself.
+fn routable_interface_ips(wg_ifname: &str) -> Vec<IpAddr> {
     let Ok(interfaces) = local_ip_address::list_afinet_netifas() else {
         return Vec::new();
     };
     interfaces
         .into_iter()
-        .filter(|(name, _)| include_interface(name))
+        .filter(|(name, _)| include_interface(name, wg_ifname))
         .map(|(_, ip)| ip)
         .filter(|ip| is_routable(*ip))
         .collect()
 }
 
-fn include_interface(name: &str) -> bool {
-    name != "ployz-wg0"
+fn include_interface(name: &str, wg_ifname: &str) -> bool {
+    name != wg_ifname
         && name != "lo"
         && name != "tailscale0"
         && !name.starts_with("docker")
