@@ -255,8 +255,10 @@ enum KeeperSubcommand {
 enum KeeperBootstrapSubcommand {
     Core,
     Join {
-        #[arg(long, value_name = "token")]
-        join_token: CliJoinToken,
+        #[arg(value_name = "token", required_unless_present = "join_token")]
+        token: Option<CliJoinToken>,
+        #[arg(long, value_name = "token", hide = true)]
+        join_token: Option<CliJoinToken>,
     },
     Cloud {
         #[arg(long, value_name = "host-or-https-url")]
@@ -296,9 +298,14 @@ fn load_bootstrap(command: Option<KeeperBootstrapSubcommand>) -> KeeperBootstrap
     let mode = match command {
         None => KeeperBootstrapMode::LocalGuidance,
         Some(KeeperBootstrapSubcommand::Core) => KeeperBootstrapMode::Core,
-        Some(KeeperBootstrapSubcommand::Join { join_token }) => KeeperBootstrapMode::Join {
-            join_token: join_token.0,
-        },
+        Some(KeeperBootstrapSubcommand::Join { token, join_token }) => {
+            let join_token = token
+                .or(join_token)
+                .expect("clap requires positional token or hidden --join-token");
+            KeeperBootstrapMode::Join {
+                join_token: join_token.0,
+            }
+        }
         Some(KeeperBootstrapSubcommand::Cloud { cloud_host }) => {
             KeeperBootstrapMode::Cloud { cloud_host }
         }
@@ -403,10 +410,13 @@ pub fn first_machine_install_target_from_spec(
     // `--public-ip` override the founder command passed via env, then magic
     // self-discovery. A first machine must be publicly reachable to serve as a core;
     // binding the NATS listener external and the cert SANs both follow from this.
-    let machine_public_ip = machine_public_ip
-        .or_else(public_ip_env_override)
-        .or_else(discover_machine_public_ip);
-    let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
+    let machine_public_ips = match machine_public_ip.or_else(public_ip_env_override) {
+        Some(public_ip) => vec![public_ip],
+        None => discover_machine_public_ips(),
+    };
+    let machine_public_ip = machine_public_ips.first().copied();
+    let certificate_sans =
+        ServerCertificateSans::try_new_many(machine_public_ips, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
     let recovery_secret = resolve_recovery_secret();
     let recovery_key_wrapped = WrappedCaKey::new(
@@ -443,16 +453,18 @@ pub fn first_machine_install_target_from_spec(
     Ok(target)
 }
 
-/// The machine's first public interface address (a syscall, no network). Used to bind
-/// the first-machine NATS listener when the operator did not pass one. If a public
-/// address is not on the NIC (e.g. a 1:1 NAT), discovery finds nothing and the
-/// operator supplies `--public-ip`.
-fn discover_machine_public_ip() -> Option<std::net::IpAddr> {
+/// The machine's public interface addresses (a syscall, no network). Used for
+/// first-machine TLS SANs and the first address becomes the listener address.
+/// If a public address is not on the NIC (e.g. a 1:1 NAT), discovery finds
+/// nothing and the operator supplies `--public-ip`.
+fn discover_machine_public_ips() -> Vec<std::net::IpAddr> {
     local_ip_address::list_afinet_netifas()
-        .ok()?
+        .ok()
+        .unwrap_or_default()
         .into_iter()
         .map(|(_, ip)| ip)
-        .find(|ip| ployz_core::reachability::is_public(*ip))
+        .filter(|ip| ployz_core::reachability::is_public(*ip))
+        .collect()
 }
 
 /// The operator's `--public-ip` override, delivered by the founder command as the
@@ -669,6 +681,21 @@ mod tests {
 
     #[test]
     fn parser_accepts_join_bootstrap() {
+        let command = load_command(["bootstrap".into(), "join".into(), "join_once_123".into()])
+            .expect("bootstrap command is valid");
+
+        assert_eq!(
+            command,
+            KeeperCommand::Bootstrap(KeeperBootstrap {
+                mode: KeeperBootstrapMode::Join {
+                    join_token: JoinToken::try_new("join_once_123").unwrap(),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_legacy_join_token_flag() {
         let command = load_command([
             "bootstrap".into(),
             "join".into(),

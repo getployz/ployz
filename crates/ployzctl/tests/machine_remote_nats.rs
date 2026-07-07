@@ -43,18 +43,22 @@ use ployzctl::bootstrap_command::{
     BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL,
 };
 use ployzctl::commands::PloyzctlCommand;
-use ployzctl::commands::core::CoreReplaceCommand;
+use ployzctl::commands::core::{CorePromoteCommand, CoreReplaceCommand};
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
 use ployzctl::config::{ClusterContext, load_cluster_context, save_cluster_context};
 use ployzctl::remote_machine_runtime::RemoteMachineExecutionError;
 use ployzctl::runtime::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
 use ployzctl::ssh::SshTarget;
+use tokio::sync::Mutex;
 
 const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
+const CORE_PROMOTE_RESULT_BEGIN: &str = "ployz-core-promote-result begin";
+const CORE_PROMOTE_RESULT_END: &str = "ployz-core-promote-result end";
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// One stand-in `ssh` that answers the machine-init phase commands and logs
 /// every remote command it received.
@@ -64,6 +68,32 @@ struct FakeSshMachine {
     log: PathBuf,
 }
 
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var(name).ok();
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
+
 impl FakeSshMachine {
     /// `hostname` is the reported remote hostname; `installer_exit` shapes
     /// the keeper bootstrap phase outcome.
@@ -71,6 +101,11 @@ impl FakeSshMachine {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let log = dir.path().join("commands.log");
         let program = dir.path().join("fake-ssh");
+        let promote_result_json = serde_json::to_string(&serde_json::json!({
+            "nats_urls": ["tls://203.0.113.20:4222", "tls://[2001:db8::20]:4222"],
+            "ca_pem": TEST_CA,
+        }))
+        .expect("promote result serializes");
         let script = format!(
             r#"#!/bin/sh
 cmd=""
@@ -93,6 +128,12 @@ case "$cmd" in
     ;;
   *'internal-core-demote --successor-nats-url'*)
     echo 'core replaced'
+    ;;
+  *'ployz-keeper core-promote'*)
+    printf '%s\n' \
+      '{promote_begin}' \
+      '{promote_result_json}' \
+      '{promote_end}'
     ;;
   'sudo cat /var/lib/ployz/join-material')
     printf '%s\n' 'machine_id=machine_2' 'cluster_name=test'
@@ -127,6 +168,9 @@ esac
             installer_body = installer_body,
             sha = TEST_SHA,
             seed = TEST_SEED,
+            promote_begin = CORE_PROMOTE_RESULT_BEGIN,
+            promote_result_json = promote_result_json,
+            promote_end = CORE_PROMOTE_RESULT_END,
         );
         fs::write(&program, script).expect("fake ssh writes");
         make_executable(&program);
@@ -311,8 +355,62 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
 }
 
 // ---------------------------------------------------------------------------
-// core replace USER@HOST
+// core promote USER@HOST / core demote USER@HOST
 // ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn core_promote_remote_runs_keeper_command_and_updates_context() {
+    let _env_lock = ENV_LOCK.lock().await;
+    let _secret = EnvVarGuard::set("PLOYZ_RECOVERY_SECRET", "recover-secret");
+
+    let server = TestNats::start().await;
+    let ssh = FakeSshMachine::new("edge-2", "echo never");
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: Vec::new(),
+        },
+    )
+    .expect("cluster context saves");
+
+    let output = execute_command(
+        PloyzctlCommand::CorePromote(CorePromoteCommand {
+            target: SshTarget::parse("root@203.0.113.20").expect("target parses"),
+        }),
+        &config,
+    )
+    .await
+    .expect("remote core promote succeeds");
+
+    assert_eq!(
+        output.stdout,
+        "core promoted on root@203.0.113.20\nnats tls://203.0.113.20:4222,tls://[2001:db8::20]:4222\nca-pem printed by remote keeper\n"
+    );
+    assert!(output.stderr.contains("context "));
+    assert!(
+        output
+            .stderr
+            .contains("now points at tls://203.0.113.20:4222")
+    );
+    assert_eq!(
+        ssh.commands(),
+        vec!["sudo env PLOYZ_RECOVERY_SECRET='recover-secret' ployz-keeper core-promote"]
+    );
+    let saved = load_cluster_context(&context.context_path)
+        .expect("context reads")
+        .expect("context exists");
+    assert_eq!(saved.nats_url.as_str(), "tls://203.0.113.20:4222");
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn core_replace_remote_runs_keeper_command() {
@@ -810,13 +908,13 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     let commands = ssh.commands();
     let install = commands
         .iter()
-        .find(|command| command.contains("--join-token"))
+        .find(|command| command.contains("ployz-keeper bootstrap join"))
         .expect("join installer ran remotely");
     for expected in [
         "curl -fsSL -- 'https://get.ployz.sh'",
         "PLOYZ_NATS_URL='tls://203.0.113.10:4222'",
         "PLOYZ_JOIN_NKEY_SEED=",
-        "--join-token 'join_once_123'",
+        "ployz-keeper bootstrap join 'join_once_123'",
     ] {
         assert!(
             install.contains(expected),

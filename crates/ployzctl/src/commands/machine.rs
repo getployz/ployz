@@ -643,19 +643,19 @@ pub(crate) struct MachineInitCli {
     name: Option<String>,
     #[command(flatten)]
     roles: RolePolicyCli,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     version: Option<String>,
-    #[arg(long, conflicts_with = "version")]
+    #[arg(long, conflicts_with = "version", hide = true)]
     channel: Option<String>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     release_manifest: Option<String>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     detach: bool,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     bootstrap_url: Option<String>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     cluster_name: Option<String>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     installer_script: Option<String>,
     /// Override the first machine's public IP instead of self-discovering it.
     #[arg(long)]

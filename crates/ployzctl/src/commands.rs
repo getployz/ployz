@@ -22,6 +22,7 @@ pub struct PloyzctlInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
+    CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
     Deploy(deploy::DeployCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
@@ -141,8 +142,8 @@ enum MachineCli {
 
 #[derive(Debug, Subcommand)]
 enum CoreCli {
+    Promote(core::CorePromoteCli),
     Demote(core::CoreReplaceCli),
-    Replace(core::CoreReplaceCli),
 }
 
 #[derive(Debug, Subcommand)]
@@ -171,10 +172,10 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
         }
         CommandCli::Core { command } => match command {
-            CoreCli::Demote(command) => {
-                core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
+            CoreCli::Promote(command) => {
+                core::core_promote_command(command).map(PloyzctlCommand::CorePromote)
             }
-            CoreCli::Replace(command) => {
+            CoreCli::Demote(command) => {
                 core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
             }
         },
