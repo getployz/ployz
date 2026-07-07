@@ -10,8 +10,9 @@ use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, s
 use crate::roles::machine::intent_mirror::MachineIntentMirror;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineFactsReadError, MachineServiceError, current_unix_ms, read_machine_facts_snapshot,
-    start_machine_role_service_with_public_ip,
+    MachineEndpointCache, MachineFactsReadError, MachineServiceError, current_unix_ms,
+    read_machine_facts_snapshot, refresh_machine_endpoints,
+    start_machine_role_service_with_endpoint_cache,
 };
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
@@ -127,17 +128,25 @@ where
         + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let machine_service = start_machine_role_service_with_public_ip(
+    let endpoint_cache = MachineEndpointCache::default();
+    let machine_service = start_machine_role_service_with_endpoint_cache(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
         preparer,
         log_reader,
+        endpoint_cache.clone(),
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
     let intent_mirror = start_intent_mirror(client.clone(), intent_mirror, seed);
-    let observer = start_machine_observer(machine_id, runner, client, observation_interval);
+    let observer = start_machine_observer(
+        machine_id,
+        runner,
+        client,
+        observation_interval,
+        endpoint_cache,
+    );
 
     Ok(RunningMachineProcess {
         machine_service,
@@ -314,6 +323,7 @@ fn start_machine_observer<R>(
     runner: R,
     client: NatsClient,
     interval: Duration,
+    endpoint_cache: MachineEndpointCache,
 ) -> RunningTask
 where
     R: MachineContainerRunner + Send + Sync + 'static,
@@ -326,7 +336,7 @@ where
     let task_health = Arc::clone(&health);
     let task = tokio::spawn(async move {
         let mut backoff = interval;
-        let mut publisher = MachineObservationPublisher::new(client);
+        let mut publisher = MachineObservationPublisher::new(client, endpoint_cache);
         loop {
             let attempt = publisher
                 .publish_with_timeout(&machine_id, &runner, MACHINE_OBSERVATION_TIMEOUT)
@@ -376,11 +386,15 @@ fn record_observer_attempt(
 
 struct MachineObservationPublisher {
     client: NatsClient,
+    endpoint_cache: MachineEndpointCache,
 }
 
 impl MachineObservationPublisher {
-    fn new(client: NatsClient) -> Self {
-        Self { client }
+    fn new(client: NatsClient, endpoint_cache: MachineEndpointCache) -> Self {
+        Self {
+            client,
+            endpoint_cache,
+        }
     }
 
     async fn publish_with_timeout<R>(
@@ -405,7 +419,8 @@ impl MachineObservationPublisher {
     where
         R: MachineContainerRunner,
     {
-        let facts = read_machine_facts_snapshot(machine_id, runner, current_unix_ms())
+        let endpoints = refresh_machine_endpoints(machine_id, &self.endpoint_cache).await;
+        let facts = read_machine_facts_snapshot(machine_id, runner, endpoints, current_unix_ms())
             .await
             .map_err(MachineProcessError::ReadFacts)?;
         let payload = serde_json::to_vec(&facts).map_err(MachineProcessError::EncodeFacts)?;
@@ -781,7 +796,8 @@ mod tests {
             .await
             .expect("subscribe machine facts");
 
-        let mut publisher = MachineObservationPublisher::new(nats.client.clone());
+        let mut publisher =
+            MachineObservationPublisher::new(nats.client.clone(), MachineEndpointCache::default());
         publisher
             .publish_with_timeout(&machine_id("machine_a"), &runner, Duration::from_secs(1))
             .await

@@ -9,6 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 const PUBLIC_IP_SERVICES: &[&str] = &[
+    "https://www.cloudflare.com/cdn-cgi/trace",
     "https://api.ipify.org",
     "https://ipinfo.io/ip",
     "http://ip-api.com/line/?fields=query",
@@ -76,11 +77,22 @@ fn discover_public_ip() -> Option<IpAddr> {
         let Ok(body) = response.body_mut().read_to_string() else {
             continue;
         };
-        if let Ok(ip) = body.trim().parse::<IpAddr>() {
+        if let Some(ip) = parse_public_ip_body(&body) {
             return Some(ip);
         }
     }
     None
+}
+
+/// Most services return the bare IP; Cloudflare's `/cdn-cgi/trace` returns
+/// `key=value` lines, one of which is `ip=<addr>`.
+fn parse_public_ip_body(body: &str) -> Option<IpAddr> {
+    if let Ok(ip) = body.trim().parse::<IpAddr>() {
+        return Some(ip);
+    }
+    body.lines()
+        .find_map(|line| line.strip_prefix("ip="))
+        .and_then(|value| value.trim().parse::<IpAddr>().ok())
 }
 
 fn discover_mesh_endpoints(control_endpoints: &[IpAddr]) -> Vec<SocketAddr> {
@@ -187,11 +199,22 @@ fn unique_socket_addrs(endpoints: Vec<SocketAddr>) -> Vec<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_public;
+    use super::{is_public, parse_public_ip_body};
     use std::net::IpAddr;
 
     fn ip(value: &str) -> IpAddr {
         value.parse().expect("valid ip")
+    }
+
+    #[test]
+    fn public_ip_body_parses_plaintext_and_cloudflare_trace() {
+        assert_eq!(
+            parse_public_ip_body("203.0.113.5\n"),
+            Some(ip("203.0.113.5"))
+        );
+        let trace = "fl=123abc\nh=www.cloudflare.com\nip=203.0.113.5\nts=1.0\n";
+        assert_eq!(parse_public_ip_body(trace), Some(ip("203.0.113.5")));
+        assert_eq!(parse_public_ip_body("not-an-ip"), None);
     }
 
     #[test]

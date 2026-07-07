@@ -39,7 +39,6 @@ use ployzd::roles::machine::runner::{
 };
 use ployzd::roles::machine::service::{
     MachinePloyzNativeMeshPreparer as LocalWireGuardEbpfPreparer, start_machine_role_service,
-    start_machine_role_service_with_public_ip,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -118,7 +117,7 @@ async fn machine_role_service_reports_unknown_substrate_without_evidence() {
 #[tokio::test]
 async fn machine_role_service_gets_fresh_facts_without_observation_tick() {
     let nats = test_nats().await;
-    let _service = start_machine_role_service_with_public_ip(
+    let _service = start_machine_role_service(
         nats.machine_a.clone(),
         machine_id("machine_a"),
         RecordingRunner::new(RecordingRunnerState::default())
