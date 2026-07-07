@@ -1,4 +1,5 @@
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
@@ -118,6 +119,19 @@ pub(super) struct MachineLifecyclePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreReplaceOperationSubmission {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub successor_nats_url: MachineJoinRuntimeNatsUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CoreReplacePayload {
+    pub(super) machine_id: MachineId,
+    pub(super) successor_nats_url: MachineJoinRuntimeNatsUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -147,6 +161,15 @@ pub struct AcceptedMachineLifecycleSubmission {
     pub start_sequence: EventSequence,
     pub machine_id: MachineId,
     pub target: MachineLifecycle,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCoreReplaceSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub machine_id: MachineId,
+    pub successor_nats_url: MachineJoinRuntimeNatsUrl,
     pub should_start_execution: bool,
 }
 

@@ -7,22 +7,24 @@ use crate::service_runtime::{
 use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
-    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
-    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
-    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, OperationApiResponse, OpsListError,
-    OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceSnapshot,
+    AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
+    CoreReplaceReported, CoreReplaceRequest, DeploySubmitError, DeploySubmitRequest,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineUpdateRequest, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
+    ServiceListError, ServiceListRequest, ServiceListResult, ServiceSnapshot,
     operation_api::{
-        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
+        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -109,6 +111,20 @@ impl OperationApiClient {
         request: &MachineLifecycleRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineLifecycleError>> {
         self.request_api::<MachineResumeApi>(request).await
+    }
+
+    pub async fn core_replace(
+        &self,
+        request: &CoreReplaceRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<CoreReplaceError>> {
+        self.request_api::<CoreReplaceApi>(request).await
+    }
+
+    pub async fn core_replace_report(
+        &self,
+        request: &CoreReplaceReportRequest,
+    ) -> Result<CoreReplaceReported, OperationApiClientError<CoreReplaceReportError>> {
+        self.request_api::<CoreReplaceReportApi>(request).await
     }
 
     pub async fn machine_list(

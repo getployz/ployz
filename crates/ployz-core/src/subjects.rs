@@ -32,6 +32,8 @@ pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.s
 pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
 pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
 pub const OPERATOR_MACHINE_RESUME: &str = "plz.v1.rpc.operator.command.machine.resume";
+pub const OPERATOR_CORE_REPLACE: &str = "plz.v1.rpc.operator.command.core.replace";
+pub const OPERATOR_CORE_REPLACE_REPORT: &str = "plz.v1.rpc.operator.command.core.replace.report";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
@@ -51,6 +53,8 @@ pub enum OperationApiEndpoint {
     OpsList,
     OpsStatus,
     OpsWatch,
+    CoreReplace,
+    CoreReplaceReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +85,8 @@ impl OperationApiEndpoint {
             Self::OpsList => "ops.list",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
+            Self::CoreReplace => "core.replace",
+            Self::CoreReplaceReport => "core.replace.report",
         }
     }
 
@@ -104,6 +110,8 @@ impl OperationApiEndpoint {
             Self::OpsList => OPERATOR_OPS_LIST,
             Self::OpsStatus => OPERATOR_OPS_STATUS,
             Self::OpsWatch => OPERATOR_OPS_WATCH,
+            Self::CoreReplace => OPERATOR_CORE_REPLACE,
+            Self::CoreReplaceReport => OPERATOR_CORE_REPLACE_REPORT,
         }
     }
 
@@ -114,10 +122,12 @@ impl OperationApiEndpoint {
             | Self::MachineAdd
             | Self::MachineUpdate
             | Self::MachineDrain
-            | Self::MachineResume => OperationApiEndpointExecution::AcceptsOperation,
-            Self::InitFirstMachineActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
-                OperationApiEndpointExecution::MutatesOperation
-            }
+            | Self::MachineResume
+            | Self::CoreReplace => OperationApiEndpointExecution::AcceptsOperation,
+            Self::InitFirstMachineActivate
+            | Self::MachineJoinRedeem
+            | Self::MachineJoinReport
+            | Self::CoreReplaceReport => OperationApiEndpointExecution::MutatesOperation,
             Self::MachineList
             | Self::MachineInspect
             | Self::ServiceList

@@ -17,6 +17,7 @@ use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 mod accessors;
 mod cert;
+mod core_replace;
 mod deploy;
 mod events;
 mod machine_add;
@@ -28,6 +29,7 @@ mod routes;
 mod text;
 
 pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
+pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
     DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployOperationState,
@@ -65,6 +67,7 @@ pub enum OperationKind {
     MachineAdd,
     MachineUpdate,
     MachineLifecycle,
+    CoreReplace,
 }
 
 /// Operation status projection rebuilt from local operation evidence.
@@ -108,6 +111,13 @@ pub enum OperationStatus {
         machine_id: MachineId,
         target: MachineLifecycle,
         state: MachineLifecycleOperationState,
+        last_event_sequence: EventSequence,
+    },
+    CoreReplace {
+        id: OperationId,
+        machine_id: MachineId,
+        successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
+        state: CoreReplaceOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -205,6 +215,22 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn core_replace_accepted(
+        id: OperationId,
+        machine_id: MachineId,
+        successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::CoreReplace {
+            id,
+            machine_id,
+            successor_nats_url,
+            state: CoreReplaceOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
@@ -212,6 +238,7 @@ impl OperationStatus {
             Self::MachineAdd { state, .. } => state.is_terminal(),
             Self::MachineUpdate { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
+            Self::CoreReplace { state, .. } => state.is_terminal(),
         }
     }
 }

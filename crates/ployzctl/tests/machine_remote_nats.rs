@@ -16,7 +16,8 @@ use ployz_core::machine::MachineAddFailure;
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
-    FailureMessage, OperationEventReplayPage, OperationStatus, OperationStatusSnapshot,
+    CoreReplaceOperationState, FailureMessage, OperationEventReplayPage, OperationStatus,
+    OperationStatusSnapshot,
 };
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
@@ -25,12 +26,14 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
-    InitFirstMachineActivateResponse, InitFirstMachineActivated, MachineAddAccepted,
-    MachineAddRequest, MachineAddResponse, MachineJoinToken, MachineName, OperationApiResponse,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    AcceptedOperation, CoreReplaceReportRequest, CoreReplaceReportResponse, CoreReplaceReported,
+    CoreReplaceRequest, CoreReplaceResponse, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivateResponse, InitFirstMachineActivated,
+    MachineAddAccepted, MachineAddRequest, MachineAddResponse, MachineJoinToken, MachineName,
+    OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{
-        InitFirstMachineActivateApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        CoreReplaceApi, CoreReplaceReportApi, InitFirstMachineActivateApi, MachineAddApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use ployz_test_support::fs::make_executable;
@@ -87,6 +90,9 @@ case "$cmd" in
     ;;
   *'internal-core-demote --successor-nats-url'*)
     echo 'core replaced'
+    ;;
+  'sudo cat /var/lib/ployz/join-material')
+    printf '%s\n' 'machine_id=machine_2' 'cluster_name=test'
     ;;
   'curl -fsSL -- '*)
     printf '%s\n' \
@@ -308,6 +314,98 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
 #[tokio::test(flavor = "multi_thread")]
 async fn core_replace_remote_runs_keeper_command() {
     let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let spec = test_api_service(&[
+        CoreReplaceApi::ENDPOINT,
+        CoreReplaceReportApi::ENDPOINT,
+        OpsWatchApi::ENDPOINT,
+        OpsStatusApi::ENDPOINT,
+    ]);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, CoreReplaceApi::ENDPOINT),
+            |request| async move {
+                let request: CoreReplaceRequest =
+                    serde_json::from_slice(&request.payload).expect("core replace decodes");
+                assert_eq!(request.machine_id, machine_id("machine_2"));
+                assert!(
+                    request
+                        .operation_id
+                        .as_str()
+                        .starts_with("op_core_replace_machine_2_")
+                );
+                assert_eq!(
+                    request.successor_nats_url.as_str(),
+                    "tls://203.0.113.20:4222"
+                );
+                let response: CoreReplaceResponse = OperationApiResponse::Ok {
+                    value: accepted_operation(&request.operation_id, &request.machine_id),
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("core replace endpoint binds");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, CoreReplaceReportApi::ENDPOINT),
+            |request| async move {
+                let request: CoreReplaceReportRequest =
+                    serde_json::from_slice(&request.payload).expect("core replace report decodes");
+                assert_eq!(request.machine_id, machine_id("machine_2"));
+                let response: CoreReplaceReportResponse = OperationApiResponse::Ok {
+                    value: CoreReplaceReported {
+                        operation_id: request.operation_id,
+                        machine_id: request.machine_id,
+                        last_event_sequence: event_sequence(2),
+                        outcome: request.outcome,
+                    },
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("core replace report endpoint binds");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            |_request| async move {
+                let response: OpsWatchResponse = OperationApiResponse::Ok {
+                    value: OperationEventReplayPage::terminal(Vec::new()),
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("ops watch endpoint binds");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            |request| async move {
+                let request: OpsStatusRequest =
+                    serde_json::from_slice(&request.payload).expect("status request decodes");
+                let response: OpsStatusResponse = OperationApiResponse::Ok {
+                    value: OperationStatusSnapshot::new(OperationStatus::CoreReplace {
+                        id: request.operation_id,
+                        machine_id: machine_id("machine_2"),
+                        successor_nats_url: MachineJoinRuntimeNatsUrl::try_new(
+                            "tls://203.0.113.20:4222",
+                        )
+                        .expect("valid URL"),
+                        state: CoreReplaceOperationState::Completed,
+                        last_event_sequence: event_sequence(2),
+                    }),
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("ops status endpoint binds");
+    client.flush().await.expect("service flushes");
+
     let ssh = FakeSshMachine::new("stale-core", "echo never");
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
@@ -330,6 +428,7 @@ async fn core_replace_remote_runs_keeper_command() {
     assert_eq!(
         ssh.commands(),
         vec![
+            "sudo cat /var/lib/ployz/join-material",
             "sudo ployz-keeper internal-core-demote --successor-nats-url 'tls://203.0.113.20:4222'"
         ]
     );

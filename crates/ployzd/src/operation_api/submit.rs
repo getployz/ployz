@@ -3,17 +3,17 @@
 
 use crate::adapters::nats_authorization::MintRequest;
 use crate::operation_api::admission::{
-    DeploySubmitCommand, MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError,
-    MachineAddSubmitCommand, MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand,
-    OperationControllers,
+    CoreReplaceSubmitCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
+    MachineUpdateSubmitCommand, OperationControllers,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
-    MachineUpdateError, MachineUpdateRequest,
+    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, DeploySubmitError,
+    DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
+    MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
 };
 
 use super::OperationApiHandlers;
@@ -285,6 +285,61 @@ async fn machine_lifecycle(
     handlers.machine_lifecycle().start(accepted);
 
     Ok(operation)
+}
+
+pub async fn core_replace(
+    handlers: &OperationApiHandlers,
+    request: CoreReplaceRequest,
+) -> Result<AcceptedOperation, CoreReplaceError> {
+    let target_machine = handlers
+        .machine_roster
+        .active_machine(&request.machine_id)
+        .await
+        .map_err(|error| CoreReplaceError::Unavailable {
+            operation_id: request.operation_id.clone(),
+            message: error.to_string(),
+        })?;
+    if target_machine.is_none() {
+        return Err(CoreReplaceError::NoSuchMachine {
+            operation_id: request.operation_id,
+            machine_id: request.machine_id,
+        });
+    }
+
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_core_replace(CoreReplaceSubmitCommand {
+            operation_id: request.operation_id,
+            machine_id: request.machine_id,
+            successor_nats_url: request.successor_nats_url,
+        })
+        .await
+        .map_err(|error| match super::error_map::submit_failure(error) {
+            super::error_map::SubmitFailure::InvalidDeployTarget => {
+                unreachable!("core replace submit is not deploy target")
+            }
+            super::error_map::SubmitFailure::ResourceBusy { .. } => {
+                unreachable!("core replace submit has no namespace lock")
+            }
+            super::error_map::SubmitFailure::Unavailable { message } => {
+                CoreReplaceError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                }
+            }
+            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                CoreReplaceError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                }
+            }
+        })?;
+    Ok(owned_machine_operation(
+        accepted.operation_id,
+        &accepted.machine_id,
+        accepted.start_sequence,
+    ))
 }
 
 #[must_use]

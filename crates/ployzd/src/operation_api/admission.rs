@@ -1,17 +1,17 @@
 //! Controller wiring for operation execution.
 
 use crate::operations::log::{
-    AcceptedDeploySubmission, AcceptedMachineAddSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission, MachineJoinIdentity, MachineJoinRedemption,
-    MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission, OperationRepository,
-    OperationStatusStoreError, RedeemMachineJoinTokenError, SubmitMachineAddError,
-    SubmitOperationError,
+    AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
+    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
+    MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
+    OperationRepository, OperationStatusStoreError, RedeemMachineJoinTokenError,
+    SubmitMachineAddError, SubmitOperationError,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::install::{
-    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
-    MachineJoinTemplate,
+    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate,
 };
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
@@ -58,6 +58,13 @@ pub struct MachineLifecycleSubmitCommand {
     pub operation_id: OperationId,
     pub machine_id: ployz_core::ids::MachineId,
     pub target: ployz_core::state::MachineLifecycle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreReplaceSubmitCommand {
+    pub operation_id: OperationId,
+    pub machine_id: ployz_core::ids::MachineId,
+    pub successor_nats_url: MachineJoinRuntimeNatsUrl,
 }
 
 /// Bootstrap material available at submit time.
@@ -235,6 +242,20 @@ impl OperationControllers {
                 operation_id: command.operation_id,
                 machine_id: command.machine_id,
                 target: command.target,
+            })
+            .await?)
+    }
+
+    pub async fn submit_core_replace(
+        &self,
+        command: CoreReplaceSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedCoreReplaceSubmission, SubmitCommandError> {
+        Ok(self
+            .repository
+            .submit_core_replace(CoreReplaceOperationSubmission {
+                operation_id: command.operation_id,
+                machine_id: command.machine_id,
+                successor_nats_url: command.successor_nats_url,
             })
             .await?)
     }

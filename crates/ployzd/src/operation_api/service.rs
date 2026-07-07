@@ -1,9 +1,9 @@
 //! NATS Service API wiring for daemon commands.
 
 use crate::operation_api::{
-    OperationApiHandlers, deploy_submit, init_first_machine_activate, machine_add, machine_drain,
-    machine_join_redeem, machine_join_report, machine_resume, machine_update, ops_list, ops_status,
-    ops_watch,
+    OperationApiHandlers, core_replace, core_replace_report, deploy_submit,
+    init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
+    machine_join_report, machine_resume, machine_update, ops_list, ops_status, ops_watch,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -14,10 +14,11 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
+        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -87,6 +88,22 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { machine_resume(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::CoreReplace => {
+            bind_operation_contract::<CoreReplaceApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { core_replace(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::CoreReplaceReport => {
+            bind_operation_contract::<CoreReplaceReportApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { core_replace_report(&handlers, request).await },
             )
             .await
         }

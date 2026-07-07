@@ -1,6 +1,7 @@
 //! Operator-facing operation service handlers.
 
 pub mod admission;
+mod core_replace;
 mod error_map;
 mod first_machine;
 mod machine_join;
@@ -8,6 +9,7 @@ mod queries;
 pub mod service;
 mod submit;
 
+pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use queries::{
@@ -15,7 +17,8 @@ pub use queries::{
     ops_list, ops_status, ops_status_missing, ops_watch,
 };
 pub use submit::{
-    deploy_submit, machine_add, machine_drain, machine_resume, machine_update, owned_operation,
+    core_replace, deploy_submit, machine_add, machine_drain, machine_resume, machine_update,
+    owned_operation,
 };
 
 use crate::adapters::nats_authorization::MachineCredentialMint;
