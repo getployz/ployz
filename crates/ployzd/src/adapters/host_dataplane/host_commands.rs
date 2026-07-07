@@ -8,8 +8,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 
-const DEFAULT_WIREGUARD_KEY_DIR: &str = "/etc/ployz";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum HostDataplaneEvidence {
     WireGuard(WireGuardReadyEvidence),
@@ -32,6 +30,11 @@ pub(super) enum HostCommandAction {
         component: PloyzNativeMeshComponent,
         program: String,
         args: Vec<String>,
+    },
+    SysctlSet {
+        component: PloyzNativeMeshComponent,
+        name: String,
+        value: String,
     },
     PloyzTcBytecode {
         path: PathBuf,
@@ -75,6 +78,21 @@ impl HostCommandPlan {
     }
 
     #[must_use]
+    pub(super) fn provisioning_sysctl(
+        component: PloyzNativeMeshComponent,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            action: HostCommandAction::SysctlSet {
+                component,
+                name: name.into(),
+                value: value.into(),
+            },
+        }
+    }
+
+    #[must_use]
     pub(super) fn readiness_ployz_tc_bytecode(path: impl Into<PathBuf>) -> Self {
         Self {
             action: HostCommandAction::PloyzTcBytecode { path: path.into() },
@@ -104,7 +122,7 @@ impl HostCommandPlan {
                 program,
                 args,
             } => match run_host_command(program, args, command_timeout).await {
-                HostCommandOutcome::Success(_) => Ok(component_ready_command(
+                HostCommandOutcome::Success => Ok(component_ready_command(
                     *component,
                     program.clone(),
                     args.clone(),
@@ -140,6 +158,34 @@ impl HostCommandPlan {
                     ),
                 )),
             },
+            HostCommandAction::SysctlSet {
+                component,
+                name,
+                value,
+            } => {
+                use sysctl::Sysctl;
+
+                let ctl = sysctl::Ctl::new(name.as_str()).map_err(|source| {
+                    unavailable(
+                        machine_id,
+                        *component,
+                        format!("required sysctl could not be opened: {name}: {source}"),
+                    )
+                })?;
+                ctl.set_value(sysctl::CtlValue::String(value.clone()))
+                    .map_err(|source| {
+                        unavailable(
+                            machine_id,
+                            *component,
+                            format!("required sysctl could not be set: {name}={value}: {source}"),
+                        )
+                    })?;
+                Ok(component_ready_command(
+                    *component,
+                    "sysctl".to_owned(),
+                    vec!["-w".to_owned(), format!("{name}={value}")],
+                ))
+            }
             HostCommandAction::PloyzTcBytecode { path } => {
                 let symbols = validate_ployz_tc_bytecode(machine_id, path)?;
                 Ok(HostDataplaneEvidence::EbpfForwarding(
@@ -166,7 +212,7 @@ fn command_action(
 }
 
 pub(super) enum HostCommandOutcome {
-    Success(std::process::Output),
+    Success,
     Failed(std::process::Output),
     TimedOut,
     CouldNotStart(std::io::Error),
@@ -182,7 +228,7 @@ pub(super) async fn run_host_command(
     match tokio::time::timeout(timeout, command.output()).await {
         Err(_) => HostCommandOutcome::TimedOut,
         Ok(Err(source)) => HostCommandOutcome::CouldNotStart(source),
-        Ok(Ok(output)) if output.status.success() => HostCommandOutcome::Success(output),
+        Ok(Ok(output)) if output.status.success() => HostCommandOutcome::Success,
         Ok(Ok(output)) => HostCommandOutcome::Failed(output),
     }
 }
@@ -192,8 +238,8 @@ pub(super) fn default_command_plans(
     ebpf_ctl_path: PathBuf,
     bridge_ifname: String,
     wg_ifname: String,
-    private_key_path: PathBuf,
-    listen_port: u16,
+    _private_key_path: PathBuf,
+    _listen_port: u16,
     ebpf_pin_path: Option<PathBuf>,
 ) -> Vec<HostCommandPlan> {
     let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
@@ -207,8 +253,7 @@ pub(super) fn default_command_plans(
             wg_ifname.clone(),
         ],
     );
-    let mut plans = wireguard_interface_plans(wg_ifname.clone(), private_key_path, listen_port);
-    plans.extend([
+    vec![
         HostCommandPlan::readiness_path(PloyzNativeMeshComponent::EbpfForwarding, "/sys/fs/bpf"),
         HostCommandPlan::readiness_command(PloyzNativeMeshComponent::EbpfForwarding, "tc", ["-V"]),
         HostCommandPlan::readiness_path(PloyzNativeMeshComponent::EbpfForwarding, ebpf_ctl_path),
@@ -223,8 +268,7 @@ pub(super) fn default_command_plans(
             ebpf_ctl_program,
             ensure_attached_args,
         ),
-    ]);
-    plans
+    ]
 }
 
 pub(super) fn ebpf_ctl_args(
@@ -238,96 +282,6 @@ pub(super) fn ebpf_ctl_args(
     }
     command_args.extend(args);
     command_args
-}
-
-/// The steps that make the local WireGuard interface exist with its key and
-/// listen port, plus the readiness checks they depend on.
-pub(super) fn wireguard_interface_plans(
-    wg_ifname: String,
-    private_key_path: PathBuf,
-    listen_port: u16,
-) -> Vec<HostCommandPlan> {
-    let private_key_dir = private_key_path
-        .parent()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| DEFAULT_WIREGUARD_KEY_DIR.to_owned());
-    let private_key_arg = private_key_path.display().to_string();
-    vec![
-        HostCommandPlan::readiness_path(PloyzNativeMeshComponent::WireGuard, "/dev/net/tun"),
-        HostCommandPlan::readiness_command(PloyzNativeMeshComponent::WireGuard, "wg", ["--version"]),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "install",
-            [
-                "-d".to_owned(),
-                "-m".to_owned(),
-                "0700".to_owned(),
-                private_key_dir,
-            ],
-        ),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "sh",
-            [
-                "-c".to_owned(),
-                "test -s \"$1\" || (umask 077 && wg genkey > \"$1\")".to_owned(),
-                "--".to_owned(),
-                private_key_arg.clone(),
-            ],
-        ),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "sh",
-            [
-                "-c".to_owned(),
-                "if [ -f /etc/apparmor.d/wg ] && command -v apparmor_parser >/dev/null 2>&1; then install -d -m 0755 /etc/apparmor.d/local; touch /etc/apparmor.d/local/wg; if ! grep -qxF \"  $1 r,\" /etc/apparmor.d/local/wg; then printf '\\n  %s r,\\n' \"$1\" >> /etc/apparmor.d/local/wg; fi; apparmor_parser -r /etc/apparmor.d/wg; fi".to_owned(),
-                "--".to_owned(),
-                private_key_arg.clone(),
-            ],
-        ),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "sh",
-            [
-                "-c".to_owned(),
-                "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard"
-                    .to_owned(),
-                "--".to_owned(),
-                wg_ifname.clone(),
-            ],
-        ),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "wg",
-            [
-                "set".to_owned(),
-                wg_ifname.clone(),
-                "private-key".to_owned(),
-                private_key_arg,
-            ],
-        ),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "wg",
-            [
-                "set".to_owned(),
-                wg_ifname.clone(),
-                "listen-port".to_owned(),
-                listen_port.to_string(),
-            ],
-        ),
-        HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "ip",
-            [
-                "link".to_owned(),
-                "set".to_owned(),
-                "up".to_owned(),
-                "dev".to_owned(),
-                wg_ifname.clone(),
-            ],
-        ),
-    ]
 }
 
 fn validate_ployz_tc_bytecode(

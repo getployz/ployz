@@ -5,7 +5,9 @@ use ployz_core::dataplane::{
 };
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
-use ployzd::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
+use ployzd::adapters::host_dataplane::{
+    PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
+};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
@@ -40,6 +42,8 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
     let runner = DockerManagedContainerRunner::local_defaults(
         ENDPOINT_NETWORK_SUBNET,
         DEFAULT_DATAPLANE_BRIDGE_IFNAME,
+        DEFAULT_DATAPLANE_WG_IFNAME,
+        WireGuardMtuPolicy::Fixed(1420),
     )
     .expect("connect to local Docker daemon");
     runner
@@ -56,15 +60,17 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
     );
 
     let peer_key = generated_wireguard_public_key();
-    let preparer =
-        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+    let preparer = PloyzNativeMeshPreparer::new(
+        PloyzNativeMeshHostConfig::with_default_key_material(
             machine_id("core_1"),
             ebpf_bytecode.clone(),
             ebpf_ctl.clone(),
             DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
             DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-        ))
-        .with_command_timeout(Duration::from_secs(20));
+        )
+        .with_mtu_policy(WireGuardMtuPolicy::Fixed(1420)),
+    )
+    .with_command_timeout(Duration::from_secs(20));
 
     let ready = preparer
         .prepare_ployz_native_mesh(&endpoint_routes(), &[edge_peer_with_public_key(peer_key)])
@@ -76,7 +82,7 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
         matches!(
             evidence,
             EbpfForwardingReadyEvidence::PloyzTcBytecode { path, .. }
-                if path == &ebpf_bytecode.display().to_string()
+                if path.as_str() == ebpf_bytecode.display().to_string()
         )
     }));
     assert_ebpf_attached_evidence(&ready.ebpf_forwarding.evidence, &ebpf_ctl);
@@ -100,17 +106,21 @@ async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
     let runner = DockerManagedContainerRunner::local_defaults(
         ENDPOINT_NETWORK_SUBNET,
         DEFAULT_DATAPLANE_BRIDGE_IFNAME,
+        DEFAULT_DATAPLANE_WG_IFNAME,
+        WireGuardMtuPolicy::Fixed(1420),
     )
     .expect("connect to local Docker daemon");
-    let preparer =
-        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+    let preparer = PloyzNativeMeshPreparer::new(
+        PloyzNativeMeshHostConfig::with_default_key_material(
             machine_id.clone(),
             ebpf_bytecode,
             ebpf_ctl.clone(),
             DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
             DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-        ))
-        .with_command_timeout(Duration::from_secs(20));
+        )
+        .with_mtu_policy(WireGuardMtuPolicy::Fixed(1420)),
+    )
+    .with_command_timeout(Duration::from_secs(20));
     let _service = start_machine_role_service(
         nats.machine_client.clone(),
         machine_id.clone(),

@@ -3,10 +3,10 @@
 use ployz_core::dataplane::{
     DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, PloyzNativeMeshComponent,
     PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
-    WireGuardPublicKey, WireGuardReady,
+    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -14,14 +14,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 
 mod host_commands;
+mod host_network;
 mod host_routes;
 
 #[cfg(test)]
 use host_commands::HostCommandAction;
-use host_commands::{
-    HostCommandOutcome, HostCommandPlan, HostDataplaneEvidence, default_command_plans,
-    run_host_command, unavailable, wireguard_interface_plans,
-};
+use host_commands::{HostCommandPlan, HostDataplaneEvidence, default_command_plans, unavailable};
+pub use host_network::WireGuardMtuPolicy;
+pub(crate) use host_network::resolve_wireguard_mtu;
+use host_network::{ensure_private_key, ensure_wireguard_interface, public_key_from_private_key};
 use host_routes::HostDataplaneRouteProgramming;
 
 const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,6 +39,7 @@ pub struct PloyzNativeMeshHostConfig {
     pub wg_ifname: String,
     pub private_key_path: PathBuf,
     pub listen_port: u16,
+    pub mtu_policy: WireGuardMtuPolicy,
     pub ebpf_pin_path: Option<PathBuf>,
 }
 
@@ -60,8 +62,15 @@ impl PloyzNativeMeshHostConfig {
             wg_ifname,
             private_key_path: PathBuf::from(DEFAULT_WIREGUARD_PRIVATE_KEY),
             listen_port: DEFAULT_WIREGUARD_LISTEN_PORT,
+            mtu_policy: WireGuardMtuPolicy::Auto,
             ebpf_pin_path: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_mtu_policy(mut self, mtu_policy: WireGuardMtuPolicy) -> Self {
+        self.mtu_policy = mtu_policy;
+        self
     }
 }
 
@@ -70,8 +79,11 @@ pub struct PloyzNativeMeshPreparer {
     machine_id: MachineId,
     plans: Vec<HostCommandPlan>,
     route_programming: Option<HostDataplaneRouteProgramming>,
-    peer_programming: Option<HostDataplanePeerProgramming>,
     public_key: HostWireGuardPublicKey,
+    private_key_path: PathBuf,
+    listen_port: u16,
+    mtu_policy: WireGuardMtuPolicy,
+    wg_ifname: String,
     endpoint_rotation: Arc<WireGuardEndpointRotation>,
     command_timeout: Duration,
 }
@@ -87,6 +99,7 @@ impl PloyzNativeMeshPreparer {
             wg_ifname,
             private_key_path,
             listen_port,
+            mtu_policy,
             ebpf_pin_path,
         } = config;
         let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
@@ -107,15 +120,14 @@ impl PloyzNativeMeshPreparer {
                 wg_ifname: wg_ifname.clone(),
                 ebpf_pin_path,
             }),
-            peer_programming: Some(HostDataplanePeerProgramming {
-                wg_ifname: wg_ifname.clone(),
-            }),
             endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(wg_ifname.clone())),
-            public_key: HostWireGuardPublicKey::Command {
-                wg_ifname,
-                private_key_path,
-                listen_port,
+            public_key: HostWireGuardPublicKey::LocalKey {
+                private_key_path: private_key_path.clone(),
             },
+            private_key_path,
+            listen_port,
+            mtu_policy,
+            wg_ifname,
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -129,11 +141,14 @@ impl PloyzNativeMeshPreparer {
             machine_id,
             plans: plans.into_iter().collect(),
             route_programming: None,
-            peer_programming: None,
             endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(String::new())),
             public_key: HostWireGuardPublicKey::Static(
                 WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"),
             ),
+            private_key_path: PathBuf::from(DEFAULT_WIREGUARD_PRIVATE_KEY),
+            listen_port: DEFAULT_WIREGUARD_LISTEN_PORT,
+            mtu_policy: WireGuardMtuPolicy::Auto,
+            wg_ifname: String::new(),
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -163,6 +178,39 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
     ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
         let mut wireguard = Vec::new();
         let mut ebpf_forwarding = Vec::new();
+        if !self.wg_ifname.is_empty() {
+            let private_key = ensure_private_key(&self.private_key_path).map_err(|message| {
+                unavailable(
+                    &self.machine_id,
+                    PloyzNativeMeshComponent::WireGuard,
+                    message,
+                )
+            })?;
+            let mtu = resolve_wireguard_mtu(self.mtu_policy, &self.wg_ifname).await;
+            ensure_wireguard_interface(
+                &self.wg_ifname,
+                &private_key,
+                self.listen_port,
+                mtu,
+                endpoint_routes,
+                peers,
+                &self.machine_id,
+            )
+            .await
+            .map_err(|message| {
+                unavailable(
+                    &self.machine_id,
+                    PloyzNativeMeshComponent::WireGuard,
+                    message,
+                )
+            })?;
+            wireguard.push(WireGuardReadyEvidence::HostPath {
+                path: "/dev/net/tun".to_owned(),
+            });
+            wireguard.push(WireGuardReadyEvidence::HostPath {
+                path: self.private_key_path.display().to_string(),
+            });
+        }
         for plan in &self.plans {
             match plan.run(&self.machine_id, self.command_timeout).await? {
                 HostDataplaneEvidence::WireGuard(evidence) => wireguard.push(evidence),
@@ -179,21 +227,11 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
                 }
             }
         }
-        if let Some(peer_programming) = &self.peer_programming {
-            for plan in peer_programming.plans_for(&self.machine_id, peers) {
-                match plan.run(&self.machine_id, self.command_timeout).await? {
-                    HostDataplaneEvidence::WireGuard(evidence) => wireguard.push(evidence),
-                    HostDataplaneEvidence::EbpfForwarding(evidence) => {
-                        ebpf_forwarding.push(evidence);
-                    }
-                }
-            }
-            self.endpoint_rotation.update_and_start(
-                self.machine_id.clone(),
-                peers,
-                self.command_timeout,
-            );
-        }
+        self.endpoint_rotation.update_and_start(
+            self.machine_id.clone(),
+            peers,
+            self.command_timeout,
+        );
         // The plans above already provisioned the WireGuard interface, so
         // the public key only needs to be read here.
         let public_key = self
@@ -231,10 +269,8 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
 enum HostWireGuardPublicKey {
     #[cfg(test)]
     Static(WireGuardPublicKey),
-    Command {
-        wg_ifname: String,
+    LocalKey {
         private_key_path: PathBuf,
-        listen_port: u16,
     },
 }
 
@@ -244,25 +280,15 @@ impl HostWireGuardPublicKey {
     async fn provision_and_read(
         &self,
         machine_id: &MachineId,
-        command_timeout: Duration,
+        _command_timeout: Duration,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
         match self {
             #[cfg(test)]
             Self::Static(public_key) => Ok(public_key.clone()),
-            Self::Command {
-                wg_ifname,
-                private_key_path,
-                listen_port,
-            } => {
-                for plan in wireguard_interface_plans(
-                    wg_ifname.clone(),
-                    private_key_path.clone(),
-                    *listen_port,
-                ) {
-                    let _ = plan.run(machine_id, command_timeout).await?;
-                }
-                read_wireguard_public_key(machine_id, wg_ifname, command_timeout).await
-            }
+            Self::LocalKey { private_key_path } => read_wireguard_public_key(private_key_path)
+                .map_err(|message| {
+                    unavailable(machine_id, PloyzNativeMeshComponent::WireGuard, message)
+                }),
         }
     }
 
@@ -271,47 +297,16 @@ impl HostWireGuardPublicKey {
     async fn read_provisioned(
         &self,
         machine_id: &MachineId,
-        command_timeout: Duration,
+        _command_timeout: Duration,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
         match self {
             #[cfg(test)]
             Self::Static(public_key) => Ok(public_key.clone()),
-            Self::Command { wg_ifname, .. } => {
-                read_wireguard_public_key(machine_id, wg_ifname, command_timeout).await
-            }
+            Self::LocalKey { private_key_path } => read_wireguard_public_key(private_key_path)
+                .map_err(|message| {
+                    unavailable(machine_id, PloyzNativeMeshComponent::WireGuard, message)
+                }),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HostDataplanePeerProgramming {
-    wg_ifname: String,
-}
-
-impl HostDataplanePeerProgramming {
-    fn plans_for(&self, machine_id: &MachineId, peers: &[WireGuardPeer]) -> Vec<HostCommandPlan> {
-        peers
-            .iter()
-            .filter(|peer| peer.machine_id != *machine_id)
-            .map(|peer| {
-                HostCommandPlan::provisioning_command(
-                    PloyzNativeMeshComponent::WireGuard,
-                    "wg",
-                    [
-                        "set".to_owned(),
-                        self.wg_ifname.clone(),
-                        "peer".to_owned(),
-                        peer.public_key.as_str().to_owned(),
-                        "endpoint".to_owned(),
-                        peer.active_endpoint.to_string(),
-                        "allowed-ips".to_owned(),
-                        peer.endpoint_subnet.clone(),
-                        "persistent-keepalive".to_owned(),
-                        "25".to_owned(),
-                    ],
-                )
-            })
-            .collect()
     }
 }
 
@@ -336,6 +331,7 @@ struct WireGuardEndpointRotation {
 
 #[derive(Debug, Clone)]
 struct RotatingWireGuardPeer {
+    endpoint_subnet: String,
     endpoints: Vec<std::net::SocketAddr>,
     active_endpoint: std::net::SocketAddr,
     last_endpoint_change: Instant,
@@ -408,6 +404,7 @@ impl WireGuardEndpointRotation {
                     state.insert(
                         key,
                         RotatingWireGuardPeer {
+                            endpoint_subnet: peer.endpoint_subnet.clone(),
                             endpoints: peer.candidate_endpoints.clone(),
                             active_endpoint: peer.active_endpoint,
                             last_endpoint_change: Instant::now(),
@@ -419,28 +416,24 @@ impl WireGuardEndpointRotation {
         state.retain(|key, _| present.contains(key));
     }
 
-    async fn rotate_once(&self, command_timeout: Duration) {
-        let Some(handshakes) = read_latest_handshakes(&self.wg_ifname, command_timeout).await
-        else {
+    async fn rotate_once(&self, _command_timeout: Duration) {
+        let Some(handshakes) = read_latest_handshakes(&self.wg_ifname).await else {
             return;
         };
-        for (public_key, endpoint) in self.rotations_due(&handshakes) {
-            let args = vec![
-                "set".to_owned(),
-                self.wg_ifname.clone(),
-                "peer".to_owned(),
-                public_key,
-                "endpoint".to_owned(),
-                endpoint.to_string(),
-            ];
-            let _ = run_host_command("wg", &args, command_timeout).await;
+        for (public_key, endpoint, endpoint_subnet) in self.rotations_due(&handshakes) {
+            let _ = host_network::configure_peer_endpoint(
+                &self.wg_ifname,
+                &public_key,
+                endpoint,
+                &endpoint_subnet,
+            );
         }
     }
 
     fn rotations_due(
         &self,
         handshakes: &std::collections::BTreeMap<String, u64>,
-    ) -> Vec<(String, std::net::SocketAddr)> {
+    ) -> Vec<(String, std::net::SocketAddr, String)> {
         let mut state = self
             .peers
             .lock()
@@ -476,7 +469,7 @@ impl WireGuardEndpointRotation {
             };
             peer.active_endpoint = next;
             peer.last_endpoint_change = Instant::now();
-            rotations.push((public_key.clone(), next));
+            rotations.push((public_key.clone(), next, peer.endpoint_subnet.clone()));
         }
         rotations
     }
@@ -484,29 +477,8 @@ impl WireGuardEndpointRotation {
 
 async fn read_latest_handshakes(
     wg_ifname: &str,
-    command_timeout: Duration,
 ) -> Option<std::collections::BTreeMap<String, u64>> {
-    let args = vec![
-        "show".to_owned(),
-        wg_ifname.to_owned(),
-        "latest-handshakes".to_owned(),
-    ];
-    let HostCommandOutcome::Success(output) = run_host_command("wg", &args, command_timeout).await
-    else {
-        return None;
-    };
-    let mut handshakes = std::collections::BTreeMap::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(public_key), Some(timestamp), None) = (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        if let Ok(timestamp) = timestamp.parse::<u64>() {
-            handshakes.insert(public_key.to_owned(), timestamp);
-        }
-    }
-    Some(handshakes)
+    host_network::read_latest_handshakes(wg_ifname).ok()
 }
 
 fn current_unix_seconds() -> u64 {
@@ -516,55 +488,9 @@ fn current_unix_seconds() -> u64 {
         .unwrap_or_default()
 }
 
-async fn read_wireguard_public_key(
-    machine_id: &MachineId,
-    wg_ifname: &str,
-    command_timeout: Duration,
-) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
-    let args = vec![
-        "show".to_owned(),
-        wg_ifname.to_owned(),
-        "public-key".to_owned(),
-    ];
-    let output = match run_host_command("wg", &args, command_timeout).await {
-        HostCommandOutcome::Success(output) => output,
-        HostCommandOutcome::TimedOut => {
-            return Err(unavailable(
-                machine_id,
-                PloyzNativeMeshComponent::WireGuard,
-                format!(
-                    "wireguard public key command timed out after {}s: wg show {} public-key",
-                    command_timeout.as_secs(),
-                    wg_ifname,
-                ),
-            ));
-        }
-        HostCommandOutcome::CouldNotStart(source) => {
-            return Err(unavailable(
-                machine_id,
-                PloyzNativeMeshComponent::WireGuard,
-                format!("wireguard public key command could not start: {source}"),
-            ));
-        }
-        HostCommandOutcome::Failed(output) => {
-            return Err(unavailable(
-                machine_id,
-                PloyzNativeMeshComponent::WireGuard,
-                format!(
-                    "wireguard public key command failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            ));
-        }
-    };
-    let public_key = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    WireGuardPublicKey::try_new(public_key).map_err(|source| {
-        unavailable(
-            machine_id,
-            PloyzNativeMeshComponent::WireGuard,
-            format!("wireguard public key is invalid: {source}"),
-        )
-    })
+fn read_wireguard_public_key(private_key_path: &Path) -> Result<WireGuardPublicKey, String> {
+    let private_key = ensure_private_key(private_key_path)?;
+    public_key_from_private_key(&private_key)
 }
 
 #[cfg(test)]
@@ -601,6 +527,7 @@ mod tests {
         rotation.peers.lock().expect("lock").insert(
             "peerkey".to_owned(),
             RotatingWireGuardPeer {
+                endpoint_subnet: "10.42.2.0/24".to_owned(),
                 endpoints: vec![a, b],
                 active_endpoint: a,
                 last_endpoint_change: Instant::now()
@@ -611,7 +538,10 @@ mod tests {
 
         // No handshake yet and past the settle window → advance to the next candidate.
         let due = rotation.rotations_due(&std::collections::BTreeMap::new());
-        assert_eq!(due, vec![("peerkey".to_owned(), b)]);
+        assert_eq!(
+            due,
+            vec![("peerkey".to_owned(), b, "10.42.2.0/24".to_owned())]
+        );
     }
 
     #[test]
@@ -622,6 +552,7 @@ mod tests {
         rotation.peers.lock().expect("lock").insert(
             "peerkey".to_owned(),
             RotatingWireGuardPeer {
+                endpoint_subnet: "10.42.2.0/24".to_owned(),
                 endpoints: vec![a, b],
                 active_endpoint: a,
                 last_endpoint_change: Instant::now(),
@@ -664,121 +595,6 @@ mod tests {
                     ]
             )
         }));
-    }
-
-    #[test]
-    fn default_command_plans_ensure_wireguard_interface_and_key() {
-        let plans = default_command_plans(
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
-            "/usr/local/bin/ployz-ebpf-ctl".into(),
-            "docker0".to_owned(),
-            "ployz-wg0".to_owned(),
-            "/etc/ployz/wireguard.key".into(),
-            51820,
-            None,
-        );
-
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "install",
-            ["-d", "-m", "0700", "/etc/ployz"]
-        )));
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "sh",
-            [
-                "-c",
-                "test -s \"$1\" || (umask 077 && wg genkey > \"$1\")",
-                "--",
-                "/etc/ployz/wireguard.key"
-            ]
-        )));
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "sh",
-            [
-                "-c",
-                "if [ -f /etc/apparmor.d/wg ] && command -v apparmor_parser >/dev/null 2>&1; then install -d -m 0755 /etc/apparmor.d/local; touch /etc/apparmor.d/local/wg; if ! grep -qxF \"  $1 r,\" /etc/apparmor.d/local/wg; then printf '\\n  %s r,\\n' \"$1\" >> /etc/apparmor.d/local/wg; fi; apparmor_parser -r /etc/apparmor.d/wg; fi",
-                "--",
-                "/etc/ployz/wireguard.key"
-            ]
-        )));
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "sh",
-            [
-                "-c",
-                "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard",
-                "--",
-                "ployz-wg0"
-            ]
-        )));
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "wg",
-            [
-                "set",
-                "ployz-wg0",
-                "private-key",
-                "/etc/ployz/wireguard.key"
-            ]
-        )));
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "wg",
-            ["set", "ployz-wg0", "listen-port", "51820"]
-        )));
-        assert!(plans.contains(&HostCommandPlan::provisioning_command(
-            PloyzNativeMeshComponent::WireGuard,
-            "ip",
-            ["link", "set", "up", "dev", "ployz-wg0"]
-        )));
-    }
-
-    #[test]
-    fn peer_programming_adds_only_peer_wireguard_peers() {
-        let peer_programming = HostDataplanePeerProgramming {
-            wg_ifname: "ployz-wg0".to_owned(),
-        };
-        let plans = peer_programming.plans_for(
-            &machine_id("machine_a"),
-            &[
-                WireGuardPeer {
-                    machine_id: machine_id("machine_a"),
-                    endpoint_subnet: "10.42.1.0/24".to_owned(),
-                    active_endpoint: "203.0.113.1:51820".parse().expect("valid endpoint"),
-                    candidate_endpoints: vec!["203.0.113.1:51820".parse().expect("valid endpoint")],
-                    public_key: wireguard_public_key("public-machine_a"),
-                },
-                WireGuardPeer {
-                    machine_id: machine_id("machine_b"),
-                    endpoint_subnet: "10.42.2.0/24".to_owned(),
-                    active_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
-                    candidate_endpoints: vec!["203.0.113.2:51820".parse().expect("valid endpoint")],
-                    public_key: wireguard_public_key("public-machine_b"),
-                },
-            ],
-        );
-
-        assert_eq!(
-            plans,
-            vec![HostCommandPlan::provisioning_command(
-                PloyzNativeMeshComponent::WireGuard,
-                "wg",
-                [
-                    "set",
-                    "ployz-wg0",
-                    "peer",
-                    "public-machine_b",
-                    "endpoint",
-                    "203.0.113.2:51820",
-                    "allowed-ips",
-                    "10.42.2.0/24",
-                    "persistent-keepalive",
-                    "25"
-                ]
-            )]
-        );
     }
 
     #[tokio::test]
@@ -890,9 +706,5 @@ mod tests {
 
     fn machine_id(value: &str) -> MachineId {
         MachineId::try_new(value).expect("valid machine id")
-    }
-
-    fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
-        WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
     }
 }

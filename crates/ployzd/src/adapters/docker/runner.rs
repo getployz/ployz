@@ -1,5 +1,7 @@
-use super::network::{ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
+use super::network::{DRIVER_MTU_OPTION, ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
 use crate::adapters::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
+use crate::adapters::host_dataplane::WireGuardMtuPolicy;
+use crate::adapters::host_dataplane::resolve_wireguard_mtu;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -9,7 +11,7 @@ use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryNetworkSettings,
-    ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkingConfig,
+    ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkInspect, NetworkingConfig,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectNetworkOptions, ListContainersOptionsBuilder,
@@ -32,6 +34,8 @@ pub struct DockerManagedContainerRunner {
     docker: DockerHandle,
     endpoint_network_subnet: String,
     endpoint_bridge_ifname: String,
+    endpoint_wg_ifname: String,
+    endpoint_mtu_policy: WireGuardMtuPolicy,
 }
 
 /// How the runner reaches the Docker daemon: an already-built client, or a
@@ -47,12 +51,16 @@ impl DockerManagedContainerRunner {
     pub fn local_defaults(
         endpoint_network_subnet: impl Into<String>,
         endpoint_bridge_ifname: impl Into<String>,
+        endpoint_wg_ifname: impl Into<String>,
+        endpoint_mtu_policy: WireGuardMtuPolicy,
     ) -> Result<Self, DockerManagedContainerRunnerConnectError> {
         let docker = connect_local_defaults()?;
         Ok(Self {
             docker: DockerHandle::Connected(docker),
             endpoint_network_subnet: endpoint_network_subnet.into(),
             endpoint_bridge_ifname: endpoint_bridge_ifname.into(),
+            endpoint_wg_ifname: endpoint_wg_ifname.into(),
+            endpoint_mtu_policy,
         })
     }
 
@@ -60,11 +68,15 @@ impl DockerManagedContainerRunner {
     pub fn lazy_local_defaults(
         endpoint_network_subnet: String,
         endpoint_bridge_ifname: String,
+        endpoint_wg_ifname: String,
+        endpoint_mtu_policy: WireGuardMtuPolicy,
     ) -> Self {
         Self {
             docker: DockerHandle::LazyLocalDefaults(Arc::new(tokio::sync::OnceCell::new())),
             endpoint_network_subnet,
             endpoint_bridge_ifname,
+            endpoint_wg_ifname,
+            endpoint_mtu_policy,
         }
     }
 
@@ -342,17 +354,37 @@ impl DockerManagedContainerRunner {
             .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
-        if docker
+        let endpoint_mtu =
+            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
+        if let Ok(network) = docker
             .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
             .await
-            .is_ok()
         {
-            return Ok(());
+            if endpoint_network_mtu_matches(&network, endpoint_mtu) {
+                return Ok(());
+            }
+            if endpoint_network_has_containers(&network) {
+                return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+                    message: format!(
+                        "Docker network {ENDPOINT_NETWORK_NAME} has MTU {}, expected {endpoint_mtu}, and has attached containers",
+                        endpoint_network_mtu(&network).unwrap_or_else(|| "unset".to_owned())
+                    ),
+                });
+            }
+            docker
+                .remove_network(ENDPOINT_NETWORK_NAME)
+                .await
+                .map_err(|error| MachineContainerRunnerError::EnsureEndpointNetwork {
+                    message: format!(
+                        "remove stale Docker network {ENDPOINT_NETWORK_NAME}: {error}"
+                    ),
+                })?;
         }
 
         let request = endpoint_network_create_request(
             &self.endpoint_network_subnet,
             &self.endpoint_bridge_ifname,
+            endpoint_mtu,
         );
 
         match docker.create_network(request).await {
@@ -375,6 +407,24 @@ impl DockerManagedContainerRunner {
 
         Ok(())
     }
+}
+
+fn endpoint_network_mtu_matches(network: &NetworkInspect, endpoint_mtu: u32) -> bool {
+    endpoint_network_mtu(network).as_deref() == Some(&endpoint_mtu.to_string())
+}
+
+fn endpoint_network_mtu(network: &NetworkInspect) -> Option<String> {
+    network
+        .options
+        .as_ref()
+        .and_then(|options| options.get(DRIVER_MTU_OPTION).cloned())
+}
+
+fn endpoint_network_has_containers(network: &NetworkInspect) -> bool {
+    network
+        .containers
+        .as_ref()
+        .is_some_and(|containers| !containers.is_empty())
 }
 
 fn is_network_already_exists(error: &BollardError) -> bool {
@@ -651,6 +701,35 @@ mod tests {
                 message: "different conflict".to_owned(),
             }
         ));
+    }
+
+    #[test]
+    fn endpoint_network_mtu_matches_driver_option() {
+        let network = NetworkInspect {
+            options: Some(HashMap::from([(
+                DRIVER_MTU_OPTION.to_owned(),
+                "1420".to_owned(),
+            )])),
+            ..Default::default()
+        };
+
+        assert!(endpoint_network_mtu_matches(&network, 1420));
+        assert!(!endpoint_network_mtu_matches(&network, 1412));
+    }
+
+    #[test]
+    fn endpoint_network_container_detection_treats_missing_as_empty() {
+        let empty = NetworkInspect::default();
+        let attached = NetworkInspect {
+            containers: Some(HashMap::from([(
+                "container-id".to_owned(),
+                bollard::models::EndpointResource::default(),
+            )])),
+            ..Default::default()
+        };
+
+        assert!(!endpoint_network_has_containers(&empty));
+        assert!(endpoint_network_has_containers(&attached));
     }
 
     #[test]

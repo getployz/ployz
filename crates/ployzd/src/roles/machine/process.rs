@@ -4,7 +4,9 @@ use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::adapters::docker::runner::DockerManagedContainerRunner;
-use crate::adapters::host_dataplane::{PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer};
+use crate::adapters::host_dataplane::{
+    PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
+};
 use crate::config::MachineProcessConfig;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use crate::roles::machine::intent_mirror::MachineIntentMirror;
@@ -80,18 +82,24 @@ pub async fn start_machine_process(
     let client = connect_authenticated_pool(&connect, &initial_pool, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(MachineProcessError::ConnectNats)?;
+    let mtu_policy = WireGuardMtuPolicy::from_config(config.ployz_native_mesh.wg_mtu)
+        .map_err(|message| MachineProcessError::InvalidDataplaneMtu { message })?;
     let runner = DockerManagedContainerRunner::lazy_local_defaults(
         config.ployz_native_mesh.endpoint_subnet.clone(),
         config.ployz_native_mesh.bridge_ifname.clone(),
+        config.ployz_native_mesh.wg_ifname.clone(),
+        mtu_policy,
     );
-    let preparer =
-        PloyzNativeMeshPreparer::new(PloyzNativeMeshHostConfig::with_default_key_material(
+    let preparer = PloyzNativeMeshPreparer::new(
+        PloyzNativeMeshHostConfig::with_default_key_material(
             config.machine_id.clone(),
             config.artifacts.ebpf_bytecode_path.clone(),
             config.artifacts.ebpf_ctl_path.clone(),
             config.ployz_native_mesh.bridge_ifname.clone(),
             config.ployz_native_mesh.wg_ifname.clone(),
-        ));
+        )
+        .with_mtu_policy(mtu_policy),
+    );
 
     start_machine_process_with_ports(
         client,
@@ -464,6 +472,7 @@ pub enum MachineProcessError {
     EncodeFacts(serde_json::Error),
     PublishFacts { message: String },
     ObservationTimedOut { timeout: Duration },
+    InvalidDataplaneMtu { message: String },
     StartMachineService(MachineServiceError),
     ShutdownSignal(std::io::Error),
     ShutdownMachineService(NatsServiceShutdownError),
@@ -487,6 +496,9 @@ impl fmt::Display for MachineProcessError {
                     "machine observation publish timed out after {}s",
                     timeout.as_secs()
                 )
+            }
+            Self::InvalidDataplaneMtu { message } => {
+                write!(formatter, "invalid dataplane WireGuard MTU: {message}")
             }
             Self::StartMachineService(error) => {
                 write!(formatter, "failed to start machine service: {error:?}")
