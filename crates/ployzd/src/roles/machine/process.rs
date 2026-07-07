@@ -532,7 +532,6 @@ mod tests {
             activated_by: ployz_test_support::ids::operation_id("op_activate"),
             lifecycle: ployz_core::state::MachineLifecycle::Active,
             public_endpoint: endpoint.map(|ip| ip.parse().expect("ip")),
-            nkey_public: None,
         }
     }
 

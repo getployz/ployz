@@ -184,7 +184,6 @@ mod tests {
                 activated_by: operation_id("op_activate"),
                 lifecycle: MachineLifecycle::Active,
                 public_endpoint: None,
-                nkey_public: None,
             })
             .await
             .expect("seed machine");

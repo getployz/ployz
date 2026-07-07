@@ -213,17 +213,6 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .expect("machine inspects");
     assert_eq!(inspected.active.machine_id, machine_id("machine_2"));
     assert_eq!(inspected.active.name.as_str(), "edge_2");
-    // The roster carries the machine's minted nkey public (piece 1), so a promoted
-    // core can regenerate authorized-users from the mirror alone.
-    assert!(
-        inspected
-            .active
-            .nkey_public
-            .as_ref()
-            .expect("roster carries the machine's minted nkey public")
-            .as_str()
-            .starts_with('U')
-    );
     assert_eq!(
         inspected
             .public_ip
@@ -719,7 +708,6 @@ async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> Machin
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
         public_endpoint: None,
-        nkey_public: None,
         lifecycle: MachineLifecycle::Active,
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),

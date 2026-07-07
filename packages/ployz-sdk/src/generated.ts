@@ -266,13 +266,7 @@ lifecycle: MachineLifecycle,
  * advertised one; never cleared on a transient disconnect — reachability is
  * a durable address property, not live liveness.
  */
-public_endpoint: string | null,
-/**
- * The machine's NATS nkey public, minted at machine-add. Legacy: superseded by
- * the mirrored `authorized_users` grant set (ADR 0031); pending deletion once
- * promotion no longer reads the roster for auth.
- */
-nkey_public: NatsUserPublicKey | null, };
+public_endpoint: string | null, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 

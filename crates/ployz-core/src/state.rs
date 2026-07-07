@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::MachineName;
-use crate::nats_config::{NatsAuthorizedUser, NatsUserPublicKey};
+use crate::nats_config::NatsAuthorizedUser;
 use crate::ops::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
 
@@ -49,11 +49,6 @@ pub struct ActiveMachineState {
     /// a durable address property, not live liveness.
     #[serde(default)]
     pub public_endpoint: Option<IpAddr>,
-    /// The machine's NATS nkey public, minted at machine-add. Legacy: superseded by
-    /// the mirrored `authorized_users` grant set (ADR 0031); pending deletion once
-    /// promotion no longer reads the roster for auth.
-    #[serde(default)]
-    pub nkey_public: Option<NatsUserPublicKey>,
 }
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a
@@ -102,22 +97,6 @@ pub struct IntentSnapshot {
 }
 
 impl IntentSnapshot {
-    /// The `(machine, nkey public)` grants a promoted core re-renders
-    /// authorized-users from (ADR 0031). Legacy: pending deletion once promotion
-    /// reuses the mirrored `authorized_users` grant set instead.
-    #[must_use]
-    pub fn authorized_machine_publics(&self) -> Vec<(MachineId, NatsUserPublicKey)> {
-        self.active_machines
-            .iter()
-            .filter_map(|machine| {
-                machine
-                    .nkey_public
-                    .clone()
-                    .map(|public| (machine.machine_id.clone(), public))
-            })
-            .collect()
-    }
-
     /// A specific machine's advertised public endpoint, if the core recorded one.
     #[must_use]
     pub fn public_endpoint_of(&self, machine_id: &MachineId) -> Option<IpAddr> {
