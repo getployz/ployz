@@ -12,6 +12,7 @@ use ployz_core::state::{
     ServingTargetEntry,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
 };
@@ -36,6 +37,7 @@ use ployzctl::api_client::{
     NatsServiceRequestFailure, OperationApiClient, OperationApiClientError,
 };
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 static SECURED_API_FIXTURE_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
@@ -45,6 +47,7 @@ struct SecuredApiFixture {
     _nats: ployz_test_support::nats::TestNats,
     service_client: async_nats::Client,
     user_client: async_nats::Client,
+    join_client: async_nats::Client,
 }
 
 async fn secured_api_fixture() -> SecuredApiFixture {
@@ -56,11 +59,15 @@ async fn secured_api_fixture() -> SecuredApiFixture {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let service_client = nats.controller.clone();
     let user_client = nats.user.clone();
+    let join_client = connect_authenticated(&nats.server.join_config(), Duration::from_secs(5))
+        .await
+        .expect("join connects");
     SecuredApiFixture {
         _lock: lock,
         _nats: nats,
         service_client,
         user_client,
+        join_client,
     }
 }
 
@@ -79,7 +86,8 @@ async fn operation_api_client_decodes_successful_envelope() {
             let response: DeploySubmitResponse = OperationApiResponse::Ok {
                 value: AcceptedOperation {
                     operation_id: operation_id("op_123"),
-                    watch_subject: "plz.v1.op.op_123.>".to_owned(),
+                    watch_subject: "plz.v1.progress.namespace.default.operation.op_123.>"
+                        .to_owned(),
                     start_sequence: event_sequence(1),
                 },
             };
@@ -98,7 +106,7 @@ async fn operation_api_client_decodes_successful_envelope() {
         accepted,
         AcceptedOperation {
             operation_id: operation_id("op_123"),
-            watch_subject: "plz.v1.op.op_123.>".to_owned(),
+            watch_subject: "plz.v1.progress.namespace.default.operation.op_123.>".to_owned(),
             start_sequence: event_sequence(1),
         }
     );
@@ -120,7 +128,8 @@ async fn operation_api_client_routes_machine_add_success() {
                 value: MachineAddAccepted {
                     accepted: AcceptedOperation {
                         operation_id: operation_id("op_machine"),
-                        watch_subject: "plz.v1.op.op_machine.>".to_owned(),
+                        watch_subject: "plz.v1.progress.machine.machine_2.operation.op_machine.>"
+                            .to_owned(),
                         start_sequence: event_sequence(2),
                     },
                     machine_id: machine_id("machine_2"),
@@ -151,7 +160,7 @@ async fn operation_api_client_routes_machine_add_success() {
 #[tokio::test]
 async fn operation_api_client_routes_machine_join_redeem_success() {
     let nats = secured_api_fixture().await;
-    let client = nats.user_client.clone();
+    let client = nats.join_client.clone();
     let spec = test_api_service(MachineJoinRedeemApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)

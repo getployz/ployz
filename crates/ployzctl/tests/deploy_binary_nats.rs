@@ -131,7 +131,7 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
 fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     AcceptedOperation {
         operation_id: self::operation_id(operation_id),
-        watch_subject: format!("plz.v1.op.{operation_id}.>"),
+        watch_subject: format!("plz.v1.progress.namespace.default.operation.{operation_id}.>"),
         start_sequence: event_sequence(1),
     }
 }

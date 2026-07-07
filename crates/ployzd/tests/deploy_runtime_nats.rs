@@ -47,7 +47,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut intent_changed = nats
-        .client
+        .machine_a
         .subscribe(INTENT_CHANGED)
         .await
         .expect("subscribe intent changes");

@@ -104,7 +104,7 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             authorized_users: vec![NatsAuthorizedUser {
-                principal: NatsPrincipal::User,
+                principal: NatsPrincipal::Operator,
                 nkey_public: MintedNatsUser::generate().expect("mint").public,
             }],
         }

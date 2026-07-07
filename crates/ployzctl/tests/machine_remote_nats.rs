@@ -242,10 +242,17 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
     }
 }
 
-fn accepted_operation(operation_id: &ployz_core::ids::OperationId) -> AcceptedOperation {
+fn accepted_operation(
+    operation_id: &ployz_core::ids::OperationId,
+    machine_id: &ployz_core::ids::MachineId,
+) -> AcceptedOperation {
     AcceptedOperation {
         operation_id: operation_id.clone(),
-        watch_subject: format!("plz.v1.op.{}.>", operation_id.as_str()),
+        watch_subject: format!(
+            "plz.v1.progress.machine.{}.operation.{}.>",
+            machine_id.as_str(),
+            operation_id.as_str()
+        ),
         start_sequence: event_sequence(1),
     }
 }
@@ -560,7 +567,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
 
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
-                        accepted: accepted_operation(&request.operation_id),
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
                         machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
@@ -697,7 +704,7 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
-                        accepted: accepted_operation(&request.operation_id),
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
                         machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
@@ -790,7 +797,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
-                        accepted: accepted_operation(&request.operation_id),
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
                         machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),

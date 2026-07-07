@@ -14,7 +14,7 @@ use ployz_core::ops::{
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
-    machine_id, operation_id, route_hostname, route_port, service_id,
+    machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
 };
 
 #[test]
@@ -115,6 +115,7 @@ fn completed_operation_state_carries_stable_outcome_name() {
 fn running_operation_status_round_trips_through_json() {
     let status = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
@@ -214,13 +215,14 @@ fn terminal_operation_state_is_explicit() {
 fn operation_status_subject_is_variant_specific_data() {
     let status = OperationStatus::deploy_accepted(
         operation_id("op_123"),
+        namespace_id("default"),
         service_id("svc_api"),
         event_sequence(42),
     );
 
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
-        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":"42"}"#
+        r#"{"kind":"deploy","id":"op_123","namespace_id":"default","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":"42"}"#
     );
 }
 

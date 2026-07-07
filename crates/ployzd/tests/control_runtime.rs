@@ -125,6 +125,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     );
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = api
         .machine_add(&MachineAddRequest {
@@ -161,15 +162,16 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         }
     );
 
-    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert_eq!(redeemed.machine_id, machine_id("machine_2"));
 
-    api.machine_join_report(&MachineJoinReportRequest {
-        join_token: accepted.join_token.clone(),
-        outcome: MachineJoinReportOutcome::Completed,
-    })
-    .await
-    .expect("join completion reports");
+    join_api
+        .machine_join_report(&MachineJoinReportRequest {
+            join_token: accepted.join_token.clone(),
+            outcome: MachineJoinReportOutcome::Completed,
+        })
+        .await
+        .expect("join completion reports");
     // The minted per-machine seed is a working Machine credential: connect
     // with it and publish this machine's facts.
     let minted_seed = ployz_core::nats_config::NatsUserSeed::try_new(

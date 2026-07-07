@@ -73,7 +73,10 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     assert!(accepted.operation_id.as_str().starts_with("op_deploy_"));
     assert_eq!(
         accepted.watch_subject,
-        format!("plz.v1.op.{}.>", accepted.operation_id.as_str())
+        format!(
+            "plz.v1.progress.namespace.default.operation.{}.>",
+            accepted.operation_id.as_str()
+        )
     );
     assert_eq!(accepted.start_sequence, event_sequence(1));
     // The control runtime starts executing the accepted deploy immediately,
@@ -834,7 +837,7 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         ployz_test_support::fixtures::machine_join_template(),
         ployz_core::install::MachineJoinSecretDelivery {
             nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
-                "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+                "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
             )
             .expect("valid seed"),
         },

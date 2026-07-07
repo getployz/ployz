@@ -1,33 +1,37 @@
 //! NATS subject construction helpers.
 
-use crate::ids::{CertId, MachineId, OperationId};
+use crate::ids::{MachineId, NamespaceId, OperationId};
 use crate::ops::DeployRunningStage;
 
-pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
+pub const OPERATION_PROGRESS_SCOPE: &str = "plz.v1.progress.>";
 
-pub const API_SERVICE_SCOPE: &str = "plz.v1.svc.api.>";
-pub const MACHINE_SERVICE_SCOPE: &str = "plz.v1.svc.machine.>";
-pub const INTENT_GET: &str = "plz.v1.svc.intent.get";
-pub const INTENT_CHANGED: &str = "plz.v1.intent.changed";
+pub const OPERATOR_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.operator.query.>";
+pub const OPERATOR_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.operator.command.>";
+pub const JOIN_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.join.command.>";
+pub const CORE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.core.query.>";
+pub const MACHINE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.>";
+pub const MACHINE_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.>";
+pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
+pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
 
-pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
-pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
-pub const API_OPS_LIST: &str = "plz.v1.svc.api.ops.list";
-pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
-pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
-pub const API_INIT_FIRST_MACHINE_ACTIVATE: &str = "plz.v1.svc.api.init.first_machine.activate";
-pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
-pub const API_MACHINE_UPDATE: &str = "plz.v1.svc.api.machine.update";
-pub const API_MACHINE_LIST: &str = "plz.v1.svc.api.machine.list";
-pub const API_MACHINE_INSPECT: &str = "plz.v1.svc.api.machine.inspect";
-pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
-pub const API_MACHINE_JOIN_REPORT: &str = "plz.v1.svc.api.machine.join.report";
-pub const API_SERVICE_LIST: &str = "plz.v1.svc.api.service.list";
-pub const API_SERVICE_INSPECT: &str = "plz.v1.svc.api.service.inspect";
-pub const API_RUNTIME_SNAPSHOT: &str = "plz.v1.svc.api.runtime.snapshot";
-pub const API_LOGS_TAIL: &str = "plz.v1.svc.api.logs.tail";
-pub const API_MACHINE_DRAIN: &str = "plz.v1.svc.api.machine.drain";
-pub const API_MACHINE_RESUME: &str = "plz.v1.svc.api.machine.resume";
+pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
+pub const OPERATOR_OPS_LIST: &str = "plz.v1.rpc.operator.query.ops.list";
+pub const OPERATOR_OPS_STATUS: &str = "plz.v1.rpc.operator.query.ops.status";
+pub const OPERATOR_OPS_WATCH: &str = "plz.v1.rpc.operator.query.ops.watch";
+pub const OPERATOR_INIT_FIRST_MACHINE_ACTIVATE: &str =
+    "plz.v1.rpc.operator.command.init.first_machine.activate";
+pub const OPERATOR_MACHINE_ADD: &str = "plz.v1.rpc.operator.command.machine.add";
+pub const OPERATOR_MACHINE_UPDATE: &str = "plz.v1.rpc.operator.command.machine.update";
+pub const OPERATOR_MACHINE_LIST: &str = "plz.v1.rpc.operator.query.machine.list";
+pub const OPERATOR_MACHINE_INSPECT: &str = "plz.v1.rpc.operator.query.machine.inspect";
+pub const JOIN_MACHINE_REDEEM: &str = "plz.v1.rpc.join.command.machine.redeem";
+pub const JOIN_MACHINE_REPORT: &str = "plz.v1.rpc.join.command.machine.report";
+pub const OPERATOR_SERVICE_LIST: &str = "plz.v1.rpc.operator.query.service.list";
+pub const OPERATOR_SERVICE_INSPECT: &str = "plz.v1.rpc.operator.query.service.inspect";
+pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.snapshot";
+pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
+pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
+pub const OPERATOR_MACHINE_RESUME: &str = "plz.v1.rpc.operator.command.machine.resume";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
@@ -68,8 +72,8 @@ impl OperationApiEndpoint {
             Self::MachineResume => "machine.resume",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
-            Self::MachineJoinRedeem => "machine.join.redeem",
-            Self::MachineJoinReport => "machine.join.report",
+            Self::MachineJoinRedeem => "machine.redeem",
+            Self::MachineJoinReport => "machine.report",
             Self::ServiceList => "service.list",
             Self::ServiceInspect => "service.inspect",
             Self::RuntimeSnapshot => "runtime.snapshot",
@@ -83,23 +87,23 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn subject(self) -> &'static str {
         match self {
-            Self::DeploySubmit => API_DEPLOY_SUBMIT,
-            Self::InitFirstMachineActivate => API_INIT_FIRST_MACHINE_ACTIVATE,
-            Self::MachineAdd => API_MACHINE_ADD,
-            Self::MachineUpdate => API_MACHINE_UPDATE,
-            Self::MachineDrain => API_MACHINE_DRAIN,
-            Self::MachineResume => API_MACHINE_RESUME,
-            Self::MachineList => API_MACHINE_LIST,
-            Self::MachineInspect => API_MACHINE_INSPECT,
-            Self::MachineJoinRedeem => API_MACHINE_JOIN_REDEEM,
-            Self::MachineJoinReport => API_MACHINE_JOIN_REPORT,
-            Self::ServiceList => API_SERVICE_LIST,
-            Self::ServiceInspect => API_SERVICE_INSPECT,
-            Self::RuntimeSnapshot => API_RUNTIME_SNAPSHOT,
-            Self::LogsTail => API_LOGS_TAIL,
-            Self::OpsList => API_OPS_LIST,
-            Self::OpsStatus => API_OPS_STATUS,
-            Self::OpsWatch => API_OPS_WATCH,
+            Self::DeploySubmit => OPERATOR_DEPLOY_SUBMIT,
+            Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
+            Self::MachineAdd => OPERATOR_MACHINE_ADD,
+            Self::MachineUpdate => OPERATOR_MACHINE_UPDATE,
+            Self::MachineDrain => OPERATOR_MACHINE_DRAIN,
+            Self::MachineResume => OPERATOR_MACHINE_RESUME,
+            Self::MachineList => OPERATOR_MACHINE_LIST,
+            Self::MachineInspect => OPERATOR_MACHINE_INSPECT,
+            Self::MachineJoinRedeem => JOIN_MACHINE_REDEEM,
+            Self::MachineJoinReport => JOIN_MACHINE_REPORT,
+            Self::ServiceList => OPERATOR_SERVICE_LIST,
+            Self::ServiceInspect => OPERATOR_SERVICE_INSPECT,
+            Self::RuntimeSnapshot => OPERATOR_RUNTIME_SNAPSHOT,
+            Self::LogsTail => OPERATOR_LOGS_TAIL,
+            Self::OpsList => OPERATOR_OPS_LIST,
+            Self::OpsStatus => OPERATOR_OPS_STATUS,
+            Self::OpsWatch => OPERATOR_OPS_WATCH,
         }
     }
 
@@ -127,66 +131,98 @@ impl OperationApiEndpoint {
     }
 }
 
-/// One operation's event subject for a suffix rendered by
-/// [`crate::ops::OperationEvent::subject`]. The prefix here and the
-/// [`op_watch`] pattern must agree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationProgressScope {
+    Namespace { namespace_id: NamespaceId },
+    Machine { machine_id: MachineId },
+    Cluster,
+}
+
+/// One operation's event subject for a suffix rendered by an operation event.
+/// The prefix here and the [`operation_progress_watch`] pattern must agree.
 #[must_use]
-pub fn op_event_subject(operation_id: &OperationId, suffix: &str) -> String {
-    format!("plz.v1.op.{}.{suffix}", operation_id.as_str())
+pub fn operation_progress_subject(
+    scope: &OperationProgressScope,
+    operation_id: &OperationId,
+    suffix: &str,
+) -> String {
+    match scope {
+        OperationProgressScope::Namespace { namespace_id } => format!(
+            "plz.v1.progress.namespace.{}.operation.{}.{suffix}",
+            namespace_id.as_str(),
+            operation_id.as_str()
+        ),
+        OperationProgressScope::Machine { machine_id } => format!(
+            "plz.v1.progress.machine.{}.operation.{}.{suffix}",
+            machine_id.as_str(),
+            operation_id.as_str()
+        ),
+        OperationProgressScope::Cluster => {
+            format!(
+                "plz.v1.progress.cluster.operation.{}.{suffix}",
+                operation_id.as_str()
+            )
+        }
+    }
 }
 
 #[must_use]
-pub fn op_watch(operation_id: &OperationId) -> String {
-    op_event_subject(operation_id, ">")
-}
-
-#[must_use]
-pub fn cert_renewal_schedule(cert_id: &CertId) -> String {
-    format!("plz.v1.sched.cert.renew.{}", cert_id.as_str())
-}
-
-#[must_use]
-pub fn cert_renewal_job(cert_id: &CertId) -> String {
-    format!("plz.v1.job.cert.renew.{}", cert_id.as_str())
+pub fn operation_progress_watch(
+    scope: &OperationProgressScope,
+    operation_id: &OperationId,
+) -> String {
+    operation_progress_subject(scope, operation_id, ">")
 }
 
 #[must_use]
 pub fn machine_service(machine_id: &MachineId, endpoint: MachineServiceEndpoint) -> String {
+    let class = match endpoint.execution() {
+        MachineServiceEndpointExecution::Query => "query",
+        MachineServiceEndpointExecution::Command => "command",
+    };
     format!(
-        "plz.v1.svc.machine.{}.{}",
+        "plz.v1.rpc.machine.{class}.{}.{}",
         machine_id.as_str(),
         endpoint.as_subject()
     )
 }
 
 #[must_use]
-pub fn machine_service_scope(machine_id: &MachineId) -> String {
-    format!("plz.v1.svc.machine.{}.>", machine_id.as_str())
+pub fn machine_service_query_scope(machine_id: &MachineId) -> String {
+    format!("plz.v1.rpc.machine.query.{}.>", machine_id.as_str())
+}
+
+#[must_use]
+pub fn machine_service_command_scope(machine_id: &MachineId) -> String {
+    format!("plz.v1.rpc.machine.command.{}.>", machine_id.as_str())
 }
 
 #[must_use]
 pub fn machine_facts(machine_id: &MachineId) -> String {
-    format!("plz.v1.facts.machine.{}", machine_id.as_str())
+    format!("plz.v1.testimony.machine.{}.snapshot", machine_id.as_str())
 }
 
 #[must_use]
 pub fn machine_container_facts(machine_id: &MachineId) -> String {
-    format!("plz.v1.facts.machine.{}.containers", machine_id.as_str())
+    format!(
+        "plz.v1.testimony.machine.{}.containers",
+        machine_id.as_str()
+    )
 }
 
 #[must_use]
 pub fn machine_facts_scope() -> String {
-    "plz.v1.facts.machine.>".to_owned()
+    "plz.v1.testimony.machine.>".to_owned()
 }
 
 #[must_use]
 pub fn gateway_status(machine_id: &MachineId) -> String {
-    format!("plz.v1.facts.gateway.{}", machine_id.as_str())
+    format!("plz.v1.testimony.gateway.{}.status", machine_id.as_str())
 }
 
 #[must_use]
 pub fn gateway_status_scope() -> String {
-    "plz.v1.facts.gateway.>".to_owned()
+    "plz.v1.testimony.gateway.>".to_owned()
 }
 
 impl DeployRunningStage {
@@ -218,6 +254,12 @@ pub enum MachineServiceEndpoint {
     LogsTail,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineServiceEndpointExecution {
+    Query,
+    Command,
+}
+
 impl MachineServiceEndpoint {
     #[must_use]
     pub const fn as_subject(self) -> &'static str {
@@ -233,6 +275,23 @@ impl MachineServiceEndpoint {
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
+        }
+    }
+
+    #[must_use]
+    pub const fn execution(self) -> MachineServiceEndpointExecution {
+        match self {
+            Self::Inspect
+            | Self::FactsGet
+            | Self::ContainerInspect
+            | Self::SubstrateReport
+            | Self::LogsTail => MachineServiceEndpointExecution::Query,
+            Self::ContainerEnsureEndpointNetwork
+            | Self::ContainerRun
+            | Self::ContainerStop
+            | Self::ContainerRemove
+            | Self::DataplanePrepare
+            | Self::SubstrateUpdate => MachineServiceEndpointExecution::Command,
         }
     }
 }

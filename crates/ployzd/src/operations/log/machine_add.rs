@@ -56,9 +56,12 @@ impl OperationRepository {
                     message: message.to_owned(),
                 }),
             )),
-            MachineAddTxn::Accepted { submitted, event } => {
-                if let Some(event) = event {
-                    publish_progress(&self.progress, event).await;
+            MachineAddTxn::Accepted {
+                submitted,
+                progress,
+            } => {
+                if let Some((event, status)) = progress {
+                    publish_progress(&self.progress, event, &status).await;
                 }
                 let submitted = *submitted;
                 Ok(AcceptedMachineAddSubmission {
@@ -424,7 +427,7 @@ enum MachineAddTxn {
     Conflict(&'static str),
     Accepted {
         submitted: Box<StoredMachineAddSubmission>,
-        event: Option<OperationEvent>,
+        progress: Option<(OperationEvent, OperationStatus)>,
     },
 }
 
@@ -453,7 +456,7 @@ fn submit_machine_add_txn(
             transaction.commit()?;
             return Ok(MachineAddTxn::Accepted {
                 submitted: Box::new(existing),
-                event: None,
+                progress: None,
             });
         }
         return Ok(MachineAddTxn::DuplicateIdempotencyKey);
@@ -517,7 +520,7 @@ fn submit_machine_add_txn(
     transaction.commit()?;
     Ok(MachineAddTxn::Accepted {
         submitted: Box::new(submitted),
-        event: Some(event),
+        progress: Some((event, status)),
     })
 }
 

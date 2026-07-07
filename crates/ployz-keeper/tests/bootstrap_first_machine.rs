@@ -136,7 +136,7 @@ fn first_machine_can_authorize_cloud_user_public_key() {
     assert!(rendered.contains(test_identity().operator.public.as_str()));
     assert!(rendered.contains(test_identity().join.public.as_str()));
     assert!(rendered.contains(cloud_public_key.as_str()));
-    assert_eq!(rendered.matches("# ployz-principal: user").count(), 2);
+    assert_eq!(rendered.matches("# ployz-principal: operator").count(), 2);
 }
 
 #[test]

@@ -215,6 +215,7 @@ pub fn project_operation_event(
         ClassifiedOperationEvent::Deploy { event, .. } => {
             let OperationStatus::Deploy {
                 id,
+                namespace_id,
                 service_id,
                 state,
                 ..
@@ -222,7 +223,7 @@ pub fn project_operation_event(
             else {
                 return Err(kind_mismatch(current, OperationKind::Deploy));
             };
-            deploy::project_event(id, service_id, state, event, event_sequence)
+            deploy::project_event(id, namespace_id, service_id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::Cert { event, .. } => {
             let OperationStatus::Cert {

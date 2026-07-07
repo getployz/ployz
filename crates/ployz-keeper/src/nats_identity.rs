@@ -2,7 +2,7 @@
 //!
 //! Pure generation only: a self-signed cluster CA, a server certificate
 //! covering the machine's reachable names, and the install-time NKey users
-//! (Controller, operator User, Join). Callers own all file I/O.
+//! (Controller, operator Operator, Join). Callers own all file I/O.
 
 use std::fmt;
 use std::net::IpAddr;

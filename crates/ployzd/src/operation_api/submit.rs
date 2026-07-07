@@ -7,9 +7,9 @@ use crate::operation_api::admission::{
     MachineAddSubmitCommand, MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand,
     OperationControllers,
 };
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::EventSequence;
-use ployz_core::subjects::op_watch;
+use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
@@ -24,9 +24,10 @@ use super::error_map::{
 #[must_use]
 pub fn owned_operation(
     operation_id: OperationId,
+    scope: OperationProgressScope,
     start_sequence: EventSequence,
 ) -> AcceptedOperation {
-    let watch_subject = op_watch(&operation_id);
+    let watch_subject = operation_progress_watch(&scope, &operation_id);
     AcceptedOperation {
         operation_id,
         watch_subject,
@@ -69,7 +70,14 @@ pub async fn deploy_submit(
         .submit_deploy(command)
         .await
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
-    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
+    let scope = OperationProgressScope::Namespace {
+        namespace_id: accepted.target.namespace_id.clone(),
+    };
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        scope,
+        accepted.start_sequence,
+    );
     handlers.deploy_driver.start(accepted);
 
     Ok(operation)
@@ -121,7 +129,11 @@ pub async fn machine_add(
     });
 
     Ok(MachineAddAccepted {
-        accepted: owned_operation(accepted.operation_id, accepted.start_sequence),
+        accepted: owned_machine_operation(
+            accepted.operation_id,
+            &accepted.identity.machine_id,
+            accepted.start_sequence,
+        ),
         machine_id: accepted.identity.machine_id,
         bootstrap_url: material.bootstrap_url,
         join_bundle: accepted.identity.join_bundle,
@@ -181,7 +193,11 @@ pub async fn machine_update(
                 }
             }
         })?;
-    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
+    let operation = owned_machine_operation(
+        accepted.operation_id.clone(),
+        &accepted.machine_id,
+        accepted.start_sequence,
+    );
     handlers.machine_update().start(accepted);
 
     Ok(operation)
@@ -261,10 +277,29 @@ async fn machine_lifecycle(
                 }
             }
         })?;
-    let operation = owned_operation(accepted.operation_id.clone(), accepted.start_sequence);
+    let operation = owned_machine_operation(
+        accepted.operation_id.clone(),
+        &accepted.machine_id,
+        accepted.start_sequence,
+    );
     handlers.machine_lifecycle().start(accepted);
 
     Ok(operation)
+}
+
+#[must_use]
+fn owned_machine_operation(
+    operation_id: OperationId,
+    machine_id: &MachineId,
+    start_sequence: EventSequence,
+) -> AcceptedOperation {
+    owned_operation(
+        operation_id,
+        OperationProgressScope::Machine {
+            machine_id: machine_id.clone(),
+        },
+        start_sequence,
+    )
 }
 
 async fn machine_add_bootstrap_material(

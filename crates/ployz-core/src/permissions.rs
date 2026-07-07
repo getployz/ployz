@@ -13,9 +13,11 @@
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
 use crate::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, INTENT_CHANGED,
-    INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status, gateway_status_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service_scope,
+    CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
+    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, gateway_status, gateway_status_scope,
+    machine_container_facts, machine_facts, machine_facts_scope, machine_service_command_scope,
+    machine_service_query_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -31,7 +33,7 @@ pub fn inbox_prefix(principal: &NatsPrincipal) -> String {
     match principal {
         NatsPrincipal::Machine { machine_id } => format!("_INBOX_machine_{}", machine_id.as_str()),
         NatsPrincipal::Controller => "_INBOX_ctl".to_owned(),
-        NatsPrincipal::User => "_INBOX_user".to_owned(),
+        NatsPrincipal::Operator => "_INBOX_operator".to_owned(),
         NatsPrincipal::Join => "_INBOX_join".to_owned(),
         NatsPrincipal::System => "_INBOX_sys".to_owned(),
     }
@@ -72,23 +74,23 @@ impl NatsPermissionProfile {
             NatsPrincipal::Controller => Self {
                 principal: principal.clone(),
                 publish: controller_publications(),
-                subscribe: api_service_server_subscriptions(inbox_scope),
+                subscribe: controller_subscriptions(inbox_scope),
                 allow_responses: ResponsePermission::Allowed,
             },
-            NatsPrincipal::User => Self {
+            NatsPrincipal::Operator => Self {
                 principal: principal.clone(),
                 publish: api_service_client_publications(),
                 subscribe: SubjectPermissions::allowing([
                     inbox_scope,
-                    OPS_STREAM_SUBJECT.to_owned(),
+                    OPERATION_PROGRESS_SCOPE.to_owned(),
                 ]),
                 allow_responses: ResponsePermission::Denied,
             },
             NatsPrincipal::Join => Self {
                 principal: principal.clone(),
                 publish: SubjectPermissions::allowing([
-                    API_MACHINE_JOIN_REDEEM.to_owned(),
-                    API_MACHINE_JOIN_REPORT.to_owned(),
+                    JOIN_MACHINE_REDEEM.to_owned(),
+                    JOIN_MACHINE_REPORT.to_owned(),
                 ]),
                 subscribe: SubjectPermissions::allowing([inbox_scope]),
                 allow_responses: ResponsePermission::Denied,
@@ -105,19 +107,30 @@ impl NatsPermissionProfile {
 
 #[must_use]
 fn api_service_client_publications() -> SubjectPermissions {
-    SubjectPermissions::allowing([API_SERVICE_SCOPE.to_owned()])
+    SubjectPermissions::allowing([
+        OPERATOR_RPC_QUERY_SCOPE.to_owned(),
+        OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+    ])
 }
 
 #[must_use]
 fn machine_service_client_publications() -> SubjectPermissions {
-    SubjectPermissions::allowing([MACHINE_SERVICE_SCOPE.to_owned()])
+    SubjectPermissions::allowing([
+        MACHINE_RPC_QUERY_SCOPE.to_owned(),
+        MACHINE_RPC_COMMAND_SCOPE.to_owned(),
+    ])
 }
 
 #[must_use]
-fn api_service_server_subscriptions(inbox_scope: String) -> SubjectPermissions {
+fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
     SubjectPermissions::allowing([
-        API_SERVICE_SCOPE.to_owned(),
-        INTENT_CHANGED.to_owned(),
+        OPERATOR_RPC_QUERY_SCOPE.to_owned(),
+        OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+        JOIN_MACHINE_REDEEM.to_owned(),
+        JOIN_MACHINE_REPORT.to_owned(),
+        CORE_RPC_QUERY_SCOPE.to_owned(),
+        MACHINE_RPC_QUERY_SCOPE.to_owned(),
+        MACHINE_RPC_COMMAND_SCOPE.to_owned(),
         INTENT_GET.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
@@ -132,7 +145,8 @@ fn machine_service_server_subscriptions(
     inbox_scope: String,
 ) -> SubjectPermissions {
     SubjectPermissions::allowing([
-        machine_service_scope(machine_id),
+        machine_service_query_scope(machine_id),
+        machine_service_command_scope(machine_id),
         INTENT_CHANGED.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
@@ -144,11 +158,10 @@ fn machine_service_server_subscriptions(
 #[must_use]
 fn controller_publications() -> SubjectPermissions {
     let mut allow = request_reply_publications(&NatsPrincipal::Controller);
-    allow.extend(api_service_client_publications().into_allowed_subjects());
     allow.extend(machine_service_client_publications().into_allowed_subjects());
     allow.extend([
-        OPS_STREAM_SUBJECT.to_owned(),
-        INTENT_GET.to_owned(),
+        CORE_RPC_QUERY_SCOPE.to_owned(),
+        OPERATION_PROGRESS_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
     ]);
     SubjectPermissions::allowing_all(allow)

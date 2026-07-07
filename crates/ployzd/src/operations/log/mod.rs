@@ -16,6 +16,7 @@ use ployz_core::ops::{
     OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
     project_operation_event, validate_fresh_deploy_evidence,
 };
+use ployz_core::subjects::operation_progress_subject;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 mod action;
@@ -70,8 +71,9 @@ impl OperationRepository {
             SubmitTxn::Created {
                 start_sequence,
                 event,
+                status,
             } => {
-                publish_progress(&self.progress, event).await;
+                publish_progress(&self.progress, event, &status).await;
                 Ok(SubmittedOperation {
                     operation_id,
                     start_sequence,
@@ -180,6 +182,7 @@ enum SubmitTxn<P> {
     Created {
         start_sequence: EventSequence,
         event: OperationEvent,
+        status: OperationStatus,
     },
 }
 
@@ -226,6 +229,7 @@ fn submit_operation_txn<K: OperationAction>(
     Ok(SubmitTxn::Created {
         start_sequence: sequence,
         event,
+        status,
     })
 }
 
@@ -482,9 +486,18 @@ fn store_status(error: CoreStoreError) -> SubmitOperationError {
     SubmitOperationError::StoreStatus(index_error(&error))
 }
 
-async fn publish_progress(client: &async_nats::Client, event: OperationEvent) {
+async fn publish_progress(
+    client: &async_nats::Client,
+    event: OperationEvent,
+    status: &OperationStatus,
+) {
     let Ok(payload) = serde_json::to_vec(&event) else {
         return;
     };
-    let _ = client.publish(event.subject(), payload.into()).await;
+    let subject = operation_progress_subject(
+        &status.progress_scope(),
+        event.operation_id(),
+        &event.subject_suffix(),
+    );
+    let _ = client.publish(subject, payload.into()).await;
 }

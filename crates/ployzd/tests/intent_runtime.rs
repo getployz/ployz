@@ -11,7 +11,8 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
-    let nats = ployz_test_support::nats::TestNats::start().await;
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let machine_roster = temp_machine_roster().await;
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -25,7 +26,8 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
         .await
         .expect("active machine stores");
     let mut changed = nats
-        .controller
+        .machine_client(&machine_id("machine_a"))
+        .await
         .subscribe(INTENT_CHANGED)
         .await
         .expect("subscribe intent changes");

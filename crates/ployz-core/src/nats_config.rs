@@ -131,13 +131,13 @@ pub struct NatsAuthorizedUser {
 impl NatsAuthorizedUser {
     /// Stable identity for one authorization file entry.
     ///
-    /// Most principals are unique by role or machine id. User credentials are
-    /// intentionally plural: the local operator and Cloud can both hold User
+    /// Most principals are unique by role or machine id. Operator credentials are
+    /// intentionally plural: the local operator and Cloud can both hold Operator
     /// authority, so the public NKey is part of their durable record key.
     #[must_use]
     pub fn authority_record_key(&self) -> String {
         match self.principal {
-            NatsPrincipal::User => {
+            NatsPrincipal::Operator => {
                 format!("user.{}", self.nkey_public.as_str())
             }
             NatsPrincipal::Machine { .. }

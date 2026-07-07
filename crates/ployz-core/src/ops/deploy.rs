@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, ServiceId,
 };
 
 use super::events::OperationEvent;
@@ -421,6 +422,7 @@ pub fn project_deploy_transition(
 ) -> Result<OperationProjection, StatusProjectionError> {
     let OperationStatus::Deploy {
         id,
+        namespace_id,
         service_id,
         state: current_state,
         ..
@@ -431,6 +433,7 @@ pub fn project_deploy_transition(
 
     project_state(
         id,
+        namespace_id,
         service_id,
         current_state,
         transition.state(),
@@ -440,6 +443,7 @@ pub fn project_deploy_transition(
 
 pub(super) fn project_state(
     id: &OperationId,
+    namespace_id: &NamespaceId,
     service_id: &ServiceId,
     current_state: &DeployOperationState,
     attempted: DeployOperationState,
@@ -454,6 +458,7 @@ pub(super) fn project_state(
     Ok(OperationProjection::StatusChanged {
         status: Box::new(OperationStatus::Deploy {
             id: id.clone(),
+            namespace_id: namespace_id.clone(),
             service_id: service_id.clone(),
             state: attempted,
             last_event_sequence: event_sequence,
@@ -463,6 +468,7 @@ pub(super) fn project_state(
 
 pub(super) fn project_event(
     id: &OperationId,
+    namespace_id: &NamespaceId,
     service_id: &ServiceId,
     state: &DeployOperationState,
     event: DeployEvent,
@@ -491,24 +497,37 @@ pub(super) fn project_event(
             }
 
             Ok(OperationProjection::StatusChanged {
-                status: Box::new(evidence_status(id, service_id, state, event_sequence)),
+                status: Box::new(evidence_status(
+                    id,
+                    namespace_id,
+                    service_id,
+                    state,
+                    event_sequence,
+                )),
             })
         }
-        DeployEvent::Transition(transition) => {
-            project_state(id, service_id, state, transition.state(), event_sequence)
-        }
+        DeployEvent::Transition(transition) => project_state(
+            id,
+            namespace_id,
+            service_id,
+            state,
+            transition.state(),
+            event_sequence,
+        ),
         DeployEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
     }
 }
 
 fn evidence_status(
     id: &OperationId,
+    namespace_id: &NamespaceId,
     service_id: &ServiceId,
     state: &DeployOperationState,
     event_sequence: EventSequence,
 ) -> OperationStatus {
     OperationStatus::Deploy {
         id: id.clone(),
+        namespace_id: namespace_id.clone(),
         service_id: service_id.clone(),
         state: state.clone(),
         last_event_sequence: event_sequence,

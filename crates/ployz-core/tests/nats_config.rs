@@ -97,7 +97,7 @@ fn authorized_users_render_one_block_per_principal_with_own_inbox() {
     assert!(rendered.contains("\"_INBOX_ctl.>\""));
     assert!(rendered.contains("\"_INBOX_join.>\""));
     assert!(!rendered.contains("\"_INBOX.>\""));
-    assert!(rendered.contains("\"plz.v1.svc.api.machine.join.redeem\""));
+    assert!(rendered.contains("\"plz.v1.rpc.join.command.machine.redeem\""));
     assert!(rendered.contains("allow_responses: true"));
 }
 
@@ -111,7 +111,7 @@ fn authorized_machine_user_uses_intent_service_without_core_kv_access() {
     }]);
 
     assert!(rendered.contains("\"_INBOX_machine_machine_7.>\""));
-    assert!(rendered.contains("\"plz.v1.svc.intent.get\""));
+    assert!(rendered.contains("\"plz.v1.rpc.core.query.intent.get\""));
     assert!(!rendered.contains("KV_KV_CORE"));
 }
 
@@ -120,11 +120,11 @@ fn authorized_user_record_keys_include_user_public_key() {
     let first = generated_user_public_key();
     let second = generated_user_public_key();
     let first_user = NatsAuthorizedUser {
-        principal: NatsPrincipal::User,
+        principal: NatsPrincipal::Operator,
         nkey_public: first.clone(),
     };
     let second_user = NatsAuthorizedUser {
-        principal: NatsPrincipal::User,
+        principal: NatsPrincipal::Operator,
         nkey_public: second.clone(),
     };
     let controller = NatsAuthorizedUser {

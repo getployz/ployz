@@ -244,8 +244,8 @@ export class PloyzClient {
 
   async machineJoinRedeem(input: PloyzMachineJoinRedeemInput): Promise<MachineJoinRedeemed> {
     return unwrapApiResponse(
-      "machine.join.redeem",
-      await this.#transport.request("machine.join.redeem", machineJoinRedeemRequest(input)),
+      "machine.redeem",
+      await this.#transport.request("machine.redeem", machineJoinRedeemRequest(input)),
     );
   }
 

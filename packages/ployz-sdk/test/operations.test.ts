@@ -293,7 +293,7 @@ test("accepted operation uses Rust wire field names", () => {
 
   assert.deepEqual(JSON.parse(JSON.stringify(accepted)), {
     operation_id: "op_123",
-    watch_subject: "plz.v1.op.op_123.>",
+    watch_subject: "plz.v1.progress.namespace.default.operation.op_123.>",
     start_sequence: "11",
   });
 });
@@ -492,7 +492,7 @@ test("sdk exports the Rust operation API contract registry", () => {
   assert.deepEqual(OPERATION_API_CONTRACTS, [
     {
       name: "deploy.submit",
-      subject: "plz.v1.svc.api.deploy.submit",
+      subject: "plz.v1.rpc.operator.command.deploy.submit",
       execution: "accepts_operation",
       request: "DeploySubmitRequest",
       success: "AcceptedOperation",
@@ -501,7 +501,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "init.first_machine.activate",
-      subject: "plz.v1.svc.api.init.first_machine.activate",
+      subject: "plz.v1.rpc.operator.command.init.first_machine.activate",
       execution: "mutates_operation",
       request: "InitFirstMachineActivateRequest",
       success: "InitFirstMachineActivated",
@@ -510,7 +510,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "machine.add",
-      subject: "plz.v1.svc.api.machine.add",
+      subject: "plz.v1.rpc.operator.command.machine.add",
       execution: "accepts_operation",
       request: "MachineAddRequest",
       success: "MachineAddAccepted",
@@ -519,7 +519,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "machine.update",
-      subject: "plz.v1.svc.api.machine.update",
+      subject: "plz.v1.rpc.operator.command.machine.update",
       execution: "accepts_operation",
       request: "MachineUpdateRequest",
       success: "AcceptedOperation",
@@ -528,7 +528,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "machine.drain",
-      subject: "plz.v1.svc.api.machine.drain",
+      subject: "plz.v1.rpc.operator.command.machine.drain",
       execution: "accepts_operation",
       request: "MachineLifecycleRequest",
       success: "AcceptedOperation",
@@ -537,7 +537,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "machine.resume",
-      subject: "plz.v1.svc.api.machine.resume",
+      subject: "plz.v1.rpc.operator.command.machine.resume",
       execution: "accepts_operation",
       request: "MachineLifecycleRequest",
       success: "AcceptedOperation",
@@ -546,7 +546,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "machine.list",
-      subject: "plz.v1.svc.api.machine.list",
+      subject: "plz.v1.rpc.operator.query.machine.list",
       execution: "query",
       request: "MachineListRequest",
       success: "MachineListResult",
@@ -555,7 +555,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "machine.inspect",
-      subject: "plz.v1.svc.api.machine.inspect",
+      subject: "plz.v1.rpc.operator.query.machine.inspect",
       execution: "query",
       request: "MachineInspectRequest",
       success: "MachineSnapshot",
@@ -563,8 +563,8 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineInspectResponse",
     },
     {
-      name: "machine.join.redeem",
-      subject: "plz.v1.svc.api.machine.join.redeem",
+      name: "machine.redeem",
+      subject: "plz.v1.rpc.join.command.machine.redeem",
       execution: "mutates_operation",
       request: "MachineJoinRedeemRequest",
       success: "MachineJoinRedeemed",
@@ -572,8 +572,8 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineJoinRedeemResponse",
     },
     {
-      name: "machine.join.report",
-      subject: "plz.v1.svc.api.machine.join.report",
+      name: "machine.report",
+      subject: "plz.v1.rpc.join.command.machine.report",
       execution: "mutates_operation",
       request: "MachineJoinReportRequest",
       success: "MachineJoinReported",
@@ -582,7 +582,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "service.list",
-      subject: "plz.v1.svc.api.service.list",
+      subject: "plz.v1.rpc.operator.query.service.list",
       execution: "query",
       request: "ServiceListRequest",
       success: "ServiceListResult",
@@ -591,7 +591,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "service.inspect",
-      subject: "plz.v1.svc.api.service.inspect",
+      subject: "plz.v1.rpc.operator.query.service.inspect",
       execution: "query",
       request: "ServiceInspectRequest",
       success: "ServiceSnapshot",
@@ -600,7 +600,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "runtime.snapshot",
-      subject: "plz.v1.svc.api.runtime.snapshot",
+      subject: "plz.v1.rpc.operator.query.runtime.snapshot",
       execution: "query",
       request: "RuntimeSnapshotRequest",
       success: "RuntimeSnapshotResult",
@@ -609,7 +609,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "logs.tail",
-      subject: "plz.v1.svc.api.logs.tail",
+      subject: "plz.v1.rpc.operator.query.logs.tail",
       execution: "query",
       request: "LogsTailRequest",
       success: "LogsTailResult",
@@ -618,7 +618,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "ops.list",
-      subject: "plz.v1.svc.api.ops.list",
+      subject: "plz.v1.rpc.operator.query.ops.list",
       execution: "query",
       request: "OpsListRequest",
       success: "OpsListResult",
@@ -627,7 +627,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "ops.status",
-      subject: "plz.v1.svc.api.ops.status",
+      subject: "plz.v1.rpc.operator.query.ops.status",
       execution: "query",
       request: "OpsStatusRequest",
       success: "OperationStatusSnapshot",
@@ -636,7 +636,7 @@ test("sdk exports the Rust operation API contract registry", () => {
     },
     {
       name: "ops.watch",
-      subject: "plz.v1.svc.api.ops.watch",
+      subject: "plz.v1.rpc.operator.query.ops.watch",
       execution: "query",
       request: "OpsWatchRequest",
       success: "OperationEventReplayPage",
@@ -752,13 +752,13 @@ class RecordingTransport implements PloyzOperationTransport {
           status: "ok",
           value: this.machineSnapshots[0],
         }) as OperationApiResponseByEndpoint[E];
-      case "machine.join.redeem":
+      case "machine.redeem":
         this.machineJoinRedeemRequests.push(request as MachineJoinRedeemRequest);
         return (this.machineJoinRedeemResponse ?? {
           status: "ok",
           value: this.machineJoinRedeemed,
         }) as OperationApiResponseByEndpoint[E];
-      case "machine.join.report":
+      case "machine.report":
         throw new Error("machine join report is not used by ergonomic client tests");
       case "service.list":
         this.serviceListRequests.push(request as ServiceListRequest);
@@ -938,6 +938,7 @@ function defaultFixture(): OperationFixture {
       status: {
         kind: "deploy",
         id: operationId("op_123"),
+        namespace_id: namespaceId("default"),
         service_id: serviceId("svc_api"),
         state: { state: "accepted" },
         last_event_sequence: eventSequence(11),
@@ -1022,14 +1023,14 @@ function machineJoinArtifact(source: string, installPath: string) {
 
 function machineJoinSecretDelivery(): MachineJoinSecretDelivery {
   return {
-    nats_credentials: "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+    nats_credentials: "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
   };
 }
 
 function acceptedOperation(operationIdValue: string): AcceptedOperation {
   return {
     operation_id: operationId(operationIdValue),
-    watch_subject: `plz.v1.op.${operationIdValue}.>`,
+    watch_subject: `plz.v1.progress.namespace.default.operation.${operationIdValue}.>`,
     start_sequence: eventSequence(11),
   };
 }

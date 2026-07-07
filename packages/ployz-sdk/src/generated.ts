@@ -134,7 +134,7 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, };
 
@@ -382,7 +382,7 @@ export type NatsUserSeed = string;
 
 export type NatsUserPublicKey = string;
 
-export type NatsPrincipal = { "principal": "machine", machine_id: MachineId, } | { "principal": "controller" } | { "principal": "user" } | { "principal": "join" } | { "principal": "system" };
+export type NatsPrincipal = { "principal": "machine", machine_id: MachineId, } | { "principal": "controller" } | { "principal": "operator" } | { "principal": "join" } | { "principal": "system" };
 
 export type NatsAuthorizedUser = { principal: NatsPrincipal, nkey_public: NatsUserPublicKey, };
 
@@ -495,23 +495,23 @@ export type OpsWatchRequest = OperationEventReplayRequest;
 export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
 
 export const OPERATION_API_CONTRACTS = [
-  { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
-  { name: "init.first_machine.activate", subject: "plz.v1.svc.api.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
-  { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
-  { name: "machine.update", subject: "plz.v1.svc.api.machine.update", execution: "accepts_operation", request: "MachineUpdateRequest", success: "AcceptedOperation", error: "MachineUpdateError", response: "MachineUpdateResponse" },
-  { name: "machine.drain", subject: "plz.v1.svc.api.machine.drain", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineDrainResponse" },
-  { name: "machine.resume", subject: "plz.v1.svc.api.machine.resume", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
-  { name: "machine.list", subject: "plz.v1.svc.api.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
-  { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
-  { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
-  { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
-  { name: "service.list", subject: "plz.v1.svc.api.service.list", execution: "query", request: "ServiceListRequest", success: "ServiceListResult", error: "ServiceListError", response: "ServiceListResponse" },
-  { name: "service.inspect", subject: "plz.v1.svc.api.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
-  { name: "runtime.snapshot", subject: "plz.v1.svc.api.runtime.snapshot", execution: "query", request: "RuntimeSnapshotRequest", success: "RuntimeSnapshotResult", error: "RuntimeSnapshotError", response: "RuntimeSnapshotResponse" },
-  { name: "logs.tail", subject: "plz.v1.svc.api.logs.tail", execution: "query", request: "LogsTailRequest", success: "LogsTailResult", error: "LogsTailError", response: "LogsTailResponse" },
-  { name: "ops.list", subject: "plz.v1.svc.api.ops.list", execution: "query", request: "OpsListRequest", success: "OpsListResult", error: "OpsListError", response: "OpsListResponse" },
-  { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
-  { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
+  { name: "deploy.submit", subject: "plz.v1.rpc.operator.command.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
+  { name: "init.first_machine.activate", subject: "plz.v1.rpc.operator.command.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
+  { name: "machine.add", subject: "plz.v1.rpc.operator.command.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
+  { name: "machine.update", subject: "plz.v1.rpc.operator.command.machine.update", execution: "accepts_operation", request: "MachineUpdateRequest", success: "AcceptedOperation", error: "MachineUpdateError", response: "MachineUpdateResponse" },
+  { name: "machine.drain", subject: "plz.v1.rpc.operator.command.machine.drain", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineDrainResponse" },
+  { name: "machine.resume", subject: "plz.v1.rpc.operator.command.machine.resume", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
+  { name: "machine.list", subject: "plz.v1.rpc.operator.query.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
+  { name: "machine.inspect", subject: "plz.v1.rpc.operator.query.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
+  { name: "machine.redeem", subject: "plz.v1.rpc.join.command.machine.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
+  { name: "machine.report", subject: "plz.v1.rpc.join.command.machine.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
+  { name: "service.list", subject: "plz.v1.rpc.operator.query.service.list", execution: "query", request: "ServiceListRequest", success: "ServiceListResult", error: "ServiceListError", response: "ServiceListResponse" },
+  { name: "service.inspect", subject: "plz.v1.rpc.operator.query.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
+  { name: "runtime.snapshot", subject: "plz.v1.rpc.operator.query.runtime.snapshot", execution: "query", request: "RuntimeSnapshotRequest", success: "RuntimeSnapshotResult", error: "RuntimeSnapshotError", response: "RuntimeSnapshotResponse" },
+  { name: "logs.tail", subject: "plz.v1.rpc.operator.query.logs.tail", execution: "query", request: "LogsTailRequest", success: "LogsTailResult", error: "LogsTailError", response: "LogsTailResponse" },
+  { name: "ops.list", subject: "plz.v1.rpc.operator.query.ops.list", execution: "query", request: "OpsListRequest", success: "OpsListResult", error: "OpsListError", response: "OpsListResponse" },
+  { name: "ops.status", subject: "plz.v1.rpc.operator.query.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
+  { name: "ops.watch", subject: "plz.v1.rpc.operator.query.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
 ] as const;
 
 export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
@@ -525,8 +525,8 @@ export type OperationApiRequestByEndpoint = {
   "machine.resume": MachineLifecycleRequest;
   "machine.list": MachineListRequest;
   "machine.inspect": MachineInspectRequest;
-  "machine.join.redeem": MachineJoinRedeemRequest;
-  "machine.join.report": MachineJoinReportRequest;
+  "machine.redeem": MachineJoinRedeemRequest;
+  "machine.report": MachineJoinReportRequest;
   "service.list": ServiceListRequest;
   "service.inspect": ServiceInspectRequest;
   "runtime.snapshot": RuntimeSnapshotRequest;
@@ -545,8 +545,8 @@ export type OperationApiResponseByEndpoint = {
   "machine.resume": MachineResumeResponse;
   "machine.list": MachineListResponse;
   "machine.inspect": MachineInspectResponse;
-  "machine.join.redeem": MachineJoinRedeemResponse;
-  "machine.join.report": MachineJoinReportResponse;
+  "machine.redeem": MachineJoinRedeemResponse;
+  "machine.report": MachineJoinReportResponse;
   "service.list": ServiceListResponse;
   "service.inspect": ServiceInspectResponse;
   "runtime.snapshot": RuntimeSnapshotResponse;

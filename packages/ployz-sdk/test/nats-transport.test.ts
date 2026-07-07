@@ -31,7 +31,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   const response = await transport.request("deploy.submit", deploySubmitRequest());
 
   assert.deepEqual(response, { status: "ok", value: acceptedOperation("op_123") });
-  assert.equal(nats.requests[0].subject, "plz.v1.svc.api.deploy.submit");
+  assert.equal(nats.requests[0].subject, "plz.v1.rpc.operator.command.deploy.submit");
   const payload = nats.requests[0].payload;
   assert.ok(payload instanceof Uint8Array);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(payload)), {
@@ -111,7 +111,7 @@ test("NATS transport covers internal machine join report endpoint", async () => 
     join_token: machineJoinToken("join_once_123"),
     outcome: { outcome: "completed" },
   };
-  const response = await transport.request("machine.join.report", request);
+  const response = await transport.request("machine.report", request);
 
   assert.deepEqual(response, {
     status: "ok",
@@ -122,7 +122,7 @@ test("NATS transport covers internal machine join report endpoint", async () => 
       outcome: { outcome: "completed" },
     },
   });
-  assert.equal(nats.requests[0].subject, "plz.v1.svc.api.machine.join.report");
+  assert.equal(nats.requests[0].subject, "plz.v1.rpc.join.command.machine.report");
 });
 
 test("NATS transport exposes connection close and drain lifecycle", async () => {
@@ -208,7 +208,7 @@ function deploySubmitRequest(): DeploySubmitRequest {
 function acceptedOperation(operationIdValue: string): AcceptedOperation {
   return {
     operation_id: operationId(operationIdValue),
-    watch_subject: `plz.v1.op.${operationIdValue}.>`,
+    watch_subject: `plz.v1.progress.namespace.default.operation.${operationIdValue}.>`,
     start_sequence: eventSequence(11),
   };
 }

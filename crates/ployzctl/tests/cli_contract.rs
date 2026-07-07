@@ -917,6 +917,7 @@ fn ops_watch_renders_no_output_when_no_events_are_replayed() {
 fn ops_status_renders_operation_state() {
     let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::Deploy {
         id: operation_id("op_deploy"),
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         service_id: ServiceId::try_new("svc_api").expect("valid service id"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,

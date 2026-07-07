@@ -136,7 +136,7 @@ pub async fn start_control_process_with_client_and_reload(
         .await
         .map_err(ControlProcessError::RenderNatsAuthorization)?;
     // Start the facts cache only after authorization has rendered and
-    // reloaded permissions: its subscription to plz.v1.facts.* must not be
+    // reloaded permissions: its subscription to plz.v1.testimony.* must not be
     // established before the grant exists, or NATS rejects it asynchronously
     // and the cache never resubscribes. Nothing between here and the
     // operation API consumes the cache, so this ordering is free.

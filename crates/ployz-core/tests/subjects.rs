@@ -6,82 +6,95 @@ use ployz_core::ops::{
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{
-    MachineServiceEndpoint, cert_renewal_job, cert_renewal_schedule, machine_container_facts,
-    machine_facts, machine_service, op_watch,
+    MachineServiceEndpoint, OperationProgressScope, machine_container_facts, machine_facts,
+    machine_service, operation_progress_watch,
 };
-use ployz_test_support::ids::{container_id, machine_id, operation_id};
+use ployz_test_support::ids::{container_id, machine_id, namespace_id, operation_id};
 
 /// Operation progress subject literals are externally observed contracts.
 #[test]
 fn operation_event_subjects_are_pinned() {
     let op_id = operation_id("op_123");
+    let deploy_scope = OperationProgressScope::Namespace {
+        namespace_id: namespace_id("default"),
+    };
 
-    assert_eq!(op_watch(&op_id), "plz.v1.op.op_123.>");
     assert_eq!(
-        planning_started(&op_id).subject(),
-        "plz.v1.op.op_123.deploy.planning.started"
+        operation_progress_watch(&deploy_scope, &op_id),
+        "plz.v1.progress.namespace.default.operation.op_123.>"
     );
     assert_eq!(
-        deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).subject(),
-        "plz.v1.op.op_123.deploy.running.serving_target_commit"
+        planning_started(&op_id).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.planning.started"
     );
     assert_eq!(
-        container_started(&op_id).subject(),
-        "plz.v1.op.op_123.deploy.container.started.machine_7.ctr_1"
+        deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.running.serving_target_commit"
     );
     assert_eq!(
-        health_check_started(&op_id).subject(),
-        "plz.v1.op.op_123.deploy.health_check.started"
+        container_started(&op_id).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.container.started.machine_7.ctr_1"
     );
     assert_eq!(
-        deploy_completed(&op_id).subject(),
-        "plz.v1.op.op_123.deploy.completed"
+        health_check_started(&op_id).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.health_check.started"
     );
-    assert_eq!(cancelled(&op_id).subject(), "plz.v1.op.op_123.cancelled");
+    assert_eq!(
+        deploy_completed(&op_id).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.completed"
+    );
+    assert_eq!(
+        cancelled(&op_id).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.cancelled"
+    );
 
     let op_id = operation_id("op_machine");
+    let machine_scope = OperationProgressScope::Machine {
+        machine_id: machine_id("machine_7"),
+    };
     assert_eq!(
-        machine_add_joined(&op_id).subject(),
-        "plz.v1.op.op_machine.machine.add.joined"
+        machine_add_joined(&op_id).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.add.joined"
     );
     assert_eq!(
-        machine_add_completed(&op_id).subject(),
-        "plz.v1.op.op_machine.machine.add.completed"
+        machine_add_completed(&op_id).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.add.completed"
     );
     assert_eq!(
-        machine_add_failed(&op_id).subject(),
-        "plz.v1.op.op_machine.machine.add.failed"
+        machine_add_failed(&op_id).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.add.failed"
     );
     assert_eq!(
-        machine_update_running(&op_id).subject(),
-        "plz.v1.op.op_machine.machine.update.running"
+        machine_update_running(&op_id).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.update.running"
     );
     assert_eq!(
-        machine_update_completed(&op_id).subject(),
-        "plz.v1.op.op_machine.machine.update.completed"
+        machine_update_completed(&op_id).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.update.completed"
     );
 
     assert_eq!(
-        lifecycle_submitted(&op_id, MachineLifecycle::Draining).subject(),
-        "plz.v1.op.op_machine.machine.lifecycle.drain.submitted"
+        lifecycle_submitted(&op_id, MachineLifecycle::Draining).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.lifecycle.drain.submitted"
     );
     assert_eq!(
-        lifecycle_submitted(&op_id, MachineLifecycle::Active).subject(),
-        "plz.v1.op.op_machine.machine.lifecycle.resume.submitted"
+        lifecycle_submitted(&op_id, MachineLifecycle::Active).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.lifecycle.resume.submitted"
     );
     assert_eq!(
-        lifecycle_completed(&op_id).subject(),
-        "plz.v1.op.op_machine.machine.lifecycle.completed"
+        lifecycle_completed(&op_id).subject(&machine_scope),
+        "plz.v1.progress.machine.machine_7.operation.op_machine.machine.lifecycle.completed"
     );
 
     let op_id = operation_id("op_cert");
+    let cluster_scope = OperationProgressScope::Cluster;
     assert_eq!(
-        cert_submitted(&op_id).subject(),
-        "plz.v1.op.op_cert.cert.submitted"
+        cert_submitted(&op_id).subject(&cluster_scope),
+        "plz.v1.progress.cluster.operation.op_cert.cert.submitted"
     );
     assert_eq!(
-        cert_validation_started(&op_id).subject(),
-        "plz.v1.op.op_cert.cert.validation.started"
+        cert_validation_started(&op_id).subject(&cluster_scope),
+        "plz.v1.progress.cluster.operation.op_cert.cert.validation.started"
     );
 }
 
@@ -91,40 +104,32 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
 
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::ContainerRun),
-        "plz.v1.svc.machine.machine_7.container.run"
+        "plz.v1.rpc.machine.command.machine_7.container.run"
     );
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::FactsGet),
-        "plz.v1.svc.machine.machine_7.facts.get"
+        "plz.v1.rpc.machine.query.machine_7.facts.get"
     );
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::ContainerStop),
-        "plz.v1.svc.machine.machine_7.container.stop"
+        "plz.v1.rpc.machine.command.machine_7.container.stop"
     );
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::ContainerRemove),
-        "plz.v1.svc.machine.machine_7.container.remove"
+        "plz.v1.rpc.machine.command.machine_7.container.remove"
     );
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::DataplanePrepare),
-        "plz.v1.svc.machine.machine_7.dataplane.prepare"
+        "plz.v1.rpc.machine.command.machine_7.dataplane.prepare"
     );
-    assert_eq!(machine_facts(&machine_id), "plz.v1.facts.machine.machine_7");
+    assert_eq!(
+        machine_facts(&machine_id),
+        "plz.v1.testimony.machine.machine_7.snapshot"
+    );
     assert_eq!(
         machine_container_facts(&machine_id),
-        "plz.v1.facts.machine.machine_7.containers"
+        "plz.v1.testimony.machine.machine_7.containers"
     );
-}
-
-#[test]
-fn cert_schedule_subjects_target_the_cert_job_subject() {
-    let cert_id = CertId::try_new("cert_api").expect("valid cert id");
-
-    assert_eq!(
-        cert_renewal_schedule(&cert_id),
-        "plz.v1.sched.cert.renew.cert_api"
-    );
-    assert_eq!(cert_renewal_job(&cert_id), "plz.v1.job.cert.renew.cert_api");
 }
 
 #[test]

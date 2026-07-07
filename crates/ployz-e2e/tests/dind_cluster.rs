@@ -28,7 +28,7 @@ use ployz_core::ops::{
 };
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::subjects::{API_RUNTIME_SNAPSHOT, MachineServiceEndpoint, machine_service};
+use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_e2e::bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
 };
@@ -205,7 +205,7 @@ async fn scenario_init_and_activate_first_machine() {
             read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await
                 .expect("authorized-users.conf is readable");
-        for principal in ["controller", "user", "join", "machine_core_1"] {
+        for principal in ["controller", "operator", "join", "machine_core_1"] {
             assert!(
                 authorized.contains(&format!("# ployz-principal: {principal}")),
                 "authorized-users.conf must contain {principal}: {authorized}"
@@ -311,7 +311,7 @@ async fn scenario_machine_add_via_join_bundle() {
                 .expect("authorized-users.conf is readable");
         for principal in [
             "controller",
-            "user",
+            "operator",
             "join",
             "machine_core_1",
             "machine_edge_2",
@@ -658,7 +658,8 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
     // (a) A fresh random NKey seed with the correct cluster CA is refused.
     let unauthorized_seed =
         SecuredTestNats::fresh_unauthorized_seed().expect("fresh unauthorized seed");
-    let rejected = connect_core_client(core, NatsPrincipal::User, unauthorized_seed.secret()).await;
+    let rejected =
+        connect_core_client(core, NatsPrincipal::Operator, unauthorized_seed.secret()).await;
     assert!(
         rejected.is_err(),
         "a seed outside the authorized user set connected"
@@ -691,7 +692,7 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
     let (edge_client, mut edge_events) = connect_with_event_capture(&edge_machine_config).await;
     for subject in [
         machine_service(&machine_id("core_1"), MachineServiceEndpoint::Inspect),
-        API_RUNTIME_SNAPSHOT.to_owned(),
+        OPERATOR_RUNTIME_SNAPSHOT.to_owned(),
     ] {
         edge_client
             .publish(subject.clone(), "evidence".into())

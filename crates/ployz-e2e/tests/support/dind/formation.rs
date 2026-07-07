@@ -356,7 +356,7 @@ async fn wait_for_operator_api(
         let connect = host_client_config(
             cluster,
             material,
-            NatsPrincipal::User,
+            NatsPrincipal::Operator,
             &material.operator_seed,
         );
         match connect_authenticated(&connect, CONNECT_TIMEOUT).await {

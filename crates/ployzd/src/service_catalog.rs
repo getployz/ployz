@@ -12,7 +12,7 @@ use ployz_nats::services::{
 
 pub const API_SERVICE_NAME: &str = "plz-api";
 pub const API_SERVICE_ID: &str = "plz-api.core";
-pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
+pub const API_SERVICE_DESCRIPTION: &str = "Ployz operator-facing command service";
 pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
 pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
 pub const INTENT_SERVICE_NAME: &str = "plz-intent";

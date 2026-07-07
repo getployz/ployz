@@ -183,7 +183,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
 fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     AcceptedOperation {
         operation_id: self::operation_id(operation_id),
-        watch_subject: format!("plz.v1.op.{operation_id}.>"),
+        watch_subject: format!("plz.v1.progress.machine.machine_2.operation.{operation_id}.>"),
         start_sequence: event_sequence(1),
     }
 }

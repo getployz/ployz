@@ -3,7 +3,7 @@
 //! `ployz_core::nats_config` — no parallel test-only config language.
 //!
 //! [`SecuredTestNats`] mints a throwaway cluster CA, a server certificate,
-//! and one NKey user per principal, then exposes per-principal
+//! and one NKey credential per principal, then exposes per-principal
 //! [`NatsConnectConfig`]s for tests to connect with.
 
 use std::error::Error;
@@ -52,7 +52,7 @@ pub struct SecuredTestNats {
 }
 
 impl SecuredTestNats {
-    /// Starts a secured server with Controller, User, Join, and System users.
+    /// Starts a secured server with Controller, Operator, Join, and System users.
     pub async fn start() -> Result<Self, FixtureError> {
         Self::start_with_machines(&[]).await
     }
@@ -64,7 +64,7 @@ impl SecuredTestNats {
     }
 
     /// Starts a secured server with the base principals, supplied Machine
-    /// users, and external User principal public keys such as Cloud clients.
+    /// users, and external Operator principal public keys such as Cloud clients.
     pub async fn start_with_machines_and_extra_users(
         machine_ids: &[MachineId],
         extra_user_public_keys: &[NatsUserPublicKey],
@@ -89,7 +89,7 @@ impl SecuredTestNats {
 
         let mut authorized = vec![
             authorized_user(NatsPrincipal::Controller, &controller),
-            authorized_user(NatsPrincipal::User, &user),
+            authorized_user(NatsPrincipal::Operator, &user),
             authorized_user(NatsPrincipal::Join, &join),
             authorized_user(NatsPrincipal::System, &system),
         ];
@@ -103,7 +103,7 @@ impl SecuredTestNats {
         }
         for public_key in extra_user_public_keys {
             authorized.push(NatsAuthorizedUser {
-                principal: NatsPrincipal::User,
+                principal: NatsPrincipal::Operator,
                 nkey_public: public_key.clone(),
             });
         }
@@ -196,7 +196,7 @@ impl SecuredTestNats {
 
     #[must_use]
     pub fn user_config(&self) -> NatsConnectConfig {
-        self.config_with_seed(NatsPrincipal::User, self.user_seed.clone())
+        self.config_with_seed(NatsPrincipal::Operator, self.user_seed.clone())
     }
 
     #[must_use]
@@ -268,11 +268,12 @@ impl SecuredTestNats {
 }
 
 /// The one connected fixture the suites share: a [`SecuredTestNats`] server
-/// plus authenticated Controller/User clients.
+/// plus authenticated Controller/Operator/Join clients.
 pub struct TestNats {
     pub server: SecuredTestNats,
     pub controller: async_nats::Client,
     pub user: async_nats::Client,
+    pub join: async_nats::Client,
 }
 
 impl TestNats {
@@ -281,7 +282,7 @@ impl TestNats {
     }
 
     /// Starts a secured server with one minted Machine user per supplied id
-    /// and connects the Controller and User clients.
+    /// and connects the Controller and Operator clients.
     pub async fn start_with_machines(machine_ids: &[MachineId]) -> Self {
         let server = SecuredTestNats::start_with_machines(machine_ids)
             .await
@@ -293,15 +294,19 @@ impl TestNats {
         let user = connect_authenticated(&server.user_config(), TEST_NATS_CONNECT_TIMEOUT)
             .await
             .expect("operator connects");
+        let join = connect_authenticated(&server.join_config(), TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("join connects");
 
         Self {
             server,
             controller,
             user,
+            join,
         }
     }
 
-    /// The operator-facing operation API client (User principal). The request
+    /// The operator-facing operation API client (Operator principal). The request
     /// timeout is generous: CI runs many nats-server-backed test binaries in
     /// parallel, and a saturated runner can stall a reply well past the production
     /// default without anything being wrong.

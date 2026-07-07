@@ -3,10 +3,11 @@ use ployz_core::permissions::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_RUNTIME_SNAPSHOT, API_SERVICE_SCOPE,
-    INTENT_CHANGED, INTENT_GET, MACHINE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, gateway_status,
-    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
-    machine_service_scope,
+    CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
+    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
+    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
+    machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -29,7 +30,8 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
-            machine_service_scope(&machine_id),
+            machine_service_query_scope(&machine_id),
+            machine_service_command_scope(&machine_id),
             INTENT_CHANGED.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),
@@ -49,18 +51,23 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
         profile.publish.allowed_subjects(),
         &[
             "_INBOX_ctl.>".to_owned(),
-            API_SERVICE_SCOPE.to_owned(),
-            MACHINE_SERVICE_SCOPE.to_owned(),
-            OPS_STREAM_SUBJECT.to_owned(),
-            ployz_core::subjects::INTENT_GET.to_owned(),
+            MACHINE_RPC_QUERY_SCOPE.to_owned(),
+            MACHINE_RPC_COMMAND_SCOPE.to_owned(),
+            CORE_RPC_QUERY_SCOPE.to_owned(),
+            OPERATION_PROGRESS_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
         ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
-            API_SERVICE_SCOPE.to_owned(),
-            ployz_core::subjects::INTENT_CHANGED.to_owned(),
+            OPERATOR_RPC_QUERY_SCOPE.to_owned(),
+            OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+            JOIN_MACHINE_REDEEM.to_owned(),
+            JOIN_MACHINE_REPORT.to_owned(),
+            CORE_RPC_QUERY_SCOPE.to_owned(),
+            MACHINE_RPC_QUERY_SCOPE.to_owned(),
+            MACHINE_RPC_COMMAND_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_GET.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),
@@ -72,33 +79,48 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
 }
 
 #[test]
-fn user_credential_renders_api_service_scope_without_machine_scope() {
-    let profile = NatsPermissionProfile::render(NatsPrincipal::User);
+fn operator_credential_renders_operator_rpc_scope_without_machine_or_join_scope() {
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Operator);
 
     assert_eq!(
         profile.publish.allowed_subjects(),
-        &[API_SERVICE_SCOPE.to_owned()]
+        &[
+            OPERATOR_RPC_QUERY_SCOPE.to_owned(),
+            OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+        ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
-        &["_INBOX_user.>".to_owned(), OPS_STREAM_SUBJECT.to_owned()]
+        &[
+            "_INBOX_operator.>".to_owned(),
+            OPERATION_PROGRESS_SCOPE.to_owned()
+        ]
     );
     assert!(
         !profile
             .publish
             .allowed_subjects()
-            .contains(&MACHINE_SERVICE_SCOPE.to_owned())
+            .contains(&MACHINE_RPC_QUERY_SCOPE.to_owned())
+    );
+    assert!(
+        !profile
+            .publish
+            .allowed_subjects()
+            .contains(&JOIN_MACHINE_REDEEM.to_owned())
     );
 }
 
 #[test]
-fn runtime_snapshot_endpoint_is_inside_the_user_api_scope() {
-    assert!(API_RUNTIME_SNAPSHOT.starts_with("plz.v1.svc.api."));
-    let profile = NatsPermissionProfile::render(NatsPrincipal::User);
+fn runtime_snapshot_endpoint_is_inside_the_operator_query_scope() {
+    assert!(OPERATOR_RUNTIME_SNAPSHOT.starts_with("plz.v1.rpc.operator.query."));
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Operator);
 
     assert_eq!(
         profile.publish.allowed_subjects(),
-        &[API_SERVICE_SCOPE.to_owned()]
+        &[
+            OPERATOR_RPC_QUERY_SCOPE.to_owned(),
+            OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+        ]
     );
 }
 
@@ -109,8 +131,8 @@ fn join_credential_can_only_redeem_and_report_with_its_own_inbox() {
     assert_eq!(
         profile.publish.allowed_subjects(),
         &[
-            API_MACHINE_JOIN_REDEEM.to_owned(),
-            API_MACHINE_JOIN_REPORT.to_owned()
+            JOIN_MACHINE_REDEEM.to_owned(),
+            JOIN_MACHINE_REPORT.to_owned()
         ]
     );
     assert_eq!(
@@ -136,7 +158,59 @@ fn system_credential_renders_system_subjects_only() {
         !profile
             .publish
             .allowed_subjects()
-            .contains(&API_SERVICE_SCOPE.to_owned())
+            .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
+    );
+}
+
+#[test]
+fn join_scope_does_not_include_operator_rpc() {
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Join);
+
+    assert!(
+        !profile
+            .publish
+            .allowed_subjects()
+            .contains(&OPERATOR_RPC_COMMAND_SCOPE.to_owned())
+    );
+    assert!(
+        !profile
+            .publish
+            .allowed_subjects()
+            .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
+    );
+}
+
+#[test]
+fn machine_scope_is_bound_to_its_own_machine_id() {
+    let machine_a = machine_id("machine_a");
+    let machine_b = machine_id("machine_b");
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
+        machine_id: machine_a.clone(),
+    });
+
+    assert!(
+        profile
+            .publish
+            .allowed_subjects()
+            .contains(&machine_facts(&machine_a))
+    );
+    assert!(
+        !profile
+            .publish
+            .allowed_subjects()
+            .contains(&machine_facts(&machine_b))
+    );
+    assert!(
+        profile
+            .subscribe
+            .allowed_subjects()
+            .contains(&machine_service_query_scope(&machine_a))
+    );
+    assert!(
+        !profile
+            .subscribe
+            .allowed_subjects()
+            .contains(&machine_service_query_scope(&machine_b))
     );
 }
 
@@ -147,7 +221,7 @@ fn no_profile_subscribes_the_shared_inbox_scope() {
             machine_id: machine_id("machine_7"),
         },
         NatsPrincipal::Controller,
-        NatsPrincipal::User,
+        NatsPrincipal::Operator,
         NatsPrincipal::Join,
         NatsPrincipal::System,
     ];
@@ -174,7 +248,7 @@ fn no_profile_subscribes_the_shared_inbox_scope() {
 #[test]
 fn inbox_prefixes_are_distinct_per_principal() {
     assert_eq!(inbox_prefix(&NatsPrincipal::Controller), "_INBOX_ctl");
-    assert_eq!(inbox_prefix(&NatsPrincipal::User), "_INBOX_user");
+    assert_eq!(inbox_prefix(&NatsPrincipal::Operator), "_INBOX_operator");
     assert_eq!(inbox_prefix(&NatsPrincipal::Join), "_INBOX_join");
     assert_eq!(inbox_prefix(&NatsPrincipal::System), "_INBOX_sys");
     assert_eq!(

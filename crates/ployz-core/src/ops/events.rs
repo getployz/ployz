@@ -300,12 +300,10 @@ impl OperationEvent {
         }
     }
 
-    /// The durable stream subject this event publishes under. Subjects are a
-    /// persisted contract: renderings must never change for an existing
-    /// variant.
+    /// The stable event token appended under an operation progress scope.
     #[must_use]
-    pub fn subject(&self) -> String {
-        let suffix = match self {
+    pub fn subject_suffix(&self) -> String {
+        match self {
             Self::DeploySubmitted { .. } => "deploy.submitted".to_owned(),
             Self::DeployPlanningStarted { .. } => "deploy.planning.started".to_owned(),
             Self::DeployPlanCreated { .. } => "deploy.plan.created".to_owned(),
@@ -347,8 +345,19 @@ impl OperationEvent {
             Self::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed".to_owned(),
             Self::MachineLifecycleFailed { .. } => "machine.lifecycle.failed".to_owned(),
             Self::Cancelled { .. } => "cancelled".to_owned(),
-        };
-        crate::subjects::op_event_subject(self.operation_id(), &suffix)
+        }
+    }
+
+    /// The durable stream subject this event publishes under. Subjects are a
+    /// persisted contract: renderings must never change for an existing
+    /// variant.
+    #[must_use]
+    pub fn subject(&self, scope: &crate::subjects::OperationProgressScope) -> String {
+        crate::subjects::operation_progress_subject(
+            scope,
+            self.operation_id(),
+            &self.subject_suffix(),
+        )
     }
 }
 
