@@ -143,6 +143,21 @@ fn set_endpoints_txn(
     let Some(mut state) = get_machine(&transaction, machine_id)? else {
         return Ok(false);
     };
+    // A partial discovery reports an empty set for a kind it couldn't determine (e.g.
+    // the public-IP echo timed out while private interfaces still yield mesh
+    // endpoints). Treat empty as "no news" and keep the durable value rather than
+    // clearing a still-valid address — reachability is a durable address property that
+    // is never cleared by silence (ADR 0030).
+    let control_endpoints = if control_endpoints.is_empty() {
+        state.control_endpoints.clone()
+    } else {
+        control_endpoints
+    };
+    let mesh_endpoints = if mesh_endpoints.is_empty() {
+        state.mesh_endpoints.clone()
+    } else {
+        mesh_endpoints
+    };
     if state.control_endpoints == control_endpoints && state.mesh_endpoints == mesh_endpoints {
         return Ok(false);
     }

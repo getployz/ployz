@@ -304,7 +304,14 @@ where
         return response;
     }
 
-    let endpoints = state.endpoint_cache.latest();
+    // Serve the observation task's cached endpoints; if it hasn't populated them yet
+    // (process startup, or a test with no observer), discover once so mesh peer
+    // discovery never sees missing endpoints. Steady state is a cache hit, so the
+    // external probes stay off the per-RPC path.
+    let endpoints = match state.endpoint_cache.latest() {
+        Some(observation) => Some(observation),
+        None => refresh_machine_endpoints(&machine_id, &state.endpoint_cache).await,
+    };
     match read_machine_facts_snapshot(&machine_id, &state.runner, endpoints, current_unix_ms())
         .await
     {

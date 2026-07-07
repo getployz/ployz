@@ -420,15 +420,27 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         .expect("machine runtime shuts down");
     let mut machine_rpc = NatsMachineContainerRuntime::new(client.clone())
         .with_request_timeout(Duration::from_millis(200));
-    assert_eq!(
-        machine_rpc
-            .run_container(&machine_id("machine_a"), machine_rpc_probe_request())
-            .await
-            .expect_err("machine service is unavailable after machine runtime shutdown"),
-        MachineContainerRuntimeError::Unavailable {
-            machine_id: machine_id("machine_a"),
-            reason: MachineRuntimeUnavailableReason::NoResponders,
-        }
+    let unavailable = machine_rpc
+        .run_container(&machine_id("machine_a"), machine_rpc_probe_request())
+        .await
+        .expect_err("machine service is unavailable after machine runtime shutdown");
+    let MachineContainerRuntimeError::Unavailable {
+        machine_id: id,
+        reason,
+    } = unavailable
+    else {
+        panic!("expected machine service unavailable, got {unavailable:?}");
+    };
+    assert_eq!(id, machine_id("machine_a"));
+    // Right after shutdown either the subscription is already gone (NoResponders) or
+    // the request outruns the unsubscribe and hits the timeout — both mean unavailable.
+    assert!(
+        matches!(
+            reason,
+            MachineRuntimeUnavailableReason::NoResponders
+                | MachineRuntimeUnavailableReason::RequestTimedOut
+        ),
+        "expected NoResponders or RequestTimedOut, got {reason:?}"
     );
     assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
     assert_eq!(upstream.requests().await.len(), 2);
