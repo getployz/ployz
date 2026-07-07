@@ -693,9 +693,27 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let ebpf_bytecode_artifact =
+        match artifact_target(ArtifactKind::EbpfBytecode, &artifacts.ebpf_bytecode) {
+            Ok(target) => target,
+            Err(error) => {
+                eprintln!("release manifest eBPF bytecode artifact is invalid: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let ebpf_ctl_artifact = match artifact_target(ArtifactKind::EbpfCtl, &artifacts.ebpf_ctl) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest eBPF controller artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    let (target, access) = match resolve_core_promote_target(nats_server_artifact, ployzd_artifact)
-    {
+    let (target, access) = match resolve_core_promote_target(
+        nats_server_artifact,
+        ployzd_artifact,
+        DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+    ) {
         Ok(resolved) => resolved,
         Err(message) => {
             eprintln!("ployz-keeper core-promote: {message}");
@@ -735,12 +753,15 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
 fn resolve_core_promote_target(
     nats_server_artifact: ArtifactTarget,
     ployzd_artifact: ArtifactTarget,
+    dataplane_artifacts: DataplaneArtifactTargets,
 ) -> Result<(CorePromoteTarget, PromotedCoreAccess), String> {
     let join_dir = PathBuf::from(KEEPER_STATE_DIR).join(JOIN_MATERIAL_DIR);
-    let machine_id = parse_machine_id_from_join_material(&read_promote_file(
-        &join_dir.join(JOIN_MATERIAL_FILE),
-    )?)
-    .ok_or("join material carries no machine id — is this a joined machine?")?;
+    let join_material = read_promote_file(&join_dir.join(JOIN_MATERIAL_FILE))?;
+    let machine_id = parse_machine_id_from_join_material(&join_material)
+        .ok_or("join material carries no machine id — is this a joined machine?")?;
+    let cluster_name = parse_cluster_name_from_join_material(&join_material)
+        .and_then(|value| MachineJoinClusterName::try_new(value).ok())
+        .unwrap_or_else(|| MachineJoinClusterName::try_new("ployz").expect("valid cluster name"));
     let ca = ployz_core::nats_config::NatsCaCertificatePem::try_new(read_promote_file(
         &join_dir.join(JOIN_TRUSTED_CA_FILE),
     )?)
@@ -789,6 +810,11 @@ fn resolve_core_promote_target(
         .first()
         .copied()
         .expect("control endpoint list is non-empty");
+    let machine_join_runtime_nats_url = MachineJoinRuntimeNatsUrl::try_new(format!(
+        "tls://{}",
+        SocketAddr::new(machine_public_ip, 4222)
+    ))
+    .map_err(|error| format!("promoted runtime NATS URL is invalid: {error}"))?;
 
     let hostname = gethostname::gethostname().into_string().ok();
     let sans = ployz_keeper::nats_identity::ServerCertificateSans::try_new_many(
@@ -816,13 +842,24 @@ fn resolve_core_promote_target(
         machine_id,
         nats_server_artifact,
         ployzd_artifact,
+        dataplane_artifacts,
         nats_identity,
         ployz_core::install::WrappedCaKey::new(wrapped),
         wrapped_seeds,
         Some(machine_public_ip),
         mirror_path,
+        default_machine_join_template_file()?,
+        cluster_name,
+        machine_join_runtime_nats_url,
     );
     Ok((target, access))
+}
+
+fn parse_cluster_name_from_join_material(contents: &str) -> Option<String> {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix("cluster_name="))
+        .map(str::to_owned)
 }
 
 /// Where the operator points their existing `ployzctl` context after promotion: the
