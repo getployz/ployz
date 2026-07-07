@@ -6,7 +6,7 @@ use ployz_core::dataplane::{
     WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -488,7 +488,7 @@ fn current_unix_seconds() -> u64 {
         .unwrap_or_default()
 }
 
-fn read_wireguard_public_key(private_key_path: &PathBuf) -> Result<WireGuardPublicKey, String> {
+fn read_wireguard_public_key(private_key_path: &Path) -> Result<WireGuardPublicKey, String> {
     let private_key = ensure_private_key(private_key_path)?;
     public_key_from_private_key(&private_key)
 }

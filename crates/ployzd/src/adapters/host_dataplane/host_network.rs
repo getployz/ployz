@@ -6,14 +6,15 @@ use futures_util::TryStreamExt;
 use ipnet::Ipv4Net;
 use ployz_core::dataplane::{WireGuardPeer, WireGuardPublicKey};
 use rtnetlink::{
-    RouteMessageBuilder,
+    LinkUnspec, RouteMessageBuilder,
     packet_route::{
         link::LinkAttribute,
         route::{RouteAttribute, RouteMetric},
     },
 };
+use std::io::Write;
 use std::net::Ipv4Addr;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 
 pub(super) const MIN_WIREGUARD_MTU: u32 = 1280;
@@ -80,22 +81,27 @@ async fn detect_wireguard_mtu(wg_ifname: &str) -> Result<WireGuardMtu, String> {
         .await
         .map_err(|source| source.to_string())?
         .ok_or_else(|| "no route to public address".to_owned())?;
-    let route_mtu = route
-        .attributes
-        .iter()
-        .find_map(|attribute| match attribute {
-            RouteAttribute::Metrics(metrics) => metrics.iter().find_map(|metric| match metric {
-                RouteMetric::Mtu(mtu) => Some(*mtu),
-                _ => None,
-            }),
-            _ => None,
-        });
+    let route_mtu = route.attributes.iter().find_map(|attribute| {
+        if let RouteAttribute::Metrics(metrics) = attribute {
+            return metrics.iter().find_map(|metric| {
+                if let RouteMetric::Mtu(mtu) = metric {
+                    Some(*mtu)
+                } else {
+                    None
+                }
+            });
+        }
+        None
+    });
     let ifindex = route
         .attributes
         .iter()
-        .find_map(|attribute| match attribute {
-            RouteAttribute::Oif(ifindex) => Some(*ifindex),
-            _ => None,
+        .find_map(|attribute| {
+            if let RouteAttribute::Oif(ifindex) = attribute {
+                Some(*ifindex)
+            } else {
+                None
+            }
         })
         .ok_or_else(|| "route to public address had no output interface".to_owned())?;
     let link = handle
@@ -110,10 +116,10 @@ async fn detect_wireguard_mtu(wg_ifname: &str) -> Result<WireGuardMtu, String> {
     let mut link_name = None;
     let mut link_mtu = None;
     for attribute in &link.attributes {
-        match attribute {
-            LinkAttribute::IfName(value) => link_name = Some(value.as_str()),
-            LinkAttribute::Mtu(value) => link_mtu = Some(*value),
-            _ => {}
+        if let LinkAttribute::IfName(value) = attribute {
+            link_name = Some(value.as_str());
+        } else if let LinkAttribute::Mtu(value) = attribute {
+            link_mtu = Some(*value);
         }
     }
     if link_name == Some(wg_ifname) {
@@ -147,21 +153,25 @@ pub(super) fn ensure_private_key(path: &Path) -> Result<String, String> {
             path.display()
         ));
     };
-    std::fs::create_dir_all(parent).map_err(|source| {
-        format!(
-            "create WireGuard key directory {}: {source}",
-            parent.display()
-        )
-    })?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .map_err(|source| {
+            format!(
+                "create WireGuard key directory {}: {source}",
+                parent.display()
+            )
+        })?;
     let private_key = Key::generate().to_string();
-    std::fs::write(path, format!("{private_key}\n"))
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|source| format!("create WireGuard private key {}: {source}", path.display()))?;
+    file.write_all(format!("{private_key}\n").as_bytes())
         .map_err(|source| format!("write WireGuard private key {}: {source}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
-        format!(
-            "set WireGuard private key permissions {}: {source}",
-            path.display()
-        )
-    })?;
     Ok(private_key)
 }
 
@@ -210,6 +220,7 @@ pub(super) async fn ensure_wireguard_interface(
     .map_err(|source| source.to_string())?;
     api.configure_peer_routing(&wg_peers)
         .map_err(|source| source.to_string())?;
+    set_link_up(wg_ifname).await?;
     Ok(())
 }
 
@@ -269,6 +280,18 @@ async fn link_index(ifname: &str) -> Result<Option<u32>, String> {
         .await
         .map_err(|source| source.to_string())?;
     Ok(link.map(|message| message.header.index))
+}
+
+async fn set_link_up(ifname: &str) -> Result<(), String> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|source| source.to_string())?;
+    tokio::spawn(connection);
+    handle
+        .link()
+        .set(LinkUnspec::new_with_name(ifname).up().build())
+        .execute()
+        .await
+        .map_err(|source| source.to_string())
 }
 
 fn to_defguard_peer(peer: &WireGuardPeer) -> Result<Peer, String> {

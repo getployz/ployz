@@ -82,7 +82,7 @@ pub async fn start_machine_process(
     let client = connect_authenticated_pool(&connect, &initial_pool, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(MachineProcessError::ConnectNats)?;
-    let mtu_policy = WireGuardMtuPolicy::from_config(config.ployz_native_mesh.wg_mtu.clone())
+    let mtu_policy = WireGuardMtuPolicy::from_config(config.ployz_native_mesh.wg_mtu)
         .map_err(|message| MachineProcessError::InvalidDataplaneMtu { message })?;
     let runner = DockerManagedContainerRunner::lazy_local_defaults(
         config.ployz_native_mesh.endpoint_subnet.clone(),
