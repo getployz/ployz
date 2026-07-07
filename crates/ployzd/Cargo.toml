@@ -14,6 +14,7 @@ bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 clap.workspace = true
 defguard_wireguard_rs.workspace = true
 futures-util.workspace = true
+getifs.workspace = true
 local-ip-address.workspace = true
 public-ip-address.workspace = true
 ipnet = "2"
@@ -24,7 +25,6 @@ ployz-core.workspace = true
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
-rtnetlink.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nkeys = "0.4"
@@ -33,6 +33,9 @@ sysctl.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rtnetlink.workspace = true
 
 [dev-dependencies]
 ployz-test-support.workspace = true

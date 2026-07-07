@@ -1,10 +1,15 @@
+#[cfg(target_os = "linux")]
+use defguard_wireguard_rs::Kernel;
+#[cfg(not(target_os = "linux"))]
+use defguard_wireguard_rs::Userspace;
 use defguard_wireguard_rs::{
-    InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask,
-    peer::Peer,
+    InterfaceConfiguration, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask, peer::Peer,
 };
+#[cfg(target_os = "linux")]
 use futures_util::TryStreamExt;
 use ipnet::Ipv4Net;
 use ployz_core::dataplane::{WireGuardPeer, WireGuardPublicKey};
+#[cfg(target_os = "linux")]
 use rtnetlink::{
     LinkUnspec, RouteMessageBuilder,
     packet_route::{
@@ -16,6 +21,11 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
+
+#[cfg(target_os = "linux")]
+type HostWireGuardApi = Kernel;
+#[cfg(not(target_os = "linux"))]
+type HostWireGuardApi = Userspace;
 
 pub(super) const MIN_WIREGUARD_MTU: u32 = 1280;
 pub(super) const MAX_WIREGUARD_MTU: u32 = 1500 - WIREGUARD_ENCAP_OVERHEAD;
@@ -68,6 +78,11 @@ pub(crate) async fn resolve_wireguard_mtu(policy: WireGuardMtuPolicy, wg_ifname:
 }
 
 async fn detect_wireguard_mtu(wg_ifname: &str) -> Result<WireGuardMtu, String> {
+    detect_wireguard_mtu_platform(wg_ifname).await
+}
+
+#[cfg(target_os = "linux")]
+async fn detect_wireguard_mtu_platform(wg_ifname: &str) -> Result<WireGuardMtu, String> {
     let (connection, handle, _) =
         rtnetlink::new_connection().map_err(|source| source.to_string())?;
     tokio::spawn(connection);
@@ -133,6 +148,24 @@ async fn detect_wireguard_mtu(wg_ifname: &str) -> Result<WireGuardMtu, String> {
     Ok(wireguard_mtu_from_egress(egress_mtu))
 }
 
+#[cfg(not(target_os = "linux"))]
+async fn detect_wireguard_mtu_platform(wg_ifname: &str) -> Result<WireGuardMtu, String> {
+    let local_addr = getifs::best_local_ipv4_addrs()
+        .map_err(|source| source.to_string())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no default IPv4 route".to_owned())?;
+    let interface = getifs::interface_by_index(local_addr.index())
+        .map_err(|source| source.to_string())?
+        .ok_or_else(|| format!("output interface {} was not found", local_addr.index()))?;
+    if interface.name().as_str() == wg_ifname {
+        return Err(format!(
+            "egress interface is the WireGuard interface {wg_ifname}"
+        ));
+    }
+    Ok(wireguard_mtu_from_egress(interface.mtu()))
+}
+
 pub(super) fn wireguard_mtu_from_egress(egress_mtu: u32) -> WireGuardMtu {
     WireGuardMtu(
         egress_mtu
@@ -196,8 +229,8 @@ pub(super) async fn ensure_wireguard_interface(
         .find(|route| route.machine_id == *local_machine_id)
         .ok_or_else(|| "local endpoint route is missing".to_owned())
         .and_then(|route| wireguard_host_cidr(&route.endpoint_subnet))?;
-    let mut api = WGApi::<Kernel>::new(wg_ifname).map_err(|source| source.to_string())?;
-    if link_index(wg_ifname).await?.is_none() {
+    let mut api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
+    if !interface_exists(wg_ifname)? {
         api.create_interface()
             .map_err(|source| source.to_string())?;
     }
@@ -220,6 +253,7 @@ pub(super) async fn ensure_wireguard_interface(
     .map_err(|source| source.to_string())?;
     api.configure_peer_routing(&wg_peers)
         .map_err(|source| source.to_string())?;
+    #[cfg(target_os = "linux")]
     set_link_up(wg_ifname).await?;
     Ok(())
 }
@@ -227,7 +261,7 @@ pub(super) async fn ensure_wireguard_interface(
 pub(super) fn read_latest_handshakes(
     wg_ifname: &str,
 ) -> Result<std::collections::BTreeMap<String, u64>, String> {
-    let api = WGApi::<Kernel>::new(wg_ifname).map_err(|source| source.to_string())?;
+    let api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
     let host = api
         .read_interface_data()
         .map_err(|source| source.to_string())?;
@@ -251,7 +285,7 @@ pub(super) fn configure_peer_endpoint(
     endpoint: std::net::SocketAddr,
     endpoint_subnet: &str,
 ) -> Result<(), String> {
-    let api = WGApi::<Kernel>::new(wg_ifname).map_err(|source| source.to_string())?;
+    let api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
     let mut peer = Peer::new(
         Key::try_from(public_key)
             .map_err(|source| format!("parse WireGuard peer public key: {source}"))?,
@@ -267,21 +301,17 @@ pub(super) fn configure_peer_endpoint(
         .map_err(|source| source.to_string())
 }
 
-async fn link_index(ifname: &str) -> Result<Option<u32>, String> {
-    let (connection, handle, _) =
-        rtnetlink::new_connection().map_err(|source| source.to_string())?;
-    tokio::spawn(connection);
-    let link = handle
-        .link()
-        .get()
-        .match_name(ifname.to_owned())
-        .execute()
-        .try_next()
-        .await
-        .map_err(|source| source.to_string())?;
-    Ok(link.map(|message| message.header.index))
+fn interface_exists(ifname: &str) -> Result<bool, String> {
+    getifs::interfaces()
+        .map(|interfaces| {
+            interfaces
+                .iter()
+                .any(|interface| interface.name().as_str() == ifname)
+        })
+        .map_err(|source| source.to_string())
 }
 
+#[cfg(target_os = "linux")]
 async fn set_link_up(ifname: &str) -> Result<(), String> {
     let (connection, handle, _) =
         rtnetlink::new_connection().map_err(|source| source.to_string())?;

@@ -1,4 +1,5 @@
 use crate::operation_api::error_map::corrupt;
+use crate::operations::log::RecordOperationEventError;
 use ployz_core::ops::{CoreReplaceTransition, OperationStatus};
 use ployz_sdk_types::{
     CoreReplaceReportError, CoreReplaceReportOutcome, CoreReplaceReportRequest, CoreReplaceReported,
@@ -22,14 +23,15 @@ pub async fn core_replace_report(
         .record_core_replace_transition(&operation_id, &machine_id, transition)
         .await
         .map_err(|error| match error {
-            crate::operations::log::RecordOperationEventError::MissingOperation { .. } => {
+            RecordOperationEventError::MissingOperation { .. } => {
                 CoreReplaceReportError::UnknownOperation {
                     operation_id: operation_id.clone(),
                 }
             }
-            other => CoreReplaceReportError::Unavailable {
+            error @ (RecordOperationEventError::StoreStatus(_)
+            | RecordOperationEventError::ProjectStatus(_)) => CoreReplaceReportError::Unavailable {
                 operation_id: operation_id.clone(),
-                message: other.to_string(),
+                message: error.to_string(),
             },
         })?;
 
