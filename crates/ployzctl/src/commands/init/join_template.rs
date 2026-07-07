@@ -5,6 +5,7 @@ use clap::Args;
 use ployz_core::install::{
     MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats, WrappedCaKey,
+    WrappedCoreSeeds,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 
@@ -37,6 +38,7 @@ pub(crate) fn machine_join_template_command(
 ) -> Result<MachineJoinTemplateCommand, PloyzctlCliError> {
     let trusted_nats_ca = read_trusted_nats_ca(parsed.trusted_nats_ca_file)?;
     let recovery_key_wrapped = read_recovery_key(parsed.recovery_key_file)?;
+    let core_seeds_wrapped = read_core_seeds(parsed.core_seeds_file)?;
     let artifacts = read_artifact_spec(parsed.artifact_spec)?;
 
     Ok(MachineJoinTemplateCommand {
@@ -50,6 +52,7 @@ pub(crate) fn machine_join_template_command(
                     ca_pem: trusted_nats_ca,
                 },
                 recovery_key_wrapped,
+                core_seeds_wrapped,
                 ployzd: artifacts.ployzd,
                 ebpf_bytecode: artifacts.ebpf_bytecode,
                 ebpf_ctl: artifacts.ebpf_ctl,
@@ -67,22 +70,31 @@ pub(crate) struct MachineJoinTemplateCli {
     #[arg(long)]
     trusted_nats_ca_file: String,
     /// The wrapped CA recovery key emitted at init (`ca-recovery.key`), delivered
-    /// to joiners so they can be core-promoted. Omit for a template without it.
+    /// to joiners so they can be core-promoted.
     #[arg(long)]
-    recovery_key_file: Option<String>,
+    recovery_key_file: String,
+    /// The wrapped core principal seeds emitted at init (`core-seeds.key`), so a
+    /// promoted core reuses the old core's principals verbatim.
+    #[arg(long)]
+    core_seeds_file: String,
     #[arg(long)]
     artifact_spec: String,
 }
 
-fn read_recovery_key(path: Option<String>) -> Result<Option<WrappedCaKey>, PloyzctlCliError> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
+fn read_recovery_key(path: String) -> Result<WrappedCaKey, PloyzctlCliError> {
     let bytes = fs::read(&path).map_err(|error| PloyzctlCliError::InvalidValue {
         flag: "--recovery-key-file",
         message: format!("cannot read {path}: {error}"),
     })?;
-    Ok(Some(WrappedCaKey::new(bytes)))
+    Ok(WrappedCaKey::new(bytes))
+}
+
+fn read_core_seeds(path: String) -> Result<WrappedCoreSeeds, PloyzctlCliError> {
+    let bytes = fs::read(&path).map_err(|error| PloyzctlCliError::InvalidValue {
+        flag: "--core-seeds-file",
+        message: format!("cannot read {path}: {error}"),
+    })?;
+    Ok(WrappedCoreSeeds::new(bytes))
 }
 
 fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCliError> {

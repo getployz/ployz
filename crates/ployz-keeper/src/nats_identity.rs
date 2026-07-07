@@ -7,10 +7,14 @@
 use std::fmt;
 use std::net::IpAddr;
 
+use ployz_core::install::WrappedCoreSeeds;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsCaCertificatePem, NatsServerCertificatePem, NatsServerConfigError,
-    is_valid_host_syntax,
+    NatsUserSeed, is_valid_host_syntax,
 };
+use serde::{Deserialize, Serialize};
+
+use crate::recovery_secret::{self, RecoverySecretError};
 
 const CA_COMMON_NAME: &str = "ployz-cluster-ca";
 const LOOPBACK_SAN: &str = "127.0.0.1";
@@ -50,6 +54,65 @@ impl fmt::Debug for NatsCaKeyPem {
         formatter.write_str("NatsCaKeyPem([redacted])")
     }
 }
+
+/// The core's three principal seeds — the plaintext that [`WrappedCoreSeeds`]
+/// encrypts. Secret material; pre-positioned on candidates so promotion reuses the
+/// old core's principals rather than rotating them (ADR 0031).
+#[derive(Serialize, Deserialize)]
+pub struct CoreSeeds {
+    pub controller: NatsUserSeed,
+    pub operator: NatsUserSeed,
+    pub join: NatsUserSeed,
+}
+
+impl CoreSeeds {
+    #[must_use]
+    pub fn from_identity(identity: &ClusterNatsIdentity) -> Self {
+        Self {
+            controller: identity.controller.seed.clone(),
+            operator: identity.operator.seed.clone(),
+            join: identity.join.seed.clone(),
+        }
+    }
+}
+
+/// Wrap the core seeds with the operator recovery secret for pre-positioning.
+pub fn wrap_core_seeds(
+    secret: &str,
+    seeds: &CoreSeeds,
+) -> Result<WrappedCoreSeeds, RecoverySecretError> {
+    let plaintext = serde_json::to_vec(seeds).expect("core seeds serialize");
+    Ok(WrappedCoreSeeds::new(recovery_secret::wrap(
+        secret, &plaintext,
+    )?))
+}
+
+/// Decrypt pre-positioned core seeds at promotion.
+pub fn unwrap_core_seeds(
+    secret: &str,
+    wrapped: &WrappedCoreSeeds,
+) -> Result<CoreSeeds, CoreSeedsError> {
+    let plaintext =
+        recovery_secret::unwrap(secret, wrapped.as_bytes()).map_err(CoreSeedsError::Decrypt)?;
+    serde_json::from_slice(&plaintext).map_err(|_| CoreSeedsError::Malformed)
+}
+
+#[derive(Debug)]
+pub enum CoreSeedsError {
+    Decrypt(RecoverySecretError),
+    Malformed,
+}
+
+impl fmt::Display for CoreSeedsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decrypt(error) => write!(formatter, "cannot decrypt core seeds: {error}"),
+            Self::Malformed => formatter.write_str("decrypted core seeds are malformed"),
+        }
+    }
+}
+
+impl std::error::Error for CoreSeedsError {}
 
 /// The server's TLS certificate plus its private key.
 #[derive(Debug, Clone, PartialEq, Eq)]

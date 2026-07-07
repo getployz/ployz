@@ -130,6 +130,11 @@
       "join_bundle": {
         "material": {
           "cluster_name": "prod",
+          "core_seeds_wrapped": [
+            4,
+            5,
+            6
+          ],
           "ebpf_bytecode": {
             "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -148,6 +153,11 @@
             "source": "/tmp/ployzd",
             "version": "0.1.0"
           },
+          "recovery_key_wrapped": [
+            1,
+            2,
+            3
+          ],
           "runtime_nats_url": "nats://127.0.0.1:7422",
           "trusted_nats": {
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
@@ -170,6 +180,11 @@
       "join_bundle": {
         "material": {
           "cluster_name": "prod",
+          "core_seeds_wrapped": [
+            4,
+            5,
+            6
+          ],
           "ebpf_bytecode": {
             "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -188,6 +203,11 @@
             "source": "/tmp/ployzd",
             "version": "0.1.0"
           },
+          "recovery_key_wrapped": [
+            1,
+            2,
+            3
+          ],
           "runtime_nats_url": "nats://127.0.0.1:7422",
           "trusted_nats": {
             "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"

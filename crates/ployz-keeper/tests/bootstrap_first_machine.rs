@@ -1,6 +1,6 @@
 mod support;
 
-use ployz_core::install::WrappedCaKey;
+use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::NatsUserPublicKey;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::ArtifactKind;
@@ -25,6 +25,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     );
     let role_environment = target.role_environment.clone();
     let plan = first_machine_install_plan(target);
@@ -104,6 +105,7 @@ fn first_machine_can_authorize_cloud_user_public_key() {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     )
     .with_additional_user_public_key(cloud_public_key.clone());
     let plan = first_machine_install_plan(target);
@@ -147,6 +149,7 @@ fn first_machine_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
         InstallRolePolicy::install_all(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     );
 
     let control_env = target
@@ -203,6 +206,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     )
     .with_machine_public_ip("203.0.113.10".parse().expect("valid IP"));
     let plan = first_machine_install_plan(target);
@@ -247,6 +251,7 @@ fn first_machine_default_install_includes_gateway_and_dns_roles() {
         InstallRolePolicy::install_all(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     ));
 
     for role in [DaemonProcessRole::Gateway, DaemonProcessRole::Dns] {
@@ -269,6 +274,7 @@ fn first_machine_dns_opt_out_skips_only_the_dns_role() {
         InstallRolePolicy::install_all().without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     ));
 
     assert!(plan_writes_unit(
@@ -291,6 +297,7 @@ fn first_machine_gateway_opt_out_skips_only_the_gateway_role() {
         InstallRolePolicy::install_all().without_gateway(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     ));
 
     assert!(!plan_writes_unit(

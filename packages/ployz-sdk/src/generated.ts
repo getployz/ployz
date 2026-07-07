@@ -363,10 +363,16 @@ export type MachineJoinRuntimeNatsUrl = string;
 export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats,
 /**
  * The cluster CA signing key wrapped with the recovery secret (ADR 0031),
- * delivered so a joined promotion candidate can decrypt it and self-issue
- * the trusted NATS server cert. `None` for material minted before recovery.
+ * delivered so a joined promotion candidate can decrypt it and self-issue the
+ * trusted NATS server cert.
  */
-recovery_key_wrapped?: WrappedCaKey | null, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
+recovery_key_wrapped: WrappedCaKey,
+/**
+ * The core's controller/operator/join principal seeds wrapped with the recovery
+ * secret (ADR 0031), delivered so a promoted core reuses them verbatim rather
+ * than rotating (which would lock out the operator and Cloud).
+ */
+core_seeds_wrapped: WrappedCoreSeeds, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
 
 export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
@@ -391,6 +397,8 @@ export type NatsCaCertificatePem = string;
 export type MachineJoinTrustedNats = { ca_pem: NatsCaCertificatePem, };
 
 export type WrappedCaKey = Array<number>;
+
+export type WrappedCoreSeeds = Array<number>;
 
 export type InstallArtifactVersion = string;
 

@@ -15,9 +15,13 @@ fn cli_init_can_render_machine_join_template_json() {
     let temp = temp_dir("ployzctl-join-template");
     let artifact_spec = write_artifact_spec_file(&temp);
     let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
+    let recovery_key_file = write_recovery_key_file(&temp);
+    let core_seeds_file = write_core_seeds_file(&temp);
     let command = parse_command(init_join_template_args(
         &artifact_spec,
         &trusted_nats_ca_file,
+        &recovery_key_file,
+        &core_seeds_file,
     ))
     .expect("join template command parses");
 
@@ -35,11 +39,15 @@ fn binary_init_can_print_machine_join_template_without_nats() {
     let temp = temp_dir("ployzctl-join-template-binary");
     let artifact_spec = write_artifact_spec_file(&temp);
     let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
+    let recovery_key_file = write_recovery_key_file(&temp);
+    let core_seeds_file = write_core_seeds_file(&temp);
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
         .args(init_join_template_args(
             &artifact_spec,
             &trusted_nats_ca_file,
+            &recovery_key_file,
+            &core_seeds_file,
         ))
         .output()
         .expect("ployzctl binary runs");
@@ -88,7 +96,12 @@ fn assert_join_template(template: MachineJoinTemplate) {
     );
 }
 
-fn init_join_template_args(artifact_spec: &Path, trusted_nats_ca_file: &Path) -> Vec<String> {
+fn init_join_template_args(
+    artifact_spec: &Path,
+    trusted_nats_ca_file: &Path,
+    recovery_key_file: &Path,
+    core_seeds_file: &Path,
+) -> Vec<String> {
     [
         "internal",
         "init",
@@ -101,6 +114,14 @@ fn init_join_template_args(artifact_spec: &Path, trusted_nats_ca_file: &Path) ->
         trusted_nats_ca_file
             .to_str()
             .expect("trusted CA fixture path is utf-8"),
+        "--recovery-key-file",
+        recovery_key_file
+            .to_str()
+            .expect("recovery key fixture path is utf-8"),
+        "--core-seeds-file",
+        core_seeds_file
+            .to_str()
+            .expect("core seeds fixture path is utf-8"),
         "--artifact-spec",
         artifact_spec
             .to_str()
@@ -109,6 +130,18 @@ fn init_join_template_args(artifact_spec: &Path, trusted_nats_ca_file: &Path) ->
     .into_iter()
     .map(str::to_owned)
     .collect()
+}
+
+fn write_recovery_key_file(dir: &Path) -> PathBuf {
+    let path = dir.join("ca-recovery.key");
+    fs::write(&path, b"wrapped-ca-key").expect("recovery key fixture can be written");
+    path
+}
+
+fn write_core_seeds_file(dir: &Path) -> PathBuf {
+    let path = dir.join("core-seeds.key");
+    fs::write(&path, b"wrapped-core-seeds").expect("core seeds fixture can be written");
+    path
 }
 
 fn write_trusted_nats_ca_file(dir: &Path) -> PathBuf {

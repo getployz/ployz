@@ -1,6 +1,6 @@
 mod support;
 
-use ployz_core::install::WrappedCaKey;
+use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::NatsUserPublicKey;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::ArtifactKind;
@@ -28,6 +28,7 @@ fn promote_target() -> CorePromoteTarget {
             .without_dns(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     );
     CorePromoteTarget {
         machine_id: first_machine.machine_id.clone(),

@@ -232,7 +232,8 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 )
                 .expect("valid CA pem"),
             },
-            recovery_key_wrapped: None,
+            recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
+            core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
             ployzd: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployzd"),

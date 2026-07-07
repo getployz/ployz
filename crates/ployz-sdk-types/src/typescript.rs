@@ -56,6 +56,7 @@ use crate::{
     RuntimeSnapshotResult, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
     ServiceListRequest, ServiceListResult, ServiceSnapshot, ServingTargetEntry, StepId,
     UnusableMachine, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence, WrappedCaKey,
+    WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::subjects::OperationApiEndpointExecution;
@@ -270,6 +271,7 @@ macro_rules! exported_types {
             NatsCaCertificatePem,
             MachineJoinTrustedNats,
             WrappedCaKey,
+            WrappedCoreSeeds,
             InstallArtifactVersion,
             InstallArtifactSource,
             InstallSha256Digest,
@@ -667,7 +669,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: trusted_nats(),
-            recovery_key_wrapped: None,
+            recovery_key_wrapped: WrappedCaKey::new(vec![1, 2, 3]),
+            core_seeds_wrapped: WrappedCoreSeeds::new(vec![4, 5, 6]),
             ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",

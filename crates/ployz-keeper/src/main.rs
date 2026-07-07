@@ -1152,7 +1152,8 @@ mod tests {
                     )
                     .expect("valid ca pem"),
                 },
-                recovery_key_wrapped: None,
+                recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
+                core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
                 ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
                 ebpf_bytecode: join_artifact(
                     "/tmp/ployz-ebpf-tc",
