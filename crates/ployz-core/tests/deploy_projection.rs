@@ -16,6 +16,7 @@ use ployz_test_support::ids::{
 fn deploy_transition_updates_status_sequence() {
     let accepted = OperationStatus::deploy_accepted(
         operation_id("op_123"),
+        namespace_id("default"),
         service_id("svc_api"),
         event_sequence(1),
     );
@@ -29,6 +30,7 @@ fn deploy_transition_updates_status_sequence() {
         OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Planning,
                 last_event_sequence: event_sequence(2),
@@ -41,6 +43,7 @@ fn deploy_transition_updates_status_sequence() {
 fn satisfied_deploy_transition_does_not_rewrite_status() {
     let planning = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Planning,
         last_event_sequence: event_sequence(2),
@@ -56,6 +59,7 @@ fn satisfied_deploy_transition_does_not_rewrite_status() {
 fn terminal_operation_status_cannot_return_to_running() {
     let completed = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::completed(),
         last_event_sequence: event_sequence(4),
@@ -77,6 +81,7 @@ fn terminal_operation_status_cannot_return_to_running() {
 fn deploy_completion_is_rejected_before_active_commit_stage() {
     let waiting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
@@ -104,6 +109,7 @@ fn deploy_completion_is_rejected_before_active_commit_stage() {
 fn deploy_running_stages_reject_unmodeled_large_skips() {
     let planning = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Planning,
         last_event_sequence: event_sequence(2),
@@ -132,6 +138,7 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
 
     let starting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
@@ -167,6 +174,7 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
 fn deploy_completion_is_allowed_after_active_commit_stage() {
     let committing = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: active_service_running(),
@@ -183,6 +191,7 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::completed(),
                 last_event_sequence: event_sequence(6),
@@ -195,6 +204,7 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
 fn deploy_completion_can_record_warning_outcome() {
     let committing = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: active_service_running(),
@@ -213,6 +223,7 @@ fn deploy_completion_can_record_warning_outcome() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Completed {
                     outcome: DeployCompletionOutcome::CompletedWithWarnings,
@@ -227,6 +238,7 @@ fn deploy_completion_can_record_warning_outcome() {
 fn deploy_route_cutover_can_precede_active_service_commit() {
     let waiting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
@@ -258,6 +270,7 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: active_service_running(),
@@ -272,6 +285,7 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
 fn deploy_cleanup_can_follow_active_service_commit() {
     let committing = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: active_service_running(),
@@ -290,6 +304,7 @@ fn deploy_cleanup_can_follow_active_service_commit() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::RemovingSupersededContainers,
@@ -304,6 +319,7 @@ fn deploy_cleanup_can_follow_active_service_commit() {
 fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
     let committing = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: active_service_running(),
@@ -324,6 +340,7 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: active_service_running(),
@@ -338,6 +355,7 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
 fn invalid_deploy_transitions_are_rejected() {
     let accepted = OperationStatus::deploy_accepted(
         operation_id("op_123"),
+        namespace_id("default"),
         service_id("svc_api"),
         event_sequence(1),
     );
@@ -360,6 +378,7 @@ fn invalid_deploy_transitions_are_rejected() {
 fn container_started_event_records_without_changing_status() {
     let starting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
@@ -372,6 +391,7 @@ fn container_started_event_records_without_changing_status() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::StartingContainers,
@@ -386,6 +406,7 @@ fn container_started_event_records_without_changing_status() {
 fn health_check_started_event_records_without_changing_status() {
     let waiting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
@@ -398,6 +419,7 @@ fn health_check_started_event_records_without_changing_status() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::WaitingForHealth,
@@ -412,6 +434,7 @@ fn health_check_started_event_records_without_changing_status() {
 fn plan_created_event_records_without_changing_status() {
     let planning = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Planning,
         last_event_sequence: event_sequence(2),
@@ -422,6 +445,7 @@ fn plan_created_event_records_without_changing_status() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Planning,
                 last_event_sequence: event_sequence(3),
@@ -434,6 +458,7 @@ fn plan_created_event_records_without_changing_status() {
 fn plan_created_event_after_execution_starts_records_without_changing_status() {
     let executing = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
@@ -446,6 +471,7 @@ fn plan_created_event_after_execution_starts_records_without_changing_status() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::StartingContainers,
@@ -460,6 +486,7 @@ fn plan_created_event_after_execution_starts_records_without_changing_status() {
 fn older_container_started_event_is_satisfied_after_later_stage() {
     let waiting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: active_service_running(),
@@ -477,6 +504,7 @@ fn older_container_started_event_is_satisfied_after_later_stage() {
 fn fresh_container_started_event_after_later_stage_records_without_changing_status() {
     let waiting = OperationStatus::Deploy {
         id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
         state: DeployOperationState::Running {
             stage: active_service_running(),
@@ -489,6 +517,7 @@ fn fresh_container_started_event_after_later_stage_records_without_changing_stat
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: active_service_running(),

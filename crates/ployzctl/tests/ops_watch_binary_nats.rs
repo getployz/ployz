@@ -88,6 +88,7 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
             let response: OpsStatusResponse = OperationApiResponse::Ok {
                 value: OperationStatusSnapshot::new(OperationStatus::Deploy {
                     id: operation_id("op_deploy"),
+                    namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
                     service_id: service_id("svc_api"),
                     state: DeployOperationState::Running {
                         stage: DeployRunningStage::WaitingForHealth,

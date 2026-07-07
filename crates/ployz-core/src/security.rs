@@ -10,7 +10,7 @@ use crate::ids::MachineId;
 pub enum NatsPrincipal {
     Machine { machine_id: MachineId },
     Controller,
-    User,
+    Operator,
     Join,
     System,
 }
@@ -24,7 +24,7 @@ impl NatsPrincipal {
         match self {
             Self::Machine { machine_id } => format!("machine_{}", machine_id.as_str()),
             Self::Controller => "controller".to_owned(),
-            Self::User => "user".to_owned(),
+            Self::Operator => "operator".to_owned(),
             Self::Join => "join".to_owned(),
             Self::System => "system".to_owned(),
         }
@@ -40,7 +40,7 @@ impl NatsPrincipal {
         }
         match key {
             "controller" => Ok(Self::Controller),
-            "user" => Ok(Self::User),
+            "operator" => Ok(Self::Operator),
             "join" => Ok(Self::Join),
             "system" => Ok(Self::System),
             _ => Err(NatsPrincipalKeyError::Invalid {

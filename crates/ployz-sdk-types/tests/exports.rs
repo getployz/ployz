@@ -45,7 +45,7 @@ fn sdk_exports_core_wire_types() {
     };
     let state = DeployOperationState::Accepted;
     let running = DeployRunningStage::ServingTargetCommit;
-    let _deploy = DeployRequest {
+    let deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         services: vec![DeployServiceSpec {
             service_id: service_id.clone(),
@@ -56,6 +56,7 @@ fn sdk_exports_core_wire_types() {
     };
     let status = OperationStatus::deploy_accepted(
         ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id"),
+        deploy.namespace_id.clone(),
         service_id,
         EventSequence::try_new(1).expect("valid event sequence"),
     );
@@ -80,7 +81,7 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
-        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":"1"}"#
+        r#"{"kind":"deploy","id":"op_123","namespace_id":"default","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":"1"}"#
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
@@ -153,7 +154,7 @@ fn sdk_exports_operation_api_wire_types() {
     let response: DeploySubmitResponse = OperationApiResponse::Ok {
         value: AcceptedOperation {
             operation_id: operation_id.clone(),
-            watch_subject: "plz.v1.op.op_123.>".to_owned(),
+            watch_subject: "plz.v1.progress.namespace.default.operation.op_123.>".to_owned(),
             start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
         },
     };
@@ -164,14 +165,17 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.op.op_123.>","start_sequence":"1"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.progress.namespace.default.operation.op_123.>","start_sequence":"1"}}"#
     );
 
     let OperationApiResponse::Ok { value } = response else {
         panic!("response should be ok");
     };
     assert_eq!(value.operation_id, operation_id);
-    assert_eq!(value.watch_subject, "plz.v1.op.op_123.>".to_owned());
+    assert_eq!(
+        value.watch_subject,
+        "plz.v1.progress.namespace.default.operation.op_123.>".to_owned()
+    );
     assert_eq!(
         value.start_sequence,
         EventSequence::try_new(1).expect("valid event sequence")
@@ -191,7 +195,8 @@ fn sdk_exports_operation_api_wire_types() {
             accepted: AcceptedOperation {
                 operation_id: ployz_sdk_types::OperationId::try_new("op_machine")
                     .expect("valid operation id"),
-                watch_subject: "plz.v1.op.op_machine.>".to_owned(),
+                watch_subject: "plz.v1.progress.machine.machine_2.operation.op_machine.>"
+                    .to_owned(),
                 start_sequence: EventSequence::try_new(7).expect("valid event sequence"),
             },
             machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
@@ -209,7 +214,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"}}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -240,7 +245,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"},"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"},"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
@@ -442,7 +447,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         vec![
             (
                 "deploy.submit",
-                "plz.v1.svc.api.deploy.submit",
+                "plz.v1.rpc.operator.command.deploy.submit",
                 OperationApiEndpointExecution::AcceptsOperation,
                 "DeploySubmitRequest".to_owned(),
                 "AcceptedOperation".to_owned(),
@@ -451,7 +456,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "init.first_machine.activate",
-                "plz.v1.svc.api.init.first_machine.activate",
+                "plz.v1.rpc.operator.command.init.first_machine.activate",
                 OperationApiEndpointExecution::MutatesOperation,
                 "InitFirstMachineActivateRequest".to_owned(),
                 "InitFirstMachineActivated".to_owned(),
@@ -460,7 +465,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "machine.add",
-                "plz.v1.svc.api.machine.add",
+                "plz.v1.rpc.operator.command.machine.add",
                 OperationApiEndpointExecution::AcceptsOperation,
                 "MachineAddRequest".to_owned(),
                 "MachineAddAccepted".to_owned(),
@@ -469,7 +474,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "machine.update",
-                "plz.v1.svc.api.machine.update",
+                "plz.v1.rpc.operator.command.machine.update",
                 OperationApiEndpointExecution::AcceptsOperation,
                 "MachineUpdateRequest".to_owned(),
                 "AcceptedOperation".to_owned(),
@@ -478,7 +483,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "machine.drain",
-                "plz.v1.svc.api.machine.drain",
+                "plz.v1.rpc.operator.command.machine.drain",
                 OperationApiEndpointExecution::AcceptsOperation,
                 "MachineLifecycleRequest".to_owned(),
                 "AcceptedOperation".to_owned(),
@@ -487,7 +492,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "machine.resume",
-                "plz.v1.svc.api.machine.resume",
+                "plz.v1.rpc.operator.command.machine.resume",
                 OperationApiEndpointExecution::AcceptsOperation,
                 "MachineLifecycleRequest".to_owned(),
                 "AcceptedOperation".to_owned(),
@@ -496,7 +501,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "machine.list",
-                "plz.v1.svc.api.machine.list",
+                "plz.v1.rpc.operator.query.machine.list",
                 OperationApiEndpointExecution::Query,
                 "MachineListRequest".to_owned(),
                 "MachineListResult".to_owned(),
@@ -505,7 +510,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "machine.inspect",
-                "plz.v1.svc.api.machine.inspect",
+                "plz.v1.rpc.operator.query.machine.inspect",
                 OperationApiEndpointExecution::Query,
                 "MachineInspectRequest".to_owned(),
                 "MachineSnapshot".to_owned(),
@@ -513,8 +518,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineInspectResponse",
             ),
             (
-                "machine.join.redeem",
-                "plz.v1.svc.api.machine.join.redeem",
+                "machine.redeem",
+                "plz.v1.rpc.join.command.machine.redeem",
                 OperationApiEndpointExecution::MutatesOperation,
                 "MachineJoinRedeemRequest".to_owned(),
                 "MachineJoinRedeemed".to_owned(),
@@ -522,8 +527,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineJoinRedeemResponse",
             ),
             (
-                "machine.join.report",
-                "plz.v1.svc.api.machine.join.report",
+                "machine.report",
+                "plz.v1.rpc.join.command.machine.report",
                 OperationApiEndpointExecution::MutatesOperation,
                 "MachineJoinReportRequest".to_owned(),
                 "MachineJoinReported".to_owned(),
@@ -532,7 +537,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "service.list",
-                "plz.v1.svc.api.service.list",
+                "plz.v1.rpc.operator.query.service.list",
                 OperationApiEndpointExecution::Query,
                 "ServiceListRequest".to_owned(),
                 "ServiceListResult".to_owned(),
@@ -541,7 +546,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "service.inspect",
-                "plz.v1.svc.api.service.inspect",
+                "plz.v1.rpc.operator.query.service.inspect",
                 OperationApiEndpointExecution::Query,
                 "ServiceInspectRequest".to_owned(),
                 "ServiceSnapshot".to_owned(),
@@ -550,7 +555,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "runtime.snapshot",
-                "plz.v1.svc.api.runtime.snapshot",
+                "plz.v1.rpc.operator.query.runtime.snapshot",
                 OperationApiEndpointExecution::Query,
                 "RuntimeSnapshotRequest".to_owned(),
                 "RuntimeSnapshotResult".to_owned(),
@@ -559,7 +564,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "logs.tail",
-                "plz.v1.svc.api.logs.tail",
+                "plz.v1.rpc.operator.query.logs.tail",
                 OperationApiEndpointExecution::Query,
                 "LogsTailRequest".to_owned(),
                 "LogsTailResult".to_owned(),
@@ -568,7 +573,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "ops.list",
-                "plz.v1.svc.api.ops.list",
+                "plz.v1.rpc.operator.query.ops.list",
                 OperationApiEndpointExecution::Query,
                 "OpsListRequest".to_owned(),
                 "OpsListResult".to_owned(),
@@ -577,7 +582,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "ops.status",
-                "plz.v1.svc.api.ops.status",
+                "plz.v1.rpc.operator.query.ops.status",
                 OperationApiEndpointExecution::Query,
                 "OpsStatusRequest".to_owned(),
                 "OperationStatusSnapshot".to_owned(),
@@ -586,7 +591,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             ),
             (
                 "ops.watch",
-                "plz.v1.svc.api.ops.watch",
+                "plz.v1.rpc.operator.query.ops.watch",
                 OperationApiEndpointExecution::Query,
                 "OpsWatchRequest".to_owned(),
                 "OperationEventReplayPage".to_owned(),
@@ -724,7 +729,7 @@ fn machine_join_artifact(
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
         nats_credentials: NatsUserSeed::try_new(
-            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+            "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
         )
         .expect("valid nats credentials"),
     }

@@ -13,7 +13,7 @@ pub struct TestNats {
 
 impl TestNats {
     /// Starts a secured server with one minted Machine user per supplied id and
-    /// connects the Controller and User clients.
+    /// connects the Controller and Operator clients.
     pub async fn start_with_machines(machine_ids: &[MachineId]) -> Self {
         let connected = ployz_test_support::nats::TestNats::start_with_machines(machine_ids).await;
         let work_dir = tempfile::TempDir::new().expect("test work dir creates");
@@ -30,7 +30,7 @@ impl TestNats {
         self.connected.controller.clone()
     }
 
-    /// The operator client (User principal) the API client requests with.
+    /// The operator client (Operator principal) the API client requests with.
     #[must_use]
     pub fn user_client(&self) -> async_nats::Client {
         self.connected.user.clone()

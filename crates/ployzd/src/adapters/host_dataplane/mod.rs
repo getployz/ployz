@@ -7,7 +7,9 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::MachineId;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 
@@ -70,6 +72,7 @@ pub struct PloyzNativeMeshPreparer {
     route_programming: Option<HostDataplaneRouteProgramming>,
     peer_programming: Option<HostDataplanePeerProgramming>,
     public_key: HostWireGuardPublicKey,
+    endpoint_rotation: Arc<WireGuardEndpointRotation>,
     command_timeout: Duration,
 }
 
@@ -107,6 +110,7 @@ impl PloyzNativeMeshPreparer {
             peer_programming: Some(HostDataplanePeerProgramming {
                 wg_ifname: wg_ifname.clone(),
             }),
+            endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(wg_ifname.clone())),
             public_key: HostWireGuardPublicKey::Command {
                 wg_ifname,
                 private_key_path,
@@ -126,6 +130,7 @@ impl PloyzNativeMeshPreparer {
             plans: plans.into_iter().collect(),
             route_programming: None,
             peer_programming: None,
+            endpoint_rotation: Arc::new(WireGuardEndpointRotation::new(String::new())),
             public_key: HostWireGuardPublicKey::Static(
                 WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"),
             ),
@@ -183,6 +188,11 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
                     }
                 }
             }
+            self.endpoint_rotation.update_and_start(
+                self.machine_id.clone(),
+                peers,
+                self.command_timeout,
+            );
         }
         // The plans above already provisioned the WireGuard interface, so
         // the public key only needs to be read here.
@@ -293,7 +303,7 @@ impl HostDataplanePeerProgramming {
                         "peer".to_owned(),
                         peer.public_key.as_str().to_owned(),
                         "endpoint".to_owned(),
-                        peer.public_endpoint.to_string(),
+                        peer.active_endpoint.to_string(),
                         "allowed-ips".to_owned(),
                         peer.endpoint_subnet.clone(),
                         "persistent-keepalive".to_owned(),
@@ -303,6 +313,207 @@ impl HostDataplanePeerProgramming {
             })
             .collect()
     }
+}
+
+/// How often the rotation loop probes handshakes and applies any due rotation.
+const ROTATION_TICK: Duration = Duration::from_secs(1);
+/// A freshly-changed endpoint gets this long to complete a handshake before it is
+/// eligible to rotate again — WireGuard retries handshakes roughly every 5s.
+const ENDPOINT_SETTLE: Duration = Duration::from_secs(15);
+/// A previously-established peer silent for this long is treated as down. WireGuard
+/// rekeys well within ~180s, so 275s is comfortably past a dead tunnel.
+const HANDSHAKE_DEAD_SECS: u64 = 275;
+
+#[derive(Debug)]
+struct WireGuardEndpointRotation {
+    wg_ifname: String,
+    /// Set once when the rotation loop is first spawned; never cleared. The loop lives
+    /// for the life of the mesh preparer and exits when the preparer is dropped (its
+    /// `Weak` upgrade fails), so there is no stop/restart to coordinate.
+    spawned: AtomicBool,
+    peers: Mutex<std::collections::BTreeMap<String, RotatingWireGuardPeer>>,
+}
+
+#[derive(Debug, Clone)]
+struct RotatingWireGuardPeer {
+    endpoints: Vec<std::net::SocketAddr>,
+    active_endpoint: std::net::SocketAddr,
+    last_endpoint_change: Instant,
+}
+
+impl WireGuardEndpointRotation {
+    fn new(wg_ifname: String) -> Self {
+        Self {
+            wg_ifname,
+            spawned: AtomicBool::new(false),
+            peers: Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    fn update_and_start(
+        self: &Arc<Self>,
+        machine_id: MachineId,
+        peers: &[WireGuardPeer],
+        command_timeout: Duration,
+    ) {
+        self.update_peers(machine_id, peers);
+
+        if self.spawned.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // A single tick loop for the life of the preparer. It holds a `Weak`, so when
+        // the last preparer clone drops (process teardown) the next upgrade fails and
+        // the loop exits — no shutdown channel, no leak. It idles when no peer has
+        // multiple candidate endpoints.
+        let rotation = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ROTATION_TICK);
+            loop {
+                interval.tick().await;
+                let Some(rotation) = rotation.upgrade() else {
+                    break;
+                };
+                rotation.rotate_once(command_timeout).await;
+            }
+        });
+    }
+
+    /// Replace the tracked peer set from intent while preserving in-flight rotation
+    /// progress: a peer already tracked keeps its `active_endpoint` and settle timer
+    /// unless intent's candidate list no longer contains its active endpoint. Resetting
+    /// every prepare would restart the settle timer faster than [`ENDPOINT_SETTLE`]
+    /// under churn and rotation would never fire.
+    fn update_peers(&self, machine_id: MachineId, peers: &[WireGuardPeer]) {
+        let mut state = self
+            .peers
+            .lock()
+            .expect("wireguard endpoint rotation lock is not poisoned");
+        let mut present = std::collections::BTreeSet::new();
+        for peer in peers.iter().filter(|peer| peer.machine_id != machine_id) {
+            if peer.candidate_endpoints.len() < 2 {
+                continue;
+            }
+            let key = peer.public_key.as_str().to_owned();
+            present.insert(key.clone());
+            match state.get_mut(&key) {
+                Some(existing) if existing.endpoints == peer.candidate_endpoints => {}
+                Some(existing) => {
+                    existing.endpoints = peer.candidate_endpoints.clone();
+                    if !existing.endpoints.contains(&existing.active_endpoint) {
+                        existing.active_endpoint = peer.active_endpoint;
+                        existing.last_endpoint_change = Instant::now();
+                    }
+                }
+                None => {
+                    state.insert(
+                        key,
+                        RotatingWireGuardPeer {
+                            endpoints: peer.candidate_endpoints.clone(),
+                            active_endpoint: peer.active_endpoint,
+                            last_endpoint_change: Instant::now(),
+                        },
+                    );
+                }
+            }
+        }
+        state.retain(|key, _| present.contains(key));
+    }
+
+    async fn rotate_once(&self, command_timeout: Duration) {
+        let Some(handshakes) = read_latest_handshakes(&self.wg_ifname, command_timeout).await
+        else {
+            return;
+        };
+        for (public_key, endpoint) in self.rotations_due(&handshakes) {
+            let args = vec![
+                "set".to_owned(),
+                self.wg_ifname.clone(),
+                "peer".to_owned(),
+                public_key,
+                "endpoint".to_owned(),
+                endpoint.to_string(),
+            ];
+            let _ = run_host_command("wg", &args, command_timeout).await;
+        }
+    }
+
+    fn rotations_due(
+        &self,
+        handshakes: &std::collections::BTreeMap<String, u64>,
+    ) -> Vec<(String, std::net::SocketAddr)> {
+        let mut state = self
+            .peers
+            .lock()
+            .expect("wireguard endpoint rotation lock is not poisoned");
+        let now_unix = current_unix_seconds();
+        let mut rotations = Vec::new();
+        for (public_key, peer) in state.iter_mut() {
+            let last_handshake = handshakes.get(public_key).copied().unwrap_or_default();
+            let after_change = peer.last_endpoint_change.elapsed() >= ENDPOINT_SETTLE;
+            // Require the settle window even for an established-but-now-stale peer, so a
+            // just-rotated endpoint gets a chance to handshake before we rotate again —
+            // otherwise the loop cycles through every candidate each tick (thrash).
+            let established_down = after_change
+                && last_handshake != 0
+                && now_unix.saturating_sub(last_handshake) >= HANDSHAKE_DEAD_SECS;
+            let never_connected = last_handshake == 0 && after_change;
+            if !established_down && !never_connected {
+                continue;
+            }
+            let Some(index) = peer
+                .endpoints
+                .iter()
+                .position(|endpoint| endpoint == &peer.active_endpoint)
+            else {
+                continue;
+            };
+            let Some(next) = peer
+                .endpoints
+                .get((index + 1) % peer.endpoints.len())
+                .copied()
+            else {
+                continue;
+            };
+            peer.active_endpoint = next;
+            peer.last_endpoint_change = Instant::now();
+            rotations.push((public_key.clone(), next));
+        }
+        rotations
+    }
+}
+
+async fn read_latest_handshakes(
+    wg_ifname: &str,
+    command_timeout: Duration,
+) -> Option<std::collections::BTreeMap<String, u64>> {
+    let args = vec![
+        "show".to_owned(),
+        wg_ifname.to_owned(),
+        "latest-handshakes".to_owned(),
+    ];
+    let HostCommandOutcome::Success(output) = run_host_command("wg", &args, command_timeout).await
+    else {
+        return None;
+    };
+    let mut handshakes = std::collections::BTreeMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(public_key), Some(timestamp), None) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if let Ok(timestamp) = timestamp.parse::<u64>() {
+            handshakes.insert(public_key.to_owned(), timestamp);
+        }
+    }
+    Some(handshakes)
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 async fn read_wireguard_public_key(
@@ -380,6 +591,49 @@ mod tests {
                 ..
             } if machine_id == self::machine_id("machine_a")
         ));
+    }
+
+    #[test]
+    fn rotations_due_advances_a_never_connected_peer_after_the_settle_window() {
+        let rotation = WireGuardEndpointRotation::new("wg-test".to_owned());
+        let a: std::net::SocketAddr = "1.2.3.4:51820".parse().expect("addr");
+        let b: std::net::SocketAddr = "5.6.7.8:51820".parse().expect("addr");
+        rotation.peers.lock().expect("lock").insert(
+            "peerkey".to_owned(),
+            RotatingWireGuardPeer {
+                endpoints: vec![a, b],
+                active_endpoint: a,
+                last_endpoint_change: Instant::now()
+                    .checked_sub(ENDPOINT_SETTLE * 2)
+                    .expect("past instant"),
+            },
+        );
+
+        // No handshake yet and past the settle window → advance to the next candidate.
+        let due = rotation.rotations_due(&std::collections::BTreeMap::new());
+        assert_eq!(due, vec![("peerkey".to_owned(), b)]);
+    }
+
+    #[test]
+    fn rotations_due_holds_a_freshly_rotated_peer_within_the_settle_window() {
+        let rotation = WireGuardEndpointRotation::new("wg-test".to_owned());
+        let a: std::net::SocketAddr = "1.2.3.4:51820".parse().expect("addr");
+        let b: std::net::SocketAddr = "5.6.7.8:51820".parse().expect("addr");
+        rotation.peers.lock().expect("lock").insert(
+            "peerkey".to_owned(),
+            RotatingWireGuardPeer {
+                endpoints: vec![a, b],
+                active_endpoint: a,
+                last_endpoint_change: Instant::now(),
+            },
+        );
+
+        // A just-changed endpoint is held even with no handshake — no per-tick thrash.
+        assert!(
+            rotation
+                .rotations_due(&std::collections::BTreeMap::new())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -492,13 +746,15 @@ mod tests {
                 WireGuardPeer {
                     machine_id: machine_id("machine_a"),
                     endpoint_subnet: "10.42.1.0/24".to_owned(),
-                    public_endpoint: "203.0.113.1:51820".parse().expect("valid endpoint"),
+                    active_endpoint: "203.0.113.1:51820".parse().expect("valid endpoint"),
+                    candidate_endpoints: vec!["203.0.113.1:51820".parse().expect("valid endpoint")],
                     public_key: wireguard_public_key("public-machine_a"),
                 },
                 WireGuardPeer {
                     machine_id: machine_id("machine_b"),
                     endpoint_subnet: "10.42.2.0/24".to_owned(),
-                    public_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
+                    active_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
+                    candidate_endpoints: vec!["203.0.113.2:51820".parse().expect("valid endpoint")],
                     public_key: wireguard_public_key("public-machine_b"),
                 },
             ],

@@ -18,7 +18,7 @@ use ployz_core::ops::{
     OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
     RouteTarget,
 };
-use ployz_core::state::MachinePublicIpObservation;
+use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest, ServiceInspectRequest};
 use ployzctl::api_client::OperationApiClient;
@@ -29,9 +29,7 @@ use ployzd::operations::deploy::{
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::client::NatsMachineContainerRuntime;
 use ployzd::roles::machine::protocol::MachineContainerRunRpcRequest;
-use ployzd::roles::machine::service::{
-    start_machine_role_service, start_machine_role_service_with_public_ip,
-};
+use ployzd::roles::machine::service::start_machine_role_service;
 
 mod support;
 
@@ -73,7 +71,10 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     assert!(accepted.operation_id.as_str().starts_with("op_deploy_"));
     assert_eq!(
         accepted.watch_subject,
-        format!("plz.v1.op.{}.>", accepted.operation_id.as_str())
+        format!(
+            "plz.v1.progress.namespace.default.operation.{}.>",
+            accepted.operation_id.as_str()
+        )
     );
     assert_eq!(accepted.start_sequence, event_sequence(1));
     // The control runtime starts executing the accepted deploy immediately,
@@ -279,13 +280,12 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service_with_public_ip(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
         runner.clone(),
-        Some(public_ip(7)),
     )
     .await?;
     let gateway_runtime = start_gateway_process_with_client(
@@ -365,13 +365,12 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service_with_public_ip(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
         runner.clone(),
-        Some(public_ip(7)),
     )
     .await?;
     let gateway_runtime = start_gateway_process_with_client(
@@ -421,15 +420,27 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         .expect("machine runtime shuts down");
     let mut machine_rpc = NatsMachineContainerRuntime::new(client.clone())
         .with_request_timeout(Duration::from_millis(200));
-    assert_eq!(
-        machine_rpc
-            .run_container(&machine_id("machine_a"), machine_rpc_probe_request())
-            .await
-            .expect_err("machine service is unavailable after machine runtime shutdown"),
-        MachineContainerRuntimeError::Unavailable {
-            machine_id: machine_id("machine_a"),
-            reason: MachineRuntimeUnavailableReason::NoResponders,
-        }
+    let unavailable = machine_rpc
+        .run_container(&machine_id("machine_a"), machine_rpc_probe_request())
+        .await
+        .expect_err("machine service is unavailable after machine runtime shutdown");
+    let MachineContainerRuntimeError::Unavailable {
+        machine_id: id,
+        reason,
+    } = unavailable
+    else {
+        panic!("expected machine service unavailable, got {unavailable:?}");
+    };
+    assert_eq!(id, machine_id("machine_a"));
+    // Right after shutdown either the subscription is already gone (NoResponders) or
+    // the request outruns the unsubscribe and hits the timeout — both mean unavailable.
+    assert!(
+        matches!(
+            reason,
+            MachineRuntimeUnavailableReason::NoResponders
+                | MachineRuntimeUnavailableReason::RequestTimedOut
+        ),
+        "expected NoResponders or RequestTimedOut, got {reason:?}"
     );
     assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
     assert_eq!(upstream.requests().await.len(), 2);
@@ -457,13 +468,12 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service_with_public_ip(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
         runner.clone(),
-        Some(public_ip(7)),
     )
     .await?;
     let gateway_runtime = start_gateway_process_with_client(
@@ -560,22 +570,20 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));
     let edge_runner = ObservingContainerRunner::new(machine_id("edge_2"));
-    let core_machine_runtime = start_machine_role_service_with_public_ip(
+    let core_machine_runtime = start_machine_role_service(
         core_machine_client.clone(),
         machine_id("core_1"),
         core_runner.clone(),
         ReadyWireGuardEbpf,
         core_runner.clone(),
-        Some(public_ip(1)),
     )
     .await?;
-    let edge_machine_runtime = start_machine_role_service_with_public_ip(
+    let edge_machine_runtime = start_machine_role_service(
         edge_machine_client.clone(),
         machine_id("edge_2"),
         edge_runner.clone(),
         ReadyWireGuardEbpf,
         edge_runner.clone(),
-        Some(public_ip(2)),
     )
     .await?;
     let core_gateway_runtime = start_gateway_process_with_client(
@@ -791,9 +799,13 @@ async fn publish_machine_facts(
     let facts = MachineFactsSnapshot::try_new(
         machine_id.clone(),
         containers,
-        public_ip.map(|public_ip| MachinePublicIpObservation {
+        public_ip.map(|public_ip| MachineEndpointObservation {
             machine_id: machine_id.clone(),
-            public_ip,
+            control_endpoints: vec![public_ip],
+            mesh_endpoints: vec![std::net::SocketAddr::new(
+                public_ip,
+                ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+            )],
         }),
         1,
     )
@@ -834,7 +846,7 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         ployz_test_support::fixtures::machine_join_template(),
         ployz_core::install::MachineJoinSecretDelivery {
             nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(
-                "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+                "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
             )
             .expect("valid seed"),
         },

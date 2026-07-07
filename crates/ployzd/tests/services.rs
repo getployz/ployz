@@ -1,7 +1,7 @@
 use ployz_core::subjects::{
-    API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_MACHINE_INSPECT,
-    API_MACHINE_JOIN_REPORT, API_MACHINE_LIST, API_OPS_STATUS, API_OPS_WATCH, API_SERVICE_INSPECT,
-    API_SERVICE_LIST, INTENT_GET,
+    INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD,
+    OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST, OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH,
+    OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST, OperationProgressScope,
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
@@ -28,21 +28,21 @@ fn control_catalog_supports_srv_ping_discovery() {
             .iter()
             .any(|ping| ping.name == "plz-api" && ping.id == "plz-api.core")
     );
-    assert!(catalog.has_endpoint_subject(API_OPS_STATUS));
-    assert!(catalog.has_endpoint_subject(API_OPS_WATCH));
-    assert!(!catalog.has_endpoint_subject(API_DEPLOY_PLAN));
-    assert!(catalog.has_endpoint_subject(API_MACHINE_ADD));
-    assert!(catalog.has_endpoint_subject(API_MACHINE_LIST));
-    assert!(catalog.has_endpoint_subject(API_MACHINE_INSPECT));
-    assert!(catalog.has_endpoint_subject(API_MACHINE_JOIN_REPORT));
-    assert!(catalog.has_endpoint_subject(API_SERVICE_LIST));
-    assert!(catalog.has_endpoint_subject(API_SERVICE_INSPECT));
+    assert!(catalog.has_endpoint_subject(OPERATOR_OPS_STATUS));
+    assert!(catalog.has_endpoint_subject(OPERATOR_OPS_WATCH));
+    assert!(!catalog.has_endpoint_subject("plz.v1.rpc.operator.query.deploy.plan"));
+    assert!(catalog.has_endpoint_subject(OPERATOR_MACHINE_ADD));
+    assert!(catalog.has_endpoint_subject(OPERATOR_MACHINE_LIST));
+    assert!(catalog.has_endpoint_subject(OPERATOR_MACHINE_INSPECT));
+    assert!(catalog.has_endpoint_subject(JOIN_MACHINE_REPORT));
+    assert!(catalog.has_endpoint_subject(OPERATOR_SERVICE_LIST));
+    assert!(catalog.has_endpoint_subject(OPERATOR_SERVICE_INSPECT));
     assert!(catalog.has_endpoint_subject(INTENT_GET));
-    assert!(!catalog.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
+    assert!(!catalog.has_endpoint_subject("plz.v1.rpc.machine.query.machine_7.inspect"));
 
     let machine_catalog = DaemonServiceCatalog::for_machine(&machine_id);
-    assert!(machine_catalog.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
-    assert!(!machine_catalog.has_endpoint_subject(API_OPS_STATUS));
+    assert!(machine_catalog.has_endpoint_subject("plz.v1.rpc.machine.query.machine_7.inspect"));
+    assert!(!machine_catalog.has_endpoint_subject(OPERATOR_OPS_STATUS));
 }
 
 #[test]
@@ -61,8 +61,8 @@ fn service_catalogs_keep_control_and_machine_surfaces_separate() {
             && ping.id == "plz-machine.machine_7"
             && ping.metadata.get("machine_id") == Some(machine_id.as_str())
     }));
-    assert!(!machine.has_endpoint_subject(API_OPS_STATUS));
-    assert!(machine.has_endpoint_subject("plz.v1.svc.machine.machine_7.inspect"));
+    assert!(!machine.has_endpoint_subject(OPERATOR_OPS_STATUS));
+    assert!(machine.has_endpoint_subject("plz.v1.rpc.machine.query.machine_7.inspect"));
 }
 
 #[test]
@@ -76,18 +76,18 @@ fn api_service_marks_mutations_as_operation_acceptors() {
     let deploy_submit = api
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == API_DEPLOY_SUBMIT)
+        .find(|endpoint| endpoint.subject == OPERATOR_DEPLOY_SUBMIT)
         .expect("deploy.submit endpoint is registered");
     let machine_add = api
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == API_MACHINE_ADD)
+        .find(|endpoint| endpoint.subject == OPERATOR_MACHINE_ADD)
         .expect("machine.add endpoint is registered");
     let machine_join_report = api
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == API_MACHINE_JOIN_REPORT)
-        .expect("machine.join.report endpoint is registered");
+        .find(|endpoint| endpoint.subject == JOIN_MACHINE_REPORT)
+        .expect("machine.report endpoint is registered");
     assert_eq!(deploy_submit.execution, EndpointExecution::AcceptsOperation);
     assert_eq!(machine_add.execution, EndpointExecution::AcceptsOperation);
     assert_eq!(
@@ -107,7 +107,7 @@ fn ops_watch_is_a_query_endpoint() {
     let ops_watch = api
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == API_OPS_WATCH)
+        .find(|endpoint| endpoint.subject == OPERATOR_OPS_WATCH)
         .expect("ops.watch endpoint is registered");
 
     assert_eq!(ops_watch.execution, EndpointExecution::Query);
@@ -122,7 +122,7 @@ fn service_read_endpoints_are_query_endpoints() {
         .find(|service| service.name == "plz-api")
         .expect("api service is registered");
 
-    for subject in [API_SERVICE_LIST, API_SERVICE_INSPECT] {
+    for subject in [OPERATOR_SERVICE_LIST, OPERATOR_SERVICE_INSPECT] {
         let endpoint = api
             .endpoints
             .iter()
@@ -140,7 +140,7 @@ fn machine_read_endpoints_are_query_endpoints() {
         .iter()
         .find(|service| service.name == "plz-api")
         .expect("api service is registered");
-    for subject in [API_MACHINE_LIST, API_MACHINE_INSPECT] {
+    for subject in [OPERATOR_MACHINE_LIST, OPERATOR_MACHINE_INSPECT] {
         let endpoint = api
             .endpoints
             .iter()
@@ -161,7 +161,7 @@ fn ops_status_is_a_query_endpoint() {
     let ops_status = api
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == API_OPS_STATUS)
+        .find(|endpoint| endpoint.subject == OPERATOR_OPS_STATUS)
         .expect("ops.status endpoint is registered");
 
     assert_eq!(ops_status.execution, EndpointExecution::Query);
@@ -179,10 +179,17 @@ fn ops_status_returns_typed_missing_operation_error() {
 
 #[test]
 fn mutating_service_acceptance_returns_operation_pointer() {
-    let accepted = owned_operation(operation_id("op_123"), event_sequence(11));
+    let accepted = owned_operation(
+        operation_id("op_123"),
+        OperationProgressScope::Cluster,
+        event_sequence(11),
+    );
 
     assert_eq!(accepted.operation_id, operation_id("op_123"));
-    assert_eq!(accepted.watch_subject, "plz.v1.op.op_123.>".to_owned());
+    assert_eq!(
+        accepted.watch_subject,
+        "plz.v1.progress.cluster.operation.op_123.>".to_owned()
+    );
     assert_eq!(accepted.start_sequence, event_sequence(11));
 }
 

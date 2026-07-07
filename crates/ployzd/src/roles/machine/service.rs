@@ -1,5 +1,6 @@
 //! NATS Service API wiring for machine-local commands.
 
+use crate::roles::machine::endpoints::{observe_interface_endpoints, observe_machine_endpoints};
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerInspectRpcResponse,
@@ -38,7 +39,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
-use ployz_core::state::MachinePublicIpObservation;
+use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -46,9 +47,9 @@ use ployz_nats::service_runtime::{
 };
 use serde::Deserialize;
 use std::future::Future;
-use std::net::IpAddr;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SUBSTRATE_VERSION_FILE: &str = "/var/lib/ployz/substrate-version.json";
@@ -65,19 +66,24 @@ where
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    start_machine_role_service_with_public_ip(
-        client, machine_id, runner, preparer, log_reader, None,
+    start_machine_role_service_with_endpoint_cache(
+        client,
+        machine_id,
+        runner,
+        preparer,
+        log_reader,
+        MachineEndpointCache::default(),
     )
     .await
 }
 
-pub async fn start_machine_role_service_with_public_ip<R, P, L>(
+pub(crate) async fn start_machine_role_service_with_endpoint_cache<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
     runner: R,
     preparer: P,
     log_reader: L,
-    public_ip: Option<IpAddr>,
+    endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
@@ -99,7 +105,7 @@ where
         MachineServiceEndpoint::FactsGet,
         MachineFactsState {
             runner: runner.clone(),
-            public_ip,
+            endpoint_cache,
         },
         handle_facts_get,
     )
@@ -183,7 +189,7 @@ where
 #[derive(Clone)]
 struct MachineFactsState<R> {
     runner: R,
-    public_ip: Option<IpAddr>,
+    endpoint_cache: MachineEndpointCache,
 }
 
 #[derive(Clone)]
@@ -298,13 +304,16 @@ where
         return response;
     }
 
-    match read_machine_facts_snapshot(
-        &machine_id,
-        &state.runner,
-        state.public_ip,
-        current_unix_ms(),
-    )
-    .await
+    // Serve the observation task's cached endpoints. Until it has populated them
+    // (process startup, or a test with no observer), fall back to interface-only
+    // discovery — a syscall, no network — so mesh peer discovery never sees missing
+    // endpoints and the public-IP echo stays off the per-RPC path.
+    let endpoints = match state.endpoint_cache.latest() {
+        Some(observation) => Some(observation),
+        None => observe_interface_endpoints(&machine_id, state.endpoint_cache.wg_ifname()).await,
+    };
+    match read_machine_facts_snapshot(&machine_id, &state.runner, endpoints, current_unix_ms())
+        .await
     {
         Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
             facts,
@@ -318,10 +327,62 @@ where
     }
 }
 
+/// The machine's last discovered endpoints, shared between the observation task
+/// (which discovers them off the hot path and stores them here) and the `FactsGet`
+/// RPC handler (which serves them without re-running discovery). Endpoints are a
+/// slow-changing address property, so a periodically-refreshed snapshot is right;
+/// re-probing external IP services on every RPC would put that I/O on the deploy
+/// planning path.
+#[derive(Clone, Default)]
+pub(crate) struct MachineEndpointCache {
+    latest: Arc<Mutex<Option<MachineEndpointObservation>>>,
+    /// The configured WireGuard interface, excluded from discovery so its overlay
+    /// tunnel address is never advertised as a mesh candidate.
+    wg_ifname: String,
+}
+
+impl MachineEndpointCache {
+    pub(crate) fn new(wg_ifname: String) -> Self {
+        Self {
+            latest: Arc::default(),
+            wg_ifname,
+        }
+    }
+
+    fn wg_ifname(&self) -> &str {
+        &self.wg_ifname
+    }
+
+    fn store(&self, observation: Option<MachineEndpointObservation>) {
+        *self
+            .latest
+            .lock()
+            .expect("machine endpoint cache lock is not poisoned") = observation;
+    }
+
+    fn latest(&self) -> Option<MachineEndpointObservation> {
+        self.latest
+            .lock()
+            .expect("machine endpoint cache lock is not poisoned")
+            .clone()
+    }
+}
+
+/// Discover the machine's endpoints and record them in the cache. Called from the
+/// observation tick, never from an RPC handler.
+pub(crate) async fn refresh_machine_endpoints(
+    machine_id: &MachineId,
+    cache: &MachineEndpointCache,
+) -> Option<MachineEndpointObservation> {
+    let observation = observe_machine_endpoints(machine_id, cache.wg_ifname()).await;
+    cache.store(observation.clone());
+    observation
+}
+
 pub(crate) async fn read_machine_facts_snapshot<R>(
     machine_id: &MachineId,
     runner: &R,
-    public_ip: Option<IpAddr>,
+    endpoints: Option<MachineEndpointObservation>,
     observed_at_unix_ms: u64,
 ) -> Result<MachineFactsSnapshot, MachineFactsReadError>
 where
@@ -341,15 +402,11 @@ where
         });
     let containers = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
         .map_err(MachineFactsReadError::BuildContainerSnapshot)?;
-    let public_ip = public_ip.map(|public_ip| MachinePublicIpObservation {
-        machine_id: machine_id.clone(),
-        public_ip,
-    });
 
     MachineFactsSnapshot::try_new(
         machine_id.clone(),
         containers,
-        public_ip,
+        endpoints,
         observed_at_unix_ms,
     )
     .map_err(MachineFactsReadError::BuildFactsSnapshot)

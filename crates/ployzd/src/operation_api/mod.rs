@@ -1,4 +1,4 @@
-//! User-facing operation service handlers.
+//! Operator-facing operation service handlers.
 
 pub mod admission;
 mod error_map;

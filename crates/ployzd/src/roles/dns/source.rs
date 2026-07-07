@@ -6,7 +6,7 @@ use crate::roles::dns::projection::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use ployz_core::ops::RouteHostname;
-use ployz_core::state::{GatewayServingStatus, MachinePublicIpObservation, RouteBindingState};
+use ployz_core::state::{GatewayServingStatus, MachineEndpointObservation, RouteBindingState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -30,7 +30,7 @@ pub async fn load_dns_projection_input_from_nats(
     let intent = async { intent_reader.intent().await.map_err(DnsSourceError::from) };
     let intent = intent.await?;
     let gateway_statuses = facts.gateway_statuses();
-    let public_ips = facts.machine_public_ips();
+    let endpoint_observations = facts.machine_endpoint_observations();
 
     let gateway_machine_ids = gateway_statuses
         .into_iter()
@@ -42,10 +42,24 @@ pub async fn load_dns_projection_input_from_nats(
         })
         .map(|status| status.machine_id)
         .collect::<BTreeSet<_>>();
-    let gateway_answers = public_ips
+    let gateway_answers = endpoint_observations
         .into_iter()
         .filter(|observation| gateway_machine_ids.contains(&observation.machine_id))
         .collect::<Vec<_>>();
+
+    // A serving gateway with no control endpoint is a partial discovery (its public-IP
+    // echo timed out); emitting the resulting empty answer set would replace
+    // last-known-good DNS with nothing. Report unavailable so the projection preserves
+    // the previous usable answers until a gateway advertises an endpoint again.
+    if !gateway_machine_ids.is_empty()
+        && !gateway_answers
+            .iter()
+            .any(|observation| !observation.control_endpoints.is_empty())
+    {
+        return Err(DnsSourceError::Unavailable {
+            message: "serving gateways have not advertised a control endpoint yet".to_owned(),
+        });
+    }
 
     Ok(dns_projection_input_from_state(
         intent.route_bindings,
@@ -78,11 +92,12 @@ impl From<IntentReadError> for DnsSourceError {
 
 fn dns_projection_input_from_state(
     routes: Vec<RouteBindingState>,
-    gateway_answers: Vec<MachinePublicIpObservation>,
+    gateway_answers: Vec<MachineEndpointObservation>,
 ) -> DnsProjectionInput {
     let answers = gateway_answers
         .into_iter()
-        .map(|observation| DnsAnswer::from_ip(observation.public_ip))
+        .flat_map(|observation| observation.control_endpoints)
+        .map(DnsAnswer::from_ip)
         .collect::<Vec<_>>();
     let mut records_by_hostname: BTreeMap<RouteHostname, Vec<DnsAnswer>> = BTreeMap::new();
 

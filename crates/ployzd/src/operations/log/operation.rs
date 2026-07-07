@@ -38,7 +38,7 @@ impl OperationRepository {
                 event,
                 status,
             } => {
-                publish_progress(&self.progress, event).await;
+                publish_progress(&self.progress, event, &status).await;
                 Ok(RecordOperationEventOutcome::Stored { sequence, status })
             }
         }

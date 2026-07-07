@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{CertId, MachineId, OperationId, ServiceId, SubjectToken, SubjectTokenError};
+use crate::ids::{
+    CertId, MachineId, NamespaceId, OperationId, ServiceId, SubjectToken, SubjectTokenError,
+};
 use crate::install::InstallArtifactVersion;
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::roles::InstallRolePolicy;
@@ -75,6 +77,7 @@ pub enum OperationKind {
 pub enum OperationStatus {
     Deploy {
         id: OperationId,
+        namespace_id: NamespaceId,
         service_id: ServiceId,
         state: DeployOperationState,
         last_event_sequence: EventSequence,
@@ -127,11 +130,13 @@ impl OperationStatus {
     #[must_use]
     pub fn deploy_accepted(
         id: OperationId,
+        namespace_id: NamespaceId,
         service_id: ServiceId,
         event_sequence: EventSequence,
     ) -> Self {
         Self::Deploy {
             id,
+            namespace_id,
             service_id,
             state: DeployOperationState::Accepted,
             last_event_sequence: event_sequence,

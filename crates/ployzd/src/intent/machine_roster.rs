@@ -9,7 +9,7 @@ use crate::core_store::{CoreStore, CoreStoreError, query_json, query_json_list, 
 use ployz_core::ids::MachineId;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use rusqlite::{Connection, params};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 #[derive(Debug, Clone)]
 pub struct MachineRosterStore {
@@ -79,14 +79,17 @@ impl MachineRosterStore {
     /// read-modify-write runs in one transaction. Returns whether the row
     /// changed, so the caller rebroadcasts intent only on a real change; a
     /// machine absent from the roster is a no-op.
-    pub async fn set_public_endpoint(
+    pub async fn set_endpoints(
         &self,
         machine_id: &MachineId,
-        public_endpoint: IpAddr,
+        control_endpoints: Vec<IpAddr>,
+        mesh_endpoints: Vec<SocketAddr>,
     ) -> Result<bool, MachineRosterStoreError> {
         let machine_id = machine_id.clone();
         self.store
-            .call(move |conn| set_public_endpoint_txn(conn, &machine_id, public_endpoint))
+            .call(move |conn| {
+                set_endpoints_txn(conn, &machine_id, control_endpoints, mesh_endpoints)
+            })
             .await
             .map_err(store_error)
     }
@@ -130,19 +133,36 @@ fn set_lifecycle_txn(
     Ok(MachineLifecycleUpdate::Changed)
 }
 
-fn set_public_endpoint_txn(
+fn set_endpoints_txn(
     conn: &mut Connection,
     machine_id: &MachineId,
-    public_endpoint: IpAddr,
+    control_endpoints: Vec<IpAddr>,
+    mesh_endpoints: Vec<SocketAddr>,
 ) -> Result<bool, rusqlite::Error> {
     let transaction = conn.transaction()?;
     let Some(mut state) = get_machine(&transaction, machine_id)? else {
         return Ok(false);
     };
-    if state.public_endpoint == Some(public_endpoint) {
+    // A partial discovery reports an empty set for a kind it couldn't determine (e.g.
+    // the public-IP echo timed out while private interfaces still yield mesh
+    // endpoints). Treat empty as "no news" and keep the durable value rather than
+    // clearing a still-valid address — reachability is a durable address property that
+    // is never cleared by silence (ADR 0030).
+    let control_endpoints = if control_endpoints.is_empty() {
+        state.control_endpoints.clone()
+    } else {
+        control_endpoints
+    };
+    let mesh_endpoints = if mesh_endpoints.is_empty() {
+        state.mesh_endpoints.clone()
+    } else {
+        mesh_endpoints
+    };
+    if state.control_endpoints == control_endpoints && state.mesh_endpoints == mesh_endpoints {
         return Ok(false);
     }
-    state.public_endpoint = Some(public_endpoint);
+    state.control_endpoints = control_endpoints;
+    state.mesh_endpoints = mesh_endpoints;
     put_machine(&transaction, &state)?;
     transaction.commit()?;
     Ok(true)
@@ -183,7 +203,8 @@ mod tests {
                 name: MachineName::try_new(machine).expect("name"),
                 activated_by: operation_id("op_activate"),
                 lifecycle: MachineLifecycle::Active,
-                public_endpoint: None,
+                control_endpoints: Vec::new(),
+                mesh_endpoints: Vec::new(),
             })
             .await
             .expect("seed machine");
@@ -191,40 +212,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_public_endpoint_records_on_change_and_is_idempotent() {
+    async fn set_endpoints_records_on_change_and_is_idempotent() {
         let (roster, id) = seeded_roster("machine_a").await;
-        let endpoint = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5));
+        let control = vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5))];
+        let mesh = vec!["10.0.0.5:51820".parse().expect("valid mesh endpoint")];
 
         assert!(
             roster
-                .set_public_endpoint(&id, endpoint)
+                .set_endpoints(&id, control.clone(), mesh.clone())
                 .await
                 .expect("set")
         );
         // The same endpoint is not a change, so nothing rebroadcasts.
         assert!(
             !roster
-                .set_public_endpoint(&id, endpoint)
+                .set_endpoints(&id, control.clone(), mesh.clone())
                 .await
                 .expect("set again")
         );
-        assert_eq!(
-            roster
-                .active_machine(&id)
-                .await
-                .expect("read")
-                .expect("machine present")
-                .public_endpoint,
-            Some(endpoint)
-        );
+        let machine = roster
+            .active_machine(&id)
+            .await
+            .expect("read")
+            .expect("machine present");
+        assert_eq!(machine.control_endpoints, control);
+        assert_eq!(machine.mesh_endpoints, mesh);
     }
 
     #[tokio::test]
-    async fn set_public_endpoint_on_unknown_machine_is_a_noop() {
+    async fn set_endpoints_on_unknown_machine_is_a_noop() {
         let roster = MachineRosterStore::new(CoreStore::open_in_memory().await.expect("store"));
         assert!(
             !roster
-                .set_public_endpoint(&machine_id("ghost"), IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .set_endpoints(
+                    &machine_id("ghost"),
+                    vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+                    Vec::new()
+                )
                 .await
                 .expect("set")
         );

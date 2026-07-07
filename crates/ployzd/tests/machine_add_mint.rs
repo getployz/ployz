@@ -12,7 +12,7 @@ use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::subjects::{OPS_STREAM_SUBJECT, OperationApiEndpoint};
+use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
@@ -55,6 +55,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
         .start_control_with_reload(&config, reload.clone())
         .await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_machine", "idem_machine", "machine_2").await;
 
@@ -63,7 +64,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
     assert_eq!(reload.outcomes().len(), 0);
     reload.release();
 
-    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert!(
         redeemed
             .secret_delivery
@@ -93,7 +94,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
             },
         }
     );
-    let replayed = redeem_when_ready(&api, &accepted.join_token).await;
+    let replayed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert_eq!(
         replayed.secret_delivery.nats_credentials.secret(),
         redeemed.secret_delivery.nats_credentials.secret(),
@@ -114,11 +115,12 @@ async fn machine_add_mints_unique_credentials_per_machine() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let first = machine_add(&api, "op_machine_a", "idem_machine_a", "machine_a").await;
     let second = machine_add(&api, "op_machine_b", "idem_machine_b", "machine_b").await;
-    let first_redeemed = redeem_when_ready(&api, &first.join_token).await;
-    let second_redeemed = redeem_when_ready(&api, &second.join_token).await;
+    let first_redeemed = redeem_when_ready(&join_api, &first.join_token).await;
+    let second_redeemed = redeem_when_ready(&join_api, &second.join_token).await;
 
     assert_ne!(
         first_redeemed.secret_delivery.nats_credentials.secret(),
@@ -142,13 +144,14 @@ async fn concurrent_machine_adds_both_render_their_keys() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let (left, right) = tokio::join!(
         machine_add(&api, "op_fence_a", "idem_fence_a", "machine_fa"),
         machine_add(&api, "op_fence_b", "idem_fence_b", "machine_fb"),
     );
-    let left_redeemed = redeem_when_ready(&api, &left.join_token).await;
-    let right_redeemed = redeem_when_ready(&api, &right.join_token).await;
+    let left_redeemed = redeem_when_ready(&join_api, &left.join_token).await;
+    let right_redeemed = redeem_when_ready(&join_api, &right.join_token).await;
 
     let rendered = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("authorized-users file is readable");
@@ -193,7 +196,7 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
         nkey_public: ghost_public.clone(),
     });
     users.push(ployz_core::nats_config::NatsAuthorizedUser {
-        principal: NatsPrincipal::User,
+        principal: NatsPrincipal::Operator,
         nkey_public: cloud_public.clone(),
     });
     std::fs::write(
@@ -205,10 +208,11 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     // Trigger a render through a real machine-add.
     let accepted = machine_add(&api, "op_preserve", "idem_preserve", "machine_new").await;
-    redeem_when_ready(&api, &accepted.join_token).await;
+    redeem_when_ready(&join_api, &accepted.join_token).await;
 
     let rendered = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("authorized-users file is readable");
@@ -224,9 +228,9 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
     );
     assert!(
         users.iter().any(|user| {
-            user.principal == NatsPrincipal::User && user.nkey_public == cloud_public
+            user.principal == NatsPrincipal::Operator && user.nkey_public == cloud_public
         }),
-        "extra User credential survives the render"
+        "extra Operator credential survives the render"
     );
 
     runtime
@@ -241,7 +245,7 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
 async fn startup_renders_current_authorization_permissions() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
-    let progress_scope = OPS_STREAM_SUBJECT;
+    let progress_scope = OPERATION_PROGRESS_SCOPE;
     let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     assert!(
@@ -339,9 +343,10 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
         .start_control_with_reload(&config, reload.clone())
         .await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_stranded", "idem_stranded", "machine_st").await;
-    let not_ready = api
+    let not_ready = join_api
         .machine_join_redeem(&MachineJoinRedeemRequest {
             join_token: accepted.join_token.clone(),
         })
@@ -369,7 +374,7 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
     // A fresh control start reconciles: the stranded mint resumes and
     // reaches material-ready without a new machine-add request.
     let runtime = nats.start_control(&config).await;
-    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert!(
         redeemed
             .secret_delivery
@@ -397,9 +402,10 @@ async fn machine_join_redeem_waits_for_material_ready() {
         .start_control_with_reload(&config, reload.clone())
         .await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_wait", "idem_wait", "machine_w").await;
-    let not_ready = api
+    let not_ready = join_api
         .machine_join_redeem(&MachineJoinRedeemRequest {
             join_token: accepted.join_token.clone(),
         })
@@ -417,7 +423,7 @@ async fn machine_join_redeem_waits_for_material_ready() {
     );
 
     reload.release();
-    redeem_when_ready(&api, &accepted.join_token).await;
+    redeem_when_ready(&join_api, &accepted.join_token).await;
 
     runtime
         .shutdown()
@@ -432,6 +438,7 @@ async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() 
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_dup", "idem_dup_a", "machine_dup").await;
     let duplicate = api
@@ -455,7 +462,7 @@ async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() 
         }
     );
 
-    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert!(
         redeemed.last_event_sequence.get() > accepted.accepted.start_sequence.get(),
         "redeem response reports the joined event sequence"
@@ -479,6 +486,7 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
     let scrub_operation_id = operation_id("op_scrub");
 
     let accepted = machine_add(
@@ -488,13 +496,14 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
         "machine_scrub",
     )
     .await;
-    redeem_when_ready(&api, &accepted.join_token).await;
-    api.machine_join_report(&MachineJoinReportRequest {
-        join_token: accepted.join_token.clone(),
-        outcome: MachineJoinReportOutcome::Completed,
-    })
-    .await
-    .expect("machine join completion reports");
+    redeem_when_ready(&join_api, &accepted.join_token).await;
+    join_api
+        .machine_join_report(&MachineJoinReportRequest {
+            join_token: accepted.join_token.clone(),
+            outcome: MachineJoinReportOutcome::Completed,
+        })
+        .await
+        .expect("machine join completion reports");
     let duplicate = api
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_scrub_retry"),
@@ -575,9 +584,10 @@ async fn completed_report_can_repair_activation_before_secret_scrub() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_repair_scrub", "idem_repair_scrub", "machine_rs").await;
-    redeem_when_ready(&api, &accepted.join_token).await;
+    redeem_when_ready(&join_api, &accepted.join_token).await;
 
     let raw_token = RawJoinToken::try_new(accepted.join_token.as_str()).expect("join token valid");
     let repository = operation_repository_for_test(&nats).await;
@@ -590,12 +600,13 @@ async fn completed_report_can_repair_activation_before_secret_scrub() {
         "completed evidence keeps token lookup until activation can repair"
     );
 
-    api.machine_join_report(&MachineJoinReportRequest {
-        join_token: accepted.join_token.clone(),
-        outcome: MachineJoinReportOutcome::Completed,
-    })
-    .await
-    .expect("completed report repairs activation and scrubs");
+    join_api
+        .machine_join_report(&MachineJoinReportRequest {
+            join_token: accepted.join_token.clone(),
+            outcome: MachineJoinReportOutcome::Completed,
+        })
+        .await
+        .expect("completed report repairs activation and scrubs");
     assert_eq!(
         secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub"),
         0,
@@ -615,9 +626,10 @@ async fn duplicate_machine_add_joined_event_adopts_existing_join() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+    let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_join_race", "idem_join_race", "machine_jr").await;
-    redeem_when_ready(&api, &accepted.join_token).await;
+    redeem_when_ready(&join_api, &accepted.join_token).await;
     let repository = operation_repository_for_test(&nats).await;
 
     let outcome = repository

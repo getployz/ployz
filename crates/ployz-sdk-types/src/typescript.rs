@@ -28,17 +28,17 @@ use crate::{
     MAX_LOGS_TAIL_LINES, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError,
     MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest,
     MachineAddResponse, MachineBootstrapUrl, MachineCredentialProvisioningStep,
-    MachineEndpointSubnet, MachineId, MachineInspectError, MachineInspectRequest,
-    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
+    MachineEndpointObservation, MachineEndpointSubnet, MachineId, MachineInspectError,
+    MachineInspectRequest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
+    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineLifecycle, MachineLifecycleError, MachineLifecycleFailure,
     MachineLifecycleOperationState, MachineLifecycleRequest, MachineListError, MachineListRequest,
-    MachineListResult, MachineName, MachinePublicIpObservation, MachineReadinessCheck,
-    MachineReadinessEvidence, MachineSnapshot, MachineSubstrateVersions, MachineUpdateError,
-    MachineUpdateFailure, MachineUpdateOperationState, MachineUpdateRequest, MachineUpdateResponse,
+    MachineListResult, MachineName, MachineReadinessCheck, MachineReadinessEvidence,
+    MachineSnapshot, MachineSubstrateVersions, MachineUpdateError, MachineUpdateFailure,
+    MachineUpdateOperationState, MachineUpdateRequest, MachineUpdateResponse,
     MachineUsabilityReason, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     NatsAuthorizedUser, NatsPrincipal, NatsServerInstallSpec, NatsUserPublicKey,
@@ -220,7 +220,7 @@ macro_rules! exported_types {
             ActiveMachineState,
             RouteBindingState,
             ServingTargetEntry,
-            MachinePublicIpObservation,
+            MachineEndpointObservation,
             GatewayServingStatus,
             GatewayStatusObservation,
             MachineSnapshot,
@@ -453,10 +453,11 @@ pub fn operation_contract_fixture() -> Value {
             routes: Vec::new(),
         }],
     };
-    let accepted = accepted_operation("op_123", 1);
-    let machine_accepted = accepted_operation("op_machine", 7);
+    let accepted = accepted_namespace_operation("op_123", "default", 1);
+    let machine_accepted = accepted_machine_operation("op_machine", "machine_2", 7);
     let status = OperationStatusSnapshot::new(OperationStatus::deploy_accepted(
         operation_id("op_123"),
+        deploy_target.namespace_id.clone(),
         service_id("svc_api"),
         event_sequence(1),
     ));
@@ -525,7 +526,7 @@ pub fn operation_contract_fixture() -> Value {
             target_version: InstallArtifactVersion::try_new("0.2.0").expect("valid version"),
         }),
         "machine_update_response": value(MachineUpdateResponse::Ok {
-            value: accepted_operation("op_machine_update", 9),
+            value: accepted_machine_operation("op_machine_update", "machine_2", 9),
         }),
         "machine_join_redeem_request": value(MachineJoinRedeemRequest {
             join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
@@ -634,10 +635,26 @@ fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
 }
 
-fn accepted_operation(id: &str, start_sequence: u64) -> AcceptedOperation {
+fn accepted_namespace_operation(
+    id: &str,
+    namespace_id: &str,
+    start_sequence: u64,
+) -> AcceptedOperation {
     AcceptedOperation {
         operation_id: operation_id(id),
-        watch_subject: format!("plz.v1.op.{id}.>"),
+        watch_subject: format!("plz.v1.progress.namespace.{namespace_id}.operation.{id}.>"),
+        start_sequence: event_sequence(start_sequence),
+    }
+}
+
+fn accepted_machine_operation(
+    id: &str,
+    machine_id: &str,
+    start_sequence: u64,
+) -> AcceptedOperation {
+    AcceptedOperation {
+        operation_id: operation_id(id),
+        watch_subject: format!("plz.v1.progress.machine.{machine_id}.operation.{id}.>"),
         start_sequence: event_sequence(start_sequence),
     }
 }
@@ -697,7 +714,7 @@ fn machine_join_artifact(source: &str, install_path: &str) -> InstallArtifactSpe
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
         nats_credentials: NatsUserSeed::try_new(
-            "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM",
+            "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ",
         )
         .expect("valid nats credentials"),
     }

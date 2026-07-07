@@ -99,7 +99,7 @@ const MIGRATIONS: &[&str] = &[
     ",
     // Authorized-users grants: the durable source of truth that
     // `authorized-users.conf` is now a rendered projection of. One row per grant,
-    // keyed by its `authority_record_key` so operator and Cloud User grants coexist.
+    // keyed by its `authority_record_key` so operator and Cloud Operator grants coexist.
     "
     CREATE TABLE nats_authorizations (
         authority_key TEXT PRIMARY KEY,

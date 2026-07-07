@@ -161,6 +161,7 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
             .expect("default bootstrap url is valid"),
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         installer_script: None,
+        public_ip: None,
     }
 }
 
@@ -242,10 +243,17 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
     }
 }
 
-fn accepted_operation(operation_id: &ployz_core::ids::OperationId) -> AcceptedOperation {
+fn accepted_operation(
+    operation_id: &ployz_core::ids::OperationId,
+    machine_id: &ployz_core::ids::MachineId,
+) -> AcceptedOperation {
     AcceptedOperation {
         operation_id: operation_id.clone(),
-        watch_subject: format!("plz.v1.op.{}.>", operation_id.as_str()),
+        watch_subject: format!(
+            "plz.v1.progress.machine.{}.operation.{}.>",
+            machine_id.as_str(),
+            operation_id.as_str()
+        ),
         start_sequence: event_sequence(1),
     }
 }
@@ -383,7 +391,6 @@ async fn machine_init_installs_activates_and_writes_local_context() {
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
-        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.10'",
         "--first-machine",
     ] {
         assert!(
@@ -391,6 +398,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
             "install missing {expected}: {install}"
         );
     }
+    assert!(!install.contains("PLOYZ_MACHINE_PUBLIC_IP="));
     assert!(
         commands
             .iter()
@@ -560,7 +568,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
 
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
-                        accepted: accepted_operation(&request.operation_id),
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
                         machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
@@ -666,7 +674,6 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("join installer ran remotely");
     for expected in [
         "curl -fsSL -- 'https://get.ployz.sh'",
-        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.11'",
         "PLOYZ_NATS_URL='tls://203.0.113.10:4222'",
         "PLOYZ_JOIN_NKEY_SEED=",
         "--join-token 'join_once_123'",
@@ -676,6 +683,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
             "install missing {expected}: {install}"
         );
     }
+    assert!(!install.contains("PLOYZ_MACHINE_PUBLIC_IP="));
 }
 
 /// Installer failure after token redemption keeps the operation id visible
@@ -697,7 +705,7 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
-                        accepted: accepted_operation(&request.operation_id),
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
                         machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
@@ -790,7 +798,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
-                        accepted: accepted_operation(&request.operation_id),
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
                         machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),

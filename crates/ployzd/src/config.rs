@@ -35,7 +35,6 @@ pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE
 pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
 pub const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
-pub const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 pub const PLOYZ_DEPLOY_MACHINES_ENV: &str = "PLOYZ_DEPLOY_MACHINES";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
@@ -110,7 +109,6 @@ pub fn load_daemon_process_config(
                 connect,
                 artifacts,
                 ployz_native_mesh,
-                load_machine_public_ip(&env)?,
             )))
         }
         DaemonProcessRole::Gateway => {
@@ -333,19 +331,6 @@ fn load_dataplane_endpoint_subnet(
         .unwrap_or_else(|| default_endpoint_subnet(machine_id))
 }
 
-fn load_machine_public_ip(
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<IpAddr>, DaemonProcessConfigError> {
-    let Some(value) = env_value(env, PLOYZ_MACHINE_PUBLIC_IP_ENV) else {
-        return Ok(None);
-    };
-
-    value
-        .parse()
-        .map(Some)
-        .map_err(|source| DaemonProcessConfigError::InvalidMachinePublicIp { value, source })
-}
-
 fn load_nats_url(
     role: &DaemonProcessRole,
     env: &impl Fn(&str) -> Option<String>,
@@ -490,10 +475,6 @@ pub enum DaemonProcessConfigError {
     InvalidDeployMachine {
         value: String,
     },
-    InvalidMachinePublicIp {
-        value: String,
-        source: std::net::AddrParseError,
-    },
     MissingNatsUrl {
         role: DaemonProcessRole,
     },
@@ -559,11 +540,6 @@ impl fmt::Display for DaemonProcessConfigError {
                     PLOYZ_DEPLOY_MACHINES_ENV
                 )
             }
-            Self::InvalidMachinePublicIp { value, .. } => write!(
-                formatter,
-                "{}={value:?} is invalid",
-                PLOYZ_MACHINE_PUBLIC_IP_ENV
-            ),
             Self::MissingNatsUrl { role } => write!(
                 formatter,
                 "{} is required for ployzd {}",
@@ -719,7 +695,6 @@ pub struct MachineProcessConfig {
     pub nats: RoleNatsConnect,
     pub artifacts: MachineProcessArtifacts,
     pub ployz_native_mesh: MachinePloyzNativeMeshConfig,
-    pub public_ip: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -763,14 +738,12 @@ impl MachineProcessConfig {
         nats: RoleNatsConnect,
         artifacts: MachineProcessArtifacts,
         ployz_native_mesh: MachinePloyzNativeMeshConfig,
-        public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
             machine_id,
             nats,
             artifacts,
             ployz_native_mesh,
-            public_ip,
         }
     }
 }

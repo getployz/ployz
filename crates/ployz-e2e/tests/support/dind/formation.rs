@@ -290,6 +290,7 @@ async fn product_init_core(
         cluster_name: MachineJoinClusterName::try_new("dind-e2e").expect("valid cluster name"),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
         detach: false,
+        public_ip: None,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await
@@ -356,7 +357,7 @@ async fn wait_for_operator_api(
         let connect = host_client_config(
             cluster,
             material,
-            NatsPrincipal::User,
+            NatsPrincipal::Operator,
             &material.operator_seed,
         );
         match connect_authenticated(&connect, CONNECT_TIMEOUT).await {

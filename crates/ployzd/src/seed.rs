@@ -99,12 +99,13 @@ mod tests {
                 name: ployz_core::machine::MachineName::try_new("machine_a").expect("name"),
                 activated_by: operation_id("op_activate"),
                 lifecycle: MachineLifecycle::Active,
-                public_endpoint: None,
+                control_endpoints: Vec::new(),
+                mesh_endpoints: Vec::new(),
             }],
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             authorized_users: vec![NatsAuthorizedUser {
-                principal: NatsPrincipal::User,
+                principal: NatsPrincipal::Operator,
                 nkey_public: MintedNatsUser::generate().expect("mint").public,
             }],
         }

@@ -117,6 +117,9 @@ pub struct MachineInitCommand {
     /// `--installer-script`: run an installer already on the remote machine
     /// instead of piping the bootstrap URL through `sh` (test seam).
     pub installer_script: Option<String>,
+    /// `--public-ip` override for the first machine's reachable address. `None`
+    /// lets the machine self-discover it at install (the common cloud-VM case).
+    pub public_ip: Option<IpAddr>,
 }
 
 impl MachineInitCommand {
@@ -280,7 +283,7 @@ impl MachineAddOutput {
             self.accepted.operation_id.as_str(),
             self.machine_id.as_str(),
             self.join_token.as_str(),
-            self.install_command(&MachineAddInstaller::FromAcceptedBootstrapUrl, None),
+            self.install_command(&MachineAddInstaller::FromAcceptedBootstrapUrl),
         )
     }
 
@@ -288,21 +291,12 @@ impl MachineAddOutput {
     /// printed install line and the SSH-driven remote add run exactly the
     /// same command.
     #[must_use]
-    pub fn install_command(
-        &self,
-        installer: &MachineAddInstaller,
-        machine_public_ip: Option<IpAddr>,
-    ) -> String {
-        self.join_bootstrap_command(installer, machine_public_ip)
-            .render()
+    pub fn install_command(&self, installer: &MachineAddInstaller) -> String {
+        self.join_bootstrap_command(installer).render()
     }
 
     #[must_use]
-    pub fn join_bootstrap_command(
-        &self,
-        installer: &MachineAddInstaller,
-        machine_public_ip: Option<IpAddr>,
-    ) -> JoinBootstrapCommand {
+    pub fn join_bootstrap_command(&self, installer: &MachineAddInstaller) -> JoinBootstrapCommand {
         JoinBootstrapCommand {
             installer: match installer {
                 MachineAddInstaller::FromAcceptedBootstrapUrl => {
@@ -317,7 +311,6 @@ impl MachineAddOutput {
             trusted_ca_b64: self.trusted_ca_b64(),
             join_seed: self.join_seed.clone(),
             join_token: self.join_token.clone(),
-            machine_public_ip,
         }
     }
 
@@ -563,6 +556,7 @@ pub(crate) fn machine_init_command(
         bootstrap_url,
         cluster_name,
         installer_script,
+        public_ip,
     } = parsed;
 
     let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
@@ -604,6 +598,16 @@ pub(crate) fn machine_init_command(
     )
     .map_err(|error| invalid_value("--cluster-name", error))?;
 
+    let public_ip = match public_ip {
+        Some(value) => Some(
+            value
+                .trim()
+                .parse()
+                .map_err(|error| invalid_value("--public-ip", error))?,
+        ),
+        None => None,
+    };
+
     Ok(MachineInitCommand {
         target,
         identity_override,
@@ -614,6 +618,7 @@ pub(crate) fn machine_init_command(
         bootstrap_url,
         cluster_name,
         installer_script: validate_installer_script(installer_script)?,
+        public_ip,
     })
 }
 
@@ -652,6 +657,9 @@ pub(crate) struct MachineInitCli {
     cluster_name: Option<String>,
     #[arg(long)]
     installer_script: Option<String>,
+    /// Override the first machine's public IP instead of self-discovering it.
+    #[arg(long)]
+    public_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -844,11 +852,12 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "machine {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
+            "machine {}\nname {}\nactivated-by {}\ncontrol-endpoints {}\nmesh-endpoints {}\ngateway {}\ncontainers {}\n",
             self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
-            render_public_ip(&self.machine),
+            render_control_endpoints(&self.machine),
+            render_mesh_endpoints(&self.machine),
             render_gateway(&self.machine),
             self.machine.observed_container_count,
         )
@@ -857,19 +866,39 @@ impl MachineInspectOutput {
 
 fn render_machine_summary(machine: &MachineSnapshot) -> String {
     format!(
-        "{} {} public-ip {} gateway {} containers {}",
+        "{} {} control-endpoints {} mesh-endpoints {} gateway {} containers {}",
         machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
-        render_public_ip(machine),
+        render_control_endpoints(machine),
+        render_mesh_endpoints(machine),
         render_gateway(machine),
         machine.observed_container_count,
     )
 }
 
-fn render_public_ip(machine: &MachineSnapshot) -> String {
-    match &machine.public_ip {
-        Some(observation) => observation.public_ip.to_string(),
+fn render_control_endpoints(machine: &MachineSnapshot) -> String {
+    match &machine.endpoints {
+        Some(observation) if !observation.control_endpoints.is_empty() => observation
+            .control_endpoints
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
         None => "unknown".to_owned(),
+        Some(_) => "unknown".to_owned(),
+    }
+}
+
+fn render_mesh_endpoints(machine: &MachineSnapshot) -> String {
+    match &machine.endpoints {
+        Some(observation) if !observation.mesh_endpoints.is_empty() => observation
+            .mesh_endpoints
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        None => "unknown".to_owned(),
+        Some(_) => "unknown".to_owned(),
     }
 }
 

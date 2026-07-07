@@ -253,17 +253,25 @@ impl WireGuardEbpfEndpointRoute {
 pub struct WireGuardPeerEndpoint {
     pub machine_id: MachineId,
     pub endpoint_subnet: String,
-    pub public_endpoint: SocketAddr,
+    pub active_endpoint: SocketAddr,
+    pub candidate_endpoints: Vec<SocketAddr>,
 }
 
 impl WireGuardPeerEndpoint {
     #[must_use]
-    pub fn new(machine_id: MachineId, public_endpoint: SocketAddr) -> Self {
+    pub fn new(machine_id: MachineId, active_endpoint: SocketAddr) -> Self {
         Self {
             endpoint_subnet: default_endpoint_subnet(&machine_id),
             machine_id,
-            public_endpoint,
+            active_endpoint,
+            candidate_endpoints: vec![active_endpoint],
         }
+    }
+
+    #[must_use]
+    pub fn with_candidates(mut self, candidate_endpoints: Vec<SocketAddr>) -> Self {
+        self.candidate_endpoints = candidate_endpoints;
+        self
     }
 }
 
@@ -273,7 +281,8 @@ impl WireGuardPeerEndpoint {
 pub struct WireGuardPeer {
     pub machine_id: MachineId,
     pub endpoint_subnet: String,
-    pub public_endpoint: SocketAddr,
+    pub active_endpoint: SocketAddr,
+    pub candidate_endpoints: Vec<SocketAddr>,
     pub public_key: WireGuardPublicKey,
 }
 
@@ -283,7 +292,8 @@ impl WireGuardPeer {
         Self {
             machine_id: endpoint.machine_id,
             endpoint_subnet: endpoint.endpoint_subnet,
-            public_endpoint: endpoint.public_endpoint,
+            active_endpoint: endpoint.active_endpoint,
+            candidate_endpoints: endpoint.candidate_endpoints,
             public_key,
         }
     }

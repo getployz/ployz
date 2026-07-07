@@ -1,7 +1,7 @@
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation, RouteBindingState,
+    GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation, RouteBindingState,
 };
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::fact_cache::FactCache;
@@ -199,10 +199,11 @@ fn gateway_status(
     }
 }
 
-fn machine_public_ip(machine_id_value: &str, address: [u8; 4]) -> MachinePublicIpObservation {
-    MachinePublicIpObservation {
+fn machine_public_ip(machine_id_value: &str, address: [u8; 4]) -> MachineEndpointObservation {
+    MachineEndpointObservation {
         machine_id: machine_id(machine_id_value),
-        public_ip: IpAddr::V4(Ipv4Addr::from(address)),
+        control_endpoints: vec![IpAddr::V4(Ipv4Addr::from(address))],
+        mesh_endpoints: Vec::new(),
     }
 }
 

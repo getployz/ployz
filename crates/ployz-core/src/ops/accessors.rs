@@ -1,3 +1,5 @@
+use crate::subjects::OperationProgressScope;
+
 use super::{EventSequence, OperationId, OperationKind, OperationStatus};
 
 impl OperationStatus {
@@ -20,6 +22,21 @@ impl OperationStatus {
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
             Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
+        }
+    }
+
+    #[must_use]
+    pub fn progress_scope(&self) -> OperationProgressScope {
+        match self {
+            Self::Deploy { namespace_id, .. } => OperationProgressScope::Namespace {
+                namespace_id: namespace_id.clone(),
+            },
+            Self::Cert { .. } => OperationProgressScope::Cluster,
+            Self::MachineAdd { machine_id, .. }
+            | Self::MachineUpdate { machine_id, .. }
+            | Self::MachineLifecycle { machine_id, .. } => OperationProgressScope::Machine {
+                machine_id: machine_id.clone(),
+            },
         }
     }
 

@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
-use crate::state::MachinePublicIpObservation;
+use crate::state::MachineEndpointObservation;
 
 /// How often each machine refreshes machine-owned observations. Operation
 /// planning gathers fresh facts by RPC.
@@ -22,7 +22,7 @@ pub struct MachineFactsSnapshot {
     machine_id: MachineId,
     containers: MachineContainerObservationSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    public_ip: Option<MachinePublicIpObservation>,
+    endpoints: Option<MachineEndpointObservation>,
     observed_at_unix_ms: u64,
 }
 
@@ -30,7 +30,7 @@ impl MachineFactsSnapshot {
     pub fn try_new(
         machine_id: MachineId,
         containers: MachineContainerObservationSnapshot,
-        public_ip: Option<MachinePublicIpObservation>,
+        endpoints: Option<MachineEndpointObservation>,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
         if containers.machine_id() != &machine_id {
@@ -39,19 +39,25 @@ impl MachineFactsSnapshot {
                 actual: containers.machine_id().clone(),
             });
         }
-        if let Some(public_ip) = &public_ip
-            && public_ip.machine_id != machine_id
+        if let Some(endpoints) = &endpoints
+            && endpoints.machine_id != machine_id
         {
-            return Err(MachineFactsSnapshotError::PublicIpMachineMismatch {
+            return Err(MachineFactsSnapshotError::EndpointMachineMismatch {
                 expected: machine_id,
-                actual: public_ip.machine_id.clone(),
+                actual: endpoints.machine_id.clone(),
             });
+        }
+        if let Some(endpoints) = &endpoints
+            && endpoints.control_endpoints.is_empty()
+            && endpoints.mesh_endpoints.is_empty()
+        {
+            return Err(MachineFactsSnapshotError::EmptyEndpoints);
         }
 
         Ok(Self {
             machine_id,
             containers,
-            public_ip,
+            endpoints,
             observed_at_unix_ms,
         })
     }
@@ -67,8 +73,8 @@ impl MachineFactsSnapshot {
     }
 
     #[must_use]
-    pub fn public_ip(&self) -> Option<&MachinePublicIpObservation> {
-        self.public_ip.as_ref()
+    pub fn endpoints(&self) -> Option<&MachineEndpointObservation> {
+        self.endpoints.as_ref()
     }
 
     #[must_use]
@@ -86,7 +92,7 @@ impl MachineFactsSnapshot {
             self.containers
                 .with_container_replaced(observation)
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
-            self.public_ip.clone(),
+            self.endpoints.clone(),
             observed_at_unix_ms,
         )
     }
@@ -101,7 +107,7 @@ impl MachineFactsSnapshot {
             self.containers
                 .with_container_removed(container_id)
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
-            self.public_ip.clone(),
+            self.endpoints.clone(),
             observed_at_unix_ms,
         )
     }
@@ -119,14 +125,16 @@ pub enum MachineFactsSnapshotError {
         actual: MachineId,
     },
     #[error(
-        "public ip belongs to machine {}, not facts machine {}",
+        "endpoints belong to machine {}, not facts machine {}",
         actual.as_str(),
         expected.as_str()
     )]
-    PublicIpMachineMismatch {
+    EndpointMachineMismatch {
         expected: MachineId,
         actual: MachineId,
     },
+    #[error("endpoint observation is empty")]
+    EmptyEndpoints,
     #[error("failed to build container snapshot: {0}")]
     BuildContainers(MachineContainerObservationSnapshotError),
 }
@@ -151,7 +159,7 @@ struct MachineFactsSnapshotWire {
     machine_id: MachineId,
     containers: MachineContainerObservationSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    public_ip: Option<MachinePublicIpObservation>,
+    endpoints: Option<MachineEndpointObservation>,
     observed_at_unix_ms: u64,
 }
 
@@ -162,7 +170,7 @@ impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
         Self::try_new(
             value.machine_id,
             value.containers,
-            value.public_ip,
+            value.endpoints,
             value.observed_at_unix_ms,
         )
     }
@@ -173,7 +181,7 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
         Self {
             machine_id: value.machine_id,
             containers: value.containers,
-            public_ip: value.public_ip,
+            endpoints: value.endpoints,
             observed_at_unix_ms: value.observed_at_unix_ms,
         }
     }

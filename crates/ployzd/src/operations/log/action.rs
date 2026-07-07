@@ -44,7 +44,12 @@ impl OperationAction for DeployOperationSubmission {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::deploy_accepted(operation_id, payload.status_service_id(), sequence)
+        OperationStatus::deploy_accepted(
+            operation_id,
+            payload.namespace_id.clone(),
+            payload.status_service_id(),
+            sequence,
+        )
     }
 }
 

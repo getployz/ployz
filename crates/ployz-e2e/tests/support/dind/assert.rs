@@ -493,7 +493,7 @@ pub async fn wait_for_machine_observations(core: &CoreContext, machine: &Machine
         machine,
         Duration::from_secs(120),
         "never published observations",
-        |snapshot| snapshot.public_ip.is_some() && snapshot.gateway.is_some(),
+        |snapshot| snapshot.endpoints.is_some() && snapshot.gateway.is_some(),
     )
     .await;
 }

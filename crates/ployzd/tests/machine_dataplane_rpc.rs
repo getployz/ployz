@@ -7,7 +7,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::state::MachinePublicIpObservation;
+use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
@@ -594,9 +594,13 @@ fn machine_facts(machine_id: &MachineId, public_ip_octet: Option<u8>) -> Machine
         machine_id.clone(),
         MachineContainerObservationSnapshot::try_new(machine_id.clone(), Vec::new())
             .expect("empty container snapshot is valid"),
-        public_ip_octet.map(|octet| MachinePublicIpObservation {
+        public_ip_octet.map(|octet| MachineEndpointObservation {
             machine_id: machine_id.clone(),
-            public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, octet)),
+            control_endpoints: vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, octet))],
+            mesh_endpoints: vec![SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, octet)),
+                DEFAULT_WIREGUARD_LISTEN_PORT,
+            )],
         }),
         1,
     )

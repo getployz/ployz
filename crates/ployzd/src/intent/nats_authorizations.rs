@@ -22,7 +22,7 @@ impl NatsAuthorizationStore {
         Self { store }
     }
 
-    /// Add or replace a grant by its `authority_record_key`. User grants are keyed
+    /// Add or replace a grant by its `authority_record_key`. Operator grants are keyed
     /// by public key, so operator and Cloud both persist; every other principal is
     /// unique by role or machine id.
     pub async fn upsert(
@@ -136,7 +136,7 @@ mod tests {
 
     fn user_grant() -> NatsAuthorizedUser {
         NatsAuthorizedUser {
-            principal: NatsPrincipal::User,
+            principal: NatsPrincipal::Operator,
             nkey_public: MintedNatsUser::generate().expect("mint user").public,
         }
     }

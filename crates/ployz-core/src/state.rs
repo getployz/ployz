@@ -42,13 +42,13 @@ pub struct ActiveMachineState {
     /// default is active.
     #[serde(default)]
     pub lifecycle: MachineLifecycle,
-    /// The machine's advertised reachable public endpoint, recorded by the core
-    /// from the machine's own public-IP testimony (ADR 0030). Selects promotion
-    /// candidates and rides intent to every mirror. `None` until the machine has
-    /// advertised one; never cleared on a transient disconnect — reachability is
-    /// a durable address property, not live liveness.
-    #[serde(default)]
-    pub public_endpoint: Option<IpAddr>,
+    /// Public NATS/operator endpoints recorded from machine testimony. Promotion
+    /// requires at least one of these; mesh-private addresses never become
+    /// promotion authority.
+    pub control_endpoints: Vec<IpAddr>,
+    /// WireGuard dial candidates recorded from machine testimony. The first is
+    /// programmed initially; later candidates are for endpoint rotation.
+    pub mesh_endpoints: Vec<SocketAddr>,
 }
 
 /// Monotonic control-plane generation, advertised with intent. A machine tells a
@@ -97,13 +97,14 @@ pub struct IntentSnapshot {
 }
 
 impl IntentSnapshot {
-    /// A specific machine's advertised public endpoint, if the core recorded one.
+    /// A specific machine's advertised control endpoints, if the core recorded any.
     #[must_use]
-    pub fn public_endpoint_of(&self, machine_id: &MachineId) -> Option<IpAddr> {
+    pub fn control_endpoints_of(&self, machine_id: &MachineId) -> Option<&[IpAddr]> {
         self.active_machines
             .iter()
             .find(|machine| &machine.machine_id == machine_id)
-            .and_then(|machine| machine.public_endpoint)
+            .map(|machine| machine.control_endpoints.as_slice())
+            .filter(|endpoints| !endpoints.is_empty())
     }
 }
 
@@ -138,13 +139,14 @@ pub fn placement_rejection(lifecycle: MachineLifecycle) -> Option<MachineUsabili
     }
 }
 
-/// Machine-owned public endpoint fact reported with machine facts.
+/// Machine-owned endpoint facts reported with machine facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct MachinePublicIpObservation {
+pub struct MachineEndpointObservation {
     pub machine_id: MachineId,
-    pub public_ip: IpAddr,
+    pub control_endpoints: Vec<IpAddr>,
+    pub mesh_endpoints: Vec<SocketAddr>,
 }
 
 /// Gateway role status fact reported by the gateway process.

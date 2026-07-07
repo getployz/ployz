@@ -603,7 +603,7 @@ fn nats_connect_config(
         url: nats_url,
         auth: NatsClientAuth::NkeySeed(seed),
         trust: NatsTlsTrust::ClusterCa(ca_file),
-        principal: NatsPrincipal::User,
+        principal: NatsPrincipal::Operator,
     })
 }
 

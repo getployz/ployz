@@ -221,7 +221,7 @@ fn cloud_joiner_bootstrap() -> CloudJoinerBootstrap {
 }
 
 fn join_seed() -> NatsUserSeed {
-    NatsUserSeed::try_new("SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM")
+    NatsUserSeed::try_new("SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ")
         .expect("valid NATS user seed")
 }
 

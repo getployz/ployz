@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// A secured server with the production service split: the Controller hosts
-/// API endpoints and the User requests them.
+/// API endpoints and the Operator requests them.
 struct TestNats {
     _server: ployz_test_support::nats::TestNats,
     service_client: async_nats::Client,
@@ -43,7 +43,7 @@ async fn wait_for_requester_interest(client: &async_nats::Client) {
 #[tokio::test]
 async fn service_runtime_responds_to_bound_endpoint() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.echo");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.echo");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -59,7 +59,7 @@ async fn service_runtime_responds_to_bound_endpoint() {
 
     let response = nats
         .request_client
-        .request("plz.v1.svc.api.test.echo", "hello".into())
+        .request("plz.v1.rpc.operator.query.test.echo", "hello".into())
         .await
         .expect("service responds");
 
@@ -69,7 +69,7 @@ async fn service_runtime_responds_to_bound_endpoint() {
 #[tokio::test]
 async fn request_json_round_trips_typed_payloads() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.json");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.json");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -85,7 +85,7 @@ async fn request_json_round_trips_typed_payloads() {
 
     let response: TestJsonPayload = request_json(
         &nats.request_client,
-        "plz.v1.svc.api.test.json".to_owned(),
+        "plz.v1.rpc.operator.query.test.json".to_owned(),
         &TestJsonPayload {
             value: "hello".to_owned(),
         },
@@ -105,7 +105,7 @@ async fn request_json_round_trips_typed_payloads() {
 #[tokio::test]
 async fn request_json_returns_service_error_headers() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.json_fail");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.json_fail");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -121,7 +121,7 @@ async fn request_json_returns_service_error_headers() {
 
     let error = request_json::<_, TestJsonPayload>(
         &nats.request_client,
-        "plz.v1.svc.api.test.json_fail".to_owned(),
+        "plz.v1.rpc.operator.query.test.json_fail".to_owned(),
         &TestJsonPayload {
             value: "hello".to_owned(),
         },
@@ -141,7 +141,7 @@ async fn request_json_returns_service_error_headers() {
 #[tokio::test]
 async fn service_runtime_returns_service_error_headers() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.fail");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.fail");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -157,7 +157,7 @@ async fn service_runtime_returns_service_error_headers() {
 
     let response = nats
         .request_client
-        .request("plz.v1.svc.api.test.fail", Vec::new().into())
+        .request("plz.v1.rpc.operator.query.test.fail", Vec::new().into())
         .await
         .expect("service responds");
     let headers = response.headers.expect("error response carries headers");
@@ -180,7 +180,7 @@ async fn service_runtime_returns_service_error_headers() {
 #[tokio::test]
 async fn service_runtime_counts_domain_error_payloads_without_service_error_headers() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.domain_error");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.domain_error");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -196,7 +196,10 @@ async fn service_runtime_counts_domain_error_payloads_without_service_error_head
 
     let response = nats
         .request_client
-        .request("plz.v1.svc.api.test.domain_error", Vec::new().into())
+        .request(
+            "plz.v1.rpc.operator.query.test.domain_error",
+            Vec::new().into(),
+        )
         .await
         .expect("service responds");
 
@@ -208,7 +211,7 @@ async fn service_runtime_counts_domain_error_payloads_without_service_error_head
 #[tokio::test]
 async fn service_runtime_times_out_slow_handler_and_records_health() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.timeout");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.timeout");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -232,7 +235,7 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
 
     let response = nats
         .request_client
-        .request("plz.v1.svc.api.test.timeout", Vec::new().into())
+        .request("plz.v1.rpc.operator.query.test.timeout", Vec::new().into())
         .await
         .expect("service responds");
     let headers = response.headers.expect("timeout response carries headers");
@@ -249,7 +252,7 @@ async fn service_runtime_times_out_slow_handler_and_records_health() {
 #[tokio::test]
 async fn service_runtime_shutdown_waits_for_in_flight_request() {
     let nats = test_nats().await;
-    let spec = test_service_spec("plz.v1.svc.api.test.shutdown");
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.shutdown");
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -281,7 +284,7 @@ async fn service_runtime_shutdown_waits_for_in_flight_request() {
         let client = nats.request_client.clone();
         async move {
             client
-                .request("plz.v1.svc.api.test.shutdown", Vec::new().into())
+                .request("plz.v1.rpc.operator.query.test.shutdown", Vec::new().into())
                 .await
                 .expect("service responds")
         }

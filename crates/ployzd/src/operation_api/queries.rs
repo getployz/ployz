@@ -493,12 +493,12 @@ impl MachineQueryService {
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
         let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
-        let public_ips = facts
+        let endpoints = facts
             .values()
             .filter_map(|facts| {
                 facts
-                    .public_ip()
-                    .map(|public_ip| (facts.machine_id().clone(), public_ip.clone()))
+                    .endpoints()
+                    .map(|endpoints| (facts.machine_id().clone(), endpoints.clone()))
             })
             .collect::<BTreeMap<_, _>>();
         let gateway_statuses = self
@@ -521,7 +521,7 @@ impl MachineQueryService {
         for machine in machines {
             let observation = container_observations.get(&machine.machine_id).copied();
             snapshots.push(MachineSnapshot {
-                public_ip: public_ips.get(&machine.machine_id).cloned(),
+                endpoints: endpoints.get(&machine.machine_id).cloned(),
                 gateway: gateway_statuses.get(&machine.machine_id).cloned(),
                 observed_container_count: observation.map(|(count, _)| count).unwrap_or_default(),
                 last_observed_at_unix_seconds: observation.map(|(_, observed_at)| observed_at),
@@ -563,12 +563,12 @@ impl MachineQueryService {
             .machine_facts(&active.machine_id)
             .await
             .ok();
-        let public_ip = facts.as_ref().and_then(|facts| facts.public_ip().cloned());
+        let endpoints = facts.as_ref().and_then(|facts| facts.endpoints().cloned());
         let gateway = self.facts.gateway_status(&active.machine_id);
 
         Ok(MachineSnapshot {
             active,
-            public_ip,
+            endpoints,
             gateway,
             observed_container_count: facts
                 .as_ref()

@@ -264,7 +264,7 @@ fn core_principal_users(identity: &ClusterNatsIdentity) -> Vec<NatsAuthorizedUse
             nkey_public: identity.controller.public.clone(),
         },
         NatsAuthorizedUser {
-            principal: NatsPrincipal::User,
+            principal: NatsPrincipal::Operator,
             nkey_public: identity.operator.public.clone(),
         },
         NatsAuthorizedUser {
@@ -275,7 +275,7 @@ fn core_principal_users(identity: &ClusterNatsIdentity) -> Vec<NatsAuthorizedUse
 }
 
 impl NatsAuthorizedUsersTarget {
-    /// The install-time user set: Controller, operator User, and Join.
+    /// The install-time user set: Controller, operator Operator, and Join.
     /// Machine users are minted later by `ployzd` control.
     #[must_use]
     pub fn initial_for_first_machine(
@@ -289,7 +289,7 @@ impl NatsAuthorizedUsersTarget {
                 .iter()
                 .cloned()
                 .map(|nkey_public| NatsAuthorizedUser {
-                    principal: NatsPrincipal::User,
+                    principal: NatsPrincipal::Operator,
                     nkey_public,
                 }),
         );

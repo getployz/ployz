@@ -49,6 +49,11 @@ impl TestNats {
         self.connected.api()
     }
 
+    pub fn join_api(&self) -> OperationApiClient {
+        OperationApiClient::new(self.connected.join.clone())
+            .with_request_timeout(Duration::from_secs(30))
+    }
+
     pub async fn machine_client(&self, machine_id: &MachineId) -> async_nats::Client {
         self.connected.machine_client(machine_id).await
     }

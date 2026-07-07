@@ -10,13 +10,12 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember, DataplanePrepareError, DataplanePrepareRequest,
-    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
-    PloyzNativeMeshPrepareRequest, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReportError,
-    WireGuardPeer, WireGuardPeerEndpoint, WireGuardPublicKey,
+    DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshComponent,
+    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshPrepareRequest,
+    WireGuardEbpfPrepareError, WireGuardEbpfPrepareReportError, WireGuardPeer,
+    WireGuardPeerEndpoint, WireGuardPublicKey,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::state::MachinePublicIpObservation;
 use ployz_core::subjects::MachineServiceEndpoint;
 use std::collections::BTreeSet;
 
@@ -107,17 +106,17 @@ async fn load_wireguard_peer_endpoint(
         .machine_facts(&member.machine_id)
         .await
         .map_err(|error| public_ip_fact_unavailable(&member.machine_id, error))?;
-    let public_ip = facts.public_ip().cloned().ok_or_else(|| {
+    let endpoints = facts.endpoints().cloned().ok_or_else(|| {
         ployz_native_mesh_unavailable(
             &member.machine_id,
             PloyzNativeMeshComponent::WireGuard,
             failure_message(format!(
-                "machine public ip fact for {} is missing",
+                "machine endpoint facts for {} are missing",
                 member.machine_id.as_str()
             )),
         )
     })?;
-    Ok(peer_endpoint_from_public_ip(member, public_ip))
+    peer_endpoint_from_observation(member, endpoints)
 }
 
 fn public_ip_fact_unavailable(
@@ -161,18 +160,26 @@ fn validate_ployz_native_mesh_membership(
     Ok(())
 }
 
-fn peer_endpoint_from_public_ip(
+fn peer_endpoint_from_observation(
     member: &DataplaneMember,
-    observation: MachinePublicIpObservation,
-) -> WireGuardPeerEndpoint {
-    WireGuardPeerEndpoint {
+    observation: ployz_core::state::MachineEndpointObservation,
+) -> Result<WireGuardPeerEndpoint, WireGuardEbpfPrepareError> {
+    let Some(active_endpoint) = observation.mesh_endpoints.first().copied() else {
+        return Err(ployz_native_mesh_unavailable(
+            &member.machine_id,
+            PloyzNativeMeshComponent::WireGuard,
+            failure_message(format!(
+                "machine mesh endpoints for {} are missing",
+                member.machine_id.as_str()
+            )),
+        ));
+    };
+    Ok(WireGuardPeerEndpoint {
         machine_id: observation.machine_id,
         endpoint_subnet: member.endpoint_subnet.as_string(),
-        public_endpoint: std::net::SocketAddr::new(
-            observation.public_ip,
-            DEFAULT_WIREGUARD_LISTEN_PORT,
-        ),
-    }
+        active_endpoint,
+        candidate_endpoints: observation.mesh_endpoints,
+    })
 }
 
 fn read_public_key_request(

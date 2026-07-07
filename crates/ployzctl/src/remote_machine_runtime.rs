@@ -5,7 +5,6 @@
 //! NATS plumbing.
 
 use std::fmt;
-use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
@@ -268,7 +267,6 @@ pub(crate) async fn execute_machine_init(
     let target = command.target.clone();
 
     let identity = derive_remote_identity(&probe, &target, command.identity_override.clone())?;
-    let machine_public_ip: Option<IpAddr> = target.host().parse().ok();
     let install_command = FounderBootstrapCommand {
         installer: command.installer(),
         release: command.release.clone(),
@@ -278,7 +276,7 @@ pub(crate) async fn execute_machine_init(
         bootstrap_url: command.bootstrap_url.clone(),
         cluster_name: command.cluster_name.clone(),
         runtime_nats_url: runtime_nats_url_for_target(&target)?,
-        machine_public_ip,
+        machine_public_ip: command.public_ip,
     }
     .render();
     let install_output = installer
@@ -377,8 +375,7 @@ pub(crate) async fn execute_machine_add_remote(
         .map_err(api_error)?;
     let output = MachineAddOutput::from_accepted(accepted, join_seed);
 
-    let machine_public_ip: Option<IpAddr> = target.host().parse().ok();
-    let install_command = output.install_command(&command.installer(), machine_public_ip);
+    let install_command = output.install_command(&command.installer());
     if let Err(source) = installer.run(&target, SshPhase::RunInstaller, &install_command) {
         return Err(remote_machine_error(
             RemoteMachineExecutionError::RemoteJoinInstall {

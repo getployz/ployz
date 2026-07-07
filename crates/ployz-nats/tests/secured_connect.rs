@@ -11,8 +11,9 @@ use ployz_core::nats_config::MintedNatsUser;
 use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    API_INIT_FIRST_MACHINE_ACTIVATE, MachineServiceEndpoint, gateway_status,
-    machine_container_facts, machine_facts, machine_service, machine_service_scope,
+    MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, gateway_status,
+    machine_container_facts, machine_facts, machine_service, machine_service_command_scope,
+    machine_service_query_scope,
 };
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
@@ -58,7 +59,7 @@ async fn wrong_seed_is_rejected() {
 }
 
 #[tokio::test]
-async fn extra_cloud_user_public_key_can_connect_as_user() {
+async fn extra_cloud_operator_public_key_can_connect_as_operator() {
     let cloud_user = MintedNatsUser::generate().expect("cloud nkey mints");
     let fixture = SecuredTestNats::start_with_machines_and_extra_users(
         &[],
@@ -68,13 +69,13 @@ async fn extra_cloud_user_public_key_can_connect_as_user() {
     .expect("secured fixture");
 
     let client = connect_authenticated(
-        &fixture.config_with_seed(NatsPrincipal::User, cloud_user.seed),
+        &fixture.config_with_seed(NatsPrincipal::Operator, cloud_user.seed),
         CONNECT_TIMEOUT,
     )
     .await
-    .expect("external cloud user key connects as User principal");
+    .expect("external cloud operator key connects as Operator principal");
 
-    client.flush().await.expect("cloud user round-trips");
+    client.flush().await.expect("cloud operator round-trips");
 }
 
 #[tokio::test]
@@ -204,18 +205,18 @@ async fn machine_fact_writes_are_fenced_to_its_own_subjects() {
 }
 
 #[tokio::test]
-async fn controller_can_serve_and_call_operation_api_subjects() {
+async fn controller_can_serve_operator_rpc_subjects() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let server_config = fixture.controller_config();
-    let caller_config = fixture.controller_config();
+    let caller_config = fixture.user_config();
     let server_client = connect_authenticated(&server_config, CONNECT_TIMEOUT)
         .await
         .expect("controller service connects");
     let caller_client = connect_authenticated(&caller_config, CONNECT_TIMEOUT)
         .await
-        .expect("controller caller connects");
+        .expect("operator caller connects");
     let mut requests = server_client
-        .subscribe(API_INIT_FIRST_MACHINE_ACTIVATE)
+        .subscribe(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE)
         .await
         .expect("controller subscribes API endpoint subject");
     server_client.flush().await.expect("flush");
@@ -235,7 +236,7 @@ async fn controller_can_serve_and_call_operation_api_subjects() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(
             remaining,
-            caller_client.request(API_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+            caller_client.request(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
         )
         .await
         {
@@ -244,7 +245,7 @@ async fn controller_can_serve_and_call_operation_api_subjects() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 let _ = error;
             }
-            Ok(Err(error)) => panic!("controller receives the API response: {error:?}"),
+            Ok(Err(error)) => panic!("operator receives the API response: {error:?}"),
             Err(_) => panic!("request does not hang"),
         }
     };
@@ -264,9 +265,13 @@ async fn machine_can_serve_machine_rpc_and_service_discovery_subjects() {
     let (machine_client, mut events) = connect_with_event_capture(&config).await;
 
     let _machine_rpc = machine_client
-        .subscribe(machine_service_scope(&machine_id))
+        .subscribe(machine_service_query_scope(&machine_id))
         .await
-        .expect("machine subscribes its machine service scope");
+        .expect("machine subscribes its machine query service scope");
+    let _machine_command_rpc = machine_client
+        .subscribe(machine_service_command_scope(&machine_id))
+        .await
+        .expect("machine subscribes its machine command service scope");
     let _service_ping = machine_client
         .subscribe("$SRV.PING")
         .await
@@ -285,7 +290,7 @@ async fn join_cannot_publish_general_operation_api_subjects() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (join_client, mut events) = connect_with_event_capture(&fixture.join_config()).await;
     join_client
-        .publish(API_INIT_FIRST_MACHINE_ACTIVATE, "activate".into())
+        .publish(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into())
         .await
         .expect("publish is accepted client-side");
     join_client.flush().await.expect("flush");
@@ -348,7 +353,7 @@ async fn join_cannot_sniff_other_principals_inboxes() {
         .expect("machine connects");
     let request_subject = machine_service(&machine_id, MachineServiceEndpoint::Inspect);
     let mut requests = machine_client
-        .subscribe(machine_service_scope(&machine_id))
+        .subscribe(machine_service_query_scope(&machine_id))
         .await
         .expect("machine subscribes its service scope");
     machine_client.flush().await.expect("flush");

@@ -2,7 +2,7 @@
   "accepted_operation": {
     "operation_id": "op_123",
     "start_sequence": "1",
-    "watch_subject": "plz.v1.op.op_123.>"
+    "watch_subject": "plz.v1.progress.namespace.default.operation.op_123.>"
   },
   "cloud_bootstrap_callback_accepted": {
     "accepted_at_unix_seconds": 1893456060
@@ -30,7 +30,7 @@
         "intent": "joiner",
         "joiner": {
           "join_secret_delivery": {
-            "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
+            "nats_credentials": "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"
           },
           "join_token": "join_once_123",
           "runtime_nats_url": "tls://203.0.113.10:4222",
@@ -91,7 +91,7 @@
     "value": {
       "operation_id": "op_123",
       "start_sequence": "1",
-      "watch_subject": "plz.v1.op.op_123.>"
+      "watch_subject": "plz.v1.progress.namespace.default.operation.op_123.>"
     }
   },
   "init_first_machine_activate_request": {
@@ -124,7 +124,7 @@
       "accepted": {
         "operation_id": "op_machine",
         "start_sequence": "7",
-        "watch_subject": "plz.v1.op.op_machine.>"
+        "watch_subject": "plz.v1.progress.machine.machine_2.operation.op_machine.>"
       },
       "bootstrap_url": "https://get.ployz.sh",
       "join_bundle": {
@@ -165,7 +165,7 @@
         }
       },
       "join_secret_delivery": {
-        "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
+        "nats_credentials": "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"
       },
       "join_token": "join_once_123",
       "machine_id": "machine_2"
@@ -225,7 +225,7 @@
         "gateway": "skip"
       },
       "secret_delivery": {
-        "nats_credentials": "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM"
+        "nats_credentials": "SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"
       }
     }
   },
@@ -239,7 +239,7 @@
     "value": {
       "operation_id": "op_machine_update",
       "start_sequence": "9",
-      "watch_subject": "plz.v1.op.op_machine_update.>"
+      "watch_subject": "plz.v1.progress.machine.machine_2.operation.op_machine_update.>"
     }
   },
   "operation_event_replay_page": {
@@ -272,6 +272,7 @@
       "id": "op_123",
       "kind": "deploy",
       "last_event_sequence": "1",
+      "namespace_id": "default",
       "service_id": "svc_api",
       "state": {
         "state": "accepted"
@@ -292,6 +293,7 @@
         "id": "op_123",
         "kind": "deploy",
         "last_event_sequence": "1",
+        "namespace_id": "default",
         "service_id": "svc_api",
         "state": {
           "state": "accepted"
