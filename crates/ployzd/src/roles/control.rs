@@ -23,9 +23,10 @@ use crate::process_support::shutdown_signal;
 use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
-use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
+use ployz_core::state::PendingMachineJoinRecovery;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
@@ -116,11 +117,22 @@ pub async fn start_control_process_with_client_and_reload(
     let core_store = CoreStore::open(config.core_db_path.clone())
         .await
         .map_err(ControlProcessError::OpenCoreStore)?;
-    if let Some(mirror_path) = &config.seed_from_mirror {
-        seed_core_from_mirror(&core_store, mirror_path).await?;
-    }
     let repository = OperationRepository::open(core_store.clone(), client.clone());
-    let controllers = OperationControllers::new(repository, config.machine_bootstrap.clone());
+    let pending_join_recovery = if let Some(mirror_path) = &config.seed_from_mirror {
+        seed_core_from_mirror(&core_store, mirror_path).await?;
+        load_pending_join_recovery(mirror_path)
+    } else {
+        Vec::new()
+    };
+    let controllers = if pending_join_recovery.is_empty() {
+        OperationControllers::new(repository, config.machine_bootstrap.clone())
+    } else {
+        OperationControllers::new_with_pending_join_recovery(
+            repository,
+            config.machine_bootstrap.clone(),
+            pending_join_recovery,
+        )
+    };
     // The grant store is the source of truth; the conf is its projection. On a
     // fresh core, import the keeper-written conf into the store once — before the
     // first render, or rendering the empty store would wipe the conf.
@@ -216,6 +228,7 @@ pub async fn start_control_process_with_client_and_reload(
                 machine_lifecycle,
                 machine_mint,
             },
+            core_store.clone(),
             config
                 .deploy_machines
                 .first()
@@ -285,6 +298,13 @@ async fn seed_core_from_mirror(
         .await
         .map_err(ControlProcessError::SeedCore)?;
     Ok(())
+}
+
+fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecovery> {
+    MachinePendingJoinMirror::new(mirror_path.with_file_name("pending-machine-joins.json"))
+        .load()
+        .map(|snapshot| snapshot.pending)
+        .unwrap_or_default()
 }
 
 #[derive(Debug)]

@@ -9,7 +9,7 @@ use crate::adapters::host_dataplane::{
 };
 use crate::config::MachineProcessConfig;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
-use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
     MachineEndpointCache, MachineFactsReadError, MachineServiceError, current_unix_ms,
@@ -18,8 +18,8 @@ use crate::roles::machine::service::{
 };
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
-use ployz_core::state::IntentSnapshot;
-use ployz_core::subjects::{INTENT_CHANGED, machine_facts};
+use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED, machine_facts};
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
@@ -46,10 +46,12 @@ pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
     observer: RunningTask,
     intent_mirror: RunningTask,
+    pending_join_mirror: RunningTask,
 }
 
 impl RunningMachineProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
+        self.pending_join_mirror.shutdown().await;
         self.intent_mirror.shutdown().await;
         self.observer.shutdown().await;
         self.machine_service.shutdown().await
@@ -74,6 +76,12 @@ pub async fn start_machine_process(
     // roster rather than timing out on the possibly-dead configured seed.
     let intent_mirror =
         MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json"));
+    let pending_join_mirror = MachinePendingJoinMirror::new(
+        config
+            .nats
+            .seed_file
+            .with_file_name("pending-machine-joins.json"),
+    );
     let seed = connect.url.clone();
     let initial_pool = match intent_mirror.load() {
         Some(snapshot) => candidate_server_pool(&snapshot, &seed),
@@ -108,6 +116,7 @@ pub async fn start_machine_process(
         preparer,
         runner,
         intent_mirror,
+        pending_join_mirror,
         seed,
         MACHINE_OBSERVATION_INTERVAL,
         config.ployz_native_mesh.wg_ifname.clone(),
@@ -125,6 +134,7 @@ pub async fn start_machine_process_with_ports<R, P, L>(
     preparer: P,
     log_reader: L,
     intent_mirror: MachineIntentMirror,
+    pending_join_mirror: MachinePendingJoinMirror,
     seed: NatsClientUrl,
     observation_interval: Duration,
     wg_ifname: String,
@@ -150,6 +160,7 @@ where
     .await
     .map_err(MachineProcessError::StartMachineService)?;
     let intent_mirror = start_intent_mirror(client.clone(), intent_mirror, seed);
+    let pending_join_mirror = start_pending_join_mirror(client.clone(), pending_join_mirror);
     let observer = start_machine_observer(
         machine_id,
         runner,
@@ -162,6 +173,7 @@ where
         machine_service,
         observer,
         intent_mirror,
+        pending_join_mirror,
     })
 }
 
@@ -306,6 +318,37 @@ fn start_intent_mirror(
                                 }
                                 Err(_) => {}
                             }
+                        }
+                    }
+                    _ = &mut shutdown_rx => return,
+                }
+            }
+        }
+    });
+    RunningTask { shutdown, task }
+}
+
+fn start_pending_join_mirror(client: NatsClient, mirror: MachinePendingJoinMirror) -> RunningTask {
+    let (shutdown, mut shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        loop {
+            let mut changed = match client.subscribe(PENDING_MACHINE_JOINS_CHANGED).await {
+                Ok(subscription) => subscription,
+                Err(_) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(INTENT_MIRROR_RESUBSCRIBE_DELAY) => continue,
+                        _ = &mut shutdown_rx => return,
+                    }
+                }
+            };
+            loop {
+                tokio::select! {
+                    message = changed.next() => {
+                        let Some(message) = message else { break };
+                        if let Ok(snapshot) =
+                            serde_json::from_slice::<PendingMachineJoinRecoverySnapshot>(&message.payload)
+                        {
+                            let _ = mirror.store(&snapshot);
                         }
                     }
                     _ = &mut shutdown_rx => return,
@@ -643,6 +686,7 @@ mod tests {
             ReadyWireGuardEbpf,
             runner,
             MachineIntentMirror::new(mirror_dir.path().join("intent-mirror.json")),
+            MachinePendingJoinMirror::new(mirror_dir.path().join("pending-machine-joins.json")),
             NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
             Duration::from_secs(60),
             "ployz-wg0".to_owned(),

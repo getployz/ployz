@@ -15,9 +15,9 @@ use crate::security::NatsPrincipal;
 use crate::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
-    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, gateway_status, gateway_status_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service_command_scope,
-    machine_service_query_scope,
+    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, PENDING_MACHINE_JOINS_CHANGED,
+    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
+    machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -147,6 +147,7 @@ fn machine_service_server_subscriptions(
         machine_service_query_scope(machine_id),
         machine_service_command_scope(machine_id),
         INTENT_CHANGED.to_owned(),
+        PENDING_MACHINE_JOINS_CHANGED.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
@@ -162,6 +163,7 @@ fn controller_publications() -> SubjectPermissions {
         CORE_RPC_QUERY_SCOPE.to_owned(),
         OPERATION_PROGRESS_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
+        PENDING_MACHINE_JOINS_CHANGED.to_owned(),
     ]);
     SubjectPermissions::allowing_all(allow)
 }

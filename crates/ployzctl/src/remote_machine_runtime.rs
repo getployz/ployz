@@ -73,35 +73,44 @@ pub(crate) async fn execute_core_replace_remote(
     command: CoreReplaceCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let api = operation_api_client(config).await?;
-    let machine_id = resolve_core_replace_machine_id(&command.target, config, &api).await?;
+    let config = config.clone().with_cluster_context_from_disk()?;
+    let api = operation_api_client(&config).await?;
+    let machine_id = resolve_core_replace_machine_id(&command.target, &config, &api).await?;
     let operation_id = crate::client_ids::generate_client_core_replace_id(&machine_id)
         .map_err(|error| client_generated_ids_error(error.to_string()))?
         .operation_id;
-    let successor_nats_url = MachineJoinRuntimeNatsUrl::try_new(
-        command.successor_nats_url.as_str(),
-    )
-    .map_err(|error| {
-        remote_machine_error(
-            RemoteMachineExecutionError::InvalidBootstrapRuntimeNatsUrl {
-                host: command.successor_nats_url.as_str().to_owned(),
-                message: error.to_string(),
-            },
-        )
-    })?;
+    let successor_nats_url = command
+        .successor_nats_url
+        .clone()
+        .or_else(|| {
+            config
+                .nats_url
+                .as_deref()
+                .and_then(|url| NatsClientUrl::try_new(url).ok())
+        })
+        .ok_or(PloyzctlExecutionError::MissingNatsUrl)?;
+    let successor_runtime_nats_url =
+        MachineJoinRuntimeNatsUrl::try_new(successor_nats_url.as_str()).map_err(|error| {
+            remote_machine_error(
+                RemoteMachineExecutionError::InvalidBootstrapRuntimeNatsUrl {
+                    host: successor_nats_url.as_str().to_owned(),
+                    message: error.to_string(),
+                },
+            )
+        })?;
     let accepted = api
         .core_replace(&CoreReplaceRequest {
             operation_id: operation_id.clone(),
             machine_id: machine_id.clone(),
-            successor_nats_url: successor_nats_url.clone(),
+            successor_nats_url: successor_runtime_nats_url,
         })
         .await
         .map_err(api_error)?;
 
-    let client = ssh_client(config, config.ssh_install_timeout());
+    let client = ssh_client(&config, config.ssh_install_timeout());
     let mut remote_command = "sudo ployz-keeper internal-core-demote".to_owned();
     remote_command.push_str(" --successor-nats-url ");
-    remote_command.push_str(&shell_quote(command.successor_nats_url.as_str()));
+    remote_command.push_str(&shell_quote(successor_nats_url.as_str()));
     let ssh_result = client.run(&command.target, SshPhase::CoreReplace, &remote_command);
     let outcome = match &ssh_result {
         Ok(_) => CoreReplaceReportOutcome::Completed,

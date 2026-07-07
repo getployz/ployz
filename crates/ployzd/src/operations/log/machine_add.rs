@@ -18,6 +18,7 @@ use ployz_core::ops::{
     EventSequence, MachineAddOperationState, OperationEvent, OperationIdempotencyKey,
     OperationKind, OperationStatus,
 };
+use ployz_core::state::PendingMachineJoinRecovery;
 use rusqlite::{Connection, OptionalExtension, params};
 
 impl OperationRepository {
@@ -160,6 +161,30 @@ impl OperationRepository {
             .call(select_machine_add_submissions)
             .await
             .map_err(|error| index_error(&error))
+    }
+
+    pub async fn pending_machine_adds_for_mirror(
+        &self,
+    ) -> Result<Vec<PendingMachineJoinRecovery>, OperationStatusStoreError> {
+        let mut pending = Vec::new();
+        for submission in self.machine_add_submissions().await? {
+            let Some(OperationStatus::MachineAdd {
+                state:
+                    MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+                ..
+            }) = self.get(&submission.operation_id).await?
+            else {
+                continue;
+            };
+            let identity = submission.identity;
+            pending.push(PendingMachineJoinRecovery {
+                machine_id: identity.machine_id,
+                name: identity.name,
+                roles: identity.roles,
+                join_token: identity.join_token,
+            });
+        }
+        Ok(pending)
     }
 
     pub async fn machine_add_secret_delivery(

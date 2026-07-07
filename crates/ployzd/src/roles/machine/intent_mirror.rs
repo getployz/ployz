@@ -5,7 +5,7 @@
 //! restore. Writes are epoch-gated: a snapshot from a lower Control-Plane Epoch
 //! — a healed, stale core — never overwrites a higher one.
 
-use ployz_core::state::IntentSnapshot;
+use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +32,35 @@ impl MachineIntentMirror {
     /// Persist `snapshot` unless a higher-epoch one is already stored; a stale
     /// core's lower epoch is dropped. Returns whether the write happened.
     pub fn store(&self, snapshot: &IntentSnapshot) -> io::Result<bool> {
+        if let Some(current) = self.load()
+            && snapshot.epoch < current.epoch
+        {
+            return Ok(false);
+        }
+        let bytes = serde_json::to_vec(snapshot).map_err(io::Error::other)?;
+        write_atomic(&self.path, &bytes)?;
+        Ok(true)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MachinePendingJoinMirror {
+    path: PathBuf,
+}
+
+impl MachinePendingJoinMirror {
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    #[must_use]
+    pub fn load(&self) -> Option<PendingMachineJoinRecoverySnapshot> {
+        let bytes = std::fs::read(&self.path).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    pub fn store(&self, snapshot: &PendingMachineJoinRecoverySnapshot) -> io::Result<bool> {
         if let Some(current) = self.load()
             && snapshot.epoch < current.epoch
         {

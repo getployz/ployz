@@ -103,7 +103,7 @@ async fn redeem_when_material_ready(
     let mut last_not_ready: Option<MachineJoinRedeemError> = None;
     for _ in 0..FIRST_MACHINE_MATERIAL_WAIT_ATTEMPTS {
         match machine_join_redeem(
-            handlers.controllers(),
+            handlers,
             MachineJoinRedeemRequest {
                 join_token: join_token.clone(),
             },

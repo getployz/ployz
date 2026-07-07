@@ -23,7 +23,7 @@ use ployz_keeper::cli::{
 };
 use ployz_keeper::cloud_client::get_text_url;
 use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
-use ployz_keeper::core_demote::{CoreDemoteTarget, demote_local_core};
+use ployz_keeper::core_demote::{CoreDemoteTarget, demote_local_core, repoint_non_core_roles};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::fsx::{FileMode, write_durable_file};
 use ployz_keeper::join::{
@@ -733,6 +733,25 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
     );
     match execute_keeper_plan(&plan, &mut effects, &mut recorder).terminal {
         KeeperPlanTerminal::Completed => {
+            let successor = match ployz_nats::connect::NatsClientUrl::try_new(
+                "tls://127.0.0.1:4222",
+            ) {
+                Ok(url) => url,
+                Err(error) => {
+                    eprintln!(
+                        "ployz-keeper core-promote failed: promoted NATS URL is invalid: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) = repoint_non_core_roles(
+                Path::new("/etc/ployz"),
+                &successor,
+                &mut SystemKeeperCommandRunner::default(),
+            ) {
+                eprintln!("ployz-keeper core-promote failed: {error}");
+                return ExitCode::FAILURE;
+            }
             drop(recorder);
             print_core_promote_result(&access);
             ExitCode::SUCCESS
