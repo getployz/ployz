@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
 use crate::client_ids::generate_client_machine_add_ids;
+use crate::commands::core::CoreReplaceCommand;
 use crate::commands::init::FirstMachineActivateCommand;
 use crate::commands::machine::{
     MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteDetachedOutput,
@@ -23,6 +24,7 @@ use crate::runtime::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, activate_first_machine,
     api_error, operation_api_client, read_join_seed, watch_operation_until_terminal,
 };
+use crate::shell::shell_quote;
 use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
@@ -60,6 +62,24 @@ fn ssh_client(config: &PloyzctlRuntimeConfig, timeout: std::time::Duration) -> S
         Some(program) => SshClient::with_program(program.clone(), timeout),
         None => SshClient::system(timeout),
     }
+}
+
+pub(crate) async fn execute_core_replace_remote(
+    command: CoreReplaceCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let client = ssh_client(config, DEFAULT_SSH_COMMAND_TIMEOUT);
+    let mut remote_command = "sudo ployz-keeper internal-core-demote".to_owned();
+    remote_command.push_str(" --successor-nats-url ");
+    remote_command.push_str(&shell_quote(command.successor_nats_url.as_str()));
+    client
+        .run(&command.target, SshPhase::CoreReplace, &remote_command)
+        .map_err(ssh_error)?;
+
+    Ok(PloyzctlExecutionOutput::stdout(format!(
+        "core replaced on {}\n",
+        command.target.destination()
+    )))
 }
 
 /// Picks the quick-start machine identity: the `--name` override when given,

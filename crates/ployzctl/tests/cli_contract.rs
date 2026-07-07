@@ -258,6 +258,31 @@ fn cli_dispatches_ops_status_request() {
 }
 
 #[test]
+fn cli_dispatches_core_replace_remote() {
+    let command = parse_command(
+        [
+            "core",
+            "replace",
+            "root@203.0.113.10",
+            "--successor-nats-url",
+            "tls://203.0.113.20:4222",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("core replace command parses");
+
+    let PloyzctlCommand::CoreReplace(command) = command else {
+        panic!("expected core replace command");
+    };
+
+    assert_eq!(command.target.destination(), "root@203.0.113.10");
+    assert_eq!(
+        command.successor_nats_url.as_str(),
+        "tls://203.0.113.20:4222"
+    );
+}
+
+#[test]
 fn cli_requires_ops_status_operation_id() {
     assert!(parse_command(["ops", "status"].map(str::to_owned)).is_err());
 }
@@ -452,7 +477,7 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert!(stdout(&output).contains("Usage: ployzctl"));
     for command in [
-        "deploy", "ls", "inspect", "machine", "service", "logs", "ops",
+        "core", "deploy", "ls", "inspect", "machine", "service", "logs", "ops",
     ] {
         assert!(stdout(&output).contains(command), "missing {command}");
     }

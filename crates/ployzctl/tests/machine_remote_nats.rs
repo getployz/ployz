@@ -40,6 +40,7 @@ use ployzctl::bootstrap_command::{
     BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL,
 };
 use ployzctl::commands::PloyzctlCommand;
+use ployzctl::commands::core::CoreReplaceCommand;
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
 use ployzctl::config::{ClusterContext, load_cluster_context, save_cluster_context};
 use ployzctl::remote_machine_runtime::RemoteMachineExecutionError;
@@ -83,6 +84,9 @@ case "$cmd" in
     ;;
   *'--first-machine'* | *'--join-token'*)
     {installer_body}
+    ;;
+  *'internal-core-demote --successor-nats-url'*)
+    echo 'core replaced'
     ;;
   'curl -fsSL -- '*)
     printf '%s\n' \
@@ -295,6 +299,40 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
         nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(TEST_SEED)
             .expect("valid nats credentials"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// core replace USER@HOST
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn core_replace_remote_runs_keeper_command() {
+    let server = TestNats::start().await;
+    let ssh = FakeSshMachine::new("stale-core", "echo never");
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+
+    let output = execute_command(
+        PloyzctlCommand::CoreReplace(CoreReplaceCommand {
+            target: SshTarget::parse("root@203.0.113.10").expect("target parses"),
+            successor_nats_url: ployz_nats::connect::NatsClientUrl::try_new(
+                "tls://203.0.113.20:4222",
+            )
+            .expect("valid url"),
+        }),
+        &config,
+    )
+    .await
+    .expect("remote core replace succeeds");
+
+    assert_eq!(output.stdout, "core replaced on root@203.0.113.10\n");
+    assert_eq!(
+        ssh.commands(),
+        vec![
+            "sudo ployz-keeper internal-core-demote --successor-nats-url 'tls://203.0.113.20:4222'"
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------

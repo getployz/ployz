@@ -10,6 +10,7 @@ pub mod cli;
 pub mod cloud_bootstrap;
 pub mod cloud_client;
 pub mod command;
+pub mod core_demote;
 pub mod executor;
 pub mod fsx;
 pub mod join;
