@@ -336,6 +336,7 @@ pub(super) fn wireguard_host_cidr(endpoint_subnet: &str) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn wireguard_mtu_from_egress_subtracts_overhead_and_clamps() {
@@ -352,6 +353,33 @@ mod tests {
         );
         assert!(WireGuardMtuPolicy::from_config(Some(1279)).is_err());
         assert!(WireGuardMtuPolicy::from_config(Some(1421)).is_err());
+    }
+
+    #[test]
+    fn ensure_private_key_creates_private_file_and_directory_modes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_dir = dir.path().join("wireguard");
+        let key_path = key_dir.join("private.key");
+
+        let private_key = ensure_private_key(&key_path).expect("private key is created");
+
+        assert!(!private_key.is_empty());
+        assert_eq!(
+            std::fs::metadata(&key_dir)
+                .expect("key dir metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&key_path)
+                .expect("key file metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]
