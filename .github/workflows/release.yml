@@ -69,6 +69,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/ployz-dind-machine-target
+            /tmp/ployz-dind-ebpf-target
+            /tmp/ployz-dind-cargo-registry
+            /tmp/ployz-dind-cargo-git
+          key: ployz-linux-${{ matrix.slug }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ployz-linux-${{ matrix.slug }}-
       - name: Package release assets
         env:
           PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
