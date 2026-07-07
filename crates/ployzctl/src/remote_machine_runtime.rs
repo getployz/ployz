@@ -68,7 +68,7 @@ pub(crate) async fn execute_core_replace_remote(
     command: CoreReplaceCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let client = ssh_client(config, DEFAULT_SSH_COMMAND_TIMEOUT);
+    let client = ssh_client(config, config.ssh_install_timeout());
     let mut remote_command = "sudo ployz-keeper internal-core-demote".to_owned();
     remote_command.push_str(" --successor-nats-url ");
     remote_command.push_str(&shell_quote(command.successor_nats_url.as_str()));
