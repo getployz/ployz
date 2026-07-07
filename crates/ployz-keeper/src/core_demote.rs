@@ -40,7 +40,26 @@ pub fn demote_local_core(
 
     let control = SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Control).unit_name();
     let nats = SupervisorUnitTarget::NatsServer.unit_name();
-    runner.systemctl(&["disable", "--now", &control, &nats])
+    runner.systemctl(&["disable", &control, &nats])?;
+    runner.systemctl(&["stop", &nats])?;
+    if runner.systemctl(&["stop", &control]).is_err() {
+        runner.systemctl(&["kill", "--signal=SIGKILL", &control])?;
+        runner.systemctl(&["stop", &control])?;
+    }
+    ensure_unit_inactive(&control, runner)?;
+    Ok(())
+}
+
+fn ensure_unit_inactive(
+    unit: &str,
+    runner: &mut impl KeeperCommandRunner,
+) -> Result<(), FailureMessage> {
+    if runner.systemctl(&["is-active", "--quiet", unit]).is_ok() {
+        return Err(failure_message(format!(
+            "{unit} is still active after demotion"
+        )));
+    }
+    Ok(())
 }
 
 pub fn repoint_non_core_roles(
@@ -163,6 +182,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingRunner {
         systemctl_calls: Vec<Vec<String>>,
+        fail_systemctl_once: Vec<Vec<String>>,
+        active_systemctl: Vec<Vec<String>>,
     }
 
     impl KeeperCommandRunner for RecordingRunner {
@@ -175,8 +196,22 @@ mod tests {
         }
 
         fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage> {
-            self.systemctl_calls
-                .push(args.iter().map(|arg| (*arg).to_owned()).collect());
+            let call: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            self.systemctl_calls.push(call.clone());
+            if let Some(index) = self
+                .fail_systemctl_once
+                .iter()
+                .position(|failure| failure == &call)
+            {
+                self.fail_systemctl_once.remove(index);
+                return Err(failure_message("simulated systemctl failure"));
+            }
+            if args.first() == Some(&"is-active") && args.get(1) == Some(&"--quiet") {
+                if self.active_systemctl.contains(&call) {
+                    return Ok(());
+                }
+                return Err(failure_message("simulated inactive unit"));
+            }
             Ok(())
         }
 
@@ -231,16 +266,98 @@ mod tests {
                 vec!["restart".to_owned(), "ployzd-gateway.service".to_owned(),],
                 vec![
                     "disable".to_owned(),
-                    "--now".to_owned(),
                     "ployzd-control.service".to_owned(),
                     "nats-server.service".to_owned(),
-                ]
+                ],
+                vec!["stop".to_owned(), "nats-server.service".to_owned(),],
+                vec!["stop".to_owned(), "ployzd-control.service".to_owned(),],
+                vec![
+                    "is-active".to_owned(),
+                    "--quiet".to_owned(),
+                    "ployzd-control.service".to_owned(),
+                ],
             ]
         );
         assert!(
             fs::read_to_string(env.path().join("ployzd-machine.env"))
                 .expect("machine env reads")
                 .starts_with("PLOYZ_NATS_URL=tls://new:4222\n")
+        );
+    }
+
+    #[test]
+    fn demote_local_core_kills_stuck_control_after_nats_stops() {
+        let env = tempfile::tempdir().expect("env dir");
+        fs::write(
+            env.path().join("ployzd-machine.env"),
+            "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_MACHINE_ID=machine_1\n",
+        )
+        .expect("write machine env");
+        let mut runner = RecordingRunner {
+            fail_systemctl_once: vec![vec!["stop".to_owned(), "ployzd-control.service".to_owned()]],
+            ..RecordingRunner::default()
+        };
+        let target =
+            CoreDemoteTarget::new(NatsClientUrl::try_new("tls://new:4222").expect("valid url"))
+                .with_env_dir(env.path().to_path_buf());
+
+        demote_local_core(&target, &mut runner).expect("demote succeeds");
+
+        assert_eq!(
+            runner.systemctl_calls,
+            vec![
+                vec![
+                    "restart".to_owned(),
+                    "ployzd-machine-machine_1.service".to_owned(),
+                ],
+                vec![
+                    "disable".to_owned(),
+                    "ployzd-control.service".to_owned(),
+                    "nats-server.service".to_owned(),
+                ],
+                vec!["stop".to_owned(), "nats-server.service".to_owned(),],
+                vec!["stop".to_owned(), "ployzd-control.service".to_owned(),],
+                vec![
+                    "kill".to_owned(),
+                    "--signal=SIGKILL".to_owned(),
+                    "ployzd-control.service".to_owned(),
+                ],
+                vec!["stop".to_owned(), "ployzd-control.service".to_owned(),],
+                vec![
+                    "is-active".to_owned(),
+                    "--quiet".to_owned(),
+                    "ployzd-control.service".to_owned(),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn demote_local_core_fails_when_control_stays_active_after_kill() {
+        let env = tempfile::tempdir().expect("env dir");
+        fs::write(
+            env.path().join("ployzd-machine.env"),
+            "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_MACHINE_ID=machine_1\n",
+        )
+        .expect("write machine env");
+        let mut runner = RecordingRunner {
+            fail_systemctl_once: vec![vec!["stop".to_owned(), "ployzd-control.service".to_owned()]],
+            active_systemctl: vec![vec![
+                "is-active".to_owned(),
+                "--quiet".to_owned(),
+                "ployzd-control.service".to_owned(),
+            ]],
+            ..RecordingRunner::default()
+        };
+        let target =
+            CoreDemoteTarget::new(NatsClientUrl::try_new("tls://new:4222").expect("valid url"))
+                .with_env_dir(env.path().to_path_buf());
+
+        let error = demote_local_core(&target, &mut runner).expect_err("demote fails");
+
+        assert_eq!(
+            error.to_string(),
+            "ployzd-control.service is still active after demotion"
         );
     }
 
