@@ -170,6 +170,9 @@ fn record_operation_event_txn(
     })
 }
 
+// A transient result enum: built then immediately matched inside one transaction,
+// never held in bulk, so the variant-size spread the lint optimizes for is moot here.
+#[allow(clippy::large_enum_variant)]
 enum SubmitTxn<P> {
     DuplicateSequenceMismatch {
         sequence: EventSequence,

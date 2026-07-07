@@ -442,7 +442,13 @@ impl WireGuardEndpointRotation {
             else {
                 continue;
             };
-            let next = peer.endpoints[(index + 1) % peer.endpoints.len()];
+            let Some(next) = peer
+                .endpoints
+                .get((index + 1) % peer.endpoints.len())
+                .copied()
+            else {
+                continue;
+            };
             peer.active_endpoint = next;
             peer.last_endpoint_change = Instant::now();
             rotations.push((public_key.clone(), next));

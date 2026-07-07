@@ -220,8 +220,10 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             .endpoints
             .as_ref()
             .expect("endpoints exist")
-            .control_endpoints[0],
-        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2))
+            .control_endpoints
+            .first()
+            .copied(),
+        Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)))
     );
     assert_eq!(
         inspected

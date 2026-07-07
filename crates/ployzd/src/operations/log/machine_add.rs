@@ -418,6 +418,9 @@ impl OperationRepository {
 
 // -------- machine-add transaction and row helpers --------
 
+// A transient result enum: built then immediately matched inside one transaction,
+// never held in bulk, so the variant-size spread the lint optimizes for is moot here.
+#[allow(clippy::large_enum_variant)]
 enum MachineAddTxn {
     KindMismatch {
         sequence: EventSequence,
