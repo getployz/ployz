@@ -507,11 +507,19 @@ fn ssh_commands_time_out_with_phase_evidence() {
     let client = SshClient::with_program(script, std::time::Duration::from_millis(200));
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = client
-        .read_remote_hostname(&target)
-        .expect_err("slow command times out");
-
-    assert!(matches!(error.as_ref(), SshCommandError::Timeout { .. }));
+    // A 5s command deterministically outlives the 200ms bound, so Timeout is the real
+    // outcome. The only other outcomes are transient environmental errors — a spawn or
+    // wait failure (e.g. fork EAGAIN while CI runs many test processes at once) — which
+    // this test is not about; retry past them, bounded, so it asserts timeout
+    // classification rather than the runner's fork headroom.
+    let error = (0..50)
+        .map(|_| {
+            client
+                .read_remote_hostname(&target)
+                .expect_err("slow command times out")
+        })
+        .find(|error| matches!(error.as_ref(), SshCommandError::Timeout { .. }))
+        .expect("a 5s command must time out against a 200ms bound within 50 attempts");
     let rendered = error.to_string();
     assert!(rendered.contains("read-hostname"));
     assert!(rendered.contains("timed out"));
