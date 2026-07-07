@@ -20,13 +20,22 @@ The decision, seam by seam:
   counter on a plain subject, which is already the fanout model. NATS carries the
   value; it does not define it.
 
-- **Intent is mirrored as the existing `IntentSnapshot`, persisted machine-side.**
+- **Intent is mirrored as the `IntentSnapshot`, persisted machine-side.**
   The payload is `IntentSnapshot { active_machines, route_bindings,
-  serving_target_entries }` — already the `intent.get` reply and the gateway/DNS
-  fold input, so no new wire type. Reachable Machines subscribe to
-  `intent.changed`, pull the snapshot, and persist it to a small local mirror
-  store, distinct from the core's evidence log. This is what makes promotion
-  instant.
+  serving_target_entries, authorized_users }` — the `intent.get` reply and the
+  gateway/DNS fold input, plus the authorized-users grant set (see below).
+  Reachable Machines subscribe to `intent.changed`, pull the snapshot, and persist
+  it to a small local mirror store, distinct from the core's evidence log. This is
+  what makes promotion instant.
+
+- **Authorized-users is store-held operator intent, not disk-as-truth.** The grant
+  set (core principals, every machine, and external `User` grants like Cloud) lives
+  in the core store as durable operator intent; `authorized-users.conf` is a
+  rendered projection of it, reloaded into `nats-server` on change. So the grants
+  ride the drumbeat inside `IntentSnapshot` and seed a promoted core's store like
+  the roster does — no separate transport, no re-derivation from partial truth. This
+  replaces the earlier disk-file-as-source-of-truth writer, whose read-parse-merge
+  was the only home of the full grant set and the reason promotion had to rebuild it.
 
 - **A promoted core seeds intent from its mirror and starts evidence fresh — the
   core database is never copied.** This is why the single `core-store.db` mixing
@@ -49,11 +58,14 @@ The decision, seam by seam:
   the candidate set. No install-time stability flag (ADR 0030).
 
 - **Promotion is `ployz core-promote`: local, idempotent, operator-triggered.** It
-  seeds the intent store from the local mirror, bumps and persists a higher epoch,
-  re-renders authorized-users from the mirrored machine nkey publics (minting its
-  own fresh core principals), self-issues its server TLS cert, and starts serving
-  as core. Nothing auto-elects (ADR 0019/0030); the operator runs it over an SSH
-  forced command or by hand.
+  seeds the intent store — roster, routes, serving targets, and the authorized-users
+  grant set — from the local mirror, bumps and persists a higher epoch, **reuses the
+  succeeded core's controller/operator/join principals from their pre-positioned
+  seeds (it does not rotate them)**, self-issues its server TLS cert, and starts
+  serving as core. Reuse is what keeps the operator and Cloud authorized after
+  recovery: a promoted core is a faithful resurrection of the one it succeeds, so
+  every existing credential still works. Nothing auto-elects (ADR 0019/0030); the
+  operator runs it over an SSH forced command or by hand.
 - **The one cluster secret a candidate needs is the CA signing key, and it rides
   encrypted.** A promoted core at a new address must present a server cert the
   fleet's `tls://` clients trust — signed by the cluster CA, whose key the dead
@@ -67,11 +79,13 @@ The decision, seam by seam:
   wraps the CA key before it is persisted or mirrored and is itself never stored. A machine compromise yields
   only ciphertext; `core-promote` takes the secret, decrypts the local copy, and
   self-issues.
-  Everything else the new core regenerates (its own controller/operator nkeys) or
-  holds non-secret (the machines' nkey publics via the mirrored authorized-users,
-  and the CA cert). The recovery secret is the one thing the operator must keep —
-  losing it means no promotion. This keeps promotion instant (the key is local, not
-  fetched) while a stolen machine cannot impersonate the cluster.
+  The core's own **controller/operator/join principal seeds** ride the same lane —
+  wrapped with the recovery secret and pre-positioned in join material — so a
+  promoted core reuses the old core's principals rather than minting fresh ones.
+  Grants (public keys) are non-secret and travel in the mirror. The recovery secret
+  is the one thing the operator must keep — losing it means no promotion. This keeps
+  promotion instant (nothing is fetched) while a stolen machine yields only
+  ciphertext and cannot impersonate the cluster.
 
 Build order, because each earns the next:
 
@@ -113,3 +127,10 @@ Consequences, stated plainly:
   on-disk artifact per machine, and the authorized-user set rides the same
   reachability scoping (ADR 0030), so mirror scope is a sensitivity boundary, not
   just an optimization.
+- **Reusing the core seeds means a leaked old-core seed stays valid on the promoted
+  core** — rotation would have invalidated it. Accepted: the recovery secret already
+  wraps the CA key, which can forge *any* identity, so pre-positioning the principal
+  seeds under the same secret grants an attacker who holds it nothing new. Rotation
+  as a side effect of a rare recovery event was also the wrong tool; deliberate
+  credential rotation is a separate, explicit operation. The reuse is what makes
+  recovery non-destructive to the operator's and Cloud's existing credentials.
