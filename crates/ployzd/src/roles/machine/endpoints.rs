@@ -27,10 +27,8 @@ pub async fn observe_machine_endpoints(
 fn observe_machine_endpoints_blocking(
     machine_id: &MachineId,
 ) -> Option<MachineEndpointObservation> {
-    let control_endpoints = discover_public_ip().into_iter().collect::<Vec<_>>();
-    let mesh_endpoints = discover_mesh_endpoints(&control_endpoints);
-    let control_endpoints = unique_ips(control_endpoints);
-    let mesh_endpoints = unique_socket_addrs(mesh_endpoints);
+    let control_endpoints = unique_ips(discover_control_endpoints());
+    let mesh_endpoints = unique_socket_addrs(discover_mesh_endpoints(&control_endpoints));
     if control_endpoints.is_empty() && mesh_endpoints.is_empty() {
         return None;
     }
@@ -39,6 +37,30 @@ fn observe_machine_endpoints_blocking(
         control_endpoints,
         mesh_endpoints,
     })
+}
+
+/// The machine's own publicly-reachable control addresses. A cloud host carries its
+/// public IP (v4 and v6) directly on its NIC, so its global-scope, non-private
+/// interface addresses are the reachable control endpoints — this is what covers
+/// IPv6, which the IPv4-only echo services below cannot. The external echo is a
+/// fallback for a NAT'd host whose NIC only holds a private address.
+fn discover_control_endpoints() -> Vec<IpAddr> {
+    let mut endpoints: Vec<IpAddr> = routable_interface_ips()
+        .into_iter()
+        .filter(|ip| is_public(*ip))
+        .collect();
+    endpoints.extend(discover_public_ip());
+    endpoints
+}
+
+/// A globally-routable address the fleet can dial: routable (see [`routable_ip`]) and
+/// not in a private (RFC 1918) or unique-local (fc00::/7) range.
+fn is_public(ip: IpAddr) -> bool {
+    routable_ip(ip)
+        && match ip {
+            IpAddr::V4(ip) => !ip.is_private(),
+            IpAddr::V6(ip) => !is_unique_local(ip),
+        }
 }
 
 fn discover_public_ip() -> Option<IpAddr> {
@@ -134,12 +156,12 @@ fn routable_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn mesh_sort_key(ip: IpAddr) -> (u8, String) {
+fn mesh_sort_key(ip: IpAddr) -> (u8, IpAddr) {
     match ip {
-        IpAddr::V4(ip) if ip.is_private() => (0, ip.to_string()),
-        IpAddr::V6(ip) if is_unique_local(ip) => (1, ip.to_string()),
-        IpAddr::V4(ip) => (2, ip.to_string()),
-        IpAddr::V6(ip) => (3, ip.to_string()),
+        IpAddr::V4(ip) if ip.is_private() => (0, IpAddr::V4(ip)),
+        IpAddr::V6(ip) if is_unique_local(ip) => (1, IpAddr::V6(ip)),
+        IpAddr::V4(ip) => (2, IpAddr::V4(ip)),
+        IpAddr::V6(ip) => (3, IpAddr::V6(ip)),
     }
 }
 
@@ -161,4 +183,27 @@ fn unique_socket_addrs(endpoints: Vec<SocketAddr>) -> Vec<SocketAddr> {
         .into_iter()
         .filter(|endpoint| seen.insert(*endpoint))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_public;
+    use std::net::IpAddr;
+
+    fn ip(value: &str) -> IpAddr {
+        value.parse().expect("valid ip")
+    }
+
+    #[test]
+    fn public_accepts_global_v4_and_v6_rejects_private_and_ula() {
+        // A cloud host's global NIC addresses — the whole point of fix: IPv6 counts.
+        assert!(is_public(ip("203.0.113.5")));
+        assert!(is_public(ip("2a01:4ff:2f0:296a::1")));
+        // Private / unique-local / loopback / link-local are not fleet-dialable.
+        assert!(!is_public(ip("10.0.0.1")));
+        assert!(!is_public(ip("192.168.1.1")));
+        assert!(!is_public(ip("fc00::1")));
+        assert!(!is_public(ip("fe80::1")));
+        assert!(!is_public(ip("127.0.0.1")));
+    }
 }
