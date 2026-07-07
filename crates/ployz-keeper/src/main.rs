@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{
-    DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec, InstallArtifactVersion,
-    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
+    AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec,
+    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
     NatsMachineMaterialPaths,
 };
 use ployz_core::nats_config::NatsUserSeed;
@@ -449,13 +449,18 @@ fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, String> {
         dns: env_dns_role(PLOYZ_DNS_ENV)?,
         machine_public_ip: local_core_machine_public_ip_from_env()?,
         machine_bootstrap_url: bootstrap_url,
-        machine_join_template_file: None,
+        machine_join_template_file: Some(default_machine_join_template_file()?),
         machine_join_cluster_name: cluster_name,
         machine_join_runtime_nats_url: runtime_nats_url,
         artifacts: manifest.install_artifacts()?,
     };
 
     ployz_keeper::cli::first_machine_install_target_from_spec(install)
+        .map_err(|error| error.to_string())
+}
+
+fn default_machine_join_template_file() -> Result<AbsoluteInstallPath, String> {
+    AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
         .map_err(|error| error.to_string())
 }
 
@@ -1130,8 +1135,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        InstalledUpdateUnit, installed_update_units, keeper_join_target,
-        read_cloud_founder_bootstrap_result,
+        InstalledUpdateUnit, default_machine_join_template_file, installed_update_units,
+        keeper_join_target, read_cloud_founder_bootstrap_result,
     };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
@@ -1144,6 +1149,16 @@ mod tests {
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
     use ployz_core::roles::InstallRolePolicy;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
+
+    #[test]
+    fn local_core_bootstrap_writes_machine_join_template_at_default_path() {
+        assert_eq!(
+            default_machine_join_template_file()
+                .expect("default machine join template path is valid")
+                .as_str(),
+            "/etc/ployz/machine-join-template.json"
+        );
+    }
 
     #[test]
     fn installed_update_units_discovers_nats_and_ployzd_units() {
