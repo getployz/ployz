@@ -30,7 +30,7 @@ use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::client::NatsMachineContainerRuntime;
 use ployzd::roles::machine::protocol::MachineContainerRunRpcRequest;
 use ployzd::roles::machine::service::{
-    start_machine_role_service, start_machine_role_service_with_public_ip,
+    start_machine_role_service,
 };
 
 mod support;
@@ -282,7 +282,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service_with_public_ip(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -367,7 +367,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service_with_public_ip(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -458,7 +458,7 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service_with_public_ip(
+    let machine_runtime = start_machine_role_service(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
@@ -560,7 +560,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));
     let edge_runner = ObservingContainerRunner::new(machine_id("edge_2"));
-    let core_machine_runtime = start_machine_role_service_with_public_ip(
+    let core_machine_runtime = start_machine_role_service(
         core_machine_client.clone(),
         machine_id("core_1"),
         core_runner.clone(),
@@ -568,7 +568,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         core_runner.clone(),
     )
     .await?;
-    let edge_machine_runtime = start_machine_role_service_with_public_ip(
+    let edge_machine_runtime = start_machine_role_service(
         edge_machine_client.clone(),
         machine_id("edge_2"),
         edge_runner.clone(),
