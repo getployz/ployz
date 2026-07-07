@@ -45,7 +45,7 @@ pub struct CloudBootstrapCommand {
 impl CloudBootstrapCommand {
     #[must_use]
     pub fn render(&self) -> String {
-        let mut bootstrap = String::from("sudo ployz-keeper bootstrap");
+        let mut bootstrap = String::from("sudo ployz-keeper bootstrap cloud");
         if let Some(host) = &self.cloud_host {
             bootstrap.push_str(&format!(" --cloud-host {}", shell_quote(host)));
         }
@@ -106,23 +106,27 @@ impl JoinBootstrapCommand {
             ));
         }
         env.push_str(&format!(
-            "PLOYZ_VERSION={} PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={}",
+            "PLOYZ_VERSION={} PLOYZ_NATS_URL={} PLOYZ_NATS_CA_FILE=\"$ca_file\" PLOYZ_JOIN_NKEY_SEED={}",
             shell_quote(&self.version),
             shell_quote(self.runtime_nats_url.as_str()),
-            shell_quote(&self.trusted_ca_b64),
             shell_quote(self.join_seed.secret()),
         ));
+        let keeper = format!(
+            "ca_file=\"$(mktemp)\"; trap 'rm -f \"$ca_file\"' EXIT; printf '%s' {} | base64 -d > \"$ca_file\"; {env} ployz-keeper bootstrap join --join-token {}",
+            shell_quote(&self.trusted_ca_b64),
+            shell_quote(self.join_token.as_str()),
+        );
 
         match &self.installer {
             BootstrapInstaller::BootstrapUrl(url) => format!(
-                "curl -fsSL -- {} | {env} sh -s -- --join-token {}",
+                "curl -fsSL -- {} | PLOYZ_VERSION={} sh && {keeper}",
                 shell_quote(url.as_str()),
-                shell_quote(self.join_token.as_str()),
+                shell_quote(&self.version),
             ),
             BootstrapInstaller::RemoteScript(path) => format!(
-                "{env} sh {} --join-token {}",
+                "PLOYZ_VERSION={} sh {} && {keeper}",
+                shell_quote(&self.version),
                 shell_quote(path),
-                shell_quote(self.join_token.as_str()),
             ),
         }
     }
@@ -167,11 +171,14 @@ impl FounderBootstrapCommand {
 
         match &self.installer {
             BootstrapInstaller::BootstrapUrl(url) => format!(
-                "curl -fsSL -- {} | {env} sh -s -- --first-machine",
+                "curl -fsSL -- {} | {env} sh && {env} ployz-keeper bootstrap core",
                 shell_quote(url.as_str()),
             ),
             BootstrapInstaller::RemoteScript(path) => {
-                format!("{env} sh {} --first-machine", shell_quote(path))
+                format!(
+                    "{env} sh {} && {env} ployz-keeper bootstrap core",
+                    shell_quote(path)
+                )
             }
         }
     }

@@ -40,7 +40,7 @@ consumes typed JSON from the shared SDK contract.
 Cloud adoption should require one simple command on the target machine:
 
 ```sh
-curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap
+curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap cloud
 ```
 
 That command is for users already SSHed into the machine. `ployz.sh` remains a
@@ -380,7 +380,7 @@ sequenceDiagram
   participant B as Browser Cloud UI
   participant N as Runtime TLS NATS
 
-  U->>K: ployz-keeper bootstrap
+  U->>K: ployz-keeper bootstrap cloud
   K->>K: local bootstrapped-machine preflight
   K->>C: create session (client, attempt id, machine facts)
   C-->>K: browser_url with user_code, session_secret, ttl

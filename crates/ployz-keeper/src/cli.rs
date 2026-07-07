@@ -13,7 +13,7 @@ use crate::nats_identity::{
     NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
-use crate::steps::{FirstMachineInstallTarget, JoinToken};
+use crate::steps::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 use clap::{Parser, Subcommand};
 use ployz_core::ids::OperationId;
@@ -39,7 +39,10 @@ pub struct KeeperBootstrap {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperBootstrapMode {
-    Interactive { cloud_host: Option<CloudHost> },
+    LocalGuidance,
+    Cloud { cloud_host: Option<CloudHost> },
+    Core,
+    Join { join_token: JoinToken },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,8 +149,8 @@ pub fn load_command(
         None => Ok(KeeperCommand::Start(load_startup_from_path(
             parsed.join_token_file,
         )?)),
-        Some(KeeperSubcommand::Bootstrap { cloud_host }) => {
-            Ok(KeeperCommand::Bootstrap(load_bootstrap(cloud_host)))
+        Some(KeeperSubcommand::Bootstrap { command }) => {
+            Ok(KeeperCommand::Bootstrap(load_bootstrap(command)))
         }
         Some(KeeperSubcommand::FirstMachineInstall { spec }) => {
             let spec = read_first_machine_install_spec(spec)?;
@@ -195,9 +198,10 @@ struct KeeperCli {
 #[derive(Debug, Subcommand)]
 enum KeeperSubcommand {
     Bootstrap {
-        #[arg(long, value_name = "host-or-https-url")]
-        cloud_host: Option<CloudHost>,
+        #[command(subcommand)]
+        command: Option<KeeperBootstrapSubcommand>,
     },
+    #[command(hide = true)]
     FirstMachineInstall {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
@@ -210,12 +214,54 @@ enum KeeperSubcommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum KeeperBootstrapSubcommand {
+    Core,
+    Join {
+        #[arg(long, value_name = "token")]
+        join_token: CliJoinToken,
+    },
+    Cloud {
+        #[arg(long, value_name = "host-or-https-url")]
+        cloud_host: Option<CloudHost>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliJoinToken(JoinToken);
+
+impl std::str::FromStr for CliJoinToken {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        JoinToken::try_new(value)
+            .map(Self)
+            .map_err(|error| match error {
+                JoinMaterialError::EmptyJoinToken => "join token is empty".to_owned(),
+                JoinMaterialError::EmptyClusterName
+                | JoinMaterialError::EmptyJoinMaterialValue { .. }
+                | JoinMaterialError::InvalidJoinMaterialValue { .. } => {
+                    "join token is invalid".to_owned()
+                }
+            })
+    }
+}
+
 fn parse_operation_id(value: &str) -> Result<OperationId, String> {
     OperationId::try_new(value).map_err(|error| error.to_string())
 }
 
-fn load_bootstrap(cloud_host: Option<CloudHost>) -> KeeperBootstrap {
-    let mode = KeeperBootstrapMode::Interactive { cloud_host };
+fn load_bootstrap(command: Option<KeeperBootstrapSubcommand>) -> KeeperBootstrap {
+    let mode = match command {
+        None => KeeperBootstrapMode::LocalGuidance,
+        Some(KeeperBootstrapSubcommand::Core) => KeeperBootstrapMode::Core,
+        Some(KeeperBootstrapSubcommand::Join { join_token }) => KeeperBootstrapMode::Join {
+            join_token: join_token.0,
+        },
+        Some(KeeperBootstrapSubcommand::Cloud { cloud_host }) => {
+            KeeperBootstrapMode::Cloud { cloud_host }
+        }
+    };
     KeeperBootstrap { mode }
 }
 
@@ -448,6 +494,7 @@ mod tests {
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
         KeeperStartup, KeeperSubstrateUpdate, SpecSource, load_command,
     };
+    use crate::steps::JoinToken;
 
     fn load_startup(
         args: impl IntoIterator<Item = OsString>,
@@ -477,21 +524,22 @@ mod tests {
     }
 
     #[test]
-    fn parser_accepts_interactive_bootstrap() {
+    fn parser_accepts_bare_bootstrap_as_local_guidance() {
         let command = load_command(["bootstrap".into()]).expect("bootstrap command is valid");
 
         assert_eq!(
             command,
             KeeperCommand::Bootstrap(KeeperBootstrap {
-                mode: KeeperBootstrapMode::Interactive { cloud_host: None },
+                mode: KeeperBootstrapMode::LocalGuidance,
             })
         );
     }
 
     #[test]
-    fn parser_accepts_interactive_bootstrap_with_custom_cloud_host() {
+    fn parser_accepts_cloud_bootstrap_with_custom_cloud_host() {
         let command = load_command([
             "bootstrap".into(),
+            "cloud".into(),
             "--cloud-host".into(),
             "cloud.example.com".into(),
         ])
@@ -500,8 +548,41 @@ mod tests {
         assert_eq!(
             command,
             KeeperCommand::Bootstrap(KeeperBootstrap {
-                mode: KeeperBootstrapMode::Interactive {
+                mode: KeeperBootstrapMode::Cloud {
                     cloud_host: Some(CloudHost::try_new("https://cloud.example.com").unwrap()),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_core_bootstrap() {
+        let command =
+            load_command(["bootstrap".into(), "core".into()]).expect("bootstrap command is valid");
+
+        assert_eq!(
+            command,
+            KeeperCommand::Bootstrap(KeeperBootstrap {
+                mode: KeeperBootstrapMode::Core,
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_join_bootstrap() {
+        let command = load_command([
+            "bootstrap".into(),
+            "join".into(),
+            "--join-token".into(),
+            "join_once_123".into(),
+        ])
+        .expect("bootstrap command is valid");
+
+        assert_eq!(
+            command,
+            KeeperCommand::Bootstrap(KeeperBootstrap {
+                mode: KeeperBootstrapMode::Join {
+                    join_token: JoinToken::try_new("join_once_123").unwrap(),
                 },
             })
         );
@@ -512,6 +593,7 @@ mod tests {
         assert!(matches!(
             load_command([
                 "bootstrap".into(),
+                "cloud".into(),
                 "--cloud-host".into(),
                 "http://cloud.example.com".into(),
             ]),

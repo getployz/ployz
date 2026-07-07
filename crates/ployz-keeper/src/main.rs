@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::{
-    InstallArtifactVersion, MachineJoinRuntimeNatsUrl, NatsMachineMaterialPaths,
+    DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec, InstallArtifactVersion,
+    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
+    NatsMachineMaterialPaths,
 };
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::plan_joined_machine_process_set;
+use ployz_core::roles::{DnsRole, GatewayRole, plan_joined_machine_process_set};
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use ployz_keeper::cli::{
@@ -24,7 +26,10 @@ use ployz_keeper::join_executor::{
     execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
-use ployz_keeper::release_manifest::{ReleaseManifest, release_manifest_url};
+use ployz_keeper::release_manifest::{
+    ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
+    release_manifest_url,
+};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
     FirstMachineInstallTarget, HostPrerequisite, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
@@ -48,6 +53,13 @@ const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 const PLOYZ_JOIN_NKEY_SEED_ENV: &str = "PLOYZ_JOIN_NKEY_SEED";
 const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
+const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
+const PLOYZ_GATEWAY_ENV: &str = "PLOYZ_GATEWAY";
+const PLOYZ_DNS_ENV: &str = "PLOYZ_DNS";
+const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
+const PLOYZ_MACHINE_JOIN_CLUSTER_NAME_ENV: &str = "PLOYZ_MACHINE_JOIN_CLUSTER_NAME";
+const PLOYZ_MACHINE_JOIN_NATS_URL_ENV: &str = "PLOYZ_MACHINE_JOIN_NATS_URL";
+const PLOYZ_RELEASE_MANIFEST_URL_ENV: &str = "PLOYZ_RELEASE_MANIFEST_URL";
 const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounded redeem retry while the core mints this machine's credential:
 /// the join token TTL is 600 seconds, so stop well within it.
@@ -65,7 +77,7 @@ fn main() -> ExitCode {
             if let Some(join) = &startup.join {
                 let stdout = std::io::stdout();
                 let mut recorder = KeeperTextRecorder::new(stdout.lock());
-                let execution = run_join(&join.token, join.file.clone(), &mut recorder);
+                let execution = run_startup_join(&join.token, join.file.clone(), &mut recorder);
                 match execution.terminal {
                     KeeperPlanTerminal::Completed => ExitCode::SUCCESS,
                     KeeperPlanTerminal::Failed(failure) => {
@@ -334,54 +346,154 @@ fn restart_installed_update_units(
 
 fn run_bootstrap_command(bootstrap: KeeperBootstrap) -> ExitCode {
     match bootstrap.mode {
-        KeeperBootstrapMode::Interactive { cloud_host } => {
-            let host = match choose_cloud_host(cloud_host) {
-                Ok(Some(host)) => host,
-                Ok(None) => {
-                    eprintln!("Use local CLI setup from your workstation:");
-                    eprintln!("  ployzctl machine init USER@HOST");
-                    return ExitCode::FAILURE;
-                }
-                Err(message) => {
-                    eprintln!("{message}");
-                    return ExitCode::FAILURE;
-                }
-            };
+        KeeperBootstrapMode::LocalGuidance => {
+            eprintln!("Use local CLI setup from your workstation:");
+            eprintln!("  ployzctl machine init USER@HOST");
+            eprintln!("Or opt in to Cloud:");
+            eprintln!("  sudo ployz-keeper bootstrap cloud");
+            ExitCode::FAILURE
+        }
+        KeeperBootstrapMode::Cloud { cloud_host } => {
+            let host = choose_cloud_host(cloud_host);
             cloud_bootstrap_runner::run_interactive_cloud_bootstrap(host.as_str())
         }
+        KeeperBootstrapMode::Core => run_local_core_bootstrap(),
+        KeeperBootstrapMode::Join { join_token } => run_bootstrap_join(&join_token),
     }
 }
 
 fn choose_cloud_host(
     cloud_host: Option<ployz_keeper::cli::CloudHost>,
-) -> Result<Option<ployz_keeper::cli::CloudHost>, String> {
-    if let Some(host) = cloud_host {
-        return Ok(Some(host));
-    }
+) -> ployz_keeper::cli::CloudHost {
+    cloud_host.unwrap_or_default()
+}
 
-    println!("Ployz bootstrap");
-    println!("1. Connect to Ployz Cloud");
-    println!("2. Connect to custom Cloud");
-    println!("3. Use local CLI setup");
-    let mut choice = String::new();
-    std::io::stdin()
-        .read_line(&mut choice)
-        .map_err(|error| format!("failed to read bootstrap choice: {error}"))?;
-    match choice.trim() {
-        "" | "1" => Ok(Some(Default::default())),
-        "2" => {
-            println!("Cloud host:");
-            let mut host = String::new();
-            std::io::stdin()
-                .read_line(&mut host)
-                .map_err(|error| format!("failed to read cloud host: {error}"))?;
-            host.trim()
-                .parse()
-                .map(Some)
-                .map_err(|error| format!("{error}"))
+fn run_local_core_bootstrap() -> ExitCode {
+    let target = match local_core_target_from_env() {
+        Ok(target) => target,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
         }
-        "3" => Ok(None),
-        other => Err(format!("unknown bootstrap choice: {other}")),
+    };
+    let machine_id = target.machine_id.clone();
+    let nats_material = target.nats_material.clone();
+    let runtime_nats_url = target.machine_join_runtime_nats_url().clone();
+    let stdout = std::io::stdout();
+    let mut recorder = KeeperTextRecorder::new(stdout.lock());
+    let execution = run_first_machine_install(target, &mut recorder);
+    match execution.terminal {
+        KeeperPlanTerminal::Completed => {
+            drop(recorder);
+            match print_first_machine_bootstrap_result(
+                &machine_id,
+                &runtime_nats_url,
+                &nats_material,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    eprintln!("{message}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        KeeperPlanTerminal::Failed(failure) => {
+            eprintln!(
+                "ployz-keeper bootstrap core failed: {}",
+                failure_summary(&failure)
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, String> {
+    let manifest = load_local_release_manifest()?;
+    let machine_id = env_machine_id(PLOYZ_MACHINE_ID_ENV)?;
+    let runtime_nats_url = env_runtime_nats_url(PLOYZ_MACHINE_JOIN_NATS_URL_ENV)?;
+    let cluster_name = env_cluster_name(PLOYZ_MACHINE_JOIN_CLUSTER_NAME_ENV)?;
+    let bootstrap_url = optional_env(PLOYZ_MACHINE_BOOTSTRAP_URL_ENV)
+        .map(MachineBootstrapUrl::try_new)
+        .transpose()
+        .map_err(|error| format!("{PLOYZ_MACHINE_BOOTSTRAP_URL_ENV} is invalid: {error}"))?
+        .or_else(|| MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL).ok());
+
+    let install = FirstMachineInstallSpec {
+        machine_id,
+        gateway: env_gateway_role(PLOYZ_GATEWAY_ENV)?,
+        dns: env_dns_role(PLOYZ_DNS_ENV)?,
+        machine_public_ip: load_machine_public_ip_from_env().map_err(|error| format!("{error}"))?,
+        machine_bootstrap_url: bootstrap_url,
+        machine_join_template_file: None,
+        machine_join_cluster_name: cluster_name,
+        machine_join_runtime_nats_url: runtime_nats_url,
+        artifacts: manifest.install_artifacts()?,
+    };
+
+    ployz_keeper::cli::first_machine_install_target_from_spec(install)
+        .map_err(|error| error.to_string())
+}
+
+fn load_local_release_manifest() -> Result<ReleaseManifest, String> {
+    let url = optional_env(PLOYZ_RELEASE_MANIFEST_URL_ENV)
+        .or_else(|| persisted_release_manifest_url(Path::new("/etc/ployz/release.env")).ok())
+        .unwrap_or_else(default_release_manifest_url);
+    let contents = get_text_url(&url)
+        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    ReleaseManifest::parse(&contents)
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn env_machine_id(name: &str) -> Result<MachineId, String> {
+    let value = optional_env(name).ok_or_else(|| format!("{name} is required"))?;
+    MachineId::try_new(value.clone())
+        .map_err(|error| format!("{name}={value:?} is invalid: {error}"))
+}
+
+fn env_runtime_nats_url(name: &str) -> Result<MachineJoinRuntimeNatsUrl, String> {
+    let value = optional_env(name).ok_or_else(|| format!("{name} is required"))?;
+    MachineJoinRuntimeNatsUrl::try_new(value.clone())
+        .map_err(|error| format!("{name}={value:?} is invalid: {error}"))
+}
+
+fn env_cluster_name(name: &str) -> Result<MachineJoinClusterName, String> {
+    let value = optional_env(name).ok_or_else(|| format!("{name} is required"))?;
+    MachineJoinClusterName::try_new(value.clone())
+        .map_err(|error| format!("{name}={value:?} is invalid: {error}"))
+}
+
+fn env_gateway_role(name: &str) -> Result<GatewayRole, String> {
+    match optional_env(name).as_deref() {
+        None | Some("install") => Ok(GatewayRole::Install),
+        Some("skip") => Ok(GatewayRole::Skip),
+        Some(value) => Err(format!("{name}={value:?} must be install or skip")),
+    }
+}
+
+fn env_dns_role(name: &str) -> Result<DnsRole, String> {
+    match optional_env(name).as_deref() {
+        None | Some("install") => Ok(DnsRole::Install),
+        Some("skip") => Ok(DnsRole::Skip),
+        Some(value) => Err(format!("{name}={value:?} must be install or skip")),
+    }
+}
+
+fn run_bootstrap_join(join_token: &JoinToken) -> ExitCode {
+    let stdout = std::io::stdout();
+    let mut recorder = KeeperTextRecorder::new(stdout.lock());
+    let execution = run_join_with_consumer(join_token, CloudJoinTokenConsumer, &mut recorder);
+    match execution.terminal {
+        KeeperPlanTerminal::Completed => ExitCode::SUCCESS,
+        KeeperPlanTerminal::Failed(failure) => {
+            eprintln!(
+                "ployz-keeper bootstrap join failed: {}",
+                failure_summary(&failure)
+            );
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -433,14 +545,25 @@ fn read_result_file(path: &std::path::Path, label: &str) -> Result<String, Strin
     })
 }
 
-fn run_join(
+fn run_startup_join(
     token: &JoinToken,
     join_token_file: std::path::PathBuf,
     recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
 ) -> ployz_keeper::executor::KeeperPlanExecution {
+    run_join_with_consumer(
+        token,
+        StartupJoinTokenConsumer { join_token_file },
+        recorder,
+    )
+}
+
+fn run_join_with_consumer(
+    token: &JoinToken,
+    mut token_consumer: impl KeeperJoinTokenConsumer,
+    recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
+) -> ployz_keeper::executor::KeeperPlanExecution {
     let mut redeemer = JoinRedeemer::from_env();
     let mut reporter = JoinReporter::from_env(token.clone());
-    let mut token_consumer = StartupJoinTokenConsumer { join_token_file };
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
