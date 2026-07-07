@@ -39,7 +39,7 @@ pub fn parse_install_line(core: &CoreContext, accepted: MachineAddAccepted) -> I
     };
     InstallLine {
         nats_url: install_line_env(install, "PLOYZ_NATS_URL"),
-        nats_ca_b64: install_line_env(install, "PLOYZ_NATS_CA_B64"),
+        nats_ca_b64: install_line_ca_b64(install),
         join_seed: install_line_env(install, "PLOYZ_JOIN_NKEY_SEED"),
         join_token: token.trim().to_owned(),
     }
@@ -50,6 +50,17 @@ pub fn parse_install_line(core: &CoreContext, accepted: MachineAddAccepted) -> I
 fn install_line_env(line: &str, name: &str) -> String {
     let Some((_, rest)) = line.split_once(&format!("{name}=")) else {
         panic!("install line is missing {name}: {line}");
+    };
+    let value = rest.split_whitespace().next().unwrap_or_default();
+    value
+        .trim_start_matches('\'')
+        .trim_end_matches('\'')
+        .to_owned()
+}
+
+fn install_line_ca_b64(line: &str) -> String {
+    let Some((_, rest)) = line.split_once("printf '%s' ") else {
+        panic!("install line is missing CA material: {line}");
     };
     let value = rest.split_whitespace().next().unwrap_or_default();
     value
@@ -132,12 +143,16 @@ pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &Ins
         .exec_sh(
             edge,
             &format!(
-                "PLOYZ_KEEPER_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz-keeper \
+                "ca_file=\"$(mktemp)\"; \
+                 trap 'rm -f \"$ca_file\"' EXIT; \
+                 printf '%s' {} | base64 -d > \"$ca_file\"; \
+                 PLOYZ_KEEPER_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz-keeper \
                  PLOYZ_KEEPER_SHA256={keeper_sha} \
-                 PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} \
-                 sh /tmp/ployz.sh --join-token {}",
-                shell_quote(&install.nats_url),
+                 sh /tmp/ployz.sh && \
+                 PLOYZ_NATS_URL={} PLOYZ_NATS_CA_FILE=\"$ca_file\" PLOYZ_JOIN_NKEY_SEED={} \
+                 ployz-keeper bootstrap join --join-token {}",
                 shell_quote(&install.nats_ca_b64),
+                shell_quote(&install.nats_url),
                 shell_quote(&install.join_seed),
                 shell_quote(&install.join_token),
             ),

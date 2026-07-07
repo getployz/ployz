@@ -44,11 +44,9 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     assert!(output.contains("machine machine_2"));
     assert!(output.contains("join-token join_once_123"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
-    assert!(output.contains(
-        " | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64="
-    ));
+    assert!(output.contains(" | PLOYZ_VERSION='0.1.0' sh && ca_file=\"$(mktemp)\""));
     assert!(output.contains(&format!(
-        "PLOYZ_JOIN_NKEY_SEED='{}' sh -s -- ",
+        "PLOYZ_JOIN_NKEY_SEED='{}' ployz-keeper bootstrap join",
         TEST_JOIN_SEED
     )));
     assert!(output.contains("--join-token 'join_once_123'"));
@@ -70,9 +68,7 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains("join-token join_once_123"));
-    assert!(output.contains(
-        " | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7423' PLOYZ_NATS_CA_B64="
-    ));
+    assert!(output.contains("PLOYZ_NATS_URL='nats://127.0.0.1:7423'"));
     assert!(output.contains("--join-token 'join_once_123'"));
 }
 
@@ -111,6 +107,7 @@ fn machine_add_shell_quotes_join_material() {
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh/bootstrap?x='\\''quoted'\\'''"));
     assert!(output.contains("PLOYZ_VERSION='0.1.0'"));
     assert!(output.contains("PLOYZ_NATS_URL='nats://127.0.0.1:7422'"));
+    assert!(output.contains("printf '%s'"));
     assert!(output.contains("--join-token 'join'\\''quoted'\\'''"));
 }
 
@@ -475,6 +472,9 @@ fn ssh_commands_pass_destination_and_remote_command() {
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-T",
             "root@203.0.113.10",
             "hostname",
         ]
@@ -831,7 +831,7 @@ fn cloud_bootstrap_command_renders_tokenless_interactive_command() {
 
     assert_eq!(
         command.render(),
-        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz-keeper bootstrap"
+        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz-keeper bootstrap cloud"
     );
 }
 
@@ -848,7 +848,7 @@ fn cloud_bootstrap_command_renders_custom_cloud_host_after_installer_pipe() {
 
     assert_eq!(
         rendered,
-        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz-keeper bootstrap --cloud-host 'cloud.example.com'"
+        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz-keeper bootstrap cloud --cloud-host 'cloud.example.com'"
     );
 }
 
@@ -908,7 +908,7 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
-        "sh -s -- --first-machine",
+        "ployz-keeper bootstrap core",
     ] {
         assert!(
             rendered.contains(expected),
@@ -941,7 +941,7 @@ fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
 
     assert!(rendered.contains("PLOYZ_CHANNEL='alpha'"));
     assert!(!rendered.contains("PLOYZ_VERSION="));
-    assert!(rendered.contains("sh -s -- --first-machine"));
+    assert!(rendered.contains("ployz-keeper bootstrap core"));
 }
 
 // --- Remote install command rendering (U6) ---
@@ -967,7 +967,8 @@ fn remote_join_install_command_matches_the_printed_install_line() {
     let scripted = output.install_command(&MachineAddInstaller::RemoteScript(
         "/tmp/ployz-install.sh".to_owned(),
     ));
-    assert!(scripted.contains("sh '/tmp/ployz-install.sh' --join-token 'join_once_123'"));
+    assert!(scripted.contains("sh '/tmp/ployz-install.sh' && ca_file=\"$(mktemp)\""));
+    assert!(scripted.contains("ployz-keeper bootstrap join --join-token 'join_once_123'"));
     assert!(!scripted.contains("curl"));
 }
 
