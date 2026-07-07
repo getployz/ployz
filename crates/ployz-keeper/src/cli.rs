@@ -332,6 +332,10 @@ pub fn first_machine_install_target_from_spec(
         nats_server_artifact.install_path().to_path_buf(),
         PathBuf::from(nats_config.as_str()),
     )?;
+    // Magic init: a first machine must be publicly reachable to serve as a core, so if
+    // the operator didn't pass an address, self-discover the machine's public interface
+    // address. Binding the NATS listener external and the cert SANs both follow from it.
+    let machine_public_ip = machine_public_ip.or_else(discover_machine_public_ip);
     let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
     let recovery_secret = resolve_recovery_secret();
@@ -367,6 +371,18 @@ pub fn first_machine_install_target_from_spec(
         target = target.with_machine_public_ip(public_ip);
     }
     Ok(target)
+}
+
+/// The machine's first public interface address (a syscall, no network). Used to bind
+/// the first-machine NATS listener when the operator did not pass one. If a public
+/// address is not on the NIC (e.g. a 1:1 NAT), discovery finds nothing and the
+/// operator supplies `--public-ip`.
+fn discover_machine_public_ip() -> Option<std::net::IpAddr> {
+    local_ip_address::list_afinet_netifas()
+        .ok()?
+        .into_iter()
+        .map(|(_, ip)| ip)
+        .find(|ip| ployz_core::reachability::is_public(*ip))
 }
 
 /// The operator's cluster recovery secret: `PLOYZ_RECOVERY_SECRET` if set, else

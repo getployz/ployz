@@ -2362,6 +2362,7 @@ dependencies = [
  "chacha20poly1305",
  "clap",
  "gethostname",
+ "local-ip-address",
  "nuid",
  "ployz-core",
  "ployz-nats",
