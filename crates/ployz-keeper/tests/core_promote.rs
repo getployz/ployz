@@ -35,6 +35,7 @@ fn promote_target() -> CorePromoteTarget {
         ployzd_artifact: first_machine.ployzd_artifact.clone(),
         nats_identity: first_machine.nats_identity.clone(),
         recovery_key_wrapped: first_machine.recovery_key_wrapped.clone(),
+        core_seeds_wrapped: first_machine.core_seeds_wrapped.clone(),
         nats_material: first_machine.nats_material.clone(),
         machine_public_ip: Some("203.0.113.9".parse().expect("valid ip")),
         nats_server_unit: first_machine.nats_server_unit.clone(),

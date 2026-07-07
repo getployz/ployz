@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::MachineId;
-use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey};
+use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
     NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
@@ -189,6 +189,7 @@ pub struct NatsTlsMaterialTarget {
     material: NatsMachineMaterialPaths,
     identity: ClusterNatsIdentity,
     recovery_key_wrapped: WrappedCaKey,
+    core_seeds_wrapped: WrappedCoreSeeds,
 }
 
 impl NatsTlsMaterialTarget {
@@ -197,11 +198,13 @@ impl NatsTlsMaterialTarget {
         material: NatsMachineMaterialPaths,
         identity: &ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
+        core_seeds_wrapped: WrappedCoreSeeds,
     ) -> Self {
         Self {
             material,
             identity: identity.clone(),
             recovery_key_wrapped,
+            core_seeds_wrapped,
         }
     }
 
@@ -233,6 +236,11 @@ impl NatsTlsMaterialTarget {
     #[must_use]
     pub fn recovery_key_wrapped(&self) -> &WrappedCaKey {
         &self.recovery_key_wrapped
+    }
+
+    #[must_use]
+    pub fn core_seeds_wrapped(&self) -> &WrappedCoreSeeds {
+        &self.core_seeds_wrapped
     }
 }
 

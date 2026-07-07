@@ -277,6 +277,14 @@ impl NatsMachineMaterialPaths {
         self.state_dir.join("ca-recovery.key")
     }
 
+    /// The core principal seeds, wrapped with the operator recovery secret (ADR 0031).
+    /// Persisted beside the recovery key so a promotion can reuse them and so a later
+    /// `init join-template` can read them.
+    #[must_use]
+    pub fn core_seeds_file(&self) -> PathBuf {
+        self.state_dir.join("core-seeds.key")
+    }
+
     #[must_use]
     pub fn controller_seed_file(&self) -> PathBuf {
         self.state_dir.join("controller.seed")

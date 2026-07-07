@@ -645,6 +645,7 @@ fn resolve_core_promote_target(
         ployzd_artifact,
         nats_identity,
         ployz_core::install::WrappedCaKey::new(wrapped),
+        wrapped_seeds,
         Some(machine_public_ip),
         mirror_path,
     );

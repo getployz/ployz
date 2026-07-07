@@ -874,6 +874,7 @@ pub struct CorePromoteTarget {
     pub ployzd_artifact: ArtifactTarget,
     pub nats_identity: ClusterNatsIdentity,
     pub recovery_key_wrapped: WrappedCaKey,
+    pub core_seeds_wrapped: WrappedCoreSeeds,
     pub nats_material: NatsMachineMaterialPaths,
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
@@ -884,13 +885,17 @@ impl CorePromoteTarget {
     /// Assemble a promote target from the resolved inputs, constructing the core
     /// material paths, the `nats-server` unit, and the Control role environment
     /// (pointed at `seed_from_mirror`) the same way first-machine install does.
+    // ponytail: the distinct resolved promotion inputs; bundling into an intermediate
+    // struct just for the lint would be a sparse option bag.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn assemble(
         machine_id: MachineId,
         nats_server_artifact: ArtifactTarget,
         ployzd_artifact: ArtifactTarget,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
+        core_seeds_wrapped: WrappedCoreSeeds,
         machine_public_ip: Option<IpAddr>,
         seed_from_mirror: PathBuf,
     ) -> Self {
@@ -917,6 +922,7 @@ impl CorePromoteTarget {
             ployzd_artifact,
             nats_identity,
             recovery_key_wrapped,
+            core_seeds_wrapped,
             nats_material,
             machine_public_ip,
             nats_server_unit,
@@ -949,6 +955,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> KeeperStepPlan {
             target.nats_material.clone(),
             &target.nats_identity,
             target.recovery_key_wrapped.clone(),
+            target.core_seeds_wrapped.clone(),
         )),
         KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),
@@ -997,6 +1004,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperSt
             target.nats_material.clone(),
             &target.nats_identity,
             target.recovery_key_wrapped.clone(),
+            target.core_seeds_wrapped.clone(),
         )),
         KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),

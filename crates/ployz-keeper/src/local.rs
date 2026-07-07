@@ -276,6 +276,12 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
             &nats_file_name(&target.material().recovery_key_file()),
             FileMode::Secret0600,
             target.recovery_key_wrapped().as_bytes(),
+        )?;
+        write_durable_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().core_seeds_file()),
+            FileMode::Secret0600,
+            target.core_seeds_wrapped().as_bytes(),
         )
     }
 
