@@ -47,6 +47,20 @@ pub async fn load_dns_projection_input_from_nats(
         .filter(|observation| gateway_machine_ids.contains(&observation.machine_id))
         .collect::<Vec<_>>();
 
+    // A serving gateway with no control endpoint is a partial discovery (its public-IP
+    // echo timed out); emitting the resulting empty answer set would replace
+    // last-known-good DNS with nothing. Report unavailable so the projection preserves
+    // the previous usable answers until a gateway advertises an endpoint again.
+    if !gateway_machine_ids.is_empty()
+        && !gateway_answers
+            .iter()
+            .any(|observation| !observation.control_endpoints.is_empty())
+    {
+        return Err(DnsSourceError::Unavailable {
+            message: "serving gateways have not advertised a control endpoint yet".to_owned(),
+        });
+    }
+
     Ok(dns_projection_input_from_state(
         intent.route_bindings,
         gateway_answers,
