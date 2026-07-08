@@ -19,7 +19,7 @@ use crate::roles::gateway::route_table::{
     GatewayProjector, GatewayProjectorTick, GatewayServingState,
 };
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
-use crate::roles::machine::process::mirrored_server_pool;
+use crate::roles::machine::process::{mirrored_server_pool, start_mirrored_server_pool_refresh};
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
@@ -101,17 +101,27 @@ pub async fn start_gateway_process(
     )
     .await
     .map_err(GatewayProcessError::AwaitCredentials)?;
-    let pool = mirrored_server_pool(&config.nats.seed_file, &connect.url);
+    let seed_file = config.nats.seed_file.clone();
+    let seed = connect.url.clone();
+    let pool = mirrored_server_pool(&seed_file, &seed);
     let client = connect_authenticated_pool(&connect, &pool, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(GatewayProcessError::ConnectNats)?;
-    start_gateway_process_with_client(
-        client,
+    let mut runtime = start_gateway_process_with_client(
+        client.clone(),
         GATEWAY_REFRESH_INTERVAL,
         config.listen_addr,
         config.machine_id.clone(),
     )
-    .await
+    .await?;
+    runtime.tasks.push(start_mirrored_server_pool_refresh(
+        client,
+        seed_file,
+        seed,
+        GATEWAY_NATS_CONNECT_TIMEOUT,
+        runtime.shutdown.subscribe(),
+    ));
+    Ok(runtime)
 }
 
 pub async fn start_gateway_process_with_client(

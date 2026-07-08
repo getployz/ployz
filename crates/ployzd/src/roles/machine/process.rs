@@ -24,10 +24,10 @@ use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -225,6 +225,25 @@ pub(crate) fn mirrored_server_pool(seed_file: &Path, seed: &NatsClientUrl) -> Ve
         Some(snapshot) => candidate_server_pool(&snapshot, seed),
         None => vec![seed.as_str().to_owned()],
     }
+}
+
+pub(crate) fn start_mirrored_server_pool_refresh(
+    client: NatsClient,
+    seed_file: PathBuf,
+    seed: NatsClientUrl,
+    interval: Duration,
+    mut shutdown: broadcast::Receiver<()>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(interval) => {
+                    let _ = client.set_server_pool(mirrored_server_pool(&seed_file, &seed)).await;
+                }
+                _ = shutdown.recv() => break,
+            }
+        }
+    })
 }
 
 /// Like [`candidate_server_pool`] but with the configured seed deprioritized to
