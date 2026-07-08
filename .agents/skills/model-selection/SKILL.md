@@ -18,8 +18,10 @@ Rankings are higher-is-better. Cost reflects what the user actually pays, not li
 
 - Treat these as defaults, not limits. Override them when output quality demands it. If a cheaper model's output does not meet the bar, rerun or redo the work with a smarter model without asking.
 - Use cost as a tie-breaker only. For anything that ships, resolve conflicts as intelligence > taste > cost.
-- Use `gpt-5.5` for bulk or mechanical work: clear-spec implementation, data analysis, and migrations. It is very cheap and token efficient.
+- Default ALL implementation to `gpt-5.5` — including bug fixes, correctness fixes, and refactors — whenever the task has a written spec: a plan doc, an issue, or a review finding with file:line references. A reviewed finding IS a clear spec. Do not route implementation to Claude models because the bug is "subtle"; subtlety was the reviewer's job, the fix is execution.
 - Require taste >= 7 for user-facing work: UI, copy, and API design.
+- Claude models (`fable-5`, `opus-4.8`) implement only when: (a) `gpt-5.5`'s output failed a correctness review, or (b) the task has no written spec and requires taste >= 7 (UI, copy, API design).
+- After any `gpt-5.5` implementation batch, run a Claude review pass (`fable-5` or `opus-4.8`) for correctness before reporting done. Codex writes, Claude verifies.
 - Use `fable-5` or `opus-4.8` for reviews of plans and implementations. Add `gpt-5.5` only as an extra independent perspective.
 - Never use Haiku.
 
@@ -29,7 +31,8 @@ Rankings are higher-is-better. Cost reflects what the user actually pays, not li
 - Avoid custom Bash wrappers. Use the plugin's built-in tools and skills.
 - Use `/codex:review` for non-destructive, read-only code quality assessment. It supports `--base <ref>` for branch analysis.
 - Use `/codex:adversarial-review` for skeptical design review that pressure-tests tradeoffs, auth, and reliability. Append custom focus text to steer the review.
-- Use `/codex:rescue` to subcontract active debugging, multi-file refactoring, or implementation loops to Codex when a second pass is needed.
+- Use `/codex:rescue` as the default implementation path, not just for second passes.
+- For parallel fix batches, launch multiple `/codex:rescue` tasks with explicit disjoint file lists, then one Claude review over the combined diff.
 - Use `/codex:status`, `/codex:result`, and `/codex:cancel` to check, fetch, or abort asynchronous jobs when using `--background` on heavy tasks.
 - Do not invoke `/codex:*` commands through Claude's `Skill(...)` tool. Run them as Claude Code slash commands; `Skill(codex:review)` fails because that plugin skill disables model invocation.
 - Run Claude models (`sonnet-5`, `opus-4.8`, `fable-5`) through the Agent/Workflow `model` parameter.
