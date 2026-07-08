@@ -18,9 +18,10 @@ use std::time::{Duration, Instant};
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start().await;
-    let runtime = start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
-        .await
-        .expect("dns runtime starts before sources exist");
+    let runtime =
+        start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10), None)
+            .await
+            .expect("dns runtime starts before sources exist");
 
     wait_until(Duration::from_secs(2), || {
         matches!(
@@ -37,9 +38,10 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
 async fn dns_process_applies_route_changes_on_next_poll() {
     let nats = TestNats::start().await;
     let _intent = nats.start_intent().await;
-    let runtime = start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10))
-        .await
-        .expect("dns runtime starts");
+    let runtime =
+        start_dns_process_with_client(nats.dns_client.clone(), Duration::from_millis(10), None)
+            .await
+            .expect("dns runtime starts");
     wait_until(Duration::from_secs(2), || {
         runtime.health().last_attempt.is_some()
     })
@@ -103,6 +105,7 @@ impl TestNats {
     async fn start_intent(&self) -> RunningIntentService {
         start_intent_service(
             self.connected.controller.clone(),
+            machine_id("machine_a"),
             MachineRosterStore::new(
                 ployzd::core_store::CoreStore::open_in_memory()
                     .await

@@ -60,7 +60,7 @@ impl PingoraRouteRegistry {
         *self
             .inner
             .write()
-            .expect("pingora route registry lock is not poisoned") = routes;
+            .map_err(|_| PingoraRouteRegistryError::LockPoisoned)? = routes;
         Ok(())
     }
 
@@ -68,7 +68,7 @@ impl PingoraRouteRegistry {
     pub fn backend_count(&self, target: &RouteTarget) -> usize {
         self.inner
             .read()
-            .expect("pingora route registry lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(target)
             .map_or(0, |pool| pool.backend_count)
     }
@@ -81,7 +81,9 @@ impl PingoraRouteRegistry {
         let pool = self
             .inner
             .read()
-            .expect("pingora route registry lock is not poisoned")
+            .map_err(|_| PingoraRouteSelectionError::LockPoisoned {
+                target: target.clone(),
+            })?
             .get(target)
             .cloned()
             .ok_or_else(|| PingoraRouteSelectionError::NoRoute {
@@ -104,13 +106,12 @@ impl PingoraRouteRegistry {
     }
 
     pub async fn run_health_checks(&self) {
-        let pools = self
-            .inner
-            .read()
-            .expect("pingora route registry lock is not poisoned")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let pools = {
+            let Ok(routes) = self.inner.read() else {
+                return;
+            };
+            routes.values().cloned().collect::<Vec<_>>()
+        };
         for pool in pools {
             pool.load_balancer
                 .backends()
@@ -152,6 +153,7 @@ impl PingoraRoutePool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PingoraRouteRegistryError {
     InvalidBackendAddress { message: String },
+    LockPoisoned,
 }
 
 impl fmt::Display for PingoraRouteRegistryError {
@@ -160,6 +162,7 @@ impl fmt::Display for PingoraRouteRegistryError {
             Self::InvalidBackendAddress { message } => {
                 write!(formatter, "invalid gateway backend address: {message}")
             }
+            Self::LockPoisoned => formatter.write_str("gateway route registry lock poisoned"),
         }
     }
 }
@@ -249,7 +252,8 @@ impl ProxyHttp for PloyzGatewayProxy {
             .map_err(|error| {
                 let status = match error {
                     PingoraRouteSelectionError::NoRoute { .. } => 404,
-                    PingoraRouteSelectionError::NoHealthyUpstream { .. } => 503,
+                    PingoraRouteSelectionError::NoHealthyUpstream { .. }
+                    | PingoraRouteSelectionError::LockPoisoned { .. } => 503,
                 };
                 Error::explain(HTTPStatus(status), format!("{error:?}"))
             })?;
@@ -314,6 +318,7 @@ impl ProxyHttp for PloyzGatewayProxy {
 pub enum PingoraRouteSelectionError {
     NoRoute { target: RouteTarget },
     NoHealthyUpstream { target: RouteTarget },
+    LockPoisoned { target: RouteTarget },
 }
 
 fn backend_inet_addr(backend: &Backend) -> Option<SocketAddr> {

@@ -16,16 +16,18 @@ use crate::roles::machine::service::{
     read_machine_facts_snapshot, refresh_machine_endpoints,
     start_machine_role_service_with_endpoint_cache,
 };
+use crate::roles::nats_failover::{
+    RunningFailoverTask, mirrored_server_pool, start_intent_failover_mirror,
+};
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
-use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
-use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED, machine_facts};
+use ployz_core::state::PendingMachineJoinRecoverySnapshot;
+use ployz_core::subjects::{PENDING_MACHINE_JOINS_CHANGED, machine_facts};
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -34,18 +36,11 @@ const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
-/// Minimum spacing between forced reconnects when a machine detects it is pinned
-/// to a lower-epoch (healed old) core — enough to rotate onto a higher-epoch
-/// candidate without a reconnect storm.
-const EPOCH_ENFORCE_INTERVAL: Duration = Duration::from_secs(5);
-/// The port a promoted core's `nats-server` listens on (keeper's
-/// `DEFAULT_NATS_PORT`), used to build failover candidate URLs.
-const CORE_NATS_PORT: u16 = 4222;
 
 pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
     observer: RunningTask,
-    intent_mirror: RunningTask,
+    intent_mirror: RunningFailoverTask,
     pending_join_mirror: RunningTask,
 }
 
@@ -83,10 +78,7 @@ pub async fn start_machine_process(
             .with_file_name("pending-machine-joins.json"),
     );
     let seed = connect.url.clone();
-    let initial_pool = match intent_mirror.load() {
-        Some(snapshot) => candidate_server_pool(&snapshot, &seed),
-        None => vec![seed.as_str().to_owned()],
-    };
+    let initial_pool = mirrored_server_pool(&config.nats.seed_file, &seed);
     let client = connect_authenticated_pool(&connect, &initial_pool, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(MachineProcessError::ConnectNats)?;
@@ -159,7 +151,7 @@ where
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
-    let intent_mirror = start_intent_mirror(client.clone(), intent_mirror, seed);
+    let intent_mirror = start_intent_failover_mirror(client.clone(), intent_mirror, seed);
     let pending_join_mirror = start_pending_join_mirror(client.clone(), pending_join_mirror);
     let observer = start_machine_observer(
         machine_id,
@@ -189,143 +181,6 @@ impl RunningTask {
         let _ = self.shutdown.send(());
         let _ = self.task.await;
     }
-}
-
-/// The NATS failover pool a machine cycles on core loss: its configured core
-/// (the `seed`, always first and always retained) plus every Reachable Machine's
-/// endpoint from the mirror. The seed is never dropped by a reachability change —
-/// only a reconfigure replaces it — so a transient core outage can't cut the
-/// machine off from a still-alive core.
-fn reachable_machine_urls(snapshot: &IntentSnapshot) -> Vec<String> {
-    let mut urls = Vec::new();
-    for machine in &snapshot.active_machines {
-        for endpoint in &machine.control_endpoints {
-            // SocketAddr's Display brackets IPv6 (`[::1]:4222`); a bare interpolation
-            // would emit an invalid `tls://::1:4222`.
-            let url = format!("tls://{}", SocketAddr::new(*endpoint, CORE_NATS_PORT));
-            if !urls.contains(&url) {
-                urls.push(url);
-            }
-        }
-    }
-    urls
-}
-
-fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
-    let mut pool = vec![seed.as_str().to_owned()];
-    for url in reachable_machine_urls(snapshot) {
-        if !pool.contains(&url) {
-            pool.push(url);
-        }
-    }
-    pool
-}
-
-/// Like [`candidate_server_pool`] but with the configured seed deprioritized to
-/// last, used when that seed is a stale (lower-epoch) core we want to reconnect
-/// away from: `retain_servers_order` then tries every Reachable Machine (the
-/// promoted core among them) before falling back to the stale seed.
-fn candidate_server_pool_seed_last(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
-    let seed = seed.as_str().to_owned();
-    // The stale seed is usually also in the roster (its old core is still an active
-    // machine until the operator removes it), so it must be filtered out of its
-    // roster position first — otherwise it stays ahead of the promoted core and
-    // retain_servers_order reconnects straight back onto it.
-    let mut pool: Vec<String> = reachable_machine_urls(snapshot)
-        .into_iter()
-        .filter(|url| url != &seed)
-        .collect();
-    pool.push(seed);
-    pool
-}
-
-/// Mirror core intent to the machine-local store off the drumbeat, so a future
-/// promotion can seed a new core without a backup restore (ADR 0031). The
-/// epoch-gating that drops a stale core's intent lives in the store.
-///
-/// The task re-subscribes on a failed or ended subscription rather than dying:
-/// a mirror that quietly stops updating is the one failure this seam must make
-/// impossible, since the mirror is what makes promotion instant.
-fn start_intent_mirror(
-    client: NatsClient,
-    mirror: MachineIntentMirror,
-    seed: NatsClientUrl,
-) -> RunningTask {
-    let (shutdown, mut shutdown_rx) = oneshot::channel();
-    let task = tokio::spawn(async move {
-        // Allow the first stale-connection detection to enforce immediately, then
-        // rate-limit to avoid a reconnect storm.
-        let mut last_enforced = Instant::now()
-            .checked_sub(EPOCH_ENFORCE_INTERVAL)
-            .unwrap_or_else(Instant::now);
-        loop {
-            let mut changed = match client.subscribe(INTENT_CHANGED).await {
-                Ok(subscription) => subscription,
-                // Not connected yet, or a transient failure: back off and retry.
-                Err(_) => {
-                    tokio::select! {
-                        () = tokio::time::sleep(INTENT_MIRROR_RESUBSCRIBE_DELAY) => continue,
-                        _ = &mut shutdown_rx => return,
-                    }
-                }
-            };
-            loop {
-                tokio::select! {
-                    message = changed.next() => {
-                        // Stream ended (a hard disconnect): re-subscribe.
-                        let Some(message) = message else { break };
-                        // Empty pings only say "something changed"; the periodic
-                        // drumbeat carries the full snapshot the mirror persists.
-                        if message.payload.is_empty() {
-                            continue;
-                        }
-                        if let Ok(snapshot) =
-                            serde_json::from_slice::<IntentSnapshot>(&message.payload)
-                        {
-                            match mirror.store(&snapshot) {
-                                // Accepted (current or higher epoch): refresh the
-                                // failover pool with the configured core plus each
-                                // Reachable Machine. Updates the pool used on the
-                                // *next* reconnect; never forces one, so the live
-                                // core connection stays undisturbed.
-                                Ok(true) => {
-                                    let _ = client
-                                        .set_server_pool(candidate_server_pool(&snapshot, &seed))
-                                        .await;
-                                }
-                                // Rejected as stale: this drumbeat arrived on a
-                                // connection to a healed old core advertising a lower
-                                // epoch than one already seen. Deprioritize that stale
-                                // seed to last in the pool (rebuilding from the
-                                // highest-epoch snapshot we've stored, which carries
-                                // the promoted core as a Reachable Machine) so
-                                // retain_servers_order does not just reconnect us
-                                // straight back onto it, then force the reconnect.
-                                // Rate-limited so a persistent stale core can't cause a
-                                // reconnect storm.
-                                Ok(false) => {
-                                    if last_enforced.elapsed() >= EPOCH_ENFORCE_INTERVAL {
-                                        last_enforced = Instant::now();
-                                        if let Some(best) = mirror.load() {
-                                            let _ = client
-                                                .set_server_pool(candidate_server_pool_seed_last(
-                                                    &best, &seed,
-                                                ))
-                                                .await;
-                                        }
-                                        let _ = client.force_reconnect().await;
-                                    }
-                                }
-                                Err(_) => {}
-                            }
-                        }
-                    }
-                    _ = &mut shutdown_rx => return,
-                }
-            }
-        }
-    });
-    RunningTask { shutdown, task }
 }
 
 fn start_pending_join_mirror(client: NatsClient, mirror: MachinePendingJoinMirror) -> RunningTask {
@@ -413,7 +268,7 @@ fn record_observer_attempt(
 ) -> Duration {
     let mut health = health
         .lock()
-        .expect("machine observer health lock is not poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let MachineObserverHealth {
         last_attempt,
         consecutive_failures,
@@ -577,7 +432,6 @@ mod tests {
     use ployz_core::machine_runtime::{
         ContainerRuntimeState, MachineFactsSnapshot, ManagedContainerIdentity,
     };
-    use ployz_core::state::ActiveMachineState;
     use ployz_core::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
 
@@ -592,84 +446,6 @@ mod tests {
                 description: "paused".to_owned(),
             }),
             ContainerRuntimeState::Exited
-        );
-    }
-
-    fn active_machine_with(id: &str, endpoint: Option<&str>) -> ActiveMachineState {
-        ActiveMachineState {
-            machine_id: machine_id(id),
-            name: ployz_core::machine::MachineName::try_new(id).expect("machine name"),
-            activated_by: ployz_test_support::ids::operation_id("op_activate"),
-            lifecycle: ployz_core::state::MachineLifecycle::Active,
-            control_endpoints: endpoint
-                .map(|ip| vec![ip.parse().expect("ip")])
-                .unwrap_or_default(),
-            mesh_endpoints: Vec::new(),
-        }
-    }
-
-    fn snapshot_with(machines: Vec<ActiveMachineState>) -> IntentSnapshot {
-        IntentSnapshot {
-            epoch: ployz_core::state::ControlPlaneEpoch::initial(),
-            active_machines: machines,
-            route_bindings: Vec::new(),
-            serving_target_entries: Vec::new(),
-            authorized_users: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn candidate_server_pool_keeps_the_seed_first_and_adds_reachable_machines() {
-        let seed = NatsClientUrl::try_new("tls://10.0.0.1:4222").expect("seed url");
-        let snapshot = snapshot_with(vec![
-            active_machine_with("machine_a", Some("203.0.113.5")),
-            active_machine_with("machine_b", None),
-            active_machine_with("machine_c", Some("203.0.113.9")),
-        ]);
-        assert_eq!(
-            candidate_server_pool(&snapshot, &seed),
-            vec![
-                "tls://10.0.0.1:4222".to_owned(),
-                "tls://203.0.113.5:4222".to_owned(),
-                "tls://203.0.113.9:4222".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn candidate_server_pool_seed_last_moves_a_rostered_stale_seed_to_the_end() {
-        // The stale seed's old core is still an active machine in the roster, so its
-        // URL is among the reachable machines. seed_last must drop it from that slot
-        // and place it strictly last, behind the promoted core.
-        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
-        let snapshot = snapshot_with(vec![
-            active_machine_with("old_core", Some("203.0.113.5")),
-            active_machine_with("promoted_core", Some("203.0.113.9")),
-        ]);
-        assert_eq!(
-            candidate_server_pool_seed_last(&snapshot, &seed),
-            vec![
-                "tls://203.0.113.9:4222".to_owned(),
-                "tls://203.0.113.5:4222".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn candidate_server_pool_always_retains_the_seed_when_no_machine_is_reachable() {
-        let seed = NatsClientUrl::try_new("tls://10.0.0.1:4222").expect("seed url");
-        // The configured core must never be dropped: not for an empty roster, and
-        // not when the only machines have advertised no endpoint yet.
-        assert_eq!(
-            candidate_server_pool(&snapshot_with(Vec::new()), &seed),
-            vec!["tls://10.0.0.1:4222".to_owned()]
-        );
-        assert_eq!(
-            candidate_server_pool(
-                &snapshot_with(vec![active_machine_with("machine_a", None)]),
-                &seed
-            ),
-            vec!["tls://10.0.0.1:4222".to_owned()]
         );
     }
 

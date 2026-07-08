@@ -152,6 +152,7 @@ async fn test_nats() -> TestNats {
     );
     let intent = start_intent_service(
         nats.controller.clone(),
+        machine_id("machine_a"),
         MachineRosterStore::new(
             ployzd::core_store::CoreStore::open_in_memory()
                 .await

@@ -206,10 +206,12 @@ impl StagedDirectory {
     }
 
     pub(crate) fn commit_to(mut self, path: &Path) -> Result<(), FailureMessage> {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("staged directory commit target has a UTF-8 file name");
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Err(failure_message(format!(
+                "staged directory commit target {} must have a UTF-8 file name",
+                path.display()
+            )));
+        };
         let backup = unique_staged_path(
             path.parent().unwrap_or_else(|| Path::new(".")),
             name,
@@ -315,7 +317,9 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{FileMode, write_durable_file};
+    use super::{FileMode, StagedDirectory, write_durable_file};
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -331,5 +335,22 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn staged_directory_commit_rejects_non_utf8_target_name() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let staged = StagedDirectory::create(directory.path(), "join-material", "test")
+            .expect("staged directory");
+        let target = directory
+            .path()
+            .join(OsString::from_vec(b"join-\xFF".to_vec()));
+
+        let error = staged
+            .commit_to(&target)
+            .expect_err("target name is invalid");
+
+        assert!(error.as_str().contains("UTF-8 file name"));
+        assert!(!target.exists());
     }
 }

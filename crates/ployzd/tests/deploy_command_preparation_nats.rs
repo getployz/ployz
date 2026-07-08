@@ -94,14 +94,14 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     .await;
 
     assert_eq!(
-        command.existing_replicas(),
+        command.existing_replicas().expect("single service"),
         [ployz_core::deploy::ExistingServiceReplica {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_target")
         }]
     );
     assert_eq!(
-        command.cleanup_candidates(),
+        command.cleanup_candidates().expect("single service"),
         [
             cleanup_container_with_entry(
                 "machine_a",
@@ -112,7 +112,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ]
     );
     assert_eq!(
-        command.eligible_machines(),
+        command.eligible_machines().expect("single service"),
         [machine_id("machine_a"), machine_id("machine_b")]
     );
     assert_eq!(command.step_timeout(), Duration::from_secs(7));
@@ -151,9 +151,12 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     )
     .await;
 
-    assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
     assert_eq!(
-        command.existing_replicas(),
+        command.eligible_machines().expect("single service"),
+        [machine_id("edge_2")]
+    );
+    assert_eq!(
+        command.existing_replicas().expect("single service"),
         [ployz_core::deploy::ExistingServiceReplica {
             machine_id: machine_id("edge_2"),
             container_id: container_id("ctr_target")
@@ -195,7 +198,10 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     )
     .await;
 
-    assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
+    assert_eq!(
+        command.eligible_machines().expect("single service"),
+        [machine_id("edge_2")]
+    );
     assert_eq!(
         command.unusable_machines(),
         [ployz_core::ops::UnusableMachine {
@@ -228,7 +234,10 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     )
     .await;
 
-    assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
+    assert_eq!(
+        command.eligible_machines().expect("single service"),
+        [machine_id("edge_2")]
+    );
     assert_eq!(command.dataplane_machines(), [machine_id("edge_2")]);
 }
 
@@ -250,7 +259,10 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
     )
     .await;
 
-    assert_eq!(command.eligible_machines(), [machine_id("core_1")]);
+    assert_eq!(
+        command.eligible_machines().expect("single service"),
+        [machine_id("core_1")]
+    );
     assert_eq!(command.dataplane_machines(), [machine_id("core_1")]);
 }
 
@@ -300,7 +312,12 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     )
     .await;
 
-    assert!(command.existing_replicas().is_empty());
+    assert!(
+        command
+            .existing_replicas()
+            .expect("single service")
+            .is_empty()
+    );
 }
 
 async fn prepare_command_from_nats(
@@ -518,6 +535,7 @@ async fn test_nats() -> TestNats {
     );
     let intent = start_intent_service(
         connected.controller.clone(),
+        machine_id("machine_a"),
         machine_roster.clone(),
         namespace_intent.clone(),
         ployzd::core_store::CoreStore::open_in_memory()

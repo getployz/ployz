@@ -74,9 +74,21 @@ impl OperationStatus {
     }
 
     /// The sequence the next recorded event for this operation must carry.
-    #[must_use]
-    pub fn next_event_sequence(&self) -> EventSequence {
-        EventSequence::try_new(self.last_event_sequence().get() + 1)
-            .expect("next event sequence stays greater than zero")
+    pub fn next_event_sequence(&self) -> Result<EventSequence, NextEventSequenceError> {
+        let last_event_sequence = self.last_event_sequence();
+        let Some(next) = last_event_sequence.get().checked_add(1) else {
+            return Err(NextEventSequenceError::Overflow {
+                last_event_sequence,
+            });
+        };
+        EventSequence::try_new(next).map_err(|_| NextEventSequenceError::Overflow {
+            last_event_sequence,
+        })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NextEventSequenceError {
+    #[error("operation event sequence overflowed after {}", .last_event_sequence.get())]
+    Overflow { last_event_sequence: EventSequence },
 }

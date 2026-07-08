@@ -181,11 +181,24 @@ pub async fn machine_update(
         .await
         .map_err(|error| match super::error_map::submit_failure(error) {
             super::error_map::SubmitFailure::InvalidDeployTarget => {
-                unreachable!("machine update submit is not deploy target")
+                MachineUpdateError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message: super::error_map::corrupt(
+                        "machine-update submit returned deploy target failure",
+                    ),
+                }
             }
-            super::error_map::SubmitFailure::ResourceBusy { .. } => {
-                unreachable!("machine update submit has no namespace lock")
-            }
+            super::error_map::SubmitFailure::ResourceBusy {
+                namespace_id,
+                owner,
+            } => MachineUpdateError::Unavailable {
+                operation_id: operation_id.clone(),
+                message: super::error_map::corrupt(format_args!(
+                    "machine-update submit returned namespace lock {} owned by {}",
+                    namespace_id.as_str(),
+                    owner.as_str()
+                )),
+            },
             super::error_map::SubmitFailure::Unavailable { message } => {
                 MachineUpdateError::Unavailable {
                     operation_id: operation_id.clone(),
@@ -265,11 +278,24 @@ async fn machine_lifecycle(
         .await
         .map_err(|error| match super::error_map::submit_failure(error) {
             super::error_map::SubmitFailure::InvalidDeployTarget => {
-                unreachable!("machine lifecycle submit is not deploy target")
+                MachineLifecycleError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message: super::error_map::corrupt(
+                        "machine-lifecycle submit returned deploy target failure",
+                    ),
+                }
             }
-            super::error_map::SubmitFailure::ResourceBusy { .. } => {
-                unreachable!("machine lifecycle submit has no namespace lock")
-            }
+            super::error_map::SubmitFailure::ResourceBusy {
+                namespace_id,
+                owner,
+            } => MachineLifecycleError::Unavailable {
+                operation_id: operation_id.clone(),
+                message: super::error_map::corrupt(format_args!(
+                    "machine-lifecycle submit returned namespace lock {} owned by {}",
+                    namespace_id.as_str(),
+                    owner.as_str()
+                )),
+            },
             super::error_map::SubmitFailure::Unavailable { message } => {
                 MachineLifecycleError::Unavailable {
                     operation_id: operation_id.clone(),

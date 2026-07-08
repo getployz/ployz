@@ -239,7 +239,11 @@ pub fn save_cluster_context(
         join_seed_file: context.join_seed_file.clone(),
         machines: context.machines.iter().map(save_context_machine).collect(),
     };
-    let mut payload = serde_json::to_vec_pretty(&file).expect("cluster context serializes");
+    let mut payload =
+        serde_json::to_vec_pretty(&file).map_err(|error| ClusterContextError::Write {
+            path: path.to_owned(),
+            message: format!("failed to encode cluster context: {error}"),
+        })?;
     payload.push(b'\n');
 
     let write_error = |error: std::io::Error| ClusterContextError::Write {
@@ -428,11 +432,13 @@ impl fmt::Display for ClusterContextError {
                 "cluster context file {} is invalid: {message}",
                 path.display()
             ),
-            Self::InvalidNatsUrl { path, error } => write!(
-                formatter,
-                "cluster context file {} has an invalid nats_url: {error:?}",
-                path.display()
-            ),
+            Self::InvalidNatsUrl { path, error } => {
+                write!(
+                    formatter,
+                    "cluster context file {} has an invalid nats_url: {error}",
+                    path.display()
+                )
+            }
             Self::InvalidMachineId {
                 path,
                 machine_id,

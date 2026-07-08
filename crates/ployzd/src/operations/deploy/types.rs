@@ -62,19 +62,20 @@ impl DeployExecutionCommand {
         &self.serving_target_removals
     }
 
-    #[must_use]
-    pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
-        self.first_service().existing_replicas()
+    pub fn existing_replicas(
+        &self,
+    ) -> Result<&[ExistingServiceReplica], DeployServiceAccessorError> {
+        Ok(self.first_service()?.existing_replicas())
     }
 
-    #[must_use]
-    pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
-        self.first_service().cleanup_candidates()
+    pub fn cleanup_candidates(
+        &self,
+    ) -> Result<&[DeployCleanupContainer], DeployServiceAccessorError> {
+        Ok(self.first_service()?.cleanup_candidates())
     }
 
-    #[must_use]
-    pub fn eligible_machines(&self) -> &[MachineId] {
-        self.first_service().eligible_machines()
+    pub fn eligible_machines(&self) -> Result<&[MachineId], DeployServiceAccessorError> {
+        Ok(self.first_service()?.eligible_machines())
     }
 
     #[must_use]
@@ -111,11 +112,17 @@ impl DeployExecutionCommand {
         )
     }
 
-    fn first_service(&self) -> &DeployServiceExecutionCommand {
+    fn first_service(&self) -> Result<&DeployServiceExecutionCommand, DeployServiceAccessorError> {
         self.services
             .first()
-            .expect("single-service command accessor requires at least one service")
+            .ok_or(DeployServiceAccessorError::EmptyServices)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DeployServiceAccessorError {
+    #[error("deploy command has no services")]
+    EmptyServices,
 }
 
 impl DeployServiceExecutionCommand {

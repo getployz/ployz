@@ -11,7 +11,9 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
-use ployzd::operations::deploy::{DeployExecutionFacts, prepare_deploy_execution_command};
+use ployzd::operations::deploy::{
+    DeployExecutionFacts, DeployServiceAccessorError, prepare_deploy_execution_command,
+};
 use std::time::Duration;
 
 #[tokio::test]
@@ -45,9 +47,14 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
-    assert!(command.existing_replicas().is_empty());
+    assert!(
+        command
+            .existing_replicas()
+            .expect("single service")
+            .is_empty()
+    );
     assert_eq!(
-        command.cleanup_candidates(),
+        command.cleanup_candidates().expect("single service"),
         [cleanup_container("machine_a", "ctr_old", "entry_old")]
     );
 }
@@ -79,11 +86,11 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
     assert_eq!(
-        command.existing_replicas(),
+        command.existing_replicas().expect("single service"),
         vec![existing_service_replica("machine_a", "ctr_target")]
     );
     assert_eq!(
-        command.cleanup_candidates(),
+        command.cleanup_candidates().expect("single service"),
         [cleanup_container_with_entry(
             "machine_a",
             "ctr_target",
@@ -158,6 +165,41 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
         panic!("omitted service container is a cleanup candidate");
     };
     assert_eq!(candidate.identity.service_id, service_id("svc_worker"));
+}
+
+#[tokio::test]
+async fn single_service_accessors_reject_empty_manifest() {
+    let facts = DeployExecutionFacts {
+        unusable_machines: Vec::new(),
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        dataplane_machines: Vec::new(),
+        observed_machines: Vec::new(),
+        namespace_cleanup_candidates: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    };
+    let command = prepare_deploy_execution_command(
+        operation_id("op_123"),
+        DeployRequest {
+            namespace_id: namespace_id("default"),
+            services: Vec::new(),
+        },
+        facts,
+    );
+
+    assert_eq!(
+        command.existing_replicas(),
+        Err(DeployServiceAccessorError::EmptyServices)
+    );
+    assert_eq!(
+        command.cleanup_candidates(),
+        Err(DeployServiceAccessorError::EmptyServices)
+    );
+    assert_eq!(
+        command.eligible_machines(),
+        Err(DeployServiceAccessorError::EmptyServices)
+    );
 }
 
 fn deploy_request() -> DeployRequest {

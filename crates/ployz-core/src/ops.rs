@@ -28,6 +28,7 @@ mod replay;
 mod routes;
 mod text;
 
+pub use accessors::NextEventSequenceError;
 pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use deploy::{

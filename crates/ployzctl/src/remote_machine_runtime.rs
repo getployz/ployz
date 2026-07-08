@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
 use crate::client_ids::generate_client_machine_add_ids;
-use crate::commands::core::CoreReplaceCommand;
+use crate::commands::core::{CorePromoteCommand, CoreReplaceCommand};
 use crate::commands::init::FirstMachineActivateCommand;
 use crate::commands::machine::{
     MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteDetachedOutput,
@@ -45,6 +45,8 @@ use std::net::IpAddr;
 
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
+const CORE_PROMOTE_RESULT_BEGIN: &str = "ployz-core-promote-result begin";
+const CORE_PROMOTE_RESULT_END: &str = "ployz-core-promote-result end";
 
 fn remote_machine_error(source: RemoteMachineExecutionError) -> PloyzctlExecutionError {
     PloyzctlExecutionError::RemoteMachine {
@@ -69,6 +71,46 @@ fn ssh_client(config: &PloyzctlRuntimeConfig, timeout: std::time::Duration) -> S
     }
 }
 
+pub(crate) async fn execute_core_promote_remote(
+    command: CorePromoteCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let recovery_secret = std::env::var("PLOYZ_RECOVERY_SECRET")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| remote_machine_error(RemoteMachineExecutionError::MissingRecoverySecret))?;
+    let client = ssh_client(config, config.ssh_install_timeout());
+    let remote_command = format!(
+        "sudo env PLOYZ_RECOVERY_SECRET={} ployz-keeper core-promote",
+        shell_quote(&recovery_secret)
+    );
+    let output = client
+        .run(&command.target, SshPhase::CorePromote, &remote_command)
+        .map_err(ssh_error)?;
+    let promoted = parse_core_promote_result(&output.stdout.text, output.stdout.truncated)?;
+    let mut stderr = output.stderr.text;
+
+    match update_context_after_core_promote(config, &promoted)? {
+        Some(path) => {
+            stderr.push_str(&format!(
+                "context {} now points at {}\n",
+                path.display(),
+                promoted.primary_nats_url().as_str()
+            ));
+        }
+        None => {
+            stderr.push_str(
+                "warning: no local cluster context found; use --nats with one of the promoted URLs\n",
+            );
+        }
+    }
+
+    Ok(PloyzctlExecutionOutput {
+        stdout: promoted.render(&command.target),
+        stderr,
+    })
+}
+
 pub(crate) async fn execute_core_replace_remote(
     command: CoreReplaceCommand,
     config: &PloyzctlRuntimeConfig,
@@ -79,15 +121,10 @@ pub(crate) async fn execute_core_replace_remote(
     let operation_id = crate::client_ids::generate_client_core_replace_id(&machine_id)
         .map_err(|error| client_generated_ids_error(error.to_string()))?
         .operation_id;
-    let successor_nats_url = command
-        .successor_nats_url
-        .clone()
-        .or_else(|| {
-            config
-                .nats_url
-                .as_deref()
-                .and_then(|url| NatsClientUrl::try_new(url).ok())
-        })
+    let successor_nats_url = config
+        .nats_url
+        .as_deref()
+        .and_then(|url| NatsClientUrl::try_new(url).ok())
         .ok_or(PloyzctlExecutionError::MissingNatsUrl)?;
     let successor_runtime_nats_url =
         MachineJoinRuntimeNatsUrl::try_new(successor_nats_url.as_str()).map_err(|error| {
@@ -132,6 +169,8 @@ pub(crate) async fn execute_core_replace_remote(
         return Err(ssh_error(source));
     }
 
+    repoint_context_machines(&command.target, &successor_nats_url, &config)?;
+
     watch_operation_until_terminal(
         &api,
         OperationEventReplayRequest {
@@ -146,9 +185,167 @@ pub(crate) async fn execute_core_replace_remote(
     .await?;
 
     Ok(PloyzctlExecutionOutput::stdout(format!(
-        "core replaced on {}\n",
+        "core demoted on {}\n",
         command.target.destination()
     )))
+}
+
+fn repoint_context_machines(
+    demoted: &SshTarget,
+    successor_nats_url: &NatsClientUrl,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<(), PloyzctlExecutionError> {
+    let Some(path) = optional_cluster_context_path(config) else {
+        return Ok(());
+    };
+    let Some(context) = load_cluster_context(&path).map_err(|source| {
+        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
+    })?
+    else {
+        return Ok(());
+    };
+    let client = ssh_client(config, config.ssh_install_timeout());
+    let mut remote_command = "sudo ployz-keeper internal-core-repoint".to_owned();
+    remote_command.push_str(" --successor-nats-url ");
+    remote_command.push_str(&shell_quote(successor_nats_url.as_str()));
+    for machine in context.machines {
+        let Some(target) = machine.ssh else {
+            continue;
+        };
+        if &target == demoted {
+            continue;
+        }
+        client
+            .run(&target, SshPhase::CoreReplace, &remote_command)
+            .map_err(ssh_error)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CorePromoteResult {
+    nats_urls: Vec<NatsClientUrl>,
+}
+
+impl CorePromoteResult {
+    fn primary_nats_url(&self) -> &NatsClientUrl {
+        self.nats_urls
+            .first()
+            .expect("core promote result validation requires at least one URL")
+    }
+
+    fn render(&self, target: &SshTarget) -> String {
+        format!(
+            "core promoted on {}\nnats {}\nca-pem printed by remote keeper\n",
+            target.destination(),
+            self.nats_urls
+                .iter()
+                .map(NatsClientUrl::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorePromoteResultFile {
+    nats_urls: Vec<String>,
+    ca_pem: String,
+}
+
+fn parse_core_promote_result(
+    stdout: &str,
+    stdout_truncated: bool,
+) -> Result<CorePromoteResult, PloyzctlExecutionError> {
+    if stdout_truncated {
+        return Err(remote_machine_error(
+            RemoteMachineExecutionError::CorePromoteOutputTruncated,
+        ));
+    }
+
+    let mut lines = stdout.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != CORE_PROMOTE_RESULT_BEGIN {
+            continue;
+        }
+        let Some(json_line) = lines.next() else {
+            return Err(invalid_core_promote_result(
+                "promote result marker was not followed by JSON",
+            ));
+        };
+        let Some(end_line) = lines.next() else {
+            return Err(invalid_core_promote_result(
+                "promote result JSON was not followed by an end marker",
+            ));
+        };
+        if end_line.trim() != CORE_PROMOTE_RESULT_END {
+            return Err(invalid_core_promote_result(
+                "promote result end marker was missing",
+            ));
+        }
+        let file: CorePromoteResultFile = serde_json::from_str(json_line).map_err(|error| {
+            remote_machine_error(RemoteMachineExecutionError::InvalidCorePromoteResult {
+                message: error.to_string(),
+            })
+        })?;
+        return core_promote_result_from_file(file);
+    }
+
+    Err(remote_machine_error(
+        RemoteMachineExecutionError::MissingCorePromoteResult,
+    ))
+}
+
+fn core_promote_result_from_file(
+    file: CorePromoteResultFile,
+) -> Result<CorePromoteResult, PloyzctlExecutionError> {
+    NatsCaCertificatePem::try_new(file.ca_pem.as_str()).map_err(|error| {
+        remote_machine_error(RemoteMachineExecutionError::InvalidCorePromoteResult {
+            message: format!("invalid ca_pem: {error}"),
+        })
+    })?;
+    let nats_urls = file
+        .nats_urls
+        .into_iter()
+        .map(|url| {
+            NatsClientUrl::try_new(url).map_err(|error| {
+                remote_machine_error(RemoteMachineExecutionError::InvalidCorePromoteResult {
+                    message: format!("invalid nats_urls entry: {error:?}"),
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if nats_urls.is_empty() {
+        return Err(invalid_core_promote_result("nats_urls was empty"));
+    }
+    Ok(CorePromoteResult { nats_urls })
+}
+
+fn invalid_core_promote_result(message: &str) -> PloyzctlExecutionError {
+    remote_machine_error(RemoteMachineExecutionError::InvalidCorePromoteResult {
+        message: message.to_owned(),
+    })
+}
+
+fn update_context_after_core_promote(
+    config: &PloyzctlRuntimeConfig,
+    result: &CorePromoteResult,
+) -> Result<Option<PathBuf>, PloyzctlExecutionError> {
+    let Some(path) = optional_cluster_context_path(config) else {
+        return Ok(None);
+    };
+    let Some(mut context) = load_cluster_context(&path).map_err(|source| {
+        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
+    })?
+    else {
+        return Ok(None);
+    };
+    context.nats_url = result.primary_nats_url().clone();
+    save_cluster_context(&path, &context).map_err(|source| {
+        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
+    })?;
+    Ok(Some(path))
 }
 
 async fn resolve_core_replace_machine_id(
@@ -658,6 +855,12 @@ pub enum RemoteMachineExecutionError {
     BootstrapSeedInvalid {
         field: String,
     },
+    MissingRecoverySecret,
+    CorePromoteOutputTruncated,
+    MissingCorePromoteResult,
+    InvalidCorePromoteResult {
+        message: String,
+    },
     ClusterContext {
         source: ClusterContextError,
     },
@@ -718,6 +921,21 @@ impl fmt::Display for RemoteMachineExecutionError {
                 formatter,
                 "first-machine bootstrap result field {field} does not contain an SU-prefixed user seed"
             ),
+            Self::MissingRecoverySecret => write!(
+                formatter,
+                "set PLOYZ_RECOVERY_SECRET before running ployzctl core promote"
+            ),
+            Self::CorePromoteOutputTruncated => write!(
+                formatter,
+                "core promote output was truncated before the result could be collected"
+            ),
+            Self::MissingCorePromoteResult => write!(
+                formatter,
+                "core promote output did not contain a structured result"
+            ),
+            Self::InvalidCorePromoteResult { message } => {
+                write!(formatter, "core promote result is invalid: {message}")
+            }
             Self::ClusterContext { source } => write!(formatter, "{source}"),
             Self::NoConfigDirectory => write!(
                 formatter,
@@ -735,14 +953,14 @@ impl fmt::Display for RemoteMachineExecutionError {
             }
             Self::CoreReplaceMachineUnknown { target } => write!(
                 formatter,
-                "could not determine the machine id for core replace target {target}; the target did not expose join material and no unique roster endpoint matched it"
+                "could not determine the machine id for core demote target {target}; the target did not expose join material and no unique roster endpoint matched it"
             ),
             Self::CoreReplaceMachineAmbiguous {
                 target,
                 machine_ids,
             } => write!(
                 formatter,
-                "core replace target {target} matched multiple machines: {}",
+                "core demote target {target} matched multiple machines: {}",
                 machine_ids
                     .iter()
                     .map(|id| id.as_str())

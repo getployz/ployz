@@ -25,6 +25,9 @@ impl OperationRepository {
             RecordTxn::Missing => Err(RecordOperationEventError::MissingOperation {
                 operation_id: operation_id.clone(),
             }),
+            RecordTxn::InvalidNextSequence(error) => {
+                Err(RecordOperationEventError::InvalidNextSequence(error))
+            }
             RecordTxn::Projection(error) => Err(RecordOperationEventError::ProjectStatus(error)),
             RecordTxn::AlreadySatisfied {
                 current_sequence,

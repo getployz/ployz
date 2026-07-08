@@ -15,7 +15,9 @@ use crate::roles::dns::projection::{
     DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
 };
 use crate::roles::dns::source::load_dns_projection_update_from_nats;
-use ployz_nats::connect::{NatsConnectError, connect_authenticated};
+use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::roles::nats_failover::{mirrored_server_pool, spawn_intent_failover_mirror};
+use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -48,7 +50,7 @@ impl RunningDnsProcess {
     pub fn health(&self) -> DnsProcessHealth {
         self.health
             .lock()
-            .expect("dns health lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
@@ -57,7 +59,7 @@ impl RunningDnsProcess {
     pub fn served_projection(&self) -> Option<DnsProjection> {
         self.runtime
             .lock()
-            .expect("dns runtime lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .answers()
             .current()
             .cloned()
@@ -73,15 +75,25 @@ pub async fn start_dns_process(
         await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
             .await
             .map_err(DnsProcessError::AwaitCredentials)?;
-    let client = connect_authenticated(&connect, DNS_NATS_CONNECT_TIMEOUT)
+    let pool = mirrored_server_pool(&config.nats.seed_file, &connect.url);
+    let client = connect_authenticated_pool(&connect, &pool, DNS_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(DnsProcessError::ConnectNats)?;
-    start_dns_process_with_client(client, DNS_REFRESH_INTERVAL).await
+    start_dns_process_with_client(
+        client,
+        DNS_REFRESH_INTERVAL,
+        Some((
+            MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json")),
+            connect.url,
+        )),
+    )
+    .await
 }
 
 pub async fn start_dns_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
+    failover: Option<(MachineIntentMirror, NatsClientUrl)>,
 ) -> Result<RunningDnsProcess, DnsProcessError> {
     let runtime = Arc::new(Mutex::new(DnsProjector::new()));
     let health = Arc::new(Mutex::new(DnsProcessHealth {
@@ -91,8 +103,17 @@ pub async fn start_dns_process_with_client(
     let facts_cache = start_fact_cache(client.clone())
         .await
         .map_err(DnsProcessError::StartFactsCache)?;
-    let stores = open_dns_process_stores(client, facts_cache.cache());
+    let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
+    let mut tasks = Vec::new();
+    if let Some((mirror, seed)) = failover {
+        tasks.push(spawn_intent_failover_mirror(
+            client.clone(),
+            mirror,
+            seed,
+            shutdown.subscribe(),
+        ));
+    }
     let task_runtime = Arc::clone(&runtime);
     let task_health = Arc::clone(&health);
     let mut refresh_shutdown = shutdown.subscribe();
@@ -111,12 +132,14 @@ pub async fn start_dns_process_with_client(
         }
     });
 
+    tasks.push(refresh_task);
+
     Ok(RunningDnsProcess {
         runtime,
         health,
         shutdown,
         facts_cache,
-        tasks: vec![refresh_task],
+        tasks,
     })
 }
 
@@ -167,7 +190,9 @@ impl DnsProcessSource {
         let update =
             load_dns_projection_update_from_nats(&self.stores.intent_reader, &self.stores.facts)
                 .await;
-        let mut runtime = runtime.lock().expect("dns runtime lock is not poisoned");
+        let mut runtime = runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         Ok(runtime.apply_source_update(update))
     }
@@ -191,7 +216,9 @@ fn record_dns_attempt(
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
-    let mut health = health.lock().expect("dns health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let DnsProcessHealth {
         last_attempt,
         consecutive_failures,

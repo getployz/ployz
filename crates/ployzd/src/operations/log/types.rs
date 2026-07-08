@@ -236,6 +236,8 @@ pub enum RecordOperationEventError {
     StoreStatus(OperationStatusStoreError),
     #[error("operation record corrupt: missing operation {}", .operation_id.as_str())]
     MissingOperation { operation_id: OperationId },
+    #[error("operation record corrupt: {0}")]
+    InvalidNextSequence(ployz_core::ops::NextEventSequenceError),
     #[error("operation status projection failed: {0}")]
     ProjectStatus(StatusProjectionError),
 }

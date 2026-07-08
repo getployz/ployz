@@ -140,6 +140,7 @@ impl std::error::Error for SshTargetParseError {}
 /// where the flow stopped (R14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SshPhase {
+    CorePromote,
     CoreReplace,
     ReadHostname,
     RunInstaller,
@@ -149,6 +150,7 @@ impl SshPhase {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::CorePromote => "core-promote",
             Self::CoreReplace => "core-replace",
             Self::ReadHostname => "read-hostname",
             Self::RunInstaller => "run-installer",

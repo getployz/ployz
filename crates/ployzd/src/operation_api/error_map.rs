@@ -111,12 +111,21 @@ pub(super) fn machine_add_error_from_submit_error(
         MachineAddSubmitCommandError::Submit(error) => error,
     };
     match submit_failure(submit) {
-        SubmitFailure::InvalidDeployTarget => {
-            unreachable!("machine add submit is not deploy target")
-        }
-        SubmitFailure::ResourceBusy { .. } => {
-            unreachable!("machine add submit has no namespace lock")
-        }
+        SubmitFailure::InvalidDeployTarget => MachineAddError::Unavailable {
+            operation_id,
+            message: corrupt("machine-add submit returned deploy target failure"),
+        },
+        SubmitFailure::ResourceBusy {
+            namespace_id,
+            owner,
+        } => MachineAddError::Unavailable {
+            operation_id,
+            message: corrupt(format_args!(
+                "machine-add submit returned namespace lock {} owned by {}",
+                namespace_id.as_str(),
+                owner.as_str()
+            )),
+        },
         SubmitFailure::Unavailable { message } => MachineAddError::Unavailable {
             operation_id,
             message,
@@ -278,15 +287,18 @@ pub(super) fn ops_watch_error_from_replay_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error};
-    use crate::operation_api::admission::SubmitCommandError;
+    use super::{
+        deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
+        ops_watch_error_from_replay_error,
+    };
+    use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
     use crate::operations::log::{
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitOperationError,
     };
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
-    use ployz_sdk_types::{DeploySubmitError, OpsWatchError};
+    use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};
 
     #[test]
     fn deploy_submit_renders_status_store_failure_to_message() {
@@ -365,6 +377,47 @@ mod tests {
                 operation_id: submitted_operation_id,
                 namespace_id,
                 owner_operation_id: owner,
+            }
+        );
+    }
+
+    #[test]
+    fn machine_add_submit_maps_unexpected_deploy_failure_to_unavailable() {
+        let operation_id = operation_id("op_123");
+
+        assert_eq!(
+            machine_add_error_from_submit_error(
+                operation_id.clone(),
+                MachineAddSubmitCommandError::Submit(SubmitCommandError::Submit(
+                    SubmitOperationError::InvalidDeployTarget,
+                )),
+            ),
+            MachineAddError::Unavailable {
+                operation_id,
+                message:
+                    "operation record corrupt: machine-add submit returned deploy target failure"
+                        .to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn machine_add_submit_maps_unexpected_namespace_busy_to_unavailable() {
+        let submitted_operation_id = operation_id("op_123");
+
+        assert_eq!(
+            machine_add_error_from_submit_error(
+                submitted_operation_id.clone(),
+                MachineAddSubmitCommandError::Submit(SubmitCommandError::NamespaceBusy {
+                    namespace_id: namespace_id("ns_prod"),
+                    owner: operation_id("op_owner"),
+                }),
+            ),
+            MachineAddError::Unavailable {
+                operation_id: submitted_operation_id,
+                message:
+                    "operation record corrupt: machine-add submit returned namespace lock ns_prod owned by op_owner"
+                        .to_owned(),
             }
         );
     }

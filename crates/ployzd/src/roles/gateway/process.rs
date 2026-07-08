@@ -19,6 +19,8 @@ use crate::roles::gateway::route_table::{
     GatewayProjector, GatewayProjectorTick, GatewayServingState,
 };
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
+use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::roles::nats_failover::{mirrored_server_pool, spawn_intent_failover_mirror};
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
@@ -26,7 +28,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
-use ployz_nats::connect::{NatsConnectError, connect_authenticated};
+use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::net::SocketAddr;
@@ -68,7 +70,7 @@ impl RunningGatewayProcess {
     pub fn health(&self) -> GatewayProcessHealth {
         self.health
             .lock()
-            .expect("gateway health lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
@@ -76,7 +78,7 @@ impl RunningGatewayProcess {
     pub fn served_projection(&self) -> Option<GatewayProjection> {
         self.runtime
             .lock()
-            .expect("gateway runtime lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .route_table()
             .current()
             .cloned()
@@ -100,7 +102,8 @@ pub async fn start_gateway_process(
     )
     .await
     .map_err(GatewayProcessError::AwaitCredentials)?;
-    let client = connect_authenticated(&connect, GATEWAY_NATS_CONNECT_TIMEOUT)
+    let pool = mirrored_server_pool(&config.nats.seed_file, &connect.url);
+    let client = connect_authenticated_pool(&connect, &pool, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(GatewayProcessError::ConnectNats)?;
     start_gateway_process_with_client(
@@ -108,6 +111,10 @@ pub async fn start_gateway_process(
         GATEWAY_REFRESH_INTERVAL,
         config.listen_addr,
         config.machine_id.clone(),
+        Some((
+            MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json")),
+            connect.url,
+        )),
     )
     .await
 }
@@ -117,6 +124,7 @@ pub async fn start_gateway_process_with_client(
     refresh_interval: Duration,
     listen_addr: SocketAddr,
     machine_id: MachineId,
+    failover: Option<(MachineIntentMirror, NatsClientUrl)>,
 ) -> Result<RunningGatewayProcess, GatewayProcessError> {
     let listen_addr = resolve_gateway_listen_addr(listen_addr).await?;
     let listener_port =
@@ -138,6 +146,15 @@ pub async fn start_gateway_process_with_client(
         consecutive_status_publish_failures: 0,
     }));
     let (shutdown, _) = broadcast::channel(2);
+    let mut tasks = Vec::new();
+    if let Some((mirror, seed)) = failover {
+        tasks.push(spawn_intent_failover_mirror(
+            client.clone(),
+            mirror,
+            seed,
+            shutdown.subscribe(),
+        ));
+    }
     let (pingora_shutdown, pingora_shutdown_rx) = watch::channel(false);
     let pingora_health = Arc::clone(&health);
     let pingora_registry = registry.clone();
@@ -205,6 +222,11 @@ pub async fn start_gateway_process_with_client(
         run_gateway_health_checks(health_registry, &mut health_shutdown).await;
     });
 
+    tasks.push(refresh_task);
+    tasks.push(watch_task);
+    tasks.push(http_task);
+    tasks.push(health_task);
+
     Ok(RunningGatewayProcess {
         runtime,
         health,
@@ -212,7 +234,7 @@ pub async fn start_gateway_process_with_client(
         shutdown,
         pingora_shutdown,
         facts_cache,
-        tasks: vec![refresh_task, watch_task, http_task, health_task],
+        tasks,
     })
 }
 
@@ -289,7 +311,7 @@ impl GatewayProcessSource {
         let tick = {
             let mut runtime = runtime
                 .lock()
-                .expect("gateway runtime lock is not poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             runtime.apply_source_update(update)
         };
         if let Some(projection) = tick.served.as_ref() {
@@ -473,7 +495,9 @@ enum GatewayWatchEvent {
 }
 
 fn record_gateway_watch_success(health: &Mutex<GatewayProcessHealth>) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     health.last_watch_failure = None;
     health.consecutive_watch_failures = 0;
 }
@@ -482,7 +506,9 @@ fn record_gateway_watch_failure(
     health: &Mutex<GatewayProcessHealth>,
     failure: GatewayWatchFailure,
 ) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     health.last_watch_failure = Some(failure);
     health.consecutive_watch_failures += 1;
 }
@@ -491,7 +517,9 @@ fn record_gateway_status_publish_result(
     health: &Mutex<GatewayProcessHealth>,
     result: Result<(), GatewayProcessError>,
 ) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match result {
         Ok(()) => {
             health.last_status_publish_failure = None;
@@ -512,7 +540,9 @@ fn record_gateway_attempt(
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let GatewayProcessHealth {
         last_attempt,
         consecutive_failures,
@@ -601,7 +631,9 @@ fn gateway_observation_from_attempt(
 }
 
 fn record_gateway_http_failure(health: &Mutex<GatewayProcessHealth>, failure: GatewayHttpFailure) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     health.last_http_failure = Some(failure);
     health.consecutive_http_failures += 1;
 }
