@@ -444,6 +444,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
     MachineIntentMirror::new(intent_mirror.clone())
         .store(&IntentSnapshot {
             epoch: ControlPlaneEpoch::initial().next(),
+            core_urls: Vec::new(),
             active_machines: Vec::new(),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),

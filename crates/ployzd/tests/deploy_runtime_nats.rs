@@ -485,6 +485,7 @@ async fn test_nats() -> TestNats {
     );
     let intent = start_intent_service(
         client.clone(),
+        machine_id("machine_a"),
         machine_roster,
         namespace_intent.clone(),
         ployzd::core_store::CoreStore::open_in_memory()

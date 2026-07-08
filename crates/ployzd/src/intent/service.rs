@@ -6,6 +6,7 @@ use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
+use ployz_core::ids::MachineId;
 use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
@@ -91,6 +92,7 @@ impl From<NatsJsonServiceRequestError> for IntentReadError {
 
 pub async fn start_intent_service(
     client: async_nats::Client,
+    core_machine_id: MachineId,
     machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
     core_store: CoreStore,
@@ -101,6 +103,8 @@ pub async fn start_intent_service(
     // the grants the authorization writer persists there.
     let nats_authorizations = NatsAuthorizationStore::new(core_store.clone());
     let operation_repository = OperationRepository::open(core_store.clone(), client.clone());
+    let service_core_machine_id = core_machine_id.clone();
+    let publisher_core_machine_id = core_machine_id;
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
     let service_core_store = core_store.clone();
@@ -111,9 +115,11 @@ pub async fn start_intent_service(
             let namespace_intent = service_namespace_intent.clone();
             let core_store = service_core_store.clone();
             let nats_authorizations = service_authorizations.clone();
+            let core_machine_id = service_core_machine_id.clone();
             async move {
                 intent_get_response(
                     request,
+                    &core_machine_id,
                     &machine_roster,
                     &namespace_intent,
                     &core_store,
@@ -129,6 +135,7 @@ pub async fn start_intent_service(
         loop {
             interval.tick().await;
             let Ok(intent) = load_intent(
+                &publisher_core_machine_id,
                 &machine_roster,
                 &namespace_intent,
                 &core_store,
@@ -152,6 +159,7 @@ pub async fn start_intent_service(
 
 async fn intent_get_response(
     request: NatsServiceRequest,
+    core_machine_id: &MachineId,
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     core_store: &CoreStore,
@@ -162,6 +170,7 @@ async fn intent_get_response(
     }
 
     match load_intent(
+        core_machine_id,
         machine_roster,
         namespace_intent,
         core_store,
@@ -175,6 +184,7 @@ async fn intent_get_response(
 }
 
 async fn load_intent(
+    core_machine_id: &MachineId,
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     core_store: &CoreStore,
@@ -199,6 +209,13 @@ async fn load_intent(
 
     Ok(IntentSnapshot {
         epoch,
+        core_urls: active_machines
+            .iter()
+            .find(|machine| &machine.machine_id == core_machine_id)
+            .into_iter()
+            .flat_map(|machine| machine.control_endpoints.iter())
+            .map(|endpoint| format!("tls://{}", std::net::SocketAddr::new(*endpoint, 4222)))
+            .collect(),
         active_machines,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,

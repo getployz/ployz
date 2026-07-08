@@ -19,7 +19,8 @@ use crate::roles::gateway::route_table::{
     GatewayProjector, GatewayProjectorTick, GatewayServingState,
 };
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
-use crate::roles::machine::process::mirrored_server_pool;
+use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::roles::nats_failover::{mirrored_server_pool, spawn_intent_failover_mirror};
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
@@ -27,7 +28,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
-use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
+use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::net::SocketAddr;
@@ -110,6 +111,10 @@ pub async fn start_gateway_process(
         GATEWAY_REFRESH_INTERVAL,
         config.listen_addr,
         config.machine_id.clone(),
+        Some((
+            MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json")),
+            connect.url,
+        )),
     )
     .await
 }
@@ -119,6 +124,7 @@ pub async fn start_gateway_process_with_client(
     refresh_interval: Duration,
     listen_addr: SocketAddr,
     machine_id: MachineId,
+    failover: Option<(MachineIntentMirror, NatsClientUrl)>,
 ) -> Result<RunningGatewayProcess, GatewayProcessError> {
     let listen_addr = resolve_gateway_listen_addr(listen_addr).await?;
     let listener_port =
@@ -140,6 +146,15 @@ pub async fn start_gateway_process_with_client(
         consecutive_status_publish_failures: 0,
     }));
     let (shutdown, _) = broadcast::channel(2);
+    let mut tasks = Vec::new();
+    if let Some((mirror, seed)) = failover {
+        tasks.push(spawn_intent_failover_mirror(
+            client.clone(),
+            mirror,
+            seed,
+            shutdown.subscribe(),
+        ));
+    }
     let (pingora_shutdown, pingora_shutdown_rx) = watch::channel(false);
     let pingora_health = Arc::clone(&health);
     let pingora_registry = registry.clone();
@@ -207,6 +222,11 @@ pub async fn start_gateway_process_with_client(
         run_gateway_health_checks(health_registry, &mut health_shutdown).await;
     });
 
+    tasks.push(refresh_task);
+    tasks.push(watch_task);
+    tasks.push(http_task);
+    tasks.push(health_task);
+
     Ok(RunningGatewayProcess {
         runtime,
         health,
@@ -214,7 +234,7 @@ pub async fn start_gateway_process_with_client(
         shutdown,
         pingora_shutdown,
         facts_cache,
-        tasks: vec![refresh_task, watch_task, http_task, health_task],
+        tasks,
     })
 }
 

@@ -197,8 +197,14 @@ pub async fn start_control_process_with_client_and_reload(
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let facts_reader = NatsMachineFactsReader::new(client.clone());
     let intent_reader = NatsIntentReader::new(client.clone());
+    let core_machine_id = config
+        .deploy_machines
+        .first()
+        .cloned()
+        .ok_or(ControlProcessError::MissingDeployMachine)?;
     let intent = start_intent_service(
         client.clone(),
+        core_machine_id.clone(),
         machine_roster.clone(),
         namespace_intent,
         core_store.clone(),
@@ -389,6 +395,7 @@ mod tests {
     fn empty_snapshot(epoch: ControlPlaneEpoch) -> IntentSnapshot {
         IntentSnapshot {
             epoch,
+            core_urls: Vec::new(),
             active_machines: Vec::new(),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),

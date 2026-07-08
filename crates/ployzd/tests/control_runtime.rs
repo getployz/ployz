@@ -606,6 +606,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
         machine_id("machine_gateway"),
+        None,
     )
     .await
     .expect("gateway runtime starts");

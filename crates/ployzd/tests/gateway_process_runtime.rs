@@ -37,6 +37,7 @@ async fn gateway_process_reports_http_bind_failure_before_returning() {
         Duration::from_millis(10),
         occupied_addr,
         machine_id("machine_7"),
+        None,
     )
     .await;
 
@@ -59,6 +60,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         machine_id("machine_7"),
+        None,
     )
     .await
     .expect("gateway runtime starts");
@@ -124,6 +126,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         machine_id("machine_7"),
+        None,
     )
     .await
     .expect("gateway runtime starts");
@@ -178,6 +181,7 @@ async fn gateway_process_records_http_proxy_failures() {
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         machine_id("machine_7"),
+        None,
     )
     .await
     .expect("gateway runtime starts");
@@ -284,6 +288,7 @@ impl TestNats {
     async fn start_intent(&self) -> RunningIntentService {
         start_intent_service(
             self.client.clone(),
+            machine_id("machine_a"),
             MachineRosterStore::new(
                 ployzd::core_store::CoreStore::open_in_memory()
                     .await
