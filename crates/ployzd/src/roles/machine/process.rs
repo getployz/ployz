@@ -268,7 +268,7 @@ fn record_observer_attempt(
 ) -> Duration {
     let mut health = health
         .lock()
-        .expect("machine observer health lock is not poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let MachineObserverHealth {
         last_attempt,
         consecutive_failures,

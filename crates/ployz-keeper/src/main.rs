@@ -19,7 +19,7 @@ use ployz_keeper::artifacts::{
 };
 use ployz_keeper::cli::{
     KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperCoreDemote, KeeperCorePromote,
-    KeeperSubstrateUpdate, load_command,
+    KeeperCoreRepoint, KeeperSubstrateUpdate, KeeperSubstrateUpdateSource, load_command,
 };
 use ployz_keeper::cloud_client::get_text_url;
 use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
@@ -136,12 +136,28 @@ fn main() -> ExitCode {
         }
         Ok(KeeperCommand::CorePromote(promote)) => run_core_promote_command(promote),
         Ok(KeeperCommand::CoreDemote(demote)) => run_core_demote_command(demote),
+        Ok(KeeperCommand::CoreRepoint(repoint)) => run_core_repoint_command(repoint),
         Err(error) if error.is_help_requested() => {
             print!("{error}");
             ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_core_repoint_command(repoint: KeeperCoreRepoint) -> ExitCode {
+    let mut runner = SystemKeeperCommandRunner::default();
+    match repoint_non_core_roles(
+        Path::new("/etc/ployz"),
+        &repoint.successor_nats_url,
+        &mut runner,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("ployz-keeper core-repoint failed: {error}");
             ExitCode::FAILURE
         }
     }
@@ -171,8 +187,8 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let manifest_url = release_manifest_url(&update.version);
-    let manifest = match load_versioned_release_manifest(&manifest_url) {
+    let update_label = update.source.label();
+    let manifest = match load_substrate_update_manifest(&update.source) {
         Ok(manifest) => manifest,
         Err(message) => {
             eprintln!("{message}");
@@ -229,9 +245,10 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
         KeeperStep::InstallArtifact(ebpf_bytecode),
         KeeperStep::InstallArtifact(ebpf_ctl),
     ];
-    if units
-        .iter()
-        .any(|unit| matches!(unit, InstalledUpdateUnit::Nats))
+    if update.source.updates_nats()
+        && units
+            .iter()
+            .any(|unit| matches!(unit, InstalledUpdateUnit::Nats))
     {
         steps.push(KeeperStep::InstallArtifact(nats_server));
     }
@@ -275,7 +292,7 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
     }
     println!(
         "substrate updated to {} and restarted {} unit(s)",
-        update.version.as_str(),
+        update_label,
         units.len()
     );
     ExitCode::SUCCESS
@@ -321,6 +338,25 @@ fn load_versioned_release_manifest(url: &str) -> Result<ReleaseManifest, String>
     let contents = get_text_url(url)
         .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
     ReleaseManifest::parse(&contents)
+}
+
+fn load_substrate_update_manifest(
+    source: &KeeperSubstrateUpdateSource,
+) -> Result<ReleaseManifest, String> {
+    match source {
+        KeeperSubstrateUpdateSource::Version(version) => {
+            load_versioned_release_manifest(&release_manifest_url(version))
+        }
+        KeeperSubstrateUpdateSource::ManifestFile(path) => {
+            let contents = std::fs::read_to_string(path).map_err(|error| {
+                format!(
+                    "failed to read release manifest {}: {error}",
+                    path.display()
+                )
+            })?;
+            ReleaseManifest::parse(&contents)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

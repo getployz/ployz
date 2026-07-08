@@ -79,6 +79,8 @@ pub fn load_daemon_process_config(
         DaemonProcessRole::Control => {
             let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
+            let epoch_fence_mirror = load_seed_from_mirror(&env)
+                .or_else(|| Some(connect.seed_file.with_file_name("intent-mirror.json")));
             let nats_connect = read_connect_config_now(&role, &connect)?;
             let mut control = ControlProcessConfig::new(
                 NatsServerLaunch::External(connect.url),
@@ -91,6 +93,7 @@ pub fn load_daemon_process_config(
             }
             control = control.with_core_db_path(load_core_db_path(&env));
             control = control.with_seed_from_mirror(load_seed_from_mirror(&env));
+            control = control.with_epoch_fence_mirror(epoch_fence_mirror);
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
@@ -643,6 +646,9 @@ pub struct ControlProcessConfig {
     /// A machine-local intent mirror to seed a fresh core store from at startup,
     /// set only by `core-promote` (ADR 0031); `None` for an ordinary core.
     pub seed_from_mirror: Option<PathBuf>,
+    /// Machine-local intent mirror used to refuse stale core startup after this
+    /// machine has observed a higher Control-Plane Epoch.
+    pub epoch_fence_mirror: Option<PathBuf>,
     pub deploy_machines: Vec<MachineId>,
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
@@ -661,6 +667,7 @@ impl ControlProcessConfig {
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),
             core_db_path: PathBuf::from(DEFAULT_CORE_DB),
             seed_from_mirror: None,
+            epoch_fence_mirror: None,
             deploy_machines: vec![first_deploy_machine],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
@@ -691,6 +698,12 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn with_seed_from_mirror(mut self, seed_from_mirror: Option<PathBuf>) -> Self {
         self.seed_from_mirror = seed_from_mirror;
+        self
+    }
+
+    #[must_use]
+    pub fn with_epoch_fence_mirror(mut self, epoch_fence_mirror: Option<PathBuf>) -> Self {
+        self.epoch_fence_mirror = epoch_fence_mirror;
         self
     }
 

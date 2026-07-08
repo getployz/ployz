@@ -9,6 +9,8 @@ use ployz_core::roles::DaemonProcessRole;
 use ployz_nats::connect::NatsClientUrl;
 
 const DEFAULT_ENV_DIR: &str = "/etc/ployz";
+const PLOYZ_NATS_NKEY_SEED_FILE: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
+const INTENT_MIRROR_FILE: &str = "intent-mirror.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreDemoteTarget {
@@ -105,6 +107,7 @@ fn repoint_machine_role(
         ))
     })?);
     write_repointed_env(&path, &contents, successor)?;
+    remove_intent_mirror_for_env(&contents)?;
     restart_repointed_role(&SupervisorUnitTarget::PloyzdRole(role).unit_name(), runner)
 }
 
@@ -120,6 +123,7 @@ fn repoint_fixed_role(
         return Ok(());
     };
     write_repointed_env(&path, &contents, successor)?;
+    remove_intent_mirror_for_env(&contents)?;
     restart_repointed_role(&SupervisorUnitTarget::PloyzdRole(role).unit_name(), runner)
 }
 
@@ -171,6 +175,21 @@ fn replace_env_value(contents: &str, key: &str, value: &str) -> Option<String> {
         output.push('\n');
     }
     found.then_some(output)
+}
+
+fn remove_intent_mirror_for_env(contents: &str) -> Result<(), FailureMessage> {
+    let Some(seed_file) = env_value(contents, PLOYZ_NATS_NKEY_SEED_FILE) else {
+        return Ok(());
+    };
+    let mirror_path = PathBuf::from(seed_file).with_file_name(INTENT_MIRROR_FILE);
+    match fs::remove_file(&mirror_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(failure_message(format!(
+            "failed to remove {}: {error}",
+            mirror_path.display()
+        ))),
+    }
 }
 
 fn env_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
@@ -510,9 +529,16 @@ mod tests {
     #[test]
     fn repoint_non_core_roles_updates_only_nats_url_and_restarts_roles() {
         let env = tempfile::tempdir().expect("env dir");
+        let material_dir = env.path().join("material");
+        fs::create_dir(&material_dir).expect("material dir");
+        fs::write(material_dir.join("intent-mirror.json"), "{}").expect("write mirror");
+        let machine_seed = material_dir.join("machine.seed");
         fs::write(
             env.path().join("ployzd-machine.env"),
-            "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE=/machine.seed\nPLOYZ_MACHINE_ID=machine_1\n",
+            format!(
+                "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE={}\nPLOYZ_MACHINE_ID=machine_1\n",
+                machine_seed.display()
+            ),
         )
         .expect("write machine env");
         fs::write(
@@ -537,7 +563,11 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(env.path().join("ployzd-machine.env")).expect("machine env reads"),
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE=/machine.seed\nPLOYZ_MACHINE_ID=machine_1\n",
+            format!(
+                "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE={}\nPLOYZ_MACHINE_ID=machine_1\n",
+                machine_seed.display()
+            ),
         );
+        assert!(!material_dir.join("intent-mirror.json").exists());
     }
 }

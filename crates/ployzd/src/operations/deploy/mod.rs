@@ -40,7 +40,8 @@ use crate::roles::machine::protocol::{
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
-    DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
+    DeployExecutionPorts, DeployServiceAccessorError, DeployServiceExecutionCommand,
+    DeployTerminalEvent,
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, S>(

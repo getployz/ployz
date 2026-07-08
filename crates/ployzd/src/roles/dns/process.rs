@@ -50,7 +50,7 @@ impl RunningDnsProcess {
     pub fn health(&self) -> DnsProcessHealth {
         self.health
             .lock()
-            .expect("dns health lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
@@ -59,7 +59,7 @@ impl RunningDnsProcess {
     pub fn served_projection(&self) -> Option<DnsProjection> {
         self.runtime
             .lock()
-            .expect("dns runtime lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .answers()
             .current()
             .cloned()
@@ -190,7 +190,9 @@ impl DnsProcessSource {
         let update =
             load_dns_projection_update_from_nats(&self.stores.intent_reader, &self.stores.facts)
                 .await;
-        let mut runtime = runtime.lock().expect("dns runtime lock is not poisoned");
+        let mut runtime = runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         Ok(runtime.apply_source_update(update))
     }
@@ -214,7 +216,9 @@ fn record_dns_attempt(
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
-    let mut health = health.lock().expect("dns health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let DnsProcessHealth {
         last_attempt,
         consecutive_failures,

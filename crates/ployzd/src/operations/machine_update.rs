@@ -61,7 +61,15 @@ impl MachineUpdateOperation {
             )
             .await
         {
-            eprintln!("failed to record machine-update running event: {error}");
+            self.record_failed(
+                &operation_id,
+                &machine_id,
+                MachineUpdateFailure::StateCommitFailed {
+                    machine_id: machine_id.clone(),
+                    message: machine_update_event_failure(error),
+                },
+            )
+            .await;
             return;
         }
         let result = self
@@ -125,7 +133,7 @@ impl MachineUpdateOperation {
         machine_id: &MachineId,
         failure: MachineUpdateFailure,
     ) {
-        if let Err(error) = self
+        let _ = self
             .controllers
             .repository()
             .record_machine_update_transition(
@@ -133,10 +141,7 @@ impl MachineUpdateOperation {
                 machine_id,
                 MachineUpdateTransition::Failed { failure },
             )
-            .await
-        {
-            eprintln!("failed to record machine-update failed event: {error}");
-        }
+            .await;
     }
 
     async fn wait_for_target_report(

@@ -123,13 +123,10 @@ impl MachineLifecycleOperation {
         machine_id: &MachineId,
         transition: MachineLifecycleTransition,
     ) {
-        if let Err(error) = self
+        let _ = self
             .controllers
             .repository()
             .record_machine_lifecycle_transition(operation_id, machine_id, transition)
-            .await
-        {
-            eprintln!("failed to record machine-lifecycle terminal event: {error}");
-        }
+            .await;
     }
 }

@@ -101,6 +101,7 @@ impl OperationRepository {
 
 enum RecordTxn {
     Missing,
+    InvalidNextSequence(ployz_core::ops::NextEventSequenceError),
     Projection(StatusProjectionError),
     AlreadySatisfied {
         current_sequence: EventSequence,
@@ -124,7 +125,10 @@ fn record_operation_event_txn(
     };
     // The next sequence is the projection's own: status is authoritative and
     // the transaction holds the write, so the insert lands at this sequence.
-    let sequence = current.next_event_sequence();
+    let sequence = match current.next_event_sequence() {
+        Ok(sequence) => sequence,
+        Err(error) => return Ok(RecordTxn::InvalidNextSequence(error)),
+    };
     // Deploy evidence recorded after a terminal deploy must be fresh.
     if let Some(evidence) = event.deploy_evidence()
         && current.is_terminal()

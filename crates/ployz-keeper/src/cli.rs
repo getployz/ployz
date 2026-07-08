@@ -32,6 +32,7 @@ pub enum KeeperCommand {
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
     CorePromote(KeeperCorePromote),
     CoreDemote(KeeperCoreDemote),
+    CoreRepoint(KeeperCoreRepoint),
     SubstrateUpdate(KeeperSubstrateUpdate),
 }
 
@@ -135,7 +136,28 @@ pub struct KeeperStartup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperSubstrateUpdate {
     pub operation_id: Option<OperationId>,
-    pub version: ExactPloyzVersion,
+    pub source: KeeperSubstrateUpdateSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeeperSubstrateUpdateSource {
+    Version(ExactPloyzVersion),
+    ManifestFile(PathBuf),
+}
+
+impl KeeperSubstrateUpdateSource {
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Version(version) => version.as_str().to_owned(),
+            Self::ManifestFile(path) => path.display().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub const fn updates_nats(&self) -> bool {
+        matches!(self, Self::Version(_))
+    }
 }
 
 /// `core-promote` reads everything from the machine's own state (its id + public
@@ -150,6 +172,11 @@ pub struct KeeperCorePromote {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperCoreDemote {
+    pub successor_nats_url: NatsClientUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperCoreRepoint {
     pub successor_nats_url: NatsClientUrl,
 }
 
@@ -186,12 +213,22 @@ pub fn load_command(
                 successor_nats_url,
             }))
         }
+        Some(KeeperSubcommand::CoreRepoint { successor_nats_url }) => {
+            Ok(KeeperCommand::CoreRepoint(KeeperCoreRepoint {
+                successor_nats_url,
+            }))
+        }
         Some(KeeperSubcommand::SubstrateUpdate {
             operation_id,
             version,
+            manifest_file,
         }) => Ok(KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
             operation_id,
-            version,
+            source: match (version, manifest_file) {
+                (Some(version), None) => KeeperSubstrateUpdateSource::Version(version),
+                (None, Some(path)) => KeeperSubstrateUpdateSource::ManifestFile(path),
+                _ => unreachable!("clap requires exactly one substrate update source"),
+            },
         })),
     }
 }
@@ -243,11 +280,22 @@ enum KeeperSubcommand {
         #[arg(long = "successor-nats-url", value_name = "url", value_parser = parse_nats_client_url)]
         successor_nats_url: NatsClientUrl,
     },
+    #[command(name = "internal-core-repoint", hide = true)]
+    CoreRepoint {
+        #[arg(long = "successor-nats-url", value_name = "url", value_parser = parse_nats_client_url)]
+        successor_nats_url: NatsClientUrl,
+    },
     SubstrateUpdate {
         #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
         operation_id: Option<OperationId>,
-        #[arg(long, value_name = "version")]
-        version: ExactPloyzVersion,
+        #[arg(
+            long,
+            value_name = "version",
+            required_unless_present = "manifest_file"
+        )]
+        version: Option<ExactPloyzVersion>,
+        #[arg(long, value_name = "path", conflicts_with = "version")]
+        manifest_file: Option<PathBuf>,
     },
 }
 
@@ -603,7 +651,8 @@ mod tests {
 
     use super::{
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
-        KeeperCoreDemote, KeeperStartup, KeeperSubstrateUpdate, SpecSource, load_command,
+        KeeperCoreDemote, KeeperCoreRepoint, KeeperStartup, KeeperSubstrateUpdate,
+        KeeperSubstrateUpdateSource, SpecSource, load_command,
     };
     use crate::steps::JoinToken;
 
@@ -805,7 +854,29 @@ mod tests {
                 operation_id: Some(
                     OperationId::try_new("op_update_1").expect("valid operation id")
                 ),
-                version: "v0.0.2-alpha.16".parse().expect("exact version parses"),
+                source: KeeperSubstrateUpdateSource::Version(
+                    "v0.0.2-alpha.16".parse().expect("exact version parses")
+                ),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_loads_substrate_update_manifest_file() {
+        let command = load_command([
+            "substrate-update".into(),
+            "--manifest-file".into(),
+            "/tmp/ployz-dev-release.env".into(),
+        ])
+        .expect("substrate update command loads");
+
+        assert_eq!(
+            command,
+            KeeperCommand::SubstrateUpdate(KeeperSubstrateUpdate {
+                operation_id: None,
+                source: KeeperSubstrateUpdateSource::ManifestFile(PathBuf::from(
+                    "/tmp/ployz-dev-release.env"
+                )),
             })
         );
     }
@@ -822,6 +893,24 @@ mod tests {
         assert_eq!(
             command,
             KeeperCommand::CoreDemote(KeeperCoreDemote {
+                successor_nats_url: NatsClientUrl::try_new("tls://203.0.113.10:4222")
+                    .expect("valid url"),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_core_repoint() {
+        let command = load_command([
+            "internal-core-repoint".into(),
+            "--successor-nats-url".into(),
+            "tls://203.0.113.10:4222".into(),
+        ])
+        .expect("internal core repoint command loads");
+
+        assert_eq!(
+            command,
+            KeeperCommand::CoreRepoint(KeeperCoreRepoint {
                 successor_nats_url: NatsClientUrl::try_new("tls://203.0.113.10:4222")
                     .expect("valid url"),
             })

@@ -26,7 +26,7 @@ use crate::roles::machine::client::{
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
-use ployz_core::state::PendingMachineJoinRecovery;
+use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
@@ -117,6 +117,7 @@ pub async fn start_control_process_with_client_and_reload(
     let core_store = CoreStore::open(config.core_db_path.clone())
         .await
         .map_err(ControlProcessError::OpenCoreStore)?;
+    reject_stale_core_epoch(&core_store, config.epoch_fence_mirror.as_deref()).await?;
     let repository = OperationRepository::open(core_store.clone(), client.clone());
     let pending_join_recovery = if let Some(mirror_path) = &config.seed_from_mirror {
         seed_core_from_mirror(&core_store, mirror_path).await?;
@@ -306,6 +307,33 @@ async fn seed_core_from_mirror(
     Ok(())
 }
 
+async fn reject_stale_core_epoch(
+    core_store: &CoreStore,
+    mirror_path: Option<&Path>,
+) -> Result<(), ControlProcessError> {
+    let Some(mirror_path) = mirror_path else {
+        return Ok(());
+    };
+    let Some(local) = core_store
+        .control_plane_epoch_if_present()
+        .await
+        .map_err(ControlProcessError::ReadCoreEpoch)?
+    else {
+        return Ok(());
+    };
+    let Some(snapshot) = MachineIntentMirror::new(mirror_path.to_path_buf()).load() else {
+        return Ok(());
+    };
+    if snapshot.epoch > local {
+        return Err(ControlProcessError::StaleCoreEpoch {
+            local,
+            mirror: snapshot.epoch,
+            mirror_path: mirror_path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
 fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecovery> {
     MachinePendingJoinMirror::new(mirror_path.with_file_name("pending-machine-joins.json"))
         .load()
@@ -319,6 +347,12 @@ pub enum ControlProcessError {
     MissingDeployMachine,
     ConnectNats(NatsConnectError),
     OpenCoreStore(CoreStoreError),
+    ReadCoreEpoch(CoreStoreError),
+    StaleCoreEpoch {
+        local: ControlPlaneEpoch,
+        mirror: ControlPlaneEpoch,
+        mirror_path: PathBuf,
+    },
     SeedMirrorMissing(PathBuf),
     SeedCore(SeedCoreError),
     SeedAuthorizations(NatsAuthorizationStoreError),
@@ -344,6 +378,20 @@ impl fmt::Display for ControlProcessError {
             Self::OpenCoreStore(error) => {
                 write!(formatter, "failed to open core state store: {error}")
             }
+            Self::ReadCoreEpoch(error) => {
+                write!(formatter, "failed to read core epoch: {error}")
+            }
+            Self::StaleCoreEpoch {
+                local,
+                mirror,
+                mirror_path,
+            } => write!(
+                formatter,
+                "refusing stale core startup: local epoch {} is behind mirrored epoch {} at {}",
+                local.get(),
+                mirror.get(),
+                mirror_path.display()
+            ),
             Self::SeedMirrorMissing(path) => {
                 write!(
                     formatter,
@@ -426,5 +474,43 @@ mod tests {
             .await
             .expect_err("missing mirror errors");
         assert!(matches!(error, ControlProcessError::SeedMirrorMissing(_)));
+    }
+
+    #[tokio::test]
+    async fn refuses_startup_when_local_core_epoch_is_behind_machine_mirror() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror_path = dir.path().join("intent-mirror.json");
+        MachineIntentMirror::new(mirror_path.clone())
+            .store(&empty_snapshot(ControlPlaneEpoch::initial().next()))
+            .expect("write mirror");
+        let store = CoreStore::open_in_memory().await.expect("store");
+        assert_eq!(
+            store.control_plane_epoch().await.expect("epoch"),
+            ControlPlaneEpoch::initial()
+        );
+
+        let error = reject_stale_core_epoch(&store, Some(&mirror_path))
+            .await
+            .expect_err("stale core rejected");
+
+        assert!(matches!(error, ControlProcessError::StaleCoreEpoch { .. }));
+    }
+
+    #[tokio::test]
+    async fn allows_startup_when_local_core_epoch_matches_machine_mirror() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror_path = dir.path().join("intent-mirror.json");
+        MachineIntentMirror::new(mirror_path.clone())
+            .store(&empty_snapshot(ControlPlaneEpoch::initial()))
+            .expect("write mirror");
+        let store = CoreStore::open_in_memory().await.expect("store");
+        assert_eq!(
+            store.control_plane_epoch().await.expect("epoch"),
+            ControlPlaneEpoch::initial()
+        );
+
+        reject_stale_core_epoch(&store, Some(&mirror_path))
+            .await
+            .expect("matching epoch allowed");
     }
 }

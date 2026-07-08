@@ -6,7 +6,6 @@ use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::service_runtime::NatsClient;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, oneshot};
@@ -14,8 +13,6 @@ use tokio::task::JoinHandle;
 
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const EPOCH_ENFORCE_INTERVAL: Duration = Duration::from_secs(5);
-const CORE_NATS_PORT: u16 = 4222;
-
 /// A background task owned by a role process: a shutdown signal and its join
 /// handle.
 pub(crate) struct RunningFailoverTask {
@@ -35,7 +32,7 @@ impl RunningFailoverTask {
 pub(crate) fn mirrored_server_pool(seed_file: &Path, seed: &NatsClientUrl) -> Vec<String> {
     let mirror = MachineIntentMirror::new(seed_file.with_file_name("intent-mirror.json"));
     match mirror.load() {
-        Some(snapshot) => candidate_server_pool(&snapshot, seed),
+        Some(snapshot) => higher_epoch_server_pool(&snapshot, seed),
         None => vec![seed.as_str().to_owned()],
     }
 }
@@ -157,7 +154,6 @@ async fn run_intent_failover_mirror(
 fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
     let mut pool = vec![seed.as_str().to_owned()];
     push_unique(&mut pool, snapshot.core_urls.iter().cloned());
-    push_unique(&mut pool, reachable_machine_urls(snapshot));
     pool
 }
 
@@ -165,15 +161,7 @@ fn higher_epoch_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> 
     let seed = seed.as_str().to_owned();
     let mut pool = Vec::new();
     push_unique(&mut pool, snapshot.core_urls.iter().cloned());
-    push_unique(&mut pool, reachable_machine_urls(snapshot));
-    let seed_is_still_named = snapshot.core_urls.iter().any(|url| url == &seed)
-        || snapshot
-            .active_machines
-            .iter()
-            .flat_map(|machine| machine.control_endpoints.iter())
-            .any(|endpoint| {
-                format!("tls://{}", SocketAddr::new(*endpoint, CORE_NATS_PORT)) == seed
-            });
+    let seed_is_still_named = snapshot.core_urls.iter().any(|url| url == &seed);
     if seed_is_still_named {
         push_unique(&mut pool, std::iter::once(seed.clone()));
     }
@@ -181,19 +169,6 @@ fn higher_epoch_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> 
         pool.push(seed);
     }
     pool
-}
-
-fn reachable_machine_urls(snapshot: &IntentSnapshot) -> Vec<String> {
-    let mut urls = Vec::new();
-    for machine in &snapshot.active_machines {
-        for endpoint in &machine.control_endpoints {
-            let url = format!("tls://{}", SocketAddr::new(*endpoint, CORE_NATS_PORT));
-            if !urls.contains(&url) {
-                urls.push(url);
-            }
-        }
-    }
-    urls
 }
 
 fn push_unique(pool: &mut Vec<String>, urls: impl IntoIterator<Item = String>) {
@@ -235,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_server_pool_keeps_seed_first_then_core_urls_then_reachable_machines() {
+    fn candidate_server_pool_keeps_seed_first_then_core_urls() {
         let seed = NatsClientUrl::try_new("tls://10.0.0.1:4222").expect("seed url");
         let snapshot = snapshot_with(
             vec!["tls://203.0.113.9:4222"],
@@ -250,7 +225,6 @@ mod tests {
             vec![
                 "tls://10.0.0.1:4222".to_owned(),
                 "tls://203.0.113.9:4222".to_owned(),
-                "tls://203.0.113.5:4222".to_owned(),
             ]
         );
     }
@@ -272,7 +246,7 @@ mod tests {
     fn higher_epoch_server_pool_keeps_seed_when_mirror_names_it() {
         let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
         let snapshot = snapshot_with(
-            vec!["tls://203.0.113.9:4222"],
+            vec!["tls://203.0.113.9:4222", "tls://203.0.113.5:4222"],
             vec![
                 active_machine_with("old_core", Some("203.0.113.5")),
                 active_machine_with("promoted_core", Some("203.0.113.9")),
@@ -288,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_server_pool_loads_reachable_machines_from_cached_intent() {
+    fn mirrored_server_pool_prefers_cached_core_urls_over_the_seed() {
         let dir = tempfile::tempdir().expect("temp dir");
         let seed_file = dir.path().join("machine.seed");
         let mirror = MachineIntentMirror::new(dir.path().join("intent-mirror.json"));
@@ -302,10 +276,7 @@ mod tests {
 
         assert_eq!(
             mirrored_server_pool(&seed_file, &seed),
-            vec![
-                "tls://203.0.113.5:4222".to_owned(),
-                "tls://203.0.113.9:4222".to_owned(),
-            ]
+            vec!["tls://203.0.113.9:4222".to_owned()]
         );
     }
 }

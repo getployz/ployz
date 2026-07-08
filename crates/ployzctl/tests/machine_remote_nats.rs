@@ -45,7 +45,9 @@ use ployzctl::bootstrap_command::{
 use ployzctl::commands::PloyzctlCommand;
 use ployzctl::commands::core::{CorePromoteCommand, CoreReplaceCommand};
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
-use ployzctl::config::{ClusterContext, load_cluster_context, save_cluster_context};
+use ployzctl::config::{
+    ClusterContext, ClusterContextMachine, load_cluster_context, save_cluster_context,
+};
 use ployzctl::remote_machine_runtime::RemoteMachineExecutionError;
 use ployzctl::runtime::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
 use ployzctl::ssh::SshTarget;
@@ -126,7 +128,7 @@ case "$cmd" in
   *'ployz-keeper bootstrap core'* | *'ployz-keeper bootstrap join'*)
     {installer_body}
     ;;
-  *'internal-core-demote --successor-nats-url'*)
+  *'internal-core-demote --successor-nats-url'* | *'internal-core-repoint --successor-nats-url'*)
     echo 'core replaced'
     ;;
   *'ployz-keeper core-promote'*)
@@ -512,6 +514,33 @@ async fn core_replace_remote_runs_keeper_command() {
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
     let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: vec![
+                ClusterContextMachine {
+                    machine_id: machine_id("machine_2"),
+                    ssh: Some(SshTarget::parse("root@203.0.113.10").expect("target parses")),
+                },
+                ClusterContextMachine {
+                    machine_id: machine_id("machine_1"),
+                    ssh: Some(SshTarget::parse("root@203.0.113.11").expect("target parses")),
+                },
+                ClusterContextMachine {
+                    machine_id: machine_id("machine_3"),
+                    ssh: Some(SshTarget::parse("root@203.0.113.12").expect("target parses")),
+                },
+            ],
+        },
+    )
+    .expect("cluster context saves");
 
     let output = execute_command(
         PloyzctlCommand::CoreReplace(CoreReplaceCommand {
@@ -529,6 +558,14 @@ async fn core_replace_remote_runs_keeper_command() {
             "sudo cat /var/lib/ployz/join-material".to_owned(),
             format!(
                 "sudo ployz-keeper internal-core-demote --successor-nats-url '{}'",
+                server.server.client_url().as_str()
+            ),
+            format!(
+                "sudo ployz-keeper internal-core-repoint --successor-nats-url '{}'",
+                server.server.client_url().as_str()
+            ),
+            format!(
+                "sudo ployz-keeper internal-core-repoint --successor-nats-url '{}'",
                 server.server.client_url().as_str()
             )
         ]

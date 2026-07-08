@@ -29,6 +29,7 @@ pub async fn core_replace_report(
                 }
             }
             error @ (RecordOperationEventError::StoreStatus(_)
+            | RecordOperationEventError::InvalidNextSequence(_)
             | RecordOperationEventError::ProjectStatus(_)) => CoreReplaceReportError::Unavailable {
                 operation_id: operation_id.clone(),
                 message: error.to_string(),

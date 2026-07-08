@@ -70,7 +70,7 @@ impl RunningGatewayProcess {
     pub fn health(&self) -> GatewayProcessHealth {
         self.health
             .lock()
-            .expect("gateway health lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
@@ -78,7 +78,7 @@ impl RunningGatewayProcess {
     pub fn served_projection(&self) -> Option<GatewayProjection> {
         self.runtime
             .lock()
-            .expect("gateway runtime lock is not poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .route_table()
             .current()
             .cloned()
@@ -311,7 +311,7 @@ impl GatewayProcessSource {
         let tick = {
             let mut runtime = runtime
                 .lock()
-                .expect("gateway runtime lock is not poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             runtime.apply_source_update(update)
         };
         if let Some(projection) = tick.served.as_ref() {
@@ -495,7 +495,9 @@ enum GatewayWatchEvent {
 }
 
 fn record_gateway_watch_success(health: &Mutex<GatewayProcessHealth>) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     health.last_watch_failure = None;
     health.consecutive_watch_failures = 0;
 }
@@ -504,7 +506,9 @@ fn record_gateway_watch_failure(
     health: &Mutex<GatewayProcessHealth>,
     failure: GatewayWatchFailure,
 ) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     health.last_watch_failure = Some(failure);
     health.consecutive_watch_failures += 1;
 }
@@ -513,7 +517,9 @@ fn record_gateway_status_publish_result(
     health: &Mutex<GatewayProcessHealth>,
     result: Result<(), GatewayProcessError>,
 ) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match result {
         Ok(()) => {
             health.last_status_publish_failure = None;
@@ -534,7 +540,9 @@ fn record_gateway_attempt(
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let GatewayProcessHealth {
         last_attempt,
         consecutive_failures,
@@ -623,7 +631,9 @@ fn gateway_observation_from_attempt(
 }
 
 fn record_gateway_http_failure(health: &Mutex<GatewayProcessHealth>, failure: GatewayHttpFailure) {
-    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     health.last_http_failure = Some(failure);
     health.consecutive_http_failures += 1;
 }
