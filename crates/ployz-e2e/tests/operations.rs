@@ -293,6 +293,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
         machine_id("machine_a"),
+        None,
     )
     .await?;
     let upstream = TestUpstream::start().await;
@@ -378,6 +379,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
         machine_id("machine_a"),
+        None,
     )
     .await?;
     let upstream = TestUpstream::start_with_expected_requests(2).await;
@@ -481,6 +483,7 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
         machine_id("machine_a"),
+        None,
     )
     .await?;
     let first_upstream = TestUpstream::start_with_expected_requests(2).await;
@@ -591,6 +594,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         Duration::from_millis(10),
         format!("127.0.0.1:{route_port}").parse()?,
         machine_id("core_1"),
+        None,
     )
     .await?;
     let edge_gateway_runtime = start_gateway_process_with_client(
@@ -598,6 +602,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         Duration::from_millis(10),
         format!("[::1]:{route_port}").parse()?,
         machine_id("edge_2"),
+        None,
     )
     .await?;
     let upstream = TestUpstream::start_with_expected_requests(2).await;
