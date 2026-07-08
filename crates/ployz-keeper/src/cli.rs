@@ -32,7 +32,6 @@ pub enum KeeperCommand {
     FirstMachineInstall(Box<FirstMachineInstallTarget>),
     CorePromote(KeeperCorePromote),
     CoreDemote(KeeperCoreDemote),
-    CoreRepoint(KeeperCoreRepoint),
     SubstrateUpdate(KeeperSubstrateUpdate),
 }
 
@@ -176,11 +175,6 @@ pub struct KeeperCoreDemote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeeperCoreRepoint {
-    pub successor_nats_url: NatsClientUrl,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupJoinToken {
     pub token: JoinToken,
     pub file: PathBuf,
@@ -210,11 +204,6 @@ pub fn load_command(
         }
         Some(KeeperSubcommand::CoreDemote { successor_nats_url }) => {
             Ok(KeeperCommand::CoreDemote(KeeperCoreDemote {
-                successor_nats_url,
-            }))
-        }
-        Some(KeeperSubcommand::CoreRepoint { successor_nats_url }) => {
-            Ok(KeeperCommand::CoreRepoint(KeeperCoreRepoint {
                 successor_nats_url,
             }))
         }
@@ -277,11 +266,6 @@ enum KeeperSubcommand {
     },
     #[command(name = "internal-core-demote", hide = true)]
     CoreDemote {
-        #[arg(long = "successor-nats-url", value_name = "url", value_parser = parse_nats_client_url)]
-        successor_nats_url: NatsClientUrl,
-    },
-    #[command(name = "internal-core-repoint", hide = true)]
-    CoreRepoint {
         #[arg(long = "successor-nats-url", value_name = "url", value_parser = parse_nats_client_url)]
         successor_nats_url: NatsClientUrl,
     },
@@ -651,8 +635,8 @@ mod tests {
 
     use super::{
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
-        KeeperCoreDemote, KeeperCoreRepoint, KeeperStartup, KeeperSubstrateUpdate,
-        KeeperSubstrateUpdateSource, SpecSource, load_command,
+        KeeperCoreDemote, KeeperStartup, KeeperSubstrateUpdate, KeeperSubstrateUpdateSource,
+        SpecSource, load_command,
     };
     use crate::steps::JoinToken;
 
@@ -893,24 +877,6 @@ mod tests {
         assert_eq!(
             command,
             KeeperCommand::CoreDemote(KeeperCoreDemote {
-                successor_nats_url: NatsClientUrl::try_new("tls://203.0.113.10:4222")
-                    .expect("valid url"),
-            })
-        );
-    }
-
-    #[test]
-    fn parser_accepts_core_repoint() {
-        let command = load_command([
-            "internal-core-repoint".into(),
-            "--successor-nats-url".into(),
-            "tls://203.0.113.10:4222".into(),
-        ])
-        .expect("internal core repoint command loads");
-
-        assert_eq!(
-            command,
-            KeeperCommand::CoreRepoint(KeeperCoreRepoint {
                 successor_nats_url: NatsClientUrl::try_new("tls://203.0.113.10:4222")
                     .expect("valid url"),
             })

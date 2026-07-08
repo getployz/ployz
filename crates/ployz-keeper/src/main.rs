@@ -19,7 +19,7 @@ use ployz_keeper::artifacts::{
 };
 use ployz_keeper::cli::{
     KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, KeeperCoreDemote, KeeperCorePromote,
-    KeeperCoreRepoint, KeeperSubstrateUpdate, KeeperSubstrateUpdateSource, load_command,
+    KeeperSubstrateUpdate, KeeperSubstrateUpdateSource, load_command,
 };
 use ployz_keeper::cloud_client::get_text_url;
 use ployz_keeper::command::{KeeperCommandRunner, SystemKeeperCommandRunner};
@@ -136,28 +136,12 @@ fn main() -> ExitCode {
         }
         Ok(KeeperCommand::CorePromote(promote)) => run_core_promote_command(promote),
         Ok(KeeperCommand::CoreDemote(demote)) => run_core_demote_command(demote),
-        Ok(KeeperCommand::CoreRepoint(repoint)) => run_core_repoint_command(repoint),
         Err(error) if error.is_help_requested() => {
             print!("{error}");
             ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("{error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn run_core_repoint_command(repoint: KeeperCoreRepoint) -> ExitCode {
-    let mut runner = SystemKeeperCommandRunner::default();
-    match repoint_non_core_roles(
-        Path::new("/etc/ployz"),
-        &repoint.successor_nats_url,
-        &mut runner,
-    ) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("ployz-keeper core-repoint failed: {error}");
             ExitCode::FAILURE
         }
     }

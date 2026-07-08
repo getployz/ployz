@@ -34,7 +34,7 @@ The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many p
 
 - R1. Authenticated NATS connection setup must have one shared API for seed-only and failover-capable clients.
 - R2. A failover-capable client must start with its configured seed plus mirrored Reachable Machine control endpoints when a mirror exists.
-- R3. Once a client observes an intent snapshot with an epoch higher than the epoch it booted from, the higher-epoch core URLs replace the bootstrap seed as the client pool head. The old seed is not retained unless it is also present in the accepted mirror.
+- R3. Once a client observes an intent snapshot with an epoch higher than the epoch it booted from, the current core machine's roster-derived control endpoints replace the bootstrap seed as the client pool head. The old seed is not retained unless it is also present in the accepted mirror.
 - R4. If a client later receives a lower-epoch snapshot than its highest accepted epoch, it must reject that snapshot, keep the last good higher-epoch pool, and reconnect away from the stale core.
 - R5. Client-side pool priority must not mutate machine lifecycle, reachable-machine truth, operation evidence, or roster intent.
 - R6. `ployzd` machine, gateway, and DNS roles must share the same epoch/pool state machine and the same intent stream consumer.
@@ -56,7 +56,7 @@ The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many p
 
 - KTD1. **Centralize policy in `ployz-nats`.** The native `async-nats` reconnect machinery already handles multiple URLs, ordering, pool updates, and force reconnect. Ployz should feed it the right ordered pool rather than building another reconnect loop.
 - KTD2. **Keep mirror interpretation in `ployzd`.** `ployz-nats` should not import `IntentSnapshot` or machine-local mirror storage. `ployzd` owns role-local recovery context and supplies ordered pools to the shared connector.
-- KTD3. **Epoch replaces the bootstrap seed.** Seed-first is correct only before the client sees a higher epoch. After that, the accepted higher-epoch core URLs become the pool head. The old seed is just bootstrap material and should not linger as a special fallback.
+- KTD3. **Epoch replaces the bootstrap seed.** Seed-first is correct only before the client sees a higher epoch. After that, the accepted higher-epoch snapshot's `core_machine_id` selects the pool head from the mirrored roster. The old seed is just bootstrap material and should not linger as a special fallback.
 - KTD4. **`intent.changed` carries the live snapshot.** Empty invalidation messages plus per-role polling are the current hack. The live path should apply the snapshot from NATS directly; `intent.get` repairs missed or bad messages.
 - KTD5. **Seed-only remains a first-class policy.** Keeper stale joins, one-shot `ployzctl` calls, control local loopback, and test fixtures should still use the same connection API but with no mirror-driven pool mutation.
 - KTD6. **No new env var.** The existing `PLOYZ_NATS_URL`, CA file, seed file, and local mirror path are enough. Adding `PLOYZ_NATS_URLS` would leak internal recovery policy into install/config before it needs to.
@@ -67,8 +67,8 @@ The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many p
 stateDiagram-v2
   [*] --> SeedPreferred
   SeedPreferred --> SeedPreferred: mirror epoch <= best_epoch_seen
-  SeedPreferred --> EpochCorePreferred: mirror epoch > best_epoch_seen / pool = epoch_core_urls + mirror_urls
-  EpochCorePreferred --> EpochCorePreferred: mirror epoch >= best_epoch_seen / pool = epoch_core_urls + mirror_urls
+  SeedPreferred --> EpochCorePreferred: mirror epoch > best_epoch_seen / pool = core_machine_endpoints + mirror_urls
+  EpochCorePreferred --> EpochCorePreferred: mirror epoch >= best_epoch_seen / pool = core_machine_endpoints + mirror_urls
   EpochCorePreferred --> EpochCorePreferred: mirror epoch < best_epoch_seen / reject snapshot
   EpochCorePreferred --> ReconnectAwayFromStale: lower epoch received from connected server
   ReconnectAwayFromStale --> EpochCorePreferred: force_reconnect(last_good_pool)
@@ -129,12 +129,12 @@ flowchart TB
 - **Requirements:** R2, R3, R4, R5
 - **Dependencies:** U1
 - **Files:** `crates/ployzd/src/roles/machine/process.rs` or a new `crates/ployzd/src/roles/nats_failover.rs`, `crates/ployzd/src/roles/machine/intent_mirror.rs`, `crates/ployzd/tests/role_process.rs`
-- **Approach:** Keep one local state object with `best_epoch_seen`, `current_core_urls`, `mirror_urls`, and `last_good_pool`. Before a higher epoch is observed, render `seed + mirror_urls`. After a higher epoch is observed, render `current_core_urls + mirror_urls`; the bootstrap seed disappears unless the accepted mirror also names it. Reject lower epochs and keep the last good higher-epoch pool. This state object should not write intent, lifecycle, or facts.
+- **Approach:** Keep one local state object with `best_epoch_seen` and `last_good_pool`. Before a higher epoch is observed, render `seed + mirrored Reachable Machine endpoints`. After a higher epoch is observed, render the current core machine's roster-derived control endpoints followed by the remaining mirrored Reachable Machine endpoints; the bootstrap seed disappears unless the accepted mirror also names it. Reject lower epochs and keep the last good higher-epoch pool. This state object should not write intent, lifecycle, or facts.
 - **Patterns to follow:** `MachineIntentMirror::store` already rejects lower epochs; mirror that rule for connection preference without moving storage ownership into `ployz-nats`.
 - **Test scenarios:**
   - With no mirror, render only the configured seed.
   - With same-epoch mirror, render seed first plus reachable machine URLs.
-  - With higher-epoch mirror, render higher-epoch core URLs first plus remaining reachable machine URLs, with no configured-seed fallback.
+  - With higher-epoch mirror, render the higher-epoch core machine's control endpoints first plus remaining reachable machine URLs, with no configured-seed fallback.
   - With epoch +2 after epoch +1, update `best_epoch_seen` and make the newest mirror order primary.
   - With a lower-epoch snapshot after a higher one, keep the previous higher-epoch pool and report that reconnect should be forced.
   - Ensure pool rendering deduplicates URLs that appear as both core and mirror candidates.

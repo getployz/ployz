@@ -439,11 +439,12 @@ impl std::error::Error for ControlProcessError {}
 mod tests {
     use super::*;
     use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
+    use ployz_test_support::ids::machine_id;
 
     fn empty_snapshot(epoch: ControlPlaneEpoch) -> IntentSnapshot {
         IntentSnapshot {
             epoch,
-            core_urls: Vec::new(),
+            core_machine_id: machine_id("machine_a"),
             active_machines: Vec::new(),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),

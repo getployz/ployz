@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Selection"
+  short_description: "Claude Code model routing with Codex CC."
+  default_prompt: "Use model-selection only inside Claude Code when choosing Claude models or delegating to Codex through openai/codex-plugin-cc."

@@ -209,13 +209,7 @@ async fn load_intent(
 
     Ok(IntentSnapshot {
         epoch,
-        core_urls: active_machines
-            .iter()
-            .find(|machine| &machine.machine_id == core_machine_id)
-            .into_iter()
-            .flat_map(|machine| machine.control_endpoints.iter())
-            .map(|endpoint| format!("tls://{}", std::net::SocketAddr::new(*endpoint, 4222)))
-            .collect(),
+        core_machine_id: core_machine_id.clone(),
         active_machines,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,

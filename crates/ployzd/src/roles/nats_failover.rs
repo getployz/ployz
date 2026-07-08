@@ -6,6 +6,7 @@ use ployz_core::state::IntentSnapshot;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::service_runtime::NatsClient;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, oneshot};
@@ -153,22 +154,40 @@ async fn run_intent_failover_mirror(
 
 fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
     let mut pool = vec![seed.as_str().to_owned()];
-    push_unique(&mut pool, snapshot.core_urls.iter().cloned());
+    push_unique(&mut pool, reachable_server_urls(snapshot));
     pool
 }
 
 fn higher_epoch_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
-    let seed = seed.as_str().to_owned();
     let mut pool = Vec::new();
-    push_unique(&mut pool, snapshot.core_urls.iter().cloned());
-    let seed_is_still_named = snapshot.core_urls.iter().any(|url| url == &seed);
-    if seed_is_still_named {
-        push_unique(&mut pool, std::iter::once(seed.clone()));
-    }
+    push_unique(&mut pool, core_server_urls(snapshot));
+    push_unique(&mut pool, reachable_server_urls(snapshot));
     if pool.is_empty() {
-        pool.push(seed);
+        pool.push(seed.as_str().to_owned());
     }
     pool
+}
+
+fn core_server_urls(snapshot: &IntentSnapshot) -> Vec<String> {
+    snapshot
+        .control_endpoints_of(&snapshot.core_machine_id)
+        .into_iter()
+        .flatten()
+        .map(control_endpoint_url)
+        .collect()
+}
+
+fn reachable_server_urls(snapshot: &IntentSnapshot) -> Vec<String> {
+    snapshot
+        .active_machines
+        .iter()
+        .flat_map(|machine| machine.control_endpoints.iter())
+        .map(control_endpoint_url)
+        .collect()
+}
+
+fn control_endpoint_url(ip: &IpAddr) -> String {
+    format!("tls://{}", SocketAddr::new(*ip, 4222))
 }
 
 fn push_unique(pool: &mut Vec<String>, urls: impl IntoIterator<Item = String>) {
@@ -185,23 +204,21 @@ mod tests {
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
     use ployz_test_support::ids::{machine_id, operation_id};
 
-    fn active_machine_with(id: &str, endpoint: Option<&str>) -> ActiveMachineState {
+    fn active_machine_with(id: &str, endpoints: &[&str]) -> ActiveMachineState {
         ActiveMachineState {
             machine_id: machine_id(id),
             name: ployz_core::machine::MachineName::try_new(id).expect("machine name"),
             activated_by: operation_id("op_activate"),
             lifecycle: MachineLifecycle::Active,
-            control_endpoints: endpoint
-                .map(|ip| vec![ip.parse().expect("ip")])
-                .unwrap_or_default(),
+            control_endpoints: endpoints.iter().map(|ip| ip.parse().expect("ip")).collect(),
             mesh_endpoints: Vec::new(),
         }
     }
 
-    fn snapshot_with(core_urls: Vec<&str>, machines: Vec<ActiveMachineState>) -> IntentSnapshot {
+    fn snapshot_with(core_machine_id: &str, machines: Vec<ActiveMachineState>) -> IntentSnapshot {
         IntentSnapshot {
             epoch: ControlPlaneEpoch::initial(),
-            core_urls: core_urls.into_iter().map(str::to_owned).collect(),
+            core_machine_id: machine_id(core_machine_id),
             active_machines: machines,
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
@@ -210,20 +227,21 @@ mod tests {
     }
 
     #[test]
-    fn candidate_server_pool_keeps_seed_first_then_core_urls() {
+    fn candidate_server_pool_keeps_seed_first_then_reachable_urls() {
         let seed = NatsClientUrl::try_new("tls://10.0.0.1:4222").expect("seed url");
         let snapshot = snapshot_with(
-            vec!["tls://203.0.113.9:4222"],
+            "machine_c",
             vec![
-                active_machine_with("machine_a", Some("203.0.113.5")),
-                active_machine_with("machine_b", None),
-                active_machine_with("machine_c", Some("203.0.113.9")),
+                active_machine_with("machine_a", &["203.0.113.5"]),
+                active_machine_with("machine_b", &[]),
+                active_machine_with("machine_c", &["203.0.113.9"]),
             ],
         );
         assert_eq!(
             candidate_server_pool(&snapshot, &seed),
             vec![
                 "tls://10.0.0.1:4222".to_owned(),
+                "tls://203.0.113.5:4222".to_owned(),
                 "tls://203.0.113.9:4222".to_owned(),
             ]
         );
@@ -233,8 +251,8 @@ mod tests {
     fn higher_epoch_server_pool_drops_old_seed_when_mirror_no_longer_names_it() {
         let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
         let snapshot = snapshot_with(
-            vec!["tls://203.0.113.9:4222"],
-            vec![active_machine_with("promoted_core", Some("203.0.113.9"))],
+            "promoted_core",
+            vec![active_machine_with("promoted_core", &["203.0.113.9"])],
         );
         assert_eq!(
             higher_epoch_server_pool(&snapshot, &seed),
@@ -246,10 +264,10 @@ mod tests {
     fn higher_epoch_server_pool_keeps_seed_when_mirror_names_it() {
         let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
         let snapshot = snapshot_with(
-            vec!["tls://203.0.113.9:4222", "tls://203.0.113.5:4222"],
+            "promoted_core",
             vec![
-                active_machine_with("old_core", Some("203.0.113.5")),
-                active_machine_with("promoted_core", Some("203.0.113.9")),
+                active_machine_with("old_core", &["203.0.113.5"]),
+                active_machine_with("promoted_core", &["203.0.113.9"]),
             ],
         );
         assert_eq!(
@@ -262,14 +280,14 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_server_pool_prefers_cached_core_urls_over_the_seed() {
+    fn mirrored_server_pool_prefers_cached_core_endpoints_over_the_seed() {
         let dir = tempfile::tempdir().expect("temp dir");
         let seed_file = dir.path().join("machine.seed");
         let mirror = MachineIntentMirror::new(dir.path().join("intent-mirror.json"));
         mirror
             .store(&snapshot_with(
-                vec!["tls://203.0.113.9:4222"],
-                vec![active_machine_with("promoted_core", Some("203.0.113.9"))],
+                "promoted_core",
+                vec![active_machine_with("promoted_core", &["203.0.113.9"])],
             ))
             .expect("store mirror");
         let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");

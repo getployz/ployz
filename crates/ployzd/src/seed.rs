@@ -94,7 +94,7 @@ mod tests {
         use ployz_core::security::NatsPrincipal;
         IntentSnapshot {
             epoch,
-            core_urls: Vec::new(),
+            core_machine_id: machine_id("machine_a"),
             active_machines: vec![ActiveMachineState {
                 machine_id: machine_id("machine_a"),
                 name: ployz_core::machine::MachineName::try_new("machine_a").expect("name"),

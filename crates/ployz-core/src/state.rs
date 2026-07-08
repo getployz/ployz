@@ -110,7 +110,7 @@ impl ControlPlaneEpoch {
 #[serde(deny_unknown_fields)]
 pub struct IntentSnapshot {
     pub epoch: ControlPlaneEpoch,
-    pub core_urls: Vec<String>,
+    pub core_machine_id: MachineId,
     pub active_machines: Vec<ActiveMachineState>,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,

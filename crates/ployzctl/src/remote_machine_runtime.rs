@@ -169,8 +169,6 @@ pub(crate) async fn execute_core_replace_remote(
         return Err(ssh_error(source));
     }
 
-    repoint_context_machines(&command.target, &successor_nats_url, &config)?;
-
     watch_operation_until_terminal(
         &api,
         OperationEventReplayRequest {
@@ -188,38 +186,6 @@ pub(crate) async fn execute_core_replace_remote(
         "core demoted on {}\n",
         command.target.destination()
     )))
-}
-
-fn repoint_context_machines(
-    demoted: &SshTarget,
-    successor_nats_url: &NatsClientUrl,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<(), PloyzctlExecutionError> {
-    let Some(path) = optional_cluster_context_path(config) else {
-        return Ok(());
-    };
-    let Some(context) = load_cluster_context(&path).map_err(|source| {
-        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
-    })?
-    else {
-        return Ok(());
-    };
-    let client = ssh_client(config, config.ssh_install_timeout());
-    let mut remote_command = "sudo ployz-keeper internal-core-repoint".to_owned();
-    remote_command.push_str(" --successor-nats-url ");
-    remote_command.push_str(&shell_quote(successor_nats_url.as_str()));
-    for machine in context.machines {
-        let Some(target) = machine.ssh else {
-            continue;
-        };
-        if &target == demoted {
-            continue;
-        }
-        client
-            .run(&target, SshPhase::CoreReplace, &remote_command)
-            .map_err(ssh_error)?;
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -23,7 +23,7 @@ The decision, seam by seam:
   value; it does not define it.
 
 - **Intent is mirrored as the `IntentSnapshot`, persisted machine-side.**
-  The payload is `IntentSnapshot { active_machines, route_bindings,
+  The payload is `IntentSnapshot { epoch, core_machine_id, active_machines, route_bindings,
   serving_target_entries, authorized_users }` — the `intent.get` reply and the
   gateway/DNS fold input, plus the authorized-users grant set (see below).
   Reachable Machines subscribe to `intent.changed`, pull the snapshot, and persist

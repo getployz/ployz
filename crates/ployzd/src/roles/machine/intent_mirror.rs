@@ -87,7 +87,7 @@ mod tests {
     fn snapshot(epoch: u64) -> IntentSnapshot {
         serde_json::from_value(serde_json::json!({
             "epoch": epoch,
-            "core_urls": [],
+            "core_machine_id": "machine_a",
             "active_machines": [],
             "route_bindings": [],
             "serving_target_entries": [],

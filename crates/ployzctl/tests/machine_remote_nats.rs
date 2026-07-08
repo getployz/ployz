@@ -128,7 +128,7 @@ case "$cmd" in
   *'ployz-keeper bootstrap core'* | *'ployz-keeper bootstrap join'*)
     {installer_body}
     ;;
-  *'internal-core-demote --successor-nats-url'* | *'internal-core-repoint --successor-nats-url'*)
+  *'internal-core-demote --successor-nats-url'*)
     echo 'core replaced'
     ;;
   *'ployz-keeper core-promote'*)
@@ -560,14 +560,6 @@ async fn core_replace_remote_runs_keeper_command() {
                 "sudo ployz-keeper internal-core-demote --successor-nats-url '{}'",
                 server.server.client_url().as_str()
             ),
-            format!(
-                "sudo ployz-keeper internal-core-repoint --successor-nats-url '{}'",
-                server.server.client_url().as_str()
-            ),
-            format!(
-                "sudo ployz-keeper internal-core-repoint --successor-nats-url '{}'",
-                server.server.client_url().as_str()
-            )
         ]
     );
 }
