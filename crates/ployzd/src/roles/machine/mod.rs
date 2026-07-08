@@ -8,10 +8,16 @@
 //! - `intent_mirror`: machine-local durable copy of core intent (ADR 0031).
 
 pub mod client;
+mod containers;
+mod dataplane;
 mod endpoints;
+mod facts;
 pub mod intent_mirror;
+mod logs;
 mod ployz_native_mesh;
 pub mod process;
 pub mod protocol;
+mod response;
 pub mod runner;
 pub mod service;
+mod substrate;

@@ -9,12 +9,13 @@ use crate::adapters::host_dataplane::{
 };
 use crate::config::MachineProcessConfig;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::roles::machine::facts::{
+    MachineEndpointCache, current_unix_ms, read_machine_facts_snapshot, refresh_machine_endpoints,
+};
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineEndpointCache, MachineFactsReadError, MachineServiceError, current_unix_ms,
-    read_machine_facts_snapshot, refresh_machine_endpoints,
-    start_machine_role_service_with_endpoint_cache,
+    MachineFactsReadError, MachineServiceError, start_machine_role_service_with_endpoint_cache,
 };
 use crate::roles::nats_failover::{
     IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
@@ -398,12 +399,12 @@ pub enum MachineProcessError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roles::machine::facts::observation_state;
     use crate::roles::machine::runner::{
         CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
         MachineContainerRunner, MachineContainerRunnerError, MachineLogReader,
         MachineLogReaderError, MachineLogTail,
     };
-    use crate::roles::machine::service::observation_state;
     use futures_util::StreamExt;
     use ployz_core::dataplane::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,

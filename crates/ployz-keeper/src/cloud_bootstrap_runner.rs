@@ -38,10 +38,11 @@ use ployz_sdk_types::{
     InitFirstMachineActivateRequest, MachineId,
 };
 
-use super::{
-    CLOUD_BOOTSTRAP_MAX_POLLS, CloudJoinTokenConsumer, DEFAULT_NATS_CONNECT_TIMEOUT, JoinRedeemer,
-    JoinReporter, KEEPER_STATE_DIR, failure_message, failure_summary,
-    read_cloud_founder_bootstrap_result, run_first_machine_install,
+use crate::first_machine::{read_cloud_founder_bootstrap_result, run_first_machine_install};
+use crate::join_client::{CloudJoinTokenConsumer, JoinRedeemer, JoinReporter};
+use crate::runtime::{
+    CLOUD_BOOTSTRAP_MAX_POLLS, DEFAULT_NATS_CONNECT_TIMEOUT, KEEPER_STATE_DIR, failure_message,
+    failure_summary,
 };
 
 const CLOUD_FOUNDER_ACTIVATION_ATTEMPTS: u32 = 60;
