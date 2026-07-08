@@ -167,6 +167,7 @@ impl KeeperSubstrateUpdateSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperCorePromote {
     pub version: Option<ExactPloyzVersion>,
+    pub check: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,8 +200,11 @@ pub fn load_command(
                 first_machine_install_target_from_spec(spec)?,
             )))
         }
-        Some(KeeperSubcommand::CorePromote { version }) => {
-            Ok(KeeperCommand::CorePromote(KeeperCorePromote { version }))
+        Some(KeeperSubcommand::CorePromote { version, check }) => {
+            Ok(KeeperCommand::CorePromote(KeeperCorePromote {
+                version,
+                check,
+            }))
         }
         Some(KeeperSubcommand::CoreDemote { successor_nats_url }) => {
             Ok(KeeperCommand::CoreDemote(KeeperCoreDemote {
@@ -263,6 +267,8 @@ enum KeeperSubcommand {
     CorePromote {
         #[arg(long, value_name = "version")]
         version: Option<ExactPloyzVersion>,
+        #[arg(long)]
+        check: bool,
     },
     #[command(name = "internal-core-demote", hide = true)]
     CoreDemote {
@@ -635,8 +641,8 @@ mod tests {
 
     use super::{
         CloudHost, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError, KeeperCommand,
-        KeeperCoreDemote, KeeperStartup, KeeperSubstrateUpdate, KeeperSubstrateUpdateSource,
-        SpecSource, load_command,
+        KeeperCoreDemote, KeeperCorePromote, KeeperStartup, KeeperSubstrateUpdate,
+        KeeperSubstrateUpdateSource, SpecSource, load_command,
     };
     use crate::steps::JoinToken;
 
@@ -861,6 +867,20 @@ mod tests {
                 source: KeeperSubstrateUpdateSource::ManifestFile(PathBuf::from(
                     "/tmp/ployz-dev-release.env"
                 )),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_core_promote_check() {
+        let command =
+            load_command(["core-promote".into(), "--check".into()]).expect("command loads");
+
+        assert_eq!(
+            command,
+            KeeperCommand::CorePromote(KeeperCorePromote {
+                version: None,
+                check: true,
             })
         );
     }

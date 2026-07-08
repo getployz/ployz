@@ -94,10 +94,12 @@ async fn run_intent_failover_mirror(
     let mut last_enforced = Instant::now()
         .checked_sub(EPOCH_ENFORCE_INTERVAL)
         .unwrap_or_else(Instant::now);
+    let mut consecutive_failures = 0;
     loop {
         let mut changed = match client.subscribe(INTENT_CHANGED).await {
             Ok(subscription) => subscription,
-            Err(_) => {
+            Err(error) => {
+                warn_failover_failure(&mut consecutive_failures, "subscribe", error);
                 tokio::select! {
                     () = tokio::time::sleep(INTENT_MIRROR_RESUBSCRIBE_DELAY) => continue,
                     () = shutdown.recv() => return,
@@ -111,38 +113,86 @@ async fn run_intent_failover_mirror(
                     if message.payload.is_empty() {
                         continue;
                     }
-                    if let Ok(snapshot) =
-                        serde_json::from_slice::<IntentSnapshot>(&message.payload)
-                    {
-                        let previous_epoch = mirror.load().map(|current| current.epoch);
-                        match mirror.store(&snapshot) {
-                            Ok(true) => {
-                                let higher_epoch = previous_epoch
-                                    .is_some_and(|epoch| snapshot.epoch > epoch);
-                                let pool = if higher_epoch {
-                                    higher_epoch_server_pool(&snapshot, &seed)
-                                } else {
-                                    candidate_server_pool(&snapshot, &seed)
-                                };
-                                let _ = client
-                                    .set_server_pool(pool)
-                                    .await;
-                                if higher_epoch {
-                                    let _ = client.force_reconnect().await;
-                                }
-                            }
-                            Ok(false) => {
-                                if last_enforced.elapsed() >= EPOCH_ENFORCE_INTERVAL {
-                                    last_enforced = Instant::now();
-                                    if let Some(best) = mirror.load() {
-                                        let _ = client
-                                            .set_server_pool(higher_epoch_server_pool(&best, &seed))
-                                            .await;
+                    let snapshot = match serde_json::from_slice::<IntentSnapshot>(&message.payload) {
+                        Ok(snapshot) => snapshot,
+                        Err(error) => {
+                            warn_failover_failure(&mut consecutive_failures, "decode-intent", error);
+                            continue;
+                        }
+                    };
+                    let previous_epoch = mirror.load().map(|current| current.epoch);
+                    match mirror.store(&snapshot) {
+                        Ok(true) => {
+                            let higher_epoch = previous_epoch
+                                .is_some_and(|epoch| snapshot.epoch > epoch);
+                            let pool = if higher_epoch {
+                                higher_epoch_server_pool(&snapshot, &seed)
+                            } else {
+                                candidate_server_pool(&snapshot, &seed)
+                            };
+                            match client.set_server_pool(pool).await {
+                                Ok(()) => {
+                                    if higher_epoch {
+                                        match client.force_reconnect().await {
+                                            Ok(()) => consecutive_failures = 0,
+                                            Err(error) => warn_failover_failure(
+                                                &mut consecutive_failures,
+                                                "force-reconnect-higher-epoch",
+                                                error,
+                                            ),
+                                        }
+                                    } else {
+                                        consecutive_failures = 0;
                                     }
-                                    let _ = client.force_reconnect().await;
+                                }
+                                Err(error) => {
+                                    warn_failover_failure(&mut consecutive_failures, "set-server-pool", error);
                                 }
                             }
-                            Err(_) => {}
+                        }
+                        Ok(false) => {
+                            if last_enforced.elapsed() >= EPOCH_ENFORCE_INTERVAL {
+                                last_enforced = Instant::now();
+                                eprintln!(
+                                    "ployzd nats failover warning: phase=reject-stale-intent local_mirror_epoch={:?} rejected_epoch={:?}",
+                                    mirror.load().map(|current| current.epoch.get()),
+                                    snapshot.epoch.get()
+                                );
+                                if let Some(best) = mirror.load() {
+                                    match client
+                                        .set_server_pool(higher_epoch_server_pool(&best, &seed))
+                                        .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => warn_failover_failure(
+                                            &mut consecutive_failures,
+                                            "set-server-pool-stale-reject",
+                                            error,
+                                        ),
+                                    }
+                                } else {
+                                    warn_failover_failure(
+                                        &mut consecutive_failures,
+                                        "load-best-mirror-stale-reject",
+                                        "missing local mirror after stale snapshot rejection",
+                                    );
+                                }
+                                match client.force_reconnect().await {
+                                    Ok(()) => {
+                                        if consecutive_failures > 0 {
+                                            consecutive_failures = 0;
+                                        }
+                                    }
+                                    Err(error) => warn_failover_failure(
+                                        &mut consecutive_failures,
+                                        "force-reconnect-stale-reject",
+                                        error,
+                                    ),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn_failover_failure(&mut consecutive_failures, "store-mirror", error);
                         }
                     }
                 }
@@ -150,6 +200,18 @@ async fn run_intent_failover_mirror(
             }
         }
     }
+}
+
+fn warn_failover_failure(
+    consecutive_failures: &mut u64,
+    phase: &str,
+    error: impl std::fmt::Display,
+) {
+    *consecutive_failures += 1;
+    eprintln!(
+        "ployzd nats failover warning: phase={phase} consecutive_failures={} error={error}",
+        *consecutive_failures
+    );
 }
 
 fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {

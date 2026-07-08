@@ -80,12 +80,15 @@ pub(crate) async fn execute_core_promote_remote(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| remote_machine_error(RemoteMachineExecutionError::MissingRecoverySecret))?;
     let client = ssh_client(config, config.ssh_install_timeout());
-    let remote_command = format!(
-        "sudo env PLOYZ_RECOVERY_SECRET={} ployz-keeper core-promote",
-        shell_quote(&recovery_secret)
-    );
+    let remote_command = "sudo sh -c 'IFS= read -r PLOYZ_RECOVERY_SECRET; export PLOYZ_RECOVERY_SECRET; exec ployz-keeper core-promote'";
+    let recovery_secret_stdin = format!("{recovery_secret}\n");
     let output = client
-        .run(&command.target, SshPhase::CorePromote, &remote_command)
+        .run_with_stdin(
+            &command.target,
+            SshPhase::CorePromote,
+            remote_command,
+            recovery_secret_stdin.as_bytes(),
+        )
         .map_err(ssh_error)?;
     let promoted = parse_core_promote_result(&output.stdout.text, output.stdout.truncated)?;
     let mut stderr = output.stderr.text;

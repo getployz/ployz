@@ -671,6 +671,19 @@ fn run_first_machine_install(
 }
 
 fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
+    if promote.check {
+        return match check_core_promote_preflight() {
+            Ok(()) => {
+                println!("core-promote preflight ok");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("ployz-keeper core-promote check failed: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     // The installed release supplies the core nats-server + ployzd binaries;
     // --version is an explicit operator override.
     let manifest_url = match &promote.version {
@@ -783,6 +796,42 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
             );
             ExitCode::FAILURE
         }
+    }
+}
+
+fn check_core_promote_preflight() -> Result<(), String> {
+    let join_dir = PathBuf::from(KEEPER_STATE_DIR).join(JOIN_MATERIAL_DIR);
+    require_promote_file(&join_dir.join(JOIN_CORE_SEEDS_FILE), JOIN_CORE_SEEDS_FILE)?;
+    require_promote_file(
+        &join_dir.join(JOIN_RECOVERY_KEY_FILE),
+        JOIN_RECOVERY_KEY_FILE,
+    )?;
+    let mirror_path = join_dir.join("intent-mirror.json");
+    require_promote_file(&mirror_path, "intent-mirror.json")?;
+    let _: ployz_core::state::IntentSnapshot =
+        serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
+            format!(
+                "cannot parse intent mirror {}: {error}",
+                mirror_path.display()
+            )
+        })?;
+    Ok(())
+}
+
+fn require_promote_file(path: &Path, name: &str) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "missing required promotion material {name} at {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "required promotion material {name} at {} is not a file",
+            path.display()
+        ))
     }
 }
 

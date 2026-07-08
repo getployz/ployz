@@ -68,6 +68,7 @@ struct FakeSshMachine {
     _dir: tempfile::TempDir,
     program: PathBuf,
     log: PathBuf,
+    stdin_log: PathBuf,
 }
 
 struct EnvVarGuard {
@@ -102,6 +103,7 @@ impl FakeSshMachine {
     fn new(hostname: &str, installer_body: &str) -> Self {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let log = dir.path().join("commands.log");
+        let stdin_log = dir.path().join("stdin.log");
         let program = dir.path().join("fake-ssh");
         let promote_result_json = serde_json::to_string(&serde_json::json!({
             "nats_urls": ["tls://203.0.113.20:4222", "tls://[2001:db8::20]:4222"],
@@ -132,6 +134,7 @@ case "$cmd" in
     echo 'core replaced'
     ;;
   *'ployz-keeper core-promote'*)
+    cat > {stdin_log}
     printf '%s\n' \
       '{promote_begin}' \
       '{promote_result_json}' \
@@ -166,6 +169,7 @@ case "$cmd" in
 esac
 "#,
             log = log.display(),
+            stdin_log = stdin_log.display(),
             hostname = hostname,
             installer_body = installer_body,
             sha = TEST_SHA,
@@ -180,6 +184,7 @@ esac
             _dir: dir,
             program,
             log,
+            stdin_log,
         }
     }
 
@@ -189,6 +194,10 @@ esac
             .map(str::to_owned)
             .filter(|entry| !entry.trim().is_empty())
             .collect()
+    }
+
+    fn stdin_text(&self) -> String {
+        fs::read_to_string(&self.stdin_log).unwrap_or_default()
     }
 }
 
@@ -406,8 +415,11 @@ async fn core_promote_remote_runs_keeper_command_and_updates_context() {
     );
     assert_eq!(
         ssh.commands(),
-        vec!["sudo env PLOYZ_RECOVERY_SECRET='recover-secret' ployz-keeper core-promote"]
+        vec![
+            "sudo sh -c 'IFS= read -r PLOYZ_RECOVERY_SECRET; export PLOYZ_RECOVERY_SECRET; exec ployz-keeper core-promote'"
+        ]
     );
+    assert_eq!(ssh.stdin_text(), "recover-secret\n");
     let saved = load_cluster_context(&context.context_path)
         .expect("context reads")
         .expect("context exists");

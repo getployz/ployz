@@ -7,7 +7,7 @@
 //! the phase and carries captured stdout/stderr.
 
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
@@ -195,6 +195,27 @@ impl SshClient {
         phase: SshPhase,
         remote_command: &str,
     ) -> Result<SshCommandOutput, Box<SshCommandError>> {
+        self.run_inner(target, phase, remote_command, None)
+    }
+
+    /// Runs one bounded remote command with bytes written to remote stdin.
+    pub fn run_with_stdin(
+        &self,
+        target: &SshTarget,
+        phase: SshPhase,
+        remote_command: &str,
+        stdin: &[u8],
+    ) -> Result<SshCommandOutput, Box<SshCommandError>> {
+        self.run_inner(target, phase, remote_command, Some(stdin))
+    }
+
+    fn run_inner(
+        &self,
+        target: &SshTarget,
+        phase: SshPhase,
+        remote_command: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<SshCommandOutput, Box<SshCommandError>> {
         let destination = target.destination();
         let rendered = format!("{} {destination} {remote_command}", self.program.display());
 
@@ -208,7 +229,11 @@ impl SshClient {
             .arg("-T")
             .arg(&destination)
             .arg(remote_command)
-            .stdin(Stdio::null())
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -240,6 +265,28 @@ impl SshClient {
         };
         let stdout_reader = spawn_bounded_reader(stdout_pipe);
         let stderr_reader = spawn_bounded_reader(stderr_pipe);
+        if let Some(bytes) = stdin {
+            let Some(mut stdin_pipe) = child.stdin.take() else {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Box::new(SshCommandError::CaptureSetup {
+                    phase,
+                    command: rendered,
+                    message: "child stdin was not piped".to_owned(),
+                }));
+            };
+            if let Err(error) = stdin_pipe.write_all(bytes) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Box::new(SshCommandError::StdinWrite {
+                    phase,
+                    command: rendered,
+                    message: error.to_string(),
+                    stdout: join_bounded_reader(stdout_reader),
+                    stderr: join_bounded_reader(stderr_reader),
+                }));
+            }
+        }
 
         let status = match child.wait_timeout(self.command_timeout) {
             Err(error) => {
@@ -380,6 +427,13 @@ pub enum SshCommandError {
         command: String,
         message: String,
     },
+    StdinWrite {
+        phase: SshPhase,
+        command: String,
+        message: String,
+        stdout: BoundedOutput,
+        stderr: BoundedOutput,
+    },
     Timeout {
         phase: SshPhase,
         command: String,
@@ -427,6 +481,16 @@ impl fmt::Display for SshCommandError {
             } => write!(
                 formatter,
                 "ssh {} phase: {command} failed while waiting: {message}",
+                phase.label()
+            ),
+            Self::StdinWrite {
+                phase,
+                command,
+                message,
+                ..
+            } => write!(
+                formatter,
+                "ssh {} phase: {command} failed while writing stdin: {message}",
                 phase.label()
             ),
             Self::Timeout {

@@ -20,6 +20,16 @@ Keeper owns substrate install paths, verification, and restarts. The script
 also replaces `/usr/local/bin/ployz-keeper` before running the staged update,
 and does not touch NATS or release channel state.
 
+Before a hub-loss promotion test, run this on the intended promotion candidate
+after it has been connected long enough to receive an intent drumbeat:
+
+```sh
+ployz-keeper core-promote --check
+```
+
+It fails fast if `core-seeds.key`, `ca-recovery.key`, or
+`intent-mirror.json` is missing or the mirror cannot be parsed.
+
 Useful knobs:
 
 ```sh
