@@ -19,6 +19,7 @@ use crate::roles::gateway::route_table::{
     GatewayProjector, GatewayProjectorTick, GatewayServingState,
 };
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
+use crate::roles::machine::process::mirrored_server_pool;
 use futures_util::StreamExt;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
@@ -26,7 +27,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
-use ployz_nats::connect::{NatsConnectError, connect_authenticated};
+use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::net::SocketAddr;
@@ -100,7 +101,8 @@ pub async fn start_gateway_process(
     )
     .await
     .map_err(GatewayProcessError::AwaitCredentials)?;
-    let client = connect_authenticated(&connect, GATEWAY_NATS_CONNECT_TIMEOUT)
+    let pool = mirrored_server_pool(&config.nats.seed_file, &connect.url);
+    let client = connect_authenticated_pool(&connect, &pool, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(GatewayProcessError::ConnectNats)?;
     start_gateway_process_with_client(

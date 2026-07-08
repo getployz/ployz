@@ -15,7 +15,8 @@ use crate::roles::dns::projection::{
     DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
 };
 use crate::roles::dns::source::load_dns_projection_update_from_nats;
-use ployz_nats::connect::{NatsConnectError, connect_authenticated};
+use crate::roles::machine::process::mirrored_server_pool;
+use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -73,7 +74,8 @@ pub async fn start_dns_process(
         await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
             .await
             .map_err(DnsProcessError::AwaitCredentials)?;
-    let client = connect_authenticated(&connect, DNS_NATS_CONNECT_TIMEOUT)
+    let pool = mirrored_server_pool(&config.nats.seed_file, &connect.url);
+    let client = connect_authenticated_pool(&connect, &pool, DNS_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(DnsProcessError::ConnectNats)?;
     start_dns_process_with_client(client, DNS_REFRESH_INTERVAL).await

@@ -24,6 +24,7 @@ use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -83,10 +84,7 @@ pub async fn start_machine_process(
             .with_file_name("pending-machine-joins.json"),
     );
     let seed = connect.url.clone();
-    let initial_pool = match intent_mirror.load() {
-        Some(snapshot) => candidate_server_pool(&snapshot, &seed),
-        None => vec![seed.as_str().to_owned()],
-    };
+    let initial_pool = mirrored_server_pool(&config.nats.seed_file, &seed);
     let client = connect_authenticated_pool(&connect, &initial_pool, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(MachineProcessError::ConnectNats)?;
@@ -219,6 +217,14 @@ fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec
         }
     }
     pool
+}
+
+pub(crate) fn mirrored_server_pool(seed_file: &Path, seed: &NatsClientUrl) -> Vec<String> {
+    let mirror = MachineIntentMirror::new(seed_file.with_file_name("intent-mirror.json"));
+    match mirror.load() {
+        Some(snapshot) => candidate_server_pool(&snapshot, seed),
+        None => vec![seed.as_str().to_owned()],
+    }
 }
 
 /// Like [`candidate_server_pool`] but with the configured seed deprioritized to
@@ -670,6 +676,28 @@ mod tests {
                 &seed
             ),
             vec!["tls://10.0.0.1:4222".to_owned()]
+        );
+    }
+
+    #[test]
+    fn mirrored_server_pool_loads_reachable_machines_from_cached_intent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let seed_file = dir.path().join("machine.seed");
+        let mirror = MachineIntentMirror::new(dir.path().join("intent-mirror.json"));
+        mirror
+            .store(&snapshot_with(vec![active_machine_with(
+                "promoted_core",
+                Some("203.0.113.9"),
+            )]))
+            .expect("store mirror");
+        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
+
+        assert_eq!(
+            mirrored_server_pool(&seed_file, &seed),
+            vec![
+                "tls://203.0.113.5:4222".to_owned(),
+                "tls://203.0.113.9:4222".to_owned(),
+            ]
         );
     }
 
