@@ -270,7 +270,7 @@ fn first_machine_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstMachin
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             ),
             ebpf_ctl: install_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-            nats_server: NatsServerInstallSpec {
+            nats_server: Some(NatsServerInstallSpec {
                 version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
                 source: InstallArtifactSource::try_new("/tmp/nats-server")
                     .expect("valid nats source"),
@@ -282,7 +282,7 @@ fn first_machine_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstMachin
                     .expect("valid nats binary path"),
                 config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
                     .expect("valid nats config path"),
-            },
+            }),
         },
     }
 }

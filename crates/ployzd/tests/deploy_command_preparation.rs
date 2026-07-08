@@ -12,7 +12,8 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
 use ployzd::operations::deploy::{
-    DeployExecutionFacts, DeployServiceAccessorError, prepare_deploy_execution_command,
+    DeployExecutionCommand, DeployExecutionFacts, DeployServiceExecutionCommand,
+    prepare_deploy_execution_command,
 };
 use std::time::Duration;
 
@@ -47,14 +48,10 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
-    assert!(
-        command
-            .existing_replicas()
-            .expect("single service")
-            .is_empty()
-    );
+    let service = single_service(&command);
+    assert!(service.existing_replicas().is_empty());
     assert_eq!(
-        command.cleanup_candidates().expect("single service"),
+        service.cleanup_candidates(),
         [cleanup_container("machine_a", "ctr_old", "entry_old")]
     );
 }
@@ -85,12 +82,13 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
+    let service = single_service(&command);
     assert_eq!(
-        command.existing_replicas().expect("single service"),
+        service.existing_replicas(),
         vec![existing_service_replica("machine_a", "ctr_target")]
     );
     assert_eq!(
-        command.cleanup_candidates().expect("single service"),
+        service.cleanup_candidates(),
         [cleanup_container_with_entry(
             "machine_a",
             "ctr_target",
@@ -168,7 +166,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
 }
 
 #[tokio::test]
-async fn single_service_accessors_reject_empty_manifest() {
+async fn empty_manifest_prepares_no_services() {
     let facts = DeployExecutionFacts {
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
@@ -188,18 +186,14 @@ async fn single_service_accessors_reject_empty_manifest() {
         facts,
     );
 
-    assert_eq!(
-        command.existing_replicas(),
-        Err(DeployServiceAccessorError::EmptyServices)
-    );
-    assert_eq!(
-        command.cleanup_candidates(),
-        Err(DeployServiceAccessorError::EmptyServices)
-    );
-    assert_eq!(
-        command.eligible_machines(),
-        Err(DeployServiceAccessorError::EmptyServices)
-    );
+    assert!(command.services().is_empty());
+}
+
+fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCommand {
+    let [service] = command.services() else {
+        panic!("deploy command has one service");
+    };
+    service
 }
 
 fn deploy_request() -> DeployRequest {

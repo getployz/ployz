@@ -60,7 +60,7 @@ impl PingoraRouteRegistry {
         *self
             .inner
             .write()
-            .map_err(|_| PingoraRouteRegistryError::LockPoisoned)? = routes;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = routes;
         Ok(())
     }
 
@@ -81,9 +81,7 @@ impl PingoraRouteRegistry {
         let pool = self
             .inner
             .read()
-            .map_err(|_| PingoraRouteSelectionError::LockPoisoned {
-                target: target.clone(),
-            })?
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(target)
             .cloned()
             .ok_or_else(|| PingoraRouteSelectionError::NoRoute {
@@ -106,12 +104,13 @@ impl PingoraRouteRegistry {
     }
 
     pub async fn run_health_checks(&self) {
-        let pools = {
-            let Ok(routes) = self.inner.read() else {
-                return;
-            };
-            routes.values().cloned().collect::<Vec<_>>()
-        };
+        let pools = self
+            .inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         for pool in pools {
             pool.load_balancer
                 .backends()
@@ -153,7 +152,6 @@ impl PingoraRoutePool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PingoraRouteRegistryError {
     InvalidBackendAddress { message: String },
-    LockPoisoned,
 }
 
 impl fmt::Display for PingoraRouteRegistryError {
@@ -162,7 +160,6 @@ impl fmt::Display for PingoraRouteRegistryError {
             Self::InvalidBackendAddress { message } => {
                 write!(formatter, "invalid gateway backend address: {message}")
             }
-            Self::LockPoisoned => formatter.write_str("gateway route registry lock poisoned"),
         }
     }
 }
@@ -252,8 +249,7 @@ impl ProxyHttp for PloyzGatewayProxy {
             .map_err(|error| {
                 let status = match error {
                     PingoraRouteSelectionError::NoRoute { .. } => 404,
-                    PingoraRouteSelectionError::NoHealthyUpstream { .. }
-                    | PingoraRouteSelectionError::LockPoisoned { .. } => 503,
+                    PingoraRouteSelectionError::NoHealthyUpstream { .. } => 503,
                 };
                 Error::explain(HTTPStatus(status), format!("{error:?}"))
             })?;
@@ -318,7 +314,6 @@ impl ProxyHttp for PloyzGatewayProxy {
 pub enum PingoraRouteSelectionError {
     NoRoute { target: RouteTarget },
     NoHealthyUpstream { target: RouteTarget },
-    LockPoisoned { target: RouteTarget },
 }
 
 fn backend_inet_addr(backend: &Backend) -> Option<SocketAddr> {

@@ -1,217 +1,229 @@
 //! Shared NATS server-pool failover driven by the intent snapshot stream.
+//!
+//! One state machine for machine, gateway, and DNS (plan
+//! 2026-07-08-001): before the mirror ever records a promotion the pool is
+//! seed-first plus mirrored Reachable Machine endpoints; once the mirror holds
+//! an epoch above the initial one, the current core's roster-derived endpoints
+//! head the pool and the bootstrap seed survives only if the accepted mirror
+//! still names it. Lower-epoch snapshots are rejected and the last good pool is
+//! kept. Pool ordering is transport preference, never cluster truth.
 
-use crate::roles::machine::intent_mirror::MachineIntentMirror;
+use crate::intent::service::NatsIntentReader;
+use crate::roles::machine::intent_mirror::{MachineIntentMirror, StoreOutcome};
 use futures_util::StreamExt;
-use ployz_core::state::IntentSnapshot;
+use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::service_runtime::NatsClient;
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const EPOCH_ENFORCE_INTERVAL: Duration = Duration::from_secs(5);
-/// A background task owned by a role process: a shutdown signal and its join
-/// handle.
-pub(crate) struct RunningFailoverTask {
-    shutdown: oneshot::Sender<()>,
-    task: JoinHandle<()>,
+const INTENT_REPAIR_TIMEOUT: Duration = Duration::from_secs(5);
+/// The port a promoted core's `nats-server` listens on (keeper's
+/// `DEFAULT_NATS_PORT`), used to build failover candidate URLs.
+const CORE_NATS_PORT: u16 = 4222;
+
+/// The role-local recovery context a failover-capable role client owns: its
+/// machine-local intent mirror and the configured bootstrap seed URL.
+#[derive(Debug, Clone)]
+pub struct IntentFailover {
+    pub mirror: MachineIntentMirror,
+    pub seed: NatsClientUrl,
 }
 
-impl RunningFailoverTask {
-    pub(crate) async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.task.await;
-    }
-}
-
-/// The NATS failover pool a role cycles on core loss: the currently configured
-/// seed plus every usable core/roster endpoint in the local intent mirror.
-pub(crate) fn mirrored_server_pool(seed_file: &Path, seed: &NatsClientUrl) -> Vec<String> {
-    let mirror = MachineIntentMirror::new(seed_file.with_file_name("intent-mirror.json"));
+/// The NATS pool a role connects with at boot: the configured seed plus every
+/// mirrored Reachable Machine endpoint while the mirror is at the initial
+/// epoch, or the mirrored core-preferred pool once the mirror records a
+/// promotion — consistent with the runtime state machine, so a machine
+/// rebooting during a core outage dials the promoted core first.
+pub(crate) fn mirrored_server_pool(
+    mirror: &MachineIntentMirror,
+    seed: &NatsClientUrl,
+) -> Vec<String> {
     match mirror.load() {
-        Some(snapshot) => higher_epoch_server_pool(&snapshot, seed),
+        Some(snapshot) => snapshot_server_pool(&snapshot, seed),
         None => vec![seed.as_str().to_owned()],
     }
 }
 
-pub(crate) fn start_intent_failover_mirror(
-    client: NatsClient,
-    mirror: MachineIntentMirror,
-    seed: NatsClientUrl,
-) -> RunningFailoverTask {
-    let (shutdown, shutdown_rx) = oneshot::channel();
-    let task = tokio::spawn(run_intent_failover_mirror(
-        client,
-        mirror,
-        seed,
-        Shutdown::Oneshot(shutdown_rx),
-    ));
-    RunningFailoverTask { shutdown, task }
-}
-
 pub(crate) fn spawn_intent_failover_mirror(
     client: NatsClient,
-    mirror: MachineIntentMirror,
-    seed: NatsClientUrl,
+    failover: IntentFailover,
     shutdown: broadcast::Receiver<()>,
 ) -> JoinHandle<()> {
-    tokio::spawn(run_intent_failover_mirror(
-        client,
-        mirror,
-        seed,
-        Shutdown::Broadcast(shutdown),
-    ))
-}
-
-enum Shutdown {
-    Oneshot(oneshot::Receiver<()>),
-    Broadcast(broadcast::Receiver<()>),
-}
-
-impl Shutdown {
-    async fn recv(&mut self) {
-        match self {
-            Self::Oneshot(receiver) => {
-                let _ = receiver.await;
-            }
-            Self::Broadcast(receiver) => {
-                let _ = receiver.recv().await;
-            }
-        }
-    }
+    tokio::spawn(run_intent_failover_mirror(client, failover, shutdown))
 }
 
 async fn run_intent_failover_mirror(
     client: NatsClient,
-    mirror: MachineIntentMirror,
-    seed: NatsClientUrl,
-    mut shutdown: Shutdown,
+    failover: IntentFailover,
+    mut shutdown: broadcast::Receiver<()>,
 ) {
-    let mut last_enforced = Instant::now()
-        .checked_sub(EPOCH_ENFORCE_INTERVAL)
-        .unwrap_or_else(Instant::now);
-    let mut consecutive_failures = 0;
+    let IntentFailover { mirror, seed } = failover;
+    let reader = NatsIntentReader::new(client.clone()).with_request_timeout(INTENT_REPAIR_TIMEOUT);
+    let mut run = IntentFailoverRun {
+        applied_pool: mirrored_server_pool(&mirror, &seed),
+        client,
+        mirror,
+        seed,
+        last_enforced: Instant::now()
+            .checked_sub(EPOCH_ENFORCE_INTERVAL)
+            .unwrap_or_else(Instant::now),
+        consecutive_failures: 0,
+    };
     loop {
-        let mut changed = match client.subscribe(INTENT_CHANGED).await {
+        let mut changed = match run.client.subscribe(INTENT_CHANGED).await {
             Ok(subscription) => subscription,
             Err(error) => {
-                warn_failover_failure(&mut consecutive_failures, "subscribe", error);
+                run.warn("subscribe", error);
+                run.repair_from_intent_get(&reader).await;
                 tokio::select! {
                     () = tokio::time::sleep(INTENT_MIRROR_RESUBSCRIBE_DELAY) => continue,
-                    () = shutdown.recv() => return,
+                    _ = shutdown.recv() => return,
                 }
             }
         };
         loop {
             tokio::select! {
                 message = changed.next() => {
-                    let Some(message) = message else { break };
+                    let Some(message) = message else {
+                        // Repair the possibly missed snapshots before the
+                        // outer loop resubscribes (spec U3).
+                        run.repair_from_intent_get(&reader).await;
+                        break;
+                    };
                     if message.payload.is_empty() {
                         continue;
                     }
-                    let snapshot = match serde_json::from_slice::<IntentSnapshot>(&message.payload) {
-                        Ok(snapshot) => snapshot,
+                    match serde_json::from_slice::<IntentSnapshot>(&message.payload) {
+                        Ok(snapshot) => run.apply_snapshot(&snapshot).await,
                         Err(error) => {
-                            warn_failover_failure(&mut consecutive_failures, "decode-intent", error);
-                            continue;
-                        }
-                    };
-                    let previous_epoch = mirror.load().map(|current| current.epoch);
-                    match mirror.store(&snapshot) {
-                        Ok(true) => {
-                            let higher_epoch = previous_epoch
-                                .is_some_and(|epoch| snapshot.epoch > epoch);
-                            let pool = if higher_epoch {
-                                higher_epoch_server_pool(&snapshot, &seed)
-                            } else {
-                                candidate_server_pool(&snapshot, &seed)
-                            };
-                            match client.set_server_pool(pool).await {
-                                Ok(()) => {
-                                    if higher_epoch {
-                                        match client.force_reconnect().await {
-                                            Ok(()) => consecutive_failures = 0,
-                                            Err(error) => warn_failover_failure(
-                                                &mut consecutive_failures,
-                                                "force-reconnect-higher-epoch",
-                                                error,
-                                            ),
-                                        }
-                                    } else {
-                                        consecutive_failures = 0;
-                                    }
-                                }
-                                Err(error) => {
-                                    warn_failover_failure(&mut consecutive_failures, "set-server-pool", error);
-                                }
-                            }
-                        }
-                        Ok(false) => {
-                            if last_enforced.elapsed() >= EPOCH_ENFORCE_INTERVAL {
-                                last_enforced = Instant::now();
-                                eprintln!(
-                                    "ployzd nats failover warning: phase=reject-stale-intent local_mirror_epoch={:?} rejected_epoch={:?}",
-                                    mirror.load().map(|current| current.epoch.get()),
-                                    snapshot.epoch.get()
-                                );
-                                if let Some(best) = mirror.load() {
-                                    match client
-                                        .set_server_pool(higher_epoch_server_pool(&best, &seed))
-                                        .await
-                                    {
-                                        Ok(()) => {}
-                                        Err(error) => warn_failover_failure(
-                                            &mut consecutive_failures,
-                                            "set-server-pool-stale-reject",
-                                            error,
-                                        ),
-                                    }
-                                } else {
-                                    warn_failover_failure(
-                                        &mut consecutive_failures,
-                                        "load-best-mirror-stale-reject",
-                                        "missing local mirror after stale snapshot rejection",
-                                    );
-                                }
-                                match client.force_reconnect().await {
-                                    Ok(()) => {
-                                        if consecutive_failures > 0 {
-                                            consecutive_failures = 0;
-                                        }
-                                    }
-                                    Err(error) => warn_failover_failure(
-                                        &mut consecutive_failures,
-                                        "force-reconnect-stale-reject",
-                                        error,
-                                    ),
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            warn_failover_failure(&mut consecutive_failures, "store-mirror", error);
+                            run.warn("decode-intent", error);
+                            run.repair_from_intent_get(&reader).await;
                         }
                     }
                 }
-                () = shutdown.recv() => return,
+                _ = shutdown.recv() => return,
             }
         }
     }
 }
 
-fn warn_failover_failure(
-    consecutive_failures: &mut u64,
-    phase: &str,
-    error: impl std::fmt::Display,
-) {
-    *consecutive_failures += 1;
-    eprintln!(
-        "ployzd nats failover warning: phase={phase} consecutive_failures={} error={error}",
-        *consecutive_failures
-    );
+/// Whether applying a pool should also drop the current connection so the
+/// client re-dials in the new preference order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reconnect {
+    KeepConnection,
+    AwayFromCurrent,
+}
+
+struct IntentFailoverRun {
+    client: NatsClient,
+    mirror: MachineIntentMirror,
+    seed: NatsClientUrl,
+    /// The last pool successfully handed to the client, so stale-reject
+    /// enforcement only forces a reconnect when the pool actually changes.
+    applied_pool: Vec<String>,
+    last_enforced: Instant,
+    consecutive_failures: u64,
+}
+
+impl IntentFailoverRun {
+    async fn apply_snapshot(&mut self, snapshot: &IntentSnapshot) {
+        let outcome = match self.mirror.store(snapshot) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.warn("store-mirror", error);
+                return;
+            }
+        };
+        match outcome {
+            StoreOutcome::AcceptedHigher => {
+                let pool = snapshot_server_pool(snapshot, &self.seed);
+                self.apply_pool(pool, Reconnect::AwayFromCurrent).await;
+            }
+            StoreOutcome::AcceptedCurrent => {
+                let pool = snapshot_server_pool(snapshot, &self.seed);
+                self.apply_pool(pool, Reconnect::KeepConnection).await;
+            }
+            StoreOutcome::RejectedStale => self.enforce_pool_over_stale(snapshot).await,
+        }
+    }
+
+    async fn apply_pool(&mut self, pool: Vec<String>, reconnect: Reconnect) {
+        if let Err(error) = self.client.set_server_pool(pool.clone()).await {
+            self.warn("set-server-pool", error);
+            return;
+        }
+        self.applied_pool = pool;
+        match reconnect {
+            Reconnect::KeepConnection => self.consecutive_failures = 0,
+            Reconnect::AwayFromCurrent => match self.client.force_reconnect().await {
+                Ok(()) => self.consecutive_failures = 0,
+                Err(error) => self.warn("force-reconnect", error),
+            },
+        }
+    }
+
+    /// A stale (lower-epoch) snapshot was rejected: keep the last good pool
+    /// and, if it is not already the applied one, reconnect away from the
+    /// stale core. Rate-limited so a stale publisher's steady drumbeat does
+    /// not spam warnings.
+    async fn enforce_pool_over_stale(&mut self, rejected: &IntentSnapshot) {
+        if self.last_enforced.elapsed() < EPOCH_ENFORCE_INTERVAL {
+            return;
+        }
+        self.last_enforced = Instant::now();
+        let Some(best) = self.mirror.load() else {
+            self.warn(
+                "load-best-mirror-stale-reject",
+                "missing local mirror after stale snapshot rejection",
+            );
+            return;
+        };
+        eprintln!(
+            "ployzd nats failover warning: phase=reject-stale-intent local_mirror_epoch={} rejected_epoch={}",
+            best.epoch.get(),
+            rejected.epoch.get()
+        );
+        let pool = snapshot_server_pool(&best, &self.seed);
+        if pool != self.applied_pool {
+            self.apply_pool(pool, Reconnect::AwayFromCurrent).await;
+        }
+    }
+
+    /// One `intent.get` repair read (spec U3), taken on subscribe failure,
+    /// decode failure, or subscription end, and applied through the same
+    /// store path as streamed snapshots.
+    async fn repair_from_intent_get(&mut self, reader: &NatsIntentReader) {
+        match reader.intent().await {
+            Ok(snapshot) => self.apply_snapshot(&snapshot).await,
+            Err(error) => self.warn("intent-get-repair", error),
+        }
+    }
+
+    fn warn(&mut self, phase: &str, error: impl std::fmt::Display) {
+        self.consecutive_failures += 1;
+        eprintln!(
+            "ployzd nats failover warning: phase={phase} consecutive_failures={} error={error}",
+            self.consecutive_failures
+        );
+    }
+}
+
+/// The pool a mirrored snapshot renders: seed-first before the cluster has
+/// ever been promoted, core-preferred (spec R3: the seed survives only if the
+/// mirror still names it) once the snapshot's epoch is above the initial one.
+fn snapshot_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
+    if snapshot.epoch > ControlPlaneEpoch::initial() {
+        higher_epoch_server_pool(snapshot, seed)
+    } else {
+        candidate_server_pool(snapshot, seed)
+    }
 }
 
 fn candidate_server_pool(snapshot: &IntentSnapshot, seed: &NatsClientUrl) -> Vec<String> {
@@ -249,7 +261,9 @@ fn reachable_server_urls(snapshot: &IntentSnapshot) -> Vec<String> {
 }
 
 fn control_endpoint_url(ip: &IpAddr) -> String {
-    format!("tls://{}", SocketAddr::new(*ip, 4222))
+    // SocketAddr's Display brackets IPv6 (`[::1]:4222`); a bare interpolation
+    // would emit an invalid `tls://::1:4222`.
+    format!("tls://{}", SocketAddr::new(*ip, CORE_NATS_PORT))
 }
 
 fn push_unique(pool: &mut Vec<String>, urls: impl IntoIterator<Item = String>) {
@@ -277,15 +291,23 @@ mod tests {
         }
     }
 
-    fn snapshot_with(core_machine_id: &str, machines: Vec<ActiveMachineState>) -> IntentSnapshot {
+    fn snapshot_with_epoch(
+        epoch: ControlPlaneEpoch,
+        core_machine_id: &str,
+        machines: Vec<ActiveMachineState>,
+    ) -> IntentSnapshot {
         IntentSnapshot {
-            epoch: ControlPlaneEpoch::initial(),
+            epoch,
             core_machine_id: machine_id(core_machine_id),
             active_machines: machines,
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             authorized_users: Vec::new(),
         }
+    }
+
+    fn snapshot_with(core_machine_id: &str, machines: Vec<ActiveMachineState>) -> IntentSnapshot {
+        snapshot_with_epoch(ControlPlaneEpoch::initial(), core_machine_id, machines)
     }
 
     #[test]
@@ -342,12 +364,65 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_server_pool_prefers_cached_core_endpoints_over_the_seed() {
+    fn snapshot_server_pool_is_seed_first_at_the_initial_epoch() {
+        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
+        let snapshot = snapshot_with(
+            "machine_a",
+            vec![active_machine_with("machine_a", &["203.0.113.9"])],
+        );
+        assert_eq!(
+            snapshot_server_pool(&snapshot, &seed),
+            vec![
+                "tls://203.0.113.5:4222".to_owned(),
+                "tls://203.0.113.9:4222".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_server_pool_is_core_preferred_on_every_post_promotion_drumbeat() {
+        // R3: after a promotion, even a same-epoch rebroadcast must not put
+        // the old seed back at the head of the pool.
+        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
+        let snapshot = snapshot_with_epoch(
+            ControlPlaneEpoch::initial().next(),
+            "promoted_core",
+            vec![active_machine_with("promoted_core", &["203.0.113.9"])],
+        );
+        assert_eq!(
+            snapshot_server_pool(&snapshot, &seed),
+            vec!["tls://203.0.113.9:4222".to_owned()]
+        );
+    }
+
+    #[test]
+    fn mirrored_server_pool_keeps_seed_first_while_the_mirror_is_unpromoted() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let seed_file = dir.path().join("machine.seed");
         let mirror = MachineIntentMirror::new(dir.path().join("intent-mirror.json"));
         mirror
             .store(&snapshot_with(
+                "machine_a",
+                vec![active_machine_with("machine_a", &["203.0.113.9"])],
+            ))
+            .expect("store mirror");
+        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
+
+        assert_eq!(
+            mirrored_server_pool(&mirror, &seed),
+            vec![
+                "tls://203.0.113.5:4222".to_owned(),
+                "tls://203.0.113.9:4222".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mirrored_server_pool_prefers_cached_core_endpoints_after_a_promotion() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror = MachineIntentMirror::new(dir.path().join("intent-mirror.json"));
+        mirror
+            .store(&snapshot_with_epoch(
+                ControlPlaneEpoch::initial().next(),
                 "promoted_core",
                 vec![active_machine_with("promoted_core", &["203.0.113.9"])],
             ))
@@ -355,8 +430,20 @@ mod tests {
         let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
 
         assert_eq!(
-            mirrored_server_pool(&seed_file, &seed),
+            mirrored_server_pool(&mirror, &seed),
             vec!["tls://203.0.113.9:4222".to_owned()]
+        );
+    }
+
+    #[test]
+    fn mirrored_server_pool_without_a_mirror_is_seed_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror = MachineIntentMirror::new(dir.path().join("intent-mirror.json"));
+        let seed = NatsClientUrl::try_new("tls://203.0.113.5:4222").expect("seed url");
+
+        assert_eq!(
+            mirrored_server_pool(&mirror, &seed),
+            vec!["tls://203.0.113.5:4222".to_owned()]
         );
     }
 }

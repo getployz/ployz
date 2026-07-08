@@ -152,11 +152,6 @@ impl KeeperSubstrateUpdateSource {
             Self::ManifestFile(path) => path.display().to_string(),
         }
     }
-
-    #[must_use]
-    pub const fn updates_nats(&self) -> bool {
-        matches!(self, Self::Version(_))
-    }
 }
 
 /// `core-promote` reads everything from the machine's own state (its id + public
@@ -424,6 +419,11 @@ pub fn first_machine_install_target_from_spec(
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
     let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
+    // Founding a first machine always installs the core nats-server; a
+    // manifest without one (a dev substrate push) cannot found a cluster.
+    let Some(nats_server) = nats_server else {
+        return Err(KeeperCliError::MissingNatsServerArtifact);
+    };
     let NatsServerInstallSpec {
         version: nats_version,
         source: nats_source,
@@ -545,6 +545,7 @@ pub enum KeeperCliError {
     JoinTokenFile(JoinTokenFileError),
     CloudHost(CloudHostError),
     ExactPloyzVersion(ExactPloyzVersionError),
+    MissingNatsServerArtifact,
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
     NatsIdentity(NatsIdentityError),
@@ -610,6 +611,10 @@ impl fmt::Display for KeeperCliError {
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
             Self::CloudHost(error) => write!(formatter, "{error}"),
             Self::ExactPloyzVersion(error) => write!(formatter, "{error}"),
+            Self::MissingNatsServerArtifact => formatter.write_str(
+                "first-machine install requires a nats-server artifact, \
+                 but the release manifest carries none",
+            ),
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
             Self::NatsIdentity(error) => write!(formatter, "{error}"),

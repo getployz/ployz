@@ -381,7 +381,12 @@ export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
 export type FirstMachineInstallSpec = { machine_id: MachineId, gateway: GatewayRole, dns: DnsRole, machine_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstMachineInstallArtifacts, };
 
-export type FirstMachineInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, nats_server: NatsServerInstallSpec, };
+export type FirstMachineInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec,
+/**
+ * Absent when the release manifest ships no `nats-server` (a dev
+ * substrate push). Installs that found or promote a core require it.
+ */
+nats_server: NatsServerInstallSpec | null, };
 
 export type NatsServerInstallSpec = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, binary: AbsoluteInstallPath, config: AbsoluteInstallPath, };
 

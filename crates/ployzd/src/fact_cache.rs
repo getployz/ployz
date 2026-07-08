@@ -204,20 +204,80 @@ async fn consume_facts(
     loop {
         tokio::select! {
             Some(message) = machine_facts.next() => {
-                if let Ok(facts) = serde_json::from_slice::<MachineFactsSnapshot>(&message.payload) {
-                    cache.record_machine_facts(facts);
-                } else if let Ok(delta) = serde_json::from_slice::<MachineContainerFactDelta>(&message.payload) {
-                    cache.record_machine_container_fact(delta);
-                }
+                ingest_machine_fact(&cache, message.subject.as_str(), &message.payload);
             }
             Some(message) = gateway_statuses.next() => {
-                if let Ok(status) = serde_json::from_slice::<GatewayStatusObservation>(&message.payload) {
-                    cache.record_gateway_status(status);
-                }
+                ingest_gateway_status(&cache, message.subject.as_str(), &message.payload);
             }
             else => break,
         }
     }
+}
+
+/// The machine that owns a testimony subject. Subject permissions scope a
+/// machine credential to its own testimony subjects, so the subject token is
+/// the authority over who a fact is about; a payload claiming another
+/// machine's id is rejected rather than recorded.
+fn subject_machine_id(subject: &str) -> Option<MachineId> {
+    let tokens = subject.split('.').collect::<Vec<_>>();
+    let ["plz", "v1", "testimony", _scope, machine_id, _leaf] = tokens.as_slice() else {
+        return None;
+    };
+    MachineId::try_new(*machine_id).ok()
+}
+
+fn ingest_machine_fact(cache: &FactCache, subject: &str, payload: &[u8]) {
+    let Some(owner) = subject_machine_id(subject) else {
+        warn_unowned_subject(subject);
+        return;
+    };
+    if let Ok(facts) = serde_json::from_slice::<MachineFactsSnapshot>(payload) {
+        if facts.machine_id() == &owner {
+            cache.record_machine_facts(facts);
+        } else {
+            warn_machine_id_mismatch(subject, facts.machine_id());
+        }
+    } else if let Ok(delta) = serde_json::from_slice::<MachineContainerFactDelta>(payload) {
+        if delta_machine_id(&delta) == &owner {
+            cache.record_machine_container_fact(delta);
+        } else {
+            warn_machine_id_mismatch(subject, delta_machine_id(&delta));
+        }
+    }
+}
+
+fn ingest_gateway_status(cache: &FactCache, subject: &str, payload: &[u8]) {
+    let Some(owner) = subject_machine_id(subject) else {
+        warn_unowned_subject(subject);
+        return;
+    };
+    if let Ok(status) = serde_json::from_slice::<GatewayStatusObservation>(payload) {
+        if status.machine_id == owner {
+            cache.record_gateway_status(status);
+        } else {
+            warn_machine_id_mismatch(subject, &status.machine_id);
+        }
+    }
+}
+
+fn delta_machine_id(delta: &MachineContainerFactDelta) -> &MachineId {
+    match delta {
+        MachineContainerFactDelta::ContainerObserved { observation, .. } => &observation.machine_id,
+        MachineContainerFactDelta::ContainerRemoved { machine_id, .. } => machine_id,
+    }
+}
+
+fn warn_machine_id_mismatch(subject: &str, claimed: &MachineId) {
+    eprintln!(
+        "ployzd fact cache warning: phase=ingest rejected testimony whose payload machine id does not match its subject subject={subject} payload_machine_id={}",
+        claimed.as_str()
+    );
+}
+
+fn warn_unowned_subject(subject: &str) {
+    eprintln!(
+        "ployzd fact cache warning: phase=ingest rejected testimony on a subject with no valid owning machine id subject={subject}"
+    );
 }
 
 fn empty_machine_facts(
@@ -362,6 +422,73 @@ mod tests {
                 .container(&container_id("ctr_1"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn snapshot_with_payload_machine_id_matching_subject_is_recorded() {
+        let cache = FactCache::default();
+        let facts = machine_facts("machine_a", 1, [observation("ctr_1")]);
+
+        ingest_machine_fact(
+            &cache,
+            "plz.v1.testimony.machine.machine_a.snapshot",
+            &serde_json::to_vec(&facts).expect("facts serialize"),
+        );
+
+        assert!(cache.machine_facts(&machine_id("machine_a")).is_some());
+    }
+
+    #[test]
+    fn snapshot_with_payload_machine_id_not_matching_subject_is_rejected() {
+        let cache = FactCache::default();
+        let facts = machine_facts("machine_a", 1, [observation("ctr_1")]);
+
+        ingest_machine_fact(
+            &cache,
+            "plz.v1.testimony.machine.machine_b.snapshot",
+            &serde_json::to_vec(&facts).expect("facts serialize"),
+        );
+
+        assert!(cache.machine_facts(&machine_id("machine_a")).is_none());
+        assert!(cache.machine_facts(&machine_id("machine_b")).is_none());
+    }
+
+    #[test]
+    fn container_delta_with_payload_machine_id_not_matching_subject_is_rejected() {
+        let cache = FactCache::default();
+        let delta = MachineContainerFactDelta::ContainerObserved {
+            observed_at_unix_ms: 1,
+            observation: observation("ctr_1"),
+        };
+
+        ingest_machine_fact(
+            &cache,
+            "plz.v1.testimony.machine.machine_b.containers",
+            &serde_json::to_vec(&delta).expect("delta serializes"),
+        );
+
+        assert!(cache.machine_facts(&machine_id("machine_a")).is_none());
+        assert!(cache.machine_facts(&machine_id("machine_b")).is_none());
+    }
+
+    #[test]
+    fn gateway_status_with_payload_machine_id_not_matching_subject_is_rejected() {
+        let cache = FactCache::default();
+        let status = GatewayStatusObservation {
+            machine_id: machine_id("machine_a"),
+            listen_addr: "203.0.113.10:443".parse().expect("valid socket addr"),
+            serving: ployz_core::state::GatewayServingStatus::Current,
+            route_count: 1,
+        };
+
+        ingest_gateway_status(
+            &cache,
+            "plz.v1.testimony.gateway.machine_b.status",
+            &serde_json::to_vec(&status).expect("status serializes"),
+        );
+
+        assert!(cache.gateway_status(&machine_id("machine_a")).is_none());
+        assert!(cache.gateway_status(&machine_id("machine_b")).is_none());
     }
 
     fn machine_facts(

@@ -48,6 +48,41 @@ const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-
 const CORE_PROMOTE_RESULT_BEGIN: &str = "ployz-core-promote-result begin";
 const CORE_PROMOTE_RESULT_END: &str = "ployz-core-promote-result end";
 
+enum MarkerBlockError {
+    Missing,
+    Malformed(&'static str),
+}
+
+/// Finds the `begin`/`end` marker block in remote stdout and returns the JSON
+/// line between the markers.
+fn extract_marker_json<'a>(
+    stdout: &'a str,
+    begin: &str,
+    end: &str,
+) -> Result<&'a str, MarkerBlockError> {
+    let mut lines = stdout.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != begin {
+            continue;
+        }
+        let Some(json_line) = lines.next() else {
+            return Err(MarkerBlockError::Malformed(
+                "result marker was not followed by JSON",
+            ));
+        };
+        let Some(end_line) = lines.next() else {
+            return Err(MarkerBlockError::Malformed(
+                "result JSON was not followed by an end marker",
+            ));
+        };
+        if end_line.trim() != end {
+            return Err(MarkerBlockError::Malformed("result end marker was missing"));
+        }
+        return Ok(json_line);
+    }
+    Err(MarkerBlockError::Missing)
+}
+
 fn remote_machine_error(source: RemoteMachineExecutionError) -> PloyzctlExecutionError {
     PloyzctlExecutionError::RemoteMachine {
         source: Box::new(source),
@@ -233,37 +268,19 @@ fn parse_core_promote_result(
         ));
     }
 
-    let mut lines = stdout.lines();
-    while let Some(line) = lines.next() {
-        if line.trim() != CORE_PROMOTE_RESULT_BEGIN {
-            continue;
-        }
-        let Some(json_line) = lines.next() else {
-            return Err(invalid_core_promote_result(
-                "promote result marker was not followed by JSON",
-            ));
-        };
-        let Some(end_line) = lines.next() else {
-            return Err(invalid_core_promote_result(
-                "promote result JSON was not followed by an end marker",
-            ));
-        };
-        if end_line.trim() != CORE_PROMOTE_RESULT_END {
-            return Err(invalid_core_promote_result(
-                "promote result end marker was missing",
-            ));
-        }
-        let file: CorePromoteResultFile = serde_json::from_str(json_line).map_err(|error| {
-            remote_machine_error(RemoteMachineExecutionError::InvalidCorePromoteResult {
-                message: error.to_string(),
-            })
+    let json_line = extract_marker_json(stdout, CORE_PROMOTE_RESULT_BEGIN, CORE_PROMOTE_RESULT_END)
+        .map_err(|error| match error {
+            MarkerBlockError::Missing => {
+                remote_machine_error(RemoteMachineExecutionError::MissingCorePromoteResult)
+            }
+            MarkerBlockError::Malformed(message) => invalid_core_promote_result(message),
         })?;
-        return core_promote_result_from_file(file);
-    }
-
-    Err(remote_machine_error(
-        RemoteMachineExecutionError::MissingCorePromoteResult,
-    ))
+    let file: CorePromoteResultFile = serde_json::from_str(json_line).map_err(|error| {
+        remote_machine_error(RemoteMachineExecutionError::InvalidCorePromoteResult {
+            message: error.to_string(),
+        })
+    })?;
+    core_promote_result_from_file(file)
 }
 
 fn core_promote_result_from_file(
@@ -499,42 +516,26 @@ fn parse_first_machine_bootstrap_result(
         ));
     }
 
-    let mut lines = stdout.lines();
-    while let Some(line) = lines.next() {
-        if line.trim() != FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN {
-            continue;
+    let json_line = extract_marker_json(
+        stdout,
+        FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN,
+        FIRST_MACHINE_BOOTSTRAP_RESULT_END,
+    )
+    .map_err(|error| match error {
+        MarkerBlockError::Missing => {
+            remote_machine_error(RemoteMachineExecutionError::MissingFirstMachineBootstrapResult)
         }
-
-        let Some(json_line) = lines.next() else {
-            return Err(invalid_first_machine_bootstrap_result(
-                "bootstrap result marker was not followed by JSON",
-            ));
-        };
-        let Some(end_line) = lines.next() else {
-            return Err(invalid_first_machine_bootstrap_result(
-                "bootstrap result JSON was not followed by an end marker",
-            ));
-        };
-        if end_line.trim() != FIRST_MACHINE_BOOTSTRAP_RESULT_END {
-            return Err(invalid_first_machine_bootstrap_result(
-                "bootstrap result end marker was missing",
-            ));
-        }
-
-        let file: FirstMachineBootstrapResultFile =
-            serde_json::from_str(json_line).map_err(|error| {
-                remote_machine_error(
-                    RemoteMachineExecutionError::InvalidFirstMachineBootstrapResult {
-                        message: error.to_string(),
-                    },
-                )
-            })?;
-        return first_machine_bootstrap_result_from_file(file);
-    }
-
-    Err(remote_machine_error(
-        RemoteMachineExecutionError::MissingFirstMachineBootstrapResult,
-    ))
+        MarkerBlockError::Malformed(message) => invalid_first_machine_bootstrap_result(message),
+    })?;
+    let file: FirstMachineBootstrapResultFile =
+        serde_json::from_str(json_line).map_err(|error| {
+            remote_machine_error(
+                RemoteMachineExecutionError::InvalidFirstMachineBootstrapResult {
+                    message: error.to_string(),
+                },
+            )
+        })?;
+    first_machine_bootstrap_result_from_file(file)
 }
 
 fn first_machine_bootstrap_result_from_file(

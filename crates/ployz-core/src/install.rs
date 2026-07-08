@@ -10,6 +10,12 @@ use url::{Host, Url};
 
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://ployz.sh";
 
+/// The machine-local intent mirror's file name, persisted beside the machine's
+/// NKey seed file (ADR 0031). Shared by `ployzd` (which writes and reads the
+/// mirror) and `ployz-keeper` (which reads it for core promotion) so both
+/// always derive the same path.
+pub const INTENT_MIRROR_FILE_NAME: &str = "intent-mirror.json";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -43,7 +49,9 @@ pub struct FirstMachineInstallArtifacts {
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,
-    pub nats_server: NatsServerInstallSpec,
+    /// Absent when the release manifest ships no `nats-server` (a dev
+    /// substrate push). Installs that found or promote a core require it.
+    pub nats_server: Option<NatsServerInstallSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

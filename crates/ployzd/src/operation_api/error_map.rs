@@ -63,6 +63,42 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     }
 }
 
+/// Submit outcome for machine-scoped operations, which have no deploy target
+/// and take no namespace lock: those two failures can only mean a corrupt
+/// record and render as corrupt-record evidence, leaving each caller only the
+/// wrapping into its own error type.
+pub(super) enum MachineSubmitFailure {
+    Unavailable { message: String },
+    DuplicateSequenceMismatch { sequence: EventSequence },
+}
+
+pub(super) fn machine_submit_failure(
+    operation: &str,
+    error: SubmitCommandError,
+) -> MachineSubmitFailure {
+    match submit_failure(error) {
+        SubmitFailure::InvalidDeployTarget => MachineSubmitFailure::Unavailable {
+            message: corrupt(format_args!(
+                "{operation} submit returned deploy target failure"
+            )),
+        },
+        SubmitFailure::ResourceBusy {
+            namespace_id,
+            owner,
+        } => MachineSubmitFailure::Unavailable {
+            message: corrupt(format_args!(
+                "{operation} submit returned namespace lock {} owned by {}",
+                namespace_id.as_str(),
+                owner.as_str()
+            )),
+        },
+        SubmitFailure::Unavailable { message } => MachineSubmitFailure::Unavailable { message },
+        SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+            MachineSubmitFailure::DuplicateSequenceMismatch { sequence }
+        }
+    }
+}
+
 pub(super) fn deploy_submit_error_from_submit_error(
     operation_id: OperationId,
     error: SubmitCommandError,
@@ -110,27 +146,12 @@ pub(super) fn machine_add_error_from_submit_error(
         }
         MachineAddSubmitCommandError::Submit(error) => error,
     };
-    match submit_failure(submit) {
-        SubmitFailure::InvalidDeployTarget => MachineAddError::Unavailable {
-            operation_id,
-            message: corrupt("machine-add submit returned deploy target failure"),
-        },
-        SubmitFailure::ResourceBusy {
-            namespace_id,
-            owner,
-        } => MachineAddError::Unavailable {
-            operation_id,
-            message: corrupt(format_args!(
-                "machine-add submit returned namespace lock {} owned by {}",
-                namespace_id.as_str(),
-                owner.as_str()
-            )),
-        },
-        SubmitFailure::Unavailable { message } => MachineAddError::Unavailable {
+    match machine_submit_failure("machine-add", submit) {
+        MachineSubmitFailure::Unavailable { message } => MachineAddError::Unavailable {
             operation_id,
             message,
         },
-        SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+        MachineSubmitFailure::DuplicateSequenceMismatch { sequence } => {
             MachineAddError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,

@@ -28,14 +28,8 @@ owns the Ployz Native Mesh dataplane proof.
 scripts/dind-e2e.sh
 ```
 
-This rebuilds the linux release artifacts and the machine image only when
-stale (a marker file at `<target dir>/.dind-e2e-build-marker` records the
-binary hashes/mtimes, the machine image id, and the newest workspace source
-mtime from the last build), then runs the gated suite with `PLOYZ_DIND_E2E=1`
-and `--test-threads=1`.
-
-`scripts/dind-e2e.sh --check-stale` reports staleness without building or
-testing (exit 1 when stale) — useful to see what a run would do first.
+This rebuilds the linux release artifacts and the machine image, then runs
+the gated suite with `PLOYZ_DIND_E2E=1` and `--test-threads=1`.
 
 ## Manual Pieces
 

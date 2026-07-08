@@ -16,8 +16,10 @@ use crate::roles::dns::projection::{
 };
 use crate::roles::dns::source::load_dns_projection_update_from_nats;
 use crate::roles::machine::intent_mirror::MachineIntentMirror;
-use crate::roles::nats_failover::{mirrored_server_pool, spawn_intent_failover_mirror};
-use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
+use crate::roles::nats_failover::{
+    IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
+};
+use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -75,17 +77,18 @@ pub async fn start_dns_process(
         await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
             .await
             .map_err(DnsProcessError::AwaitCredentials)?;
-    let pool = mirrored_server_pool(&config.nats.seed_file, &connect.url);
+    let mirror = MachineIntentMirror::beside_seed_file(&config.nats.seed_file);
+    let pool = mirrored_server_pool(&mirror, &connect.url);
     let client = connect_authenticated_pool(&connect, &pool, DNS_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(DnsProcessError::ConnectNats)?;
     start_dns_process_with_client(
         client,
         DNS_REFRESH_INTERVAL,
-        Some((
-            MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json")),
-            connect.url,
-        )),
+        Some(IntentFailover {
+            mirror,
+            seed: connect.url,
+        }),
     )
     .await
 }
@@ -93,7 +96,7 @@ pub async fn start_dns_process(
 pub async fn start_dns_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
-    failover: Option<(MachineIntentMirror, NatsClientUrl)>,
+    failover: Option<IntentFailover>,
 ) -> Result<RunningDnsProcess, DnsProcessError> {
     let runtime = Arc::new(Mutex::new(DnsProjector::new()));
     let health = Arc::new(Mutex::new(DnsProcessHealth {
@@ -106,11 +109,10 @@ pub async fn start_dns_process_with_client(
     let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
-    if let Some((mirror, seed)) = failover {
+    if let Some(failover) = failover {
         tasks.push(spawn_intent_failover_mirror(
             client.clone(),
-            mirror,
-            seed,
+            failover,
             shutdown.subscribe(),
         ));
     }

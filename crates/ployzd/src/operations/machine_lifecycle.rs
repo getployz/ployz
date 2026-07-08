@@ -123,10 +123,17 @@ impl MachineLifecycleOperation {
         machine_id: &MachineId,
         transition: MachineLifecycleTransition,
     ) {
-        let _ = self
+        if let Err(error) = self
             .controllers
             .repository()
             .record_machine_lifecycle_transition(operation_id, machine_id, transition)
-            .await;
+            .await
+        {
+            eprintln!(
+                "ployzd machine lifecycle warning: phase=record-terminal operation_id={} machine_id={} error={error}",
+                operation_id.as_str(),
+                machine_id.as_str()
+            );
+        }
     }
 }

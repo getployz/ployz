@@ -179,36 +179,19 @@ pub async fn machine_update(
         .controllers()
         .submit_machine_update(request.into())
         .await
-        .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::InvalidDeployTarget => {
-                MachineUpdateError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message: super::error_map::corrupt(
-                        "machine-update submit returned deploy target failure",
-                    ),
+        .map_err(|error| {
+            match super::error_map::machine_submit_failure("machine-update", error) {
+                super::error_map::MachineSubmitFailure::Unavailable { message } => {
+                    MachineUpdateError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::ResourceBusy {
-                namespace_id,
-                owner,
-            } => MachineUpdateError::Unavailable {
-                operation_id: operation_id.clone(),
-                message: super::error_map::corrupt(format_args!(
-                    "machine-update submit returned namespace lock {} owned by {}",
-                    namespace_id.as_str(),
-                    owner.as_str()
-                )),
-            },
-            super::error_map::SubmitFailure::Unavailable { message } => {
-                MachineUpdateError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message,
-                }
-            }
-            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                MachineUpdateError::DuplicateSequenceMismatch {
-                    operation_id: operation_id.clone(),
-                    sequence,
+                super::error_map::MachineSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    MachineUpdateError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
                 }
             }
         })?;
@@ -276,36 +259,19 @@ async fn machine_lifecycle(
             target,
         })
         .await
-        .map_err(|error| match super::error_map::submit_failure(error) {
-            super::error_map::SubmitFailure::InvalidDeployTarget => {
-                MachineLifecycleError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message: super::error_map::corrupt(
-                        "machine-lifecycle submit returned deploy target failure",
-                    ),
+        .map_err(|error| {
+            match super::error_map::machine_submit_failure("machine-lifecycle", error) {
+                super::error_map::MachineSubmitFailure::Unavailable { message } => {
+                    MachineLifecycleError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
                 }
-            }
-            super::error_map::SubmitFailure::ResourceBusy {
-                namespace_id,
-                owner,
-            } => MachineLifecycleError::Unavailable {
-                operation_id: operation_id.clone(),
-                message: super::error_map::corrupt(format_args!(
-                    "machine-lifecycle submit returned namespace lock {} owned by {}",
-                    namespace_id.as_str(),
-                    owner.as_str()
-                )),
-            },
-            super::error_map::SubmitFailure::Unavailable { message } => {
-                MachineLifecycleError::Unavailable {
-                    operation_id: operation_id.clone(),
-                    message,
-                }
-            }
-            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                MachineLifecycleError::DuplicateSequenceMismatch {
-                    operation_id: operation_id.clone(),
-                    sequence,
+                super::error_map::MachineSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    MachineLifecycleError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
                 }
             }
         })?;

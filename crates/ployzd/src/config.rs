@@ -79,8 +79,13 @@ pub fn load_daemon_process_config(
         DaemonProcessRole::Control => {
             let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
-            let epoch_fence_mirror = load_seed_from_mirror(&env)
-                .or_else(|| Some(connect.seed_file.with_file_name("intent-mirror.json")));
+            let epoch_fence_mirror = load_seed_from_mirror(&env).or_else(|| {
+                Some(
+                    connect
+                        .seed_file
+                        .with_file_name(ployz_core::install::INTENT_MIRROR_FILE_NAME),
+                )
+            });
             let nats_connect = read_connect_config_now(&role, &connect)?;
             let mut control = ControlProcessConfig::new(
                 NatsServerLaunch::External(connect.url),

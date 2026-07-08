@@ -9,8 +9,6 @@ use ployz_core::roles::DaemonProcessRole;
 use ployz_nats::connect::NatsClientUrl;
 
 const DEFAULT_ENV_DIR: &str = "/etc/ployz";
-const PLOYZ_NATS_NKEY_SEED_FILE: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
-const INTENT_MIRROR_FILE: &str = "intent-mirror.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreDemoteTarget {
@@ -67,6 +65,13 @@ fn ensure_unit_inactive(
     Ok(())
 }
 
+/// Repoint this machine's non-core role env files at the successor core and
+/// restart the roles. The machine-local intent mirror is deliberately left in
+/// place: `core-promote` runs this right after starting the promoted
+/// `ployzd-control`, which still has to read that mirror to seed its store
+/// (`PLOYZ_SEED_FROM_MIRROR`), and the mirror is epoch-gated so the restarted
+/// roles repair it from the successor's higher-epoch drumbeat — the daemon
+/// owns the mirror's lifecycle, keeper never deletes it.
 pub fn repoint_non_core_roles(
     env_dir: &Path,
     successor: &NatsClientUrl,
@@ -107,7 +112,6 @@ fn repoint_machine_role(
         ))
     })?);
     write_repointed_env(&path, &contents, successor)?;
-    remove_intent_mirror_for_env(&contents)?;
     restart_repointed_role(&SupervisorUnitTarget::PloyzdRole(role).unit_name(), runner)
 }
 
@@ -123,7 +127,6 @@ fn repoint_fixed_role(
         return Ok(());
     };
     write_repointed_env(&path, &contents, successor)?;
-    remove_intent_mirror_for_env(&contents)?;
     restart_repointed_role(&SupervisorUnitTarget::PloyzdRole(role).unit_name(), runner)
 }
 
@@ -175,21 +178,6 @@ fn replace_env_value(contents: &str, key: &str, value: &str) -> Option<String> {
         output.push('\n');
     }
     found.then_some(output)
-}
-
-fn remove_intent_mirror_for_env(contents: &str) -> Result<(), FailureMessage> {
-    let Some(seed_file) = env_value(contents, PLOYZ_NATS_NKEY_SEED_FILE) else {
-        return Ok(());
-    };
-    let mirror_path = PathBuf::from(seed_file).with_file_name(INTENT_MIRROR_FILE);
-    match fs::remove_file(&mirror_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(failure_message(format!(
-            "failed to remove {}: {error}",
-            mirror_path.display()
-        ))),
-    }
 }
 
 fn env_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
@@ -568,6 +556,33 @@ mod tests {
                 machine_seed.display()
             ),
         );
-        assert!(!material_dir.join("intent-mirror.json").exists());
+    }
+
+    #[test]
+    fn repoint_non_core_roles_leaves_the_intent_mirror_for_promoted_control() {
+        // core-promote calls repoint_non_core_roles after starting the
+        // promoted ployzd-control, which reads the mirror asynchronously to
+        // seed its store. Deleting the mirror here would race that first
+        // read, so repoint must leave it untouched.
+        let env = tempfile::tempdir().expect("env dir");
+        let material_dir = env.path().join("material");
+        fs::create_dir(&material_dir).expect("material dir");
+        let mirror = material_dir.join("intent-mirror.json");
+        fs::write(&mirror, "{}").expect("write mirror");
+        let machine_seed = material_dir.join("machine.seed");
+        fs::write(
+            env.path().join("ployzd-machine.env"),
+            format!(
+                "PLOYZ_NATS_URL=tls://old:4222\nPLOYZ_NATS_CA_FILE=/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE={}\nPLOYZ_MACHINE_ID=machine_1\n",
+                machine_seed.display()
+            ),
+        )
+        .expect("write machine env");
+        let successor = NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("valid url");
+        let mut runner = RecordingRunner::default();
+
+        repoint_non_core_roles(env.path(), &successor, &mut runner).expect("repoint succeeds");
+
+        assert!(mirror.exists());
     }
 }

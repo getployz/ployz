@@ -132,9 +132,10 @@ pub async fn start_intent_service(
 
     let publisher = tokio::spawn(async move {
         let mut interval = tokio::time::interval(publish_interval);
+        let mut consecutive_failures: u64 = 0;
         loop {
             interval.tick().await;
-            let Ok(intent) = load_intent(
+            let intent = match load_intent(
                 &publisher_core_machine_id,
                 &machine_roster,
                 &namespace_intent,
@@ -142,15 +143,31 @@ pub async fn start_intent_service(
                 &nats_authorizations,
             )
             .await
-            else {
-                continue;
+            {
+                Ok(intent) => intent,
+                Err(error) => {
+                    warn_publisher_failure(&mut consecutive_failures, "load-intent", error);
+                    continue;
+                }
             };
-            let Ok(payload) = serde_json::to_vec(&intent) else {
-                continue;
+            let payload = match serde_json::to_vec(&intent) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    warn_publisher_failure(&mut consecutive_failures, "encode-intent", error);
+                    continue;
+                }
             };
-            let _ = client.publish(INTENT_CHANGED, payload.into()).await;
-            let _ =
-                publish_pending_machine_joins(&client, &operation_repository, &core_store).await;
+            if let Err(error) = client.publish(INTENT_CHANGED, payload.into()).await {
+                warn_publisher_failure(&mut consecutive_failures, "publish-intent", error);
+                continue;
+            }
+            if let Err(error) =
+                publish_pending_machine_joins(&client, &operation_repository, &core_store).await
+            {
+                warn_publisher_failure(&mut consecutive_failures, "publish-pending-joins", error);
+                continue;
+            }
+            consecutive_failures = 0;
         }
     });
 
@@ -236,4 +253,16 @@ pub async fn publish_pending_machine_joins(
         .publish(PENDING_MACHINE_JOINS_CHANGED, payload.into())
         .await
         .map_err(|error| error.to_string())
+}
+
+fn warn_publisher_failure(
+    consecutive_failures: &mut u64,
+    phase: &str,
+    error: impl std::fmt::Display,
+) {
+    *consecutive_failures += 1;
+    eprintln!(
+        "ployzd intent publisher warning: phase={phase} consecutive_failures={} error={error}",
+        *consecutive_failures
+    );
 }

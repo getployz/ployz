@@ -133,7 +133,7 @@ impl MachineUpdateOperation {
         machine_id: &MachineId,
         failure: MachineUpdateFailure,
     ) {
-        let _ = self
+        if let Err(error) = self
             .controllers
             .repository()
             .record_machine_update_transition(
@@ -141,7 +141,14 @@ impl MachineUpdateOperation {
                 machine_id,
                 MachineUpdateTransition::Failed { failure },
             )
-            .await;
+            .await
+        {
+            eprintln!(
+                "ployzd machine update warning: phase=record-failed operation_id={} machine_id={} error={error}",
+                operation_id.as_str(),
+                machine_id.as_str()
+            );
+        }
     }
 
     async fn wait_for_target_report(

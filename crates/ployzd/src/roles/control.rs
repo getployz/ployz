@@ -334,11 +334,45 @@ async fn reject_stale_core_epoch(
     Ok(())
 }
 
+/// Pending machine-add recovery hints trusted at promotion. The pending mirror
+/// is only believed when its epoch matches the intent mirror the core seeded
+/// from, and never for a machine the seeded roster already holds active —
+/// replaying such a hint would let a stale join overwrite roster truth.
 fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecovery> {
-    MachinePendingJoinMirror::new(mirror_path.with_file_name("pending-machine-joins.json"))
-        .load()
-        .map(|snapshot| snapshot.pending)
-        .unwrap_or_default()
+    let Some(intent) = MachineIntentMirror::new(mirror_path.to_path_buf()).load() else {
+        return Vec::new();
+    };
+    let Some(snapshot) =
+        MachinePendingJoinMirror::new(mirror_path.with_file_name("pending-machine-joins.json"))
+            .load()
+    else {
+        return Vec::new();
+    };
+    if snapshot.epoch != intent.epoch {
+        eprintln!(
+            "ployzd control warning: phase=pending-join-recovery ignoring pending-join mirror whose epoch does not match the seeded intent pending_epoch={} intent_epoch={}",
+            snapshot.epoch.get(),
+            intent.epoch.get()
+        );
+        return Vec::new();
+    }
+    snapshot
+        .pending
+        .into_iter()
+        .filter(|recovery| {
+            let already_active = intent
+                .active_machines
+                .iter()
+                .any(|machine| machine.machine_id == recovery.machine_id);
+            if already_active {
+                eprintln!(
+                    "ployzd control warning: phase=pending-join-recovery skipping pending join for machine already active in the seeded roster machine_id={}",
+                    recovery.machine_id.as_str()
+                );
+            }
+            !already_active
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -438,7 +472,13 @@ impl std::error::Error for ControlProcessError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
+    use ployz_core::ids::OperationId;
+    use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, MachineName, RawJoinToken};
+    use ployz_core::roles::InstallRolePolicy;
+    use ployz_core::state::{
+        ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
+        PendingMachineJoinRecoverySnapshot,
+    };
     use ployz_test_support::ids::machine_id;
 
     fn empty_snapshot(epoch: ControlPlaneEpoch) -> IntentSnapshot {
@@ -449,6 +489,32 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             authorized_users: Vec::new(),
+        }
+    }
+
+    fn pending_join(machine_id_value: &str) -> PendingMachineJoinRecovery {
+        let raw_join_token =
+            RawJoinToken::try_new(format!("join_{machine_id_value}")).expect("valid join token");
+        PendingMachineJoinRecovery {
+            machine_id: machine_id(machine_id_value),
+            name: MachineName::try_new(machine_id_value).expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            join_token: IssuedJoinToken::new(
+                raw_join_token.fingerprint().expect("fingerprint"),
+                JoinTokenExpiresAt::try_new(4_102_444_800).expect("valid expiry"),
+            ),
+        }
+    }
+
+    fn active_machine(machine_id_value: &str) -> ActiveMachineState {
+        ActiveMachineState {
+            machine_id: machine_id(machine_id_value),
+            name: MachineName::try_new(machine_id_value).expect("valid machine name"),
+            activated_by: OperationId::try_new(format!("op_add_{machine_id_value}"))
+                .expect("valid operation id"),
+            lifecycle: MachineLifecycle::Active,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
         }
     }
 
@@ -475,6 +541,47 @@ mod tests {
             .await
             .expect_err("missing mirror errors");
         assert!(matches!(error, ControlProcessError::SeedMirrorMissing(_)));
+    }
+
+    #[test]
+    fn pending_join_mirror_with_stale_epoch_is_ignored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror_path = dir.path().join("intent-mirror.json");
+        MachineIntentMirror::new(mirror_path.clone())
+            .store(&empty_snapshot(ControlPlaneEpoch::initial().next()))
+            .expect("write intent mirror");
+        MachinePendingJoinMirror::new(dir.path().join("pending-machine-joins.json"))
+            .store(&PendingMachineJoinRecoverySnapshot {
+                epoch: ControlPlaneEpoch::initial(),
+                pending: vec![pending_join("machine_b")],
+            })
+            .expect("write pending join mirror");
+
+        assert!(load_pending_join_recovery(&mirror_path).is_empty());
+    }
+
+    #[test]
+    fn pending_join_for_machine_already_active_in_seeded_roster_is_skipped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mirror_path = dir.path().join("intent-mirror.json");
+        let mut snapshot = empty_snapshot(ControlPlaneEpoch::initial());
+        snapshot.active_machines = vec![active_machine("machine_b")];
+        MachineIntentMirror::new(mirror_path.clone())
+            .store(&snapshot)
+            .expect("write intent mirror");
+        MachinePendingJoinMirror::new(dir.path().join("pending-machine-joins.json"))
+            .store(&PendingMachineJoinRecoverySnapshot {
+                epoch: ControlPlaneEpoch::initial(),
+                pending: vec![pending_join("machine_b"), pending_join("machine_c")],
+            })
+            .expect("write pending join mirror");
+
+        let recovered = load_pending_join_recovery(&mirror_path);
+
+        let [recovery] = recovered.as_slice() else {
+            panic!("exactly the not-yet-active machine is recovered: {recovered:?}");
+        };
+        assert_eq!(recovery.machine_id, machine_id("machine_c"));
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ use crate::roles::machine::service::{
     start_machine_role_service_with_endpoint_cache,
 };
 use crate::roles::nats_failover::{
-    RunningFailoverTask, mirrored_server_pool, start_intent_failover_mirror,
+    IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
 };
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
@@ -28,7 +28,7 @@ use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningN
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -40,14 +40,16 @@ const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
     observer: RunningTask,
-    intent_mirror: RunningFailoverTask,
+    intent_mirror_shutdown: broadcast::Sender<()>,
+    intent_mirror: JoinHandle<()>,
     pending_join_mirror: RunningTask,
 }
 
 impl RunningMachineProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.pending_join_mirror.shutdown().await;
-        self.intent_mirror.shutdown().await;
+        let _ = self.intent_mirror_shutdown.send(());
+        let _ = self.intent_mirror.await;
         self.observer.shutdown().await;
         self.machine_service.shutdown().await
     }
@@ -69,8 +71,7 @@ pub async fn start_machine_process(
     // Build the failover pool from the persisted mirror *before* connecting, so a
     // machine rebooting during a core outage dials a promoted core from its cached
     // roster rather than timing out on the possibly-dead configured seed.
-    let intent_mirror =
-        MachineIntentMirror::new(config.nats.seed_file.with_file_name("intent-mirror.json"));
+    let intent_mirror = MachineIntentMirror::beside_seed_file(&config.nats.seed_file);
     let pending_join_mirror = MachinePendingJoinMirror::new(
         config
             .nats
@@ -78,7 +79,7 @@ pub async fn start_machine_process(
             .with_file_name("pending-machine-joins.json"),
     );
     let seed = connect.url.clone();
-    let initial_pool = mirrored_server_pool(&config.nats.seed_file, &seed);
+    let initial_pool = mirrored_server_pool(&intent_mirror, &seed);
     let client = connect_authenticated_pool(&connect, &initial_pool, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(MachineProcessError::ConnectNats)?;
@@ -151,7 +152,15 @@ where
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
-    let intent_mirror = start_intent_failover_mirror(client.clone(), intent_mirror, seed);
+    let (intent_mirror_shutdown, intent_mirror_shutdown_rx) = broadcast::channel(1);
+    let intent_mirror = spawn_intent_failover_mirror(
+        client.clone(),
+        IntentFailover {
+            mirror: intent_mirror,
+            seed,
+        },
+        intent_mirror_shutdown_rx,
+    );
     let pending_join_mirror = start_pending_join_mirror(client.clone(), pending_join_mirror);
     let observer = start_machine_observer(
         machine_id,
@@ -164,13 +173,14 @@ where
     Ok(RunningMachineProcess {
         machine_service,
         observer,
+        intent_mirror_shutdown,
         intent_mirror,
         pending_join_mirror,
     })
 }
 
 /// A background task owned by the machine process: a shutdown signal and its
-/// join handle. Shared by the observer and the intent mirror.
+/// join handle. Shared by the observer and the pending-join mirror.
 struct RunningTask {
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<()>,

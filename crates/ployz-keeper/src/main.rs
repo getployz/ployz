@@ -209,18 +209,23 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let nats_server_spec = ployz_core::install::InstallArtifactSpec {
-        version: artifacts.nats_server.version,
-        source: artifacts.nats_server.source,
-        sha256: artifacts.nats_server.sha256,
-        install_path: artifacts.nats_server.binary,
-    };
-    let nats_server = match artifact_target(ArtifactKind::NatsServer, &nats_server_spec) {
-        Ok(target) => target,
-        Err(error) => {
-            eprintln!("release manifest NATS artifact is invalid: {error}");
-            return ExitCode::FAILURE;
+    let nats_server = match artifacts.nats_server {
+        Some(spec) => {
+            let nats_server_spec = ployz_core::install::InstallArtifactSpec {
+                version: spec.version,
+                source: spec.source,
+                sha256: spec.sha256,
+                install_path: spec.binary,
+            };
+            match artifact_target(ArtifactKind::NatsServer, &nats_server_spec) {
+                Ok(target) => Some(target),
+                Err(error) => {
+                    eprintln!("release manifest NATS artifact is invalid: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
+        None => None,
     };
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
@@ -229,7 +234,7 @@ fn run_substrate_update_command(update: KeeperSubstrateUpdate) -> ExitCode {
         KeeperStep::InstallArtifact(ebpf_bytecode),
         KeeperStep::InstallArtifact(ebpf_ctl),
     ];
-    if update.source.updates_nats()
+    if let Some(nats_server) = nats_server
         && units
             .iter()
             .any(|unit| matches!(unit, InstalledUpdateUnit::Nats))
@@ -704,13 +709,19 @@ fn run_core_promote_command(promote: KeeperCorePromote) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // A promoted core runs its own nats-server; a manifest without one (a dev
+    // substrate push) cannot promote.
+    let Some(nats_server_spec) = artifacts.nats_server else {
+        eprintln!("release manifest carries no nats-server artifact; core-promote requires one");
+        return ExitCode::FAILURE;
+    };
     let nats_server_artifact = match artifact_target(
         ArtifactKind::NatsServer,
         &ployz_core::install::InstallArtifactSpec {
-            version: artifacts.nats_server.version,
-            source: artifacts.nats_server.source,
-            sha256: artifacts.nats_server.sha256,
-            install_path: artifacts.nats_server.binary,
+            version: nats_server_spec.version,
+            source: nats_server_spec.source,
+            sha256: nats_server_spec.sha256,
+            install_path: nats_server_spec.binary,
         },
     ) {
         Ok(target) => target,
@@ -806,8 +817,8 @@ fn check_core_promote_preflight() -> Result<(), String> {
         &join_dir.join(JOIN_RECOVERY_KEY_FILE),
         JOIN_RECOVERY_KEY_FILE,
     )?;
-    let mirror_path = join_dir.join("intent-mirror.json");
-    require_promote_file(&mirror_path, "intent-mirror.json")?;
+    let mirror_path = join_dir.join(ployz_core::install::INTENT_MIRROR_FILE_NAME);
+    require_promote_file(&mirror_path, ployz_core::install::INTENT_MIRROR_FILE_NAME)?;
     let _: ployz_core::state::IntentSnapshot =
         serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
             format!(
@@ -874,7 +885,7 @@ fn resolve_core_promote_target(
     // The machine persists its mirror beside its seed file; on a joined machine
     // that seed lives in the join-material directory (nats.creds), so the mirror is
     // there too — not the first-machine `/var/lib/ployz/nats` layout.
-    let mirror_path = join_dir.join("intent-mirror.json");
+    let mirror_path = join_dir.join(ployz_core::install::INTENT_MIRROR_FILE_NAME);
     let snapshot: ployz_core::state::IntentSnapshot =
         serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
             format!(

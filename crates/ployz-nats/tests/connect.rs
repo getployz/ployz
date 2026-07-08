@@ -48,9 +48,7 @@ fn client_url_can_be_derived_from_local_endpoints() {
         NatsClientEndpoint::from_socket(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 4222));
 
     assert_eq!(
-        NatsClientUrl::from_endpoint(&endpoint)
-            .expect("endpoint URL is valid")
-            .as_str(),
+        NatsClientUrl::from_endpoint(&endpoint).as_str(),
         "nats://[::1]:4222"
     );
     assert_eq!(

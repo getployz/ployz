@@ -30,7 +30,7 @@ pub mod roles {
         pub mod source;
     }
     pub mod machine;
-    pub(crate) mod nats_failover;
+    pub mod nats_failover;
 }
 pub mod operations {
     pub mod deploy;

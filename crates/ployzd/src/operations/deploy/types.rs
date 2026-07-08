@@ -62,22 +62,6 @@ impl DeployExecutionCommand {
         &self.serving_target_removals
     }
 
-    pub fn existing_replicas(
-        &self,
-    ) -> Result<&[ExistingServiceReplica], DeployServiceAccessorError> {
-        Ok(self.first_service()?.existing_replicas())
-    }
-
-    pub fn cleanup_candidates(
-        &self,
-    ) -> Result<&[DeployCleanupContainer], DeployServiceAccessorError> {
-        Ok(self.first_service()?.cleanup_candidates())
-    }
-
-    pub fn eligible_machines(&self) -> Result<&[MachineId], DeployServiceAccessorError> {
-        Ok(self.first_service()?.eligible_machines())
-    }
-
     #[must_use]
     pub fn unusable_machines(&self) -> &[ployz_core::ops::UnusableMachine] {
         &self.unusable_machines
@@ -111,18 +95,6 @@ impl DeployExecutionCommand {
             &self.dataplane_machines,
         )
     }
-
-    fn first_service(&self) -> Result<&DeployServiceExecutionCommand, DeployServiceAccessorError> {
-        self.services
-            .first()
-            .ok_or(DeployServiceAccessorError::EmptyServices)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum DeployServiceAccessorError {
-    #[error("deploy command has no services")]
-    EmptyServices,
 }
 
 impl DeployServiceExecutionCommand {
