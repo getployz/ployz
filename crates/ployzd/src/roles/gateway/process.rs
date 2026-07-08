@@ -32,7 +32,6 @@ use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
-use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -747,96 +746,38 @@ pub async fn run_gateway_until_shutdown(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum GatewayProcessError {
+    #[error("{0}")]
     AwaitCredentials(AwaitSeedFileError),
+    #[error("{0}")]
     ConnectNats(NatsConnectError),
+    #[error("failed to bind gateway HTTP listener {addr}: {source}")]
     BindHttp {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    #[error("failed to read gateway HTTP listener address: {0}")]
     ReadHttpListenerAddr(std::io::Error),
-    HttpListenerNotReady {
-        addr: SocketAddr,
-        timeout: Duration,
-    },
+    #[error("gateway HTTP listener {addr} was not ready after {}s", timeout.as_secs())]
+    HttpListenerNotReady { addr: SocketAddr, timeout: Duration },
+    #[error("failed to start runtime facts cache: {0}")]
     StartFactsCache(FactCacheError),
+    #[error("failed to encode gateway status: {0}")]
     EncodeGatewayStatus(serde_json::Error),
-    PublishGatewayStatus {
-        message: String,
-    },
+    #[error("failed to publish gateway status: {message}")]
+    PublishGatewayStatus { message: String },
+    #[error("failed to update Pingora gateway routes: {0}")]
     UpdatePingoraRoutes(PingoraRouteRegistryError),
-    WatchIntent {
-        message: String,
-    },
-    WatchFacts {
-        subject: String,
-        message: String,
-    },
-    RefreshTimedOut {
-        timeout: Duration,
-    },
+    #[error("failed to watch intent: {message}")]
+    WatchIntent { message: String },
+    #[error("failed to watch {subject}: {message}")]
+    WatchFacts { subject: String, message: String },
+    #[error("gateway projection refresh timed out after {}s", timeout.as_secs())]
+    RefreshTimedOut { timeout: Duration },
+    #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
 }
-
-impl fmt::Display for GatewayProcessError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AwaitCredentials(error) => write!(formatter, "{error}"),
-            Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::BindHttp { addr, source } => {
-                write!(
-                    formatter,
-                    "failed to bind gateway HTTP listener {addr}: {source}"
-                )
-            }
-            Self::ReadHttpListenerAddr(error) => {
-                write!(
-                    formatter,
-                    "failed to read gateway HTTP listener address: {error}"
-                )
-            }
-            Self::HttpListenerNotReady { addr, timeout } => {
-                write!(
-                    formatter,
-                    "gateway HTTP listener {addr} was not ready after {}s",
-                    timeout.as_secs()
-                )
-            }
-            Self::StartFactsCache(error) => {
-                write!(formatter, "failed to start runtime facts cache: {error}")
-            }
-            Self::EncodeGatewayStatus(error) => {
-                write!(formatter, "failed to encode gateway status: {error}")
-            }
-            Self::PublishGatewayStatus { message } => {
-                write!(formatter, "failed to publish gateway status: {message}")
-            }
-            Self::UpdatePingoraRoutes(error) => {
-                write!(
-                    formatter,
-                    "failed to update Pingora gateway routes: {error}"
-                )
-            }
-            Self::WatchIntent { message } => write!(formatter, "failed to watch intent: {message}"),
-            Self::WatchFacts { subject, message } => {
-                write!(formatter, "failed to watch {subject}: {message}")
-            }
-            Self::RefreshTimedOut { timeout } => {
-                write!(
-                    formatter,
-                    "gateway projection refresh timed out after {}s",
-                    timeout.as_secs()
-                )
-            }
-            Self::ShutdownSignal(error) => {
-                write!(formatter, "failed to wait for shutdown: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for GatewayProcessError {}
 
 #[cfg(test)]
 mod tests {

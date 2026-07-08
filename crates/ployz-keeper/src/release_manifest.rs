@@ -1,7 +1,5 @@
 //! Versioned release manifest parsing for keeper-owned installs.
 
-use std::fmt;
-
 use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
@@ -61,36 +59,17 @@ impl std::str::FromStr for ExactPloyzVersion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExactPloyzVersionError {
+    #[error("update version is empty")]
     Empty,
+    #[error("update version must be exact, got mutable {value:?}")]
     Mutable { value: String },
+    #[error("update version must be exact, got range {value:?}")]
     Range { value: String },
+    #[error("update version is invalid: {value:?}")]
     Invalid { value: String },
 }
-
-impl fmt::Display for ExactPloyzVersionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("update version is empty"),
-            Self::Mutable { value } => {
-                write!(
-                    formatter,
-                    "update version must be exact, got mutable {value:?}"
-                )
-            }
-            Self::Range { value } => {
-                write!(
-                    formatter,
-                    "update version must be exact, got range {value:?}"
-                )
-            }
-            Self::Invalid { value } => write!(formatter, "update version is invalid: {value:?}"),
-        }
-    }
-}
-
-impl std::error::Error for ExactPloyzVersionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseManifest {

@@ -91,87 +91,50 @@ pub fn connect_docker() -> Result<Docker, DindError> {
 }
 
 /// Typed failures of the DinD harness.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DindError {
     /// Could not build a Docker client from the environment.
+    #[error("failed to connect to Docker: {message}")]
     DockerConnect { message: String },
     /// A Docker API call failed.
+    #[error("docker api call failed ({context}): {message}")]
     DockerApi { context: String, message: String },
     /// The requested cluster shape is invalid (e.g. zero or two cores).
+    #[error("invalid DinD cluster shape: {detail}")]
     ClusterShape { detail: String },
     /// Could not pre-reserve a loopback port for publishing.
+    #[error("failed to reserve loopback port: {message}")]
     PortReservation { message: String },
     /// A machine container exited before it became ready.
+    #[error("machine container {machine} exited before readiness")]
     MachineExited { machine: String },
     /// A machine did not reach systemd + inner-docker readiness in budget.
+    #[error(
+        "machine {machine} not ready in budget \
+         (last systemd state: {last_system_state}; \
+         last inner docker info: {last_docker_info})"
+    )]
     MachineReadinessTimeout {
         machine: String,
         last_system_state: String,
         last_docker_info: String,
     },
     /// A started machine never reported a bridge IP on the cluster network.
+    #[error("machine {machine} has no bridge IP: {detail}")]
     BridgeIpUnavailable { machine: String, detail: String },
     /// An exec did not finish within the per-exec budget.
+    #[error("exec in {container} timed out: {command}")]
     ExecTimeout { container: String, command: String },
     /// Docker started the exec detached even though we asked for output.
+    #[error("exec in {container} unexpectedly started detached")]
     ExecDetached { container: String },
     /// The finished exec carried no exit code.
+    #[error("exec in {container} finished without exit code: {command}")]
     ExecExitCodeMissing { container: String, command: String },
     /// Writing evidence files failed.
+    #[error("failed to write evidence {}: {message}", path.display())]
     EvidenceIo { path: PathBuf, message: String },
 }
-
-impl std::fmt::Display for DindError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DindError::DockerConnect { message } => {
-                write!(f, "failed to connect to Docker: {message}")
-            }
-            DindError::DockerApi { context, message } => {
-                write!(f, "docker api call failed ({context}): {message}")
-            }
-            DindError::ClusterShape { detail } => {
-                write!(f, "invalid DinD cluster shape: {detail}")
-            }
-            DindError::PortReservation { message } => {
-                write!(f, "failed to reserve loopback port: {message}")
-            }
-            DindError::MachineExited { machine } => {
-                write!(f, "machine container {machine} exited before readiness")
-            }
-            DindError::MachineReadinessTimeout {
-                machine,
-                last_system_state,
-                last_docker_info,
-            } => write!(
-                f,
-                "machine {machine} not ready in budget \
-                 (last systemd state: {last_system_state}; \
-                 last inner docker info: {last_docker_info})"
-            ),
-            DindError::BridgeIpUnavailable { machine, detail } => {
-                write!(f, "machine {machine} has no bridge IP: {detail}")
-            }
-            DindError::ExecTimeout { container, command } => {
-                write!(f, "exec in {container} timed out: {command}")
-            }
-            DindError::ExecDetached { container } => {
-                write!(f, "exec in {container} unexpectedly started detached")
-            }
-            DindError::ExecExitCodeMissing { container, command } => {
-                write!(
-                    f,
-                    "exec in {container} finished without exit code: {command}"
-                )
-            }
-            DindError::EvidenceIo { path, message } => {
-                write!(f, "failed to write evidence {}: {message}", path.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for DindError {}
 
 pub(crate) fn docker_api_error(
     context: &str,

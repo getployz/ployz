@@ -29,7 +29,6 @@ use crate::tasks::TaskRegistry;
 use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -375,99 +374,50 @@ fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecov
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ControlProcessError {
+    #[error("machine add requires configured join template")]
     MissingMachineJoinTemplate,
+    #[error("control runtime requires a deploy machine")]
     MissingDeployMachine,
+    #[error("{0}")]
     ConnectNats(NatsConnectError),
+    #[error("failed to open core state store: {0}")]
     OpenCoreStore(CoreStoreError),
+    #[error("failed to read core epoch: {0}")]
     ReadCoreEpoch(CoreStoreError),
+    #[error(
+        "refusing stale core startup: local epoch {} is behind mirrored epoch {} at {}",
+        local.get(),
+        mirror.get(),
+        mirror_path.display()
+    )]
     StaleCoreEpoch {
         local: ControlPlaneEpoch,
         mirror: ControlPlaneEpoch,
         mirror_path: PathBuf,
     },
+    #[error("core-promote seed mirror is missing or unreadable: {}", .0.display())]
     SeedMirrorMissing(PathBuf),
+    #[error("failed to seed core store from mirror: {0}")]
     SeedCore(SeedCoreError),
+    #[error("failed to seed authorization grants: {0}")]
     SeedAuthorizations(NatsAuthorizationStoreError),
+    #[error("failed to start runtime facts cache: {0}")]
     StartFactsCache(FactCacheError),
+    #[error("failed to render NATS authorization: {0}")]
     RenderNatsAuthorization(RenderFailure),
+    #[error("failed to reconcile unfinished machine-add mints: {0}")]
     ResumeMachineAddMints(MintResumeError),
+    #[error("failed to start intent service: {0}")]
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
+    #[error("failed to start operation API service: {0}")]
     StartOperationApi(ApiServiceError),
+    #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("failed to stop operation API service: {0}")]
     ShutdownOperationApi(NatsServiceShutdownError),
 }
-
-impl fmt::Display for ControlProcessError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingMachineJoinTemplate => {
-                write!(formatter, "machine add requires configured join template")
-            }
-            Self::MissingDeployMachine => {
-                write!(formatter, "control runtime requires a deploy machine")
-            }
-            Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::OpenCoreStore(error) => {
-                write!(formatter, "failed to open core state store: {error}")
-            }
-            Self::ReadCoreEpoch(error) => {
-                write!(formatter, "failed to read core epoch: {error}")
-            }
-            Self::StaleCoreEpoch {
-                local,
-                mirror,
-                mirror_path,
-            } => write!(
-                formatter,
-                "refusing stale core startup: local epoch {} is behind mirrored epoch {} at {}",
-                local.get(),
-                mirror.get(),
-                mirror_path.display()
-            ),
-            Self::SeedMirrorMissing(path) => {
-                write!(
-                    formatter,
-                    "core-promote seed mirror is missing or unreadable: {}",
-                    path.display()
-                )
-            }
-            Self::SeedCore(error) => {
-                write!(formatter, "failed to seed core store from mirror: {error}")
-            }
-            Self::SeedAuthorizations(error) => {
-                write!(formatter, "failed to seed authorization grants: {error}")
-            }
-            Self::StartFactsCache(error) => {
-                write!(formatter, "failed to start runtime facts cache: {error}")
-            }
-            Self::RenderNatsAuthorization(error) => {
-                write!(formatter, "failed to render NATS authorization: {error}")
-            }
-            Self::ResumeMachineAddMints(error) => {
-                write!(
-                    formatter,
-                    "failed to reconcile unfinished machine-add mints: {error}"
-                )
-            }
-            Self::StartIntent(error) => {
-                write!(formatter, "failed to start intent service: {error}")
-            }
-            Self::StartOperationApi(error) => {
-                write!(formatter, "failed to start operation API service: {error}")
-            }
-            Self::ShutdownSignal(error) => {
-                write!(formatter, "failed to wait for shutdown: {error}")
-            }
-            Self::ShutdownOperationApi(error) => {
-                write!(formatter, "failed to stop operation API service: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ControlProcessError {}
 
 #[cfg(test)]
 mod tests {

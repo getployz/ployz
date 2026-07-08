@@ -8,7 +8,6 @@ use crate::roles::gateway::projection::{
 };
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use std::fmt;
 pub async fn load_gateway_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
     facts: &FactCache,
@@ -48,21 +47,12 @@ pub async fn load_gateway_projection_input_from_nats(
     ))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GatewaySourceError {
+    #[error("invalid gateway source: {message}")]
     Invalid { message: String },
+    #[error("gateway source unavailable: {message}")]
     Unavailable { message: String },
-}
-
-impl fmt::Display for GatewaySourceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid { message } => write!(formatter, "invalid gateway source: {message}"),
-            Self::Unavailable { message } => {
-                write!(formatter, "gateway source unavailable: {message}")
-            }
-        }
-    }
 }
 
 impl From<IntentReadError> for GatewaySourceError {

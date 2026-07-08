@@ -32,7 +32,6 @@ use ployz_nats::service_runtime::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::time::Duration;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -98,12 +97,18 @@ pub enum MachineLogsTailError {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineFactsReadError {
+    #[error("machine {} rejected facts gather: {}", machine_id.as_str(), message.as_str())]
     GatherFailed {
         machine_id: MachineId,
         message: ployz_core::ops::FailureMessage,
     },
+    #[error(
+        "machine {} facts unavailable: {}",
+        machine_id.as_str(),
+        reason.failure_message().as_str()
+    )]
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
@@ -403,28 +408,6 @@ impl NatsMachineDataplanePreparer {
         self.request_timeout = request_timeout;
         self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
         self
-    }
-}
-
-impl fmt::Display for MachineFactsReadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::GatherFailed {
-                machine_id,
-                message,
-            } => write!(
-                formatter,
-                "machine {} rejected facts gather: {}",
-                machine_id.as_str(),
-                message.as_str()
-            ),
-            Self::Unavailable { machine_id, reason } => write!(
-                formatter,
-                "machine {} facts unavailable: {}",
-                machine_id.as_str(),
-                reason.failure_message().as_str()
-            ),
-        }
     }
 }
 

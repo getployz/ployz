@@ -1059,19 +1059,8 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineServiceError {
+    #[error("failed to start machine service: {0:?}")]
     Nats(NatsServiceRuntimeError),
 }
-
-impl std::fmt::Display for MachineServiceError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Nats(error) => {
-                write!(formatter, "failed to start machine service: {error:?}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MachineServiceError {}

@@ -610,43 +610,62 @@ fn nats_connect_config(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PloyzctlExecutionError {
+    #[error(
+        "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set {PLOYZ_NATS_URL_ENV}"
+    )]
     MissingNatsUrl,
+    #[error("--nats or {PLOYZ_NATS_URL_ENV} is invalid: {0:?}")]
     InvalidNatsUrl(NatsClientUrlError),
+    #[error("{PLOYZ_NATS_CA_FILE_ENV} is required")]
     MissingNatsCaFile,
+    #[error("{PLOYZ_NATS_NKEY_SEED_FILE_ENV} is required")]
     MissingNatsSeedFile,
-    ReadNatsSeedFile {
-        path: PathBuf,
-        message: String,
-    },
-    InvalidNatsSeedFile {
-        path: PathBuf,
-    },
+    #[error(
+        "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} is unreadable: {message}",
+        path.display()
+    )]
+    ReadNatsSeedFile { path: PathBuf, message: String },
+    #[error(
+        "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} does not contain an SU-prefixed user seed",
+        path.display()
+    )]
+    InvalidNatsSeedFile { path: PathBuf },
+    #[error(
+        "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployzctl init USER@HOST` with the current CLI to refresh the context"
+    )]
     MissingJoinSeedFile,
-    ReadJoinSeedFile {
-        path: PathBuf,
-        message: String,
-    },
-    InvalidJoinSeedFile {
-        path: PathBuf,
-    },
+    #[error(
+        "join seed file {} is unreadable (set {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}): {message}",
+        path.display()
+    )]
+    ReadJoinSeedFile { path: PathBuf, message: String },
+    #[error("join seed file {} does not contain an SU-prefixed user seed", path.display())]
+    InvalidJoinSeedFile { path: PathBuf },
+    #[error("{0}")]
     NatsConnect(NatsConnectError),
+    #[error("{source}")]
     KeeperFirstMachineInstall {
         source: Box<LocalKeeperInstallError>,
     },
-    ClusterContext {
-        source: ClusterContextError,
-    },
+    #[error("{source}")]
+    ClusterContext { source: ClusterContextError },
+    #[error("{source}")]
     RemoteMachine {
         source: Box<RemoteMachineExecutionError>,
     },
-    OperationApi {
-        message: String,
-    },
+    #[error("{message}")]
+    OperationApi { message: String },
+    #[error("first machine activation failed: {source}")]
     FirstMachineActivateApi {
         source: OperationApiClientError<InitFirstMachineActivateError>,
     },
+    #[error(
+        "operation {} did not reach a terminal state within {}s",
+        operation_id.as_str(),
+        timeout.as_secs()
+    )]
     OpsWatchTimedOut {
         operation_id: OperationId,
         timeout: Duration,
@@ -670,72 +689,6 @@ impl PloyzctlExecutionError {
         )
     }
 }
-
-impl fmt::Display for PloyzctlExecutionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingNatsUrl => write!(
-                formatter,
-                "no cluster context: run `ployzctl init USER@HOST` to create one, pass --nats, or set {PLOYZ_NATS_URL_ENV}"
-            ),
-            Self::InvalidNatsUrl(error) => {
-                write!(
-                    formatter,
-                    "--nats or {PLOYZ_NATS_URL_ENV} is invalid: {error:?}"
-                )
-            }
-            Self::MissingNatsCaFile => {
-                write!(formatter, "{PLOYZ_NATS_CA_FILE_ENV} is required")
-            }
-            Self::MissingNatsSeedFile => {
-                write!(formatter, "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} is required")
-            }
-            Self::ReadNatsSeedFile { path, message } => write!(
-                formatter,
-                "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} is unreadable: {message}",
-                path.display()
-            ),
-            Self::InvalidNatsSeedFile { path } => write!(
-                formatter,
-                "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} does not contain an SU-prefixed user seed",
-                path.display()
-            ),
-            Self::MissingJoinSeedFile => write!(
-                formatter,
-                "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployzctl init USER@HOST` with the current CLI to refresh the context"
-            ),
-            Self::ReadJoinSeedFile { path, message } => write!(
-                formatter,
-                "join seed file {} is unreadable (set {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}): {message}",
-                path.display()
-            ),
-            Self::InvalidJoinSeedFile { path } => write!(
-                formatter,
-                "join seed file {} does not contain an SU-prefixed user seed",
-                path.display()
-            ),
-            Self::NatsConnect(error) => write!(formatter, "{error}"),
-            Self::KeeperFirstMachineInstall { source } => write!(formatter, "{source}"),
-            Self::ClusterContext { source } => write!(formatter, "{source}"),
-            Self::RemoteMachine { source } => write!(formatter, "{source}"),
-            Self::OperationApi { message } => formatter.write_str(message),
-            Self::FirstMachineActivateApi { source } => {
-                write!(formatter, "first machine activation failed: {source}")
-            }
-            Self::OpsWatchTimedOut {
-                operation_id,
-                timeout,
-            } => write!(
-                formatter,
-                "operation {} did not reach a terminal state within {}s",
-                operation_id.as_str(),
-                timeout.as_secs()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for PloyzctlExecutionError {}
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,5 @@
 //! Local helpers for typed Cloud bootstrap envelopes.
 
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -309,125 +308,52 @@ pub enum CloudBootstrapLocalState {
     AlreadyBootstrapped { evidence: PathBuf },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CloudAttemptStateError {
+    #[error("failed to create cloud bootstrap state directory {}: {message}", path.display())]
     CreateDir { path: PathBuf, message: String },
+    #[error("failed to read cloud bootstrap attempt {}: {message}", path.display())]
     Read { path: PathBuf, message: String },
+    #[error("failed to parse cloud bootstrap attempt {}: {message}", path.display())]
     Parse { path: PathBuf, message: String },
+    #[error("failed to serialize cloud bootstrap attempt: {message}")]
     Serialize { message: String },
+    #[error("failed to write cloud bootstrap attempt {}: {message}", path.display())]
     Write { path: PathBuf, message: String },
+    #[error("failed to create cloud bootstrap attempt id: {message}")]
     InvalidGeneratedAttempt { message: String },
+    #[error(
+        "cloud bootstrap attempt {} cannot persist a terminal callback for a different envelope",
+        path.display()
+    )]
     TerminalCallbackEnvelopeMismatch { path: PathBuf },
+    #[error(
+        "cloud bootstrap attempt {} already has a different terminal callback payload",
+        path.display()
+    )]
     ConflictingTerminalCallback { path: PathBuf },
+    #[error(
+        "cloud bootstrap attempt {} already has a different terminal callback envelope",
+        path.display()
+    )]
     ConflictingTerminalEnvelope { path: PathBuf },
 }
 
-impl fmt::Display for CloudAttemptStateError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CreateDir { path, message } => write!(
-                formatter,
-                "failed to create cloud bootstrap state directory {}: {message}",
-                path.display()
-            ),
-            Self::Read { path, message } => write!(
-                formatter,
-                "failed to read cloud bootstrap attempt {}: {message}",
-                path.display()
-            ),
-            Self::Parse { path, message } => write!(
-                formatter,
-                "failed to parse cloud bootstrap attempt {}: {message}",
-                path.display()
-            ),
-            Self::Serialize { message } => {
-                write!(
-                    formatter,
-                    "failed to serialize cloud bootstrap attempt: {message}"
-                )
-            }
-            Self::Write { path, message } => write!(
-                formatter,
-                "failed to write cloud bootstrap attempt {}: {message}",
-                path.display()
-            ),
-            Self::InvalidGeneratedAttempt { message } => write!(
-                formatter,
-                "failed to create cloud bootstrap attempt id: {message}"
-            ),
-            Self::TerminalCallbackEnvelopeMismatch { path } => write!(
-                formatter,
-                "cloud bootstrap attempt {} cannot persist a terminal callback for a different envelope",
-                path.display()
-            ),
-            Self::ConflictingTerminalCallback { path } => write!(
-                formatter,
-                "cloud bootstrap attempt {} already has a different terminal callback payload",
-                path.display()
-            ),
-            Self::ConflictingTerminalEnvelope { path } => write!(
-                formatter,
-                "cloud bootstrap attempt {} already has a different terminal callback envelope",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CloudAttemptStateError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CloudBootstrapLocalStateError {
+    #[error("failed to read systemd directory {}: {message}", path.display())]
     ReadSystemd { path: PathBuf, message: String },
 }
 
-impl fmt::Display for CloudBootstrapLocalStateError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadSystemd { path, message } => {
-                write!(
-                    formatter,
-                    "failed to read systemd directory {}: {message}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for CloudBootstrapLocalStateError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CloudJoinerEnvelopeError {
+    #[error("cloud joiner runtime NATS URL is invalid: {message}")]
     InvalidRuntimeNatsUrl { message: String },
+    #[error("failed to create cloud joiner trust directory {}: {message}", path.display())]
     CreateTrustDir { path: PathBuf, message: String },
+    #[error("failed to write cloud joiner trusted CA {}: {message}", path.display())]
     WriteTrustedCa { path: PathBuf, message: String },
 }
-
-impl fmt::Display for CloudJoinerEnvelopeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidRuntimeNatsUrl { message } => {
-                write!(
-                    formatter,
-                    "cloud joiner runtime NATS URL is invalid: {message}"
-                )
-            }
-            Self::CreateTrustDir { path, message } => write!(
-                formatter,
-                "failed to create cloud joiner trust directory {}: {message}",
-                path.display()
-            ),
-            Self::WriteTrustedCa { path, message } => write!(
-                formatter,
-                "failed to write cloud joiner trusted CA {}: {message}",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CloudJoinerEnvelopeError {}
 
 #[cfg(test)]
 mod tests {

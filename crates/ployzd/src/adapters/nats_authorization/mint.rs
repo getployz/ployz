@@ -1,4 +1,3 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::operations::log::{
@@ -69,36 +68,15 @@ pub enum MintOutcome {
 }
 
 /// Why the control-start mint reconciliation pass could not finish.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum MintResumeError {
+    #[error("failed to list machine-add submissions: {0:?}")]
     ListSubmissions(OperationStatusStoreError),
+    #[error("failed to read minted material record: {0:?}")]
     ReadSecretDelivery(OperationStatusStoreError),
+    #[error("failed to read machine-add status: {0:?}")]
     ReadStatus(OperationStatusStoreError),
 }
-
-impl fmt::Display for MintResumeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ListSubmissions(error) => {
-                write!(
-                    formatter,
-                    "failed to list machine-add submissions: {error:?}"
-                )
-            }
-            Self::ReadSecretDelivery(error) => {
-                write!(
-                    formatter,
-                    "failed to read minted material record: {error:?}"
-                )
-            }
-            Self::ReadStatus(error) => {
-                write!(formatter, "failed to read machine-add status: {error:?}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MintResumeError {}
 
 /// Bounded operation work that mints per-machine credentials after a
 /// machine-add submission is accepted.

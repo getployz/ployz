@@ -276,21 +276,12 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ApiServiceError {
+    #[error("machine join template is missing")]
     MissingMachineJoinTemplate,
+    #[error("{0}")]
     Nats(NatsServiceRuntimeError),
-}
-
-impl std::fmt::Display for ApiServiceError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingMachineJoinTemplate => {
-                write!(formatter, "machine join template is missing")
-            }
-            Self::Nats(error) => write!(formatter, "{error}"),
-        }
-    }
 }
 
 #[cfg(test)]

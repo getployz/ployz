@@ -21,7 +21,6 @@ use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -469,22 +468,11 @@ fn docker_container_state(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("failed to connect to local Docker: {message}")]
 pub struct DockerManagedContainerRunnerConnectError {
     message: String,
 }
-
-impl fmt::Display for DockerManagedContainerRunnerConnectError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "failed to connect to local Docker: {}",
-            self.message
-        )
-    }
-}
-
-impl std::error::Error for DockerManagedContainerRunnerConnectError {}
 
 fn managed_container_list_options() -> bollard::query_parameters::ListContainersOptions {
     let filters = HashMap::from([("label".to_owned(), vec![format!("{MANAGED_LABEL}=true")])]);
@@ -581,44 +569,20 @@ fn container_ip(
     })?))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 enum DockerManagedContainerSummaryError {
+    #[error("managed Docker container is missing id")]
     MissingId,
+    #[error("managed Docker container is missing labels")]
     MissingLabels,
+    #[error("managed Docker container is missing state")]
     MissingState,
+    #[error("managed Docker container has invalid endpoint ip: {value}")]
     InvalidEndpointIp { value: String },
+    #[error("managed Docker container has invalid id: {0}")]
     InvalidContainerId(SubjectTokenError),
+    #[error("managed Docker container has invalid labels: {0:?}")]
     InvalidLabels(ManagedContainerLabelError),
-}
-
-impl fmt::Display for DockerManagedContainerSummaryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingId => formatter.write_str("managed Docker container is missing id"),
-            Self::MissingLabels => {
-                formatter.write_str("managed Docker container is missing labels")
-            }
-            Self::MissingState => formatter.write_str("managed Docker container is missing state"),
-            Self::InvalidEndpointIp { value } => {
-                write!(
-                    formatter,
-                    "managed Docker container has invalid endpoint ip: {value}"
-                )
-            }
-            Self::InvalidContainerId(error) => {
-                write!(
-                    formatter,
-                    "managed Docker container has invalid id: {error}"
-                )
-            }
-            Self::InvalidLabels(error) => {
-                write!(
-                    formatter,
-                    "managed Docker container has invalid labels: {error:?}"
-                )
-            }
-        }
-    }
 }
 
 fn hashmap_from_btree(map: BTreeMap<String, String>) -> HashMap<String, String> {

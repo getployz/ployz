@@ -1,7 +1,6 @@
 //! Artifact targets installed by keeper.
 
 use sha2::{Digest, Sha256};
-use std::fmt;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -171,45 +170,22 @@ fn sha256_file(path: &Path) -> Result<Sha256Digest, ArtifactVerificationError> {
     Ok(Sha256Digest::try_new(format!("{digest:x}")).expect("sha256 hasher yields valid hex"))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ArtifactVerificationError {
-    ReadFailed {
-        path: PathBuf,
-        message: String,
-    },
+    #[error("failed to read artifact {}: {message}", path.display())]
+    ReadFailed { path: PathBuf, message: String },
+    #[error(
+        "artifact {} sha256 mismatch: expected {}, got {}",
+        path.display(),
+        expected.as_str(),
+        actual.as_str()
+    )]
     DigestMismatch {
         path: PathBuf,
         expected: Sha256Digest,
         actual: Sha256Digest,
     },
 }
-
-impl fmt::Display for ArtifactVerificationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadFailed { path, message } => {
-                write!(
-                    formatter,
-                    "failed to read artifact {}: {message}",
-                    path.display()
-                )
-            }
-            Self::DigestMismatch {
-                path,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "artifact {} sha256 mismatch: expected {}, got {}",
-                path.display(),
-                expected.as_str(),
-                actual.as_str()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ArtifactVerificationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledArtifactFile {
@@ -499,183 +475,77 @@ fn sync_parent_directory(_install_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ArtifactInstallError {
+    #[error("artifact verification failed before install: {0}")]
     VerificationFailed(ArtifactVerificationError),
-    ArchiveKindMismatch {
-        kind: ArtifactKind,
-    },
-    ExtractArchiveFailed {
-        archive: PathBuf,
-        message: String,
-    },
+    #[error("artifact kind {kind:?} is not an archive install")]
+    ArchiveKindMismatch { kind: ArtifactKind },
+    #[error("failed to extract artifact archive {}: {message}", archive.display())]
+    ExtractArchiveFailed { archive: PathBuf, message: String },
+    #[error("artifact archive {} does not contain {member}", archive.display())]
     ArchiveMemberMissing {
         archive: PathBuf,
         member: &'static str,
     },
-    ReadDirFailed {
-        path: PathBuf,
-        message: String,
-    },
+    #[error("failed to read artifact directory {}: {message}", path.display())]
+    ReadDirFailed { path: PathBuf, message: String },
+    #[error(
+        "verified artifact digest {} does not match install target {} for {}",
+        verified.as_str(),
+        expected.as_str(),
+        install_path.display()
+    )]
     VerifiedDigestMismatch {
         install_path: PathBuf,
         expected: Sha256Digest,
         verified: Sha256Digest,
     },
-    CreateParentFailed {
-        path: PathBuf,
-        message: String,
-    },
-    ClockWentBackwards {
-        message: String,
-    },
+    #[error("failed to create artifact install directory {}: {message}", path.display())]
+    CreateParentFailed { path: PathBuf, message: String },
+    #[error("failed to create staged artifact name: {message}")]
+    ClockWentBackwards { message: String },
+    #[error("failed to create staged artifact {}: {message}", staged_path.display())]
     CreateStagedFailed {
         staged_path: PathBuf,
         message: String,
     },
-    CreateStagedExhausted {
-        parent: PathBuf,
-    },
+    #[error("failed to create a unique staged artifact in {}", parent.display())]
+    CreateStagedExhausted { parent: PathBuf },
+    #[error("failed to read artifact {} for install: {message}", source_path.display())]
     ReadFailed {
         source_path: PathBuf,
         message: String,
     },
+    #[error(
+        "failed to copy artifact {} to staged file: {message}",
+        source_path.display()
+    )]
     CopyFailed {
         source_path: PathBuf,
         message: String,
     },
+    #[error("failed to sync staged artifact {}: {message}", staged_path.display())]
     SyncStagedFailed {
         staged_path: PathBuf,
         message: String,
     },
+    #[error(
+        "failed to mark staged artifact {} executable: {message}",
+        staged_path.display()
+    )]
     SetExecutableFailed {
         staged_path: PathBuf,
         message: String,
     },
+    #[error(
+        "failed to commit staged artifact {} to {}: {message}",
+        staged_path.display(),
+        install_path.display()
+    )]
     CommitFailed {
         staged_path: PathBuf,
         install_path: PathBuf,
         message: String,
     },
 }
-
-impl fmt::Display for ArtifactInstallError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::VerificationFailed(error) => {
-                write!(
-                    formatter,
-                    "artifact verification failed before install: {error}"
-                )
-            }
-            Self::ArchiveKindMismatch { kind } => {
-                write!(
-                    formatter,
-                    "artifact kind {kind:?} is not an archive install"
-                )
-            }
-            Self::ExtractArchiveFailed { archive, message } => {
-                write!(
-                    formatter,
-                    "failed to extract artifact archive {}: {message}",
-                    archive.display()
-                )
-            }
-            Self::ArchiveMemberMissing { archive, member } => {
-                write!(
-                    formatter,
-                    "artifact archive {} does not contain {member}",
-                    archive.display()
-                )
-            }
-            Self::ReadDirFailed { path, message } => {
-                write!(
-                    formatter,
-                    "failed to read artifact directory {}: {message}",
-                    path.display()
-                )
-            }
-            Self::VerifiedDigestMismatch {
-                install_path,
-                expected,
-                verified,
-            } => write!(
-                formatter,
-                "verified artifact digest {} does not match install target {} for {}",
-                verified.as_str(),
-                expected.as_str(),
-                install_path.display()
-            ),
-            Self::CreateParentFailed { path, message } => {
-                write!(
-                    formatter,
-                    "failed to create artifact install directory {}: {message}",
-                    path.display()
-                )
-            }
-            Self::ClockWentBackwards { message } => {
-                write!(
-                    formatter,
-                    "failed to create staged artifact name: {message}"
-                )
-            }
-            Self::CreateStagedFailed {
-                staged_path,
-                message,
-            } => write!(
-                formatter,
-                "failed to create staged artifact {}: {message}",
-                staged_path.display()
-            ),
-            Self::CreateStagedExhausted { parent } => write!(
-                formatter,
-                "failed to create a unique staged artifact in {}",
-                parent.display()
-            ),
-            Self::ReadFailed {
-                source_path,
-                message,
-            } => write!(
-                formatter,
-                "failed to read artifact {} for install: {message}",
-                source_path.display()
-            ),
-            Self::CopyFailed {
-                source_path,
-                message,
-            } => write!(
-                formatter,
-                "failed to copy artifact {} to staged file: {message}",
-                source_path.display()
-            ),
-            Self::SyncStagedFailed {
-                staged_path,
-                message,
-            } => write!(
-                formatter,
-                "failed to sync staged artifact {}: {message}",
-                staged_path.display()
-            ),
-            Self::SetExecutableFailed {
-                staged_path,
-                message,
-            } => write!(
-                formatter,
-                "failed to mark staged artifact {} executable: {message}",
-                staged_path.display()
-            ),
-            Self::CommitFailed {
-                staged_path,
-                install_path,
-                message,
-            } => write!(
-                formatter,
-                "failed to commit staged artifact {} to {}: {message}",
-                staged_path.display(),
-                install_path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ArtifactInstallError {}

@@ -189,34 +189,15 @@ impl RoleNatsConnect {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SeedFileReadError {
+    #[error("NKey seed file {} is missing", path.display())]
     Missing { path: PathBuf },
+    #[error("NKey seed file {} is unreadable: {message}", path.display())]
     Unreadable { path: PathBuf, message: String },
+    #[error("NKey seed file {} does not contain an SU-prefixed user seed", path.display())]
     Invalid { path: PathBuf },
 }
-
-impl fmt::Display for SeedFileReadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing { path } => {
-                write!(formatter, "NKey seed file {} is missing", path.display())
-            }
-            Self::Unreadable { path, message } => write!(
-                formatter,
-                "NKey seed file {} is unreadable: {message}",
-                path.display()
-            ),
-            Self::Invalid { path } => write!(
-                formatter,
-                "NKey seed file {} does not contain an SU-prefixed user seed",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SeedFileReadError {}
 
 /// Reads `PLOYZ_NATS_URL`, `PLOYZ_NATS_CA_FILE`, and
 /// `PLOYZ_NATS_NKEY_SEED_FILE` for the given role. Each missing or invalid

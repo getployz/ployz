@@ -28,8 +28,6 @@ use ployz_sdk_types::{
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::error::Error;
-use std::fmt;
 use std::time::Duration;
 
 pub const DEFAULT_OPERATION_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -245,82 +243,41 @@ impl OperationApiClient {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OperationApiClientError<E> {
+    #[error("failed to encode {} request: {message}", endpoint.subject())]
     EncodeRequest {
         endpoint: OperationApiEndpoint,
         message: String,
     },
+    #[error("{} request failed: {failure}", endpoint.subject())]
     Request {
         endpoint: OperationApiEndpoint,
         failure: NatsServiceRequestFailure,
     },
+    #[error(
+        "{} returned service error {}: {}",
+        endpoint.subject(),
+        failure.code.http_status_code(),
+        failure.message
+    )]
     Service {
         endpoint: OperationApiEndpoint,
         failure: NatsServiceError,
     },
+    #[error("{} returned malformed service error headers: {error}", endpoint.subject())]
     ServiceProtocol {
         endpoint: OperationApiEndpoint,
         error: NatsServiceErrorHeaderDecodeError,
     },
+    #[error("failed to decode {} response: {message}", endpoint.subject())]
     DecodeResponse {
         endpoint: OperationApiEndpoint,
         message: String,
     },
+    #[error("{} failed: {error}", endpoint.subject())]
     Domain {
         endpoint: OperationApiEndpoint,
         error: E,
     },
 }
-
-impl<E> fmt::Display for OperationApiClientError<E>
-where
-    E: fmt::Display,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EncodeRequest { endpoint, message } => {
-                write!(
-                    formatter,
-                    "failed to encode {} request: {message}",
-                    endpoint.subject()
-                )
-            }
-            Self::Request { endpoint, failure } => {
-                write!(
-                    formatter,
-                    "{} request failed: {failure}",
-                    endpoint.subject()
-                )
-            }
-            Self::Service { endpoint, failure } => {
-                write!(
-                    formatter,
-                    "{} returned service error {}: {}",
-                    endpoint.subject(),
-                    failure.code.http_status_code(),
-                    failure.message,
-                )
-            }
-            Self::ServiceProtocol { endpoint, error } => {
-                write!(
-                    formatter,
-                    "{} returned malformed service error headers: {error}",
-                    endpoint.subject()
-                )
-            }
-            Self::DecodeResponse { endpoint, message } => {
-                write!(
-                    formatter,
-                    "failed to decode {} response: {message}",
-                    endpoint.subject()
-                )
-            }
-            Self::Domain { endpoint, error } => {
-                write!(formatter, "{} failed: {error}", endpoint.subject())
-            }
-        }
-    }
-}
-
-impl<E> Error for OperationApiClientError<E> where E: fmt::Debug + fmt::Display {}

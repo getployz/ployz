@@ -9,7 +9,6 @@ use ployz_core::machine_runtime::{
 use ployz_core::state::{GatewayStatusObservation, MachineEndpointObservation};
 use ployz_core::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 
@@ -290,22 +289,11 @@ fn empty_machine_facts(
     MachineFactsSnapshot::try_new(machine_id, containers, None, observed_at_unix_ms)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FactCacheError {
+    #[error("subscribe {subject}: {message}")]
     Subscribe { subject: String, message: String },
 }
-
-impl fmt::Display for FactCacheError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Subscribe { subject, message } => {
-                write!(formatter, "subscribe {subject}: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for FactCacheError {}
 
 #[cfg(test)]
 mod tests {

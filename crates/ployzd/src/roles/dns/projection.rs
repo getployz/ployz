@@ -3,7 +3,6 @@
 use ployz_core::ops::RouteHostname;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,19 +53,12 @@ impl DnsAnswer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DnsAnswerError {
+    #[error("DNS answer is empty")]
     Empty,
+    #[error("DNS answer is invalid: {value}")]
     Invalid { value: String },
-}
-
-impl fmt::Display for DnsAnswerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("DNS answer is empty"),
-            Self::Invalid { value } => write!(formatter, "DNS answer is invalid: {value}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

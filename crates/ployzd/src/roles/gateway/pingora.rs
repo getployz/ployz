@@ -20,7 +20,6 @@ use pingora::proxy::{FailToProxy, ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
 use ployz_core::ops::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -149,22 +148,11 @@ impl PingoraRoutePool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PingoraRouteRegistryError {
+    #[error("invalid gateway backend address: {message}")]
     InvalidBackendAddress { message: String },
 }
-
-impl fmt::Display for PingoraRouteRegistryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidBackendAddress { message } => {
-                write!(formatter, "invalid gateway backend address: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PingoraRouteRegistryError {}
 
 #[derive(Clone)]
 pub struct PloyzGatewayProxy {

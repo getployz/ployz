@@ -168,7 +168,8 @@ fn set_endpoints_txn(
     Ok(true)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("machine roster store: {message}")]
 pub struct MachineRosterStoreError {
     message: String,
 }
@@ -178,14 +179,6 @@ fn store_error(error: CoreStoreError) -> MachineRosterStoreError {
         message: error.to_string(),
     }
 }
-
-impl std::fmt::Display for MachineRosterStoreError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "machine roster store: {}", self.message)
-    }
-}
-
-impl std::error::Error for MachineRosterStoreError {}
 
 #[cfg(test)]
 mod tests {

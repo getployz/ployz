@@ -94,47 +94,23 @@ fn is_valid_host(host: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SshTargetParseError {
+    #[error("ssh target \"{target}\" must look like user@host (for example root@203.0.113.10)")]
     MissingUser { target: String },
+    #[error("ssh target \"{target}\" has an empty user before '@'")]
     EmptyUser { target: String },
+    #[error("ssh target \"{target}\" has an empty host after '@'")]
     EmptyHost { target: String },
+    #[error(
+        "ssh target \"{target}\" has an unsupported user (letters, digits, '.', '_', and '-' only)"
+    )]
     InvalidUser { target: String },
+    #[error(
+        "ssh target \"{target}\" has an unsupported host (letters, digits, '.', ':', and '-' only, not starting with '-')"
+    )]
     InvalidHost { target: String },
 }
-
-impl fmt::Display for SshTargetParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingUser { target } => write!(
-                formatter,
-                "ssh target \"{target}\" must look like user@host (for example root@203.0.113.10)"
-            ),
-            Self::EmptyUser { target } => {
-                write!(
-                    formatter,
-                    "ssh target \"{target}\" has an empty user before '@'"
-                )
-            }
-            Self::EmptyHost { target } => {
-                write!(
-                    formatter,
-                    "ssh target \"{target}\" has an empty host after '@'"
-                )
-            }
-            Self::InvalidUser { target } => write!(
-                formatter,
-                "ssh target \"{target}\" has an unsupported user (letters, digits, '.', '_', and '-' only)"
-            ),
-            Self::InvalidHost { target } => write!(
-                formatter,
-                "ssh target \"{target}\" has an unsupported host (letters, digits, '.', ':', and '-' only, not starting with '-')"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SshTargetParseError {}
 
 /// Remote bootstrap phases, named in every SSH failure so the operator knows
 /// where the flow stopped (R14).

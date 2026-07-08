@@ -1,4 +1,3 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,84 +28,45 @@ pub struct RenderedAuthorization {
 /// Why reading the on-disk authorized-users file failed. The file is only read
 /// for the no-op comparison (the store is the source of truth); a missing file is
 /// not an error — it reads as absent.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("failed to read authorized-users file {}: {message}", path.display())]
 pub struct AuthorizedUsersFileError {
     path: PathBuf,
     message: String,
 }
 
-impl fmt::Display for AuthorizedUsersFileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "failed to read authorized-users file {}: {}",
-            self.path.display(),
-            self.message
-        )
-    }
-}
-
-impl std::error::Error for AuthorizedUsersFileError {}
-
 /// Why a render did not complete, shaped by the pipeline phase that failed.
 /// The variant names the progress that preceded it: `Reload` means the file
 /// rendered first; `Verify` means render and reload both completed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RenderFailure {
     /// Nothing reached the running server.
+    #[error("{failure}")]
     Prepare { failure: RenderPrepareFailure },
     /// The file rendered; the nats-server reload failed.
+    #[error("{failure}")]
     Reload { failure: NatsReloadFailure },
     /// Render and reload completed; the minted credential never
     /// authenticated within the bounded verify window.
+    #[error("minted credential failed verification: {message}")]
     Verify { message: String },
 }
 
-impl fmt::Display for RenderFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Prepare { failure } => failure.fmt(formatter),
-            Self::Reload { failure } => failure.fmt(formatter),
-            Self::Verify { message } => {
-                write!(
-                    formatter,
-                    "minted credential failed verification: {message}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for RenderFailure {}
-
 /// A render failure before anything changed on the running server.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RenderPrepareFailure {
     /// The single-writer render task is no longer running.
+    #[error("authorization render writer task is no longer running")]
     WriterClosed,
     /// The grant store could not be read or written.
+    #[error("grant store: {message}")]
     Store { message: String },
     /// The current on-disk file could not be read (for the no-op comparison).
+    #[error("{source}")]
     File { source: AuthorizedUsersFileError },
     /// The atomic file write failed.
+    #[error("failed to write authorized-users file {}: {message}", path.display())]
     WriteFile { path: PathBuf, message: String },
-}
-
-impl fmt::Display for RenderPrepareFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::WriterClosed => {
-                formatter.write_str("authorization render writer task is no longer running")
-            }
-            Self::Store { message } => write!(formatter, "grant store: {message}"),
-            Self::File { source } => source.fmt(formatter),
-            Self::WriteFile { path, message } => write!(
-                formatter,
-                "failed to write authorized-users file {}: {message}",
-                path.display()
-            ),
-        }
-    }
 }
 
 struct RenderRequest {

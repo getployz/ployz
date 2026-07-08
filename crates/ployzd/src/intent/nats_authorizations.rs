@@ -109,7 +109,8 @@ fn put_authorization(conn: &Connection, user: &NatsAuthorizedUser) -> Result<(),
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("nats authorization store: {message}")]
 pub struct NatsAuthorizationStoreError {
     message: String,
 }
@@ -119,14 +120,6 @@ fn store_error(error: CoreStoreError) -> NatsAuthorizationStoreError {
         message: error.to_string(),
     }
 }
-
-impl std::fmt::Display for NatsAuthorizationStoreError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "nats authorization store: {}", self.message)
-    }
-}
-
-impl std::error::Error for NatsAuthorizationStoreError {}
 
 #[cfg(test)]
 mod tests {

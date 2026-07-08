@@ -7,7 +7,6 @@
 //! operator seed and CA files — but it is still written with restrictive
 //! permissions and an atomic rename so a crash never leaves a torn file.
 
-use std::fmt;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -380,93 +379,40 @@ fn restrict_directory_mode(_parent: &Path) -> Result<(), ClusterContextError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ClusterContextError {
-    CreateConfigDirectory {
-        path: PathBuf,
-        message: String,
-    },
-    Read {
-        path: PathBuf,
-        message: String,
-    },
-    Parse {
-        path: PathBuf,
-        message: String,
-    },
+    #[error("could not prepare config directory {}: {message}", path.display())]
+    CreateConfigDirectory { path: PathBuf, message: String },
+    #[error("cluster context file {} is unreadable: {message}", path.display())]
+    Read { path: PathBuf, message: String },
+    #[error("cluster context file {} is invalid: {message}", path.display())]
+    Parse { path: PathBuf, message: String },
+    #[error("cluster context file {} has an invalid nats_url: {error}", path.display())]
     InvalidNatsUrl {
         path: PathBuf,
         error: NatsClientUrlError,
     },
+    #[error(
+        "cluster context file {} has an invalid machine id {machine_id:?}: {error}",
+        path.display()
+    )]
     InvalidMachineId {
         path: PathBuf,
         machine_id: String,
         error: SubjectTokenError,
     },
+    #[error(
+        "cluster context file {} has an invalid ssh target {target:?}: {error}",
+        path.display()
+    )]
     InvalidMachineSshTarget {
         path: PathBuf,
         target: String,
         error: SshTargetParseError,
     },
-    Write {
-        path: PathBuf,
-        message: String,
-    },
+    #[error("could not write cluster context file {}: {message}", path.display())]
+    Write { path: PathBuf, message: String },
 }
-
-impl fmt::Display for ClusterContextError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CreateConfigDirectory { path, message } => write!(
-                formatter,
-                "could not prepare config directory {}: {message}",
-                path.display()
-            ),
-            Self::Read { path, message } => write!(
-                formatter,
-                "cluster context file {} is unreadable: {message}",
-                path.display()
-            ),
-            Self::Parse { path, message } => write!(
-                formatter,
-                "cluster context file {} is invalid: {message}",
-                path.display()
-            ),
-            Self::InvalidNatsUrl { path, error } => {
-                write!(
-                    formatter,
-                    "cluster context file {} has an invalid nats_url: {error}",
-                    path.display()
-                )
-            }
-            Self::InvalidMachineId {
-                path,
-                machine_id,
-                error,
-            } => write!(
-                formatter,
-                "cluster context file {} has an invalid machine id {machine_id:?}: {error}",
-                path.display()
-            ),
-            Self::InvalidMachineSshTarget {
-                path,
-                target,
-                error,
-            } => write!(
-                formatter,
-                "cluster context file {} has an invalid ssh target {target:?}: {error}",
-                path.display()
-            ),
-            Self::Write { path, message } => write!(
-                formatter,
-                "could not write cluster context file {}: {message}",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ClusterContextError {}
 
 fn load_context_machine(
     path: &Path,

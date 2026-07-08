@@ -97,22 +97,13 @@ pub fn unwrap_core_seeds(
     serde_json::from_slice(&plaintext).map_err(|_| CoreSeedsError::Malformed)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CoreSeedsError {
+    #[error("cannot decrypt core seeds: {0}")]
     Decrypt(RecoverySecretError),
+    #[error("decrypted core seeds are malformed")]
     Malformed,
 }
-
-impl fmt::Display for CoreSeedsError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decrypt(error) => write!(formatter, "cannot decrypt core seeds: {error}"),
-            Self::Malformed => formatter.write_str("decrypted core seeds are malformed"),
-        }
-    }
-}
-
-impl std::error::Error for CoreSeedsError {}
 
 /// The server's TLS certificate plus its private key.
 #[derive(Debug, Clone, PartialEq, Eq)]

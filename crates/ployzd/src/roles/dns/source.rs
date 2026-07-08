@@ -8,7 +8,6 @@ use crate::roles::dns::projection::{
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{GatewayServingStatus, MachineEndpointObservation, RouteBindingState};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 pub async fn load_dns_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
@@ -67,19 +66,12 @@ pub async fn load_dns_projection_input_from_nats(
     ))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DnsSourceError {
+    #[error("invalid DNS source: {message}")]
     Invalid { message: String },
+    #[error("DNS source unavailable: {message}")]
     Unavailable { message: String },
-}
-
-impl fmt::Display for DnsSourceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid { message } => write!(formatter, "invalid DNS source: {message}"),
-            Self::Unavailable { message } => write!(formatter, "DNS source unavailable: {message}"),
-        }
-    }
 }
 
 impl From<IntentReadError> for DnsSourceError {

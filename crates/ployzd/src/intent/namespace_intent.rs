@@ -118,7 +118,8 @@ pub struct NamespaceIntentEvidence {
     pub serving_target_entries: Vec<ServingTargetEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("namespace intent store: {message}")]
 pub struct NamespaceIntentStoreError {
     message: String,
 }
@@ -128,11 +129,3 @@ fn store_error(error: CoreStoreError) -> NamespaceIntentStoreError {
         message: error.to_string(),
     }
 }
-
-impl std::fmt::Display for NamespaceIntentStoreError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "namespace intent store: {}", self.message)
-    }
-}
-
-impl std::error::Error for NamespaceIntentStoreError {}

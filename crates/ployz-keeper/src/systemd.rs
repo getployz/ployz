@@ -1,6 +1,5 @@
 //! Supervisor units managed by keeper.
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::artifacts::ArtifactTarget;
@@ -263,48 +262,21 @@ fn render_exec_token(value: impl Into<String>) -> Result<String, SupervisorUnitF
     Ok(format!("\"{escaped}\""))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SupervisorUnitFileError {
+    #[error("systemd exec token is empty")]
     EmptyExecToken,
+    #[error("systemd exec token {value:?} is unsupported")]
     UnsupportedExecToken { value: String },
+    #[error("systemd path is empty")]
     EmptyPath,
+    #[error("systemd path {} must be absolute", value.display())]
     RelativePath { value: std::path::PathBuf },
+    #[error("systemd path {} needs a file name", value.display())]
     MissingFileName { value: std::path::PathBuf },
+    #[error("systemd environment file path {} must be an absolute plain token", value.display())]
     UnsupportedEnvironmentFilePath { value: std::path::PathBuf },
 }
-
-impl fmt::Display for SupervisorUnitFileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyExecToken => formatter.write_str("systemd exec token is empty"),
-            Self::UnsupportedExecToken { value } => {
-                write!(formatter, "systemd exec token {value:?} is unsupported")
-            }
-            Self::EmptyPath => formatter.write_str("systemd path is empty"),
-            Self::RelativePath { value } => {
-                write!(
-                    formatter,
-                    "systemd path {} must be absolute",
-                    value.display()
-                )
-            }
-            Self::MissingFileName { value } => {
-                write!(
-                    formatter,
-                    "systemd path {} needs a file name",
-                    value.display()
-                )
-            }
-            Self::UnsupportedEnvironmentFilePath { value } => write!(
-                formatter,
-                "systemd environment file path {} must be an absolute plain token",
-                value.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SupervisorUnitFileError {}
 
 fn is_plain_systemd_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()

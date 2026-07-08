@@ -275,10 +275,13 @@ pub(crate) fn cli_error(message: impl Into<String>) -> PloyzctlCliError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PloyzctlCliError {
+    #[error("{flag} has an invalid value: {message}")]
     InvalidValue { flag: &'static str, message: String },
+    #[error("{message}")]
     Usage { message: String },
+    #[error("{0}")]
     Clap(clap::Error),
 }
 
@@ -293,17 +296,3 @@ impl PloyzctlCliError {
         }
     }
 }
-
-impl fmt::Display for PloyzctlCliError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidValue { flag, message } => {
-                write!(formatter, "{flag} has an invalid value: {message}")
-            }
-            Self::Usage { message } => formatter.write_str(message),
-            Self::Clap(error) => write!(formatter, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for PloyzctlCliError {}

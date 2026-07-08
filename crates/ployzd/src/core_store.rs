@@ -265,26 +265,17 @@ fn migrate(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     transaction.commit()
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CoreStoreError {
+    #[error("open core database: {0}")]
     Open(rusqlite::Error),
+    #[error("migrate core database: {0}")]
     Migrate(rusqlite::Error),
+    #[error("core database query: {0}")]
     Sqlite(rusqlite::Error),
+    #[error("core database task: {0}")]
     Join(tokio::task::JoinError),
 }
-
-impl std::fmt::Display for CoreStoreError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Open(error) => write!(formatter, "open core database: {error}"),
-            Self::Migrate(error) => write!(formatter, "migrate core database: {error}"),
-            Self::Sqlite(error) => write!(formatter, "core database query: {error}"),
-            Self::Join(error) => write!(formatter, "core database task: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for CoreStoreError {}
 
 /// Serialize a value for a JSON text column. A failure here is a programming
 /// error (our own types), surfaced as a rusqlite conversion failure so it

@@ -117,23 +117,12 @@ macro_rules! positive_u64_wire_error {
         pub enum $error:ident;
         noun: $noun:literal;
     ) => {
-        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[derive(Debug, Clone, PartialEq, Eq, ::thiserror::Error)]
         pub enum $error {
+            #[error("{} must be greater than zero", $noun)]
             Zero,
+            #[error("{} {value:?} must be a positive integer string", $noun)]
             InvalidWireValue { value: String },
-        }
-
-        impl ::std::fmt::Display for $error {
-            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                match self {
-                    Self::Zero => formatter.write_str(concat!($noun, " must be greater than zero")),
-                    Self::InvalidWireValue { value } => write!(
-                        formatter,
-                        concat!($noun, " {value:?} must be a positive integer string"),
-                        value = value
-                    ),
-                }
-            }
         }
     };
 }

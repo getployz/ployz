@@ -23,10 +23,13 @@ async fn run() -> Result<(), MainError> {
         .map_err(MainError::Runtime)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum MainError {
+    #[error("{0}")]
     Role(ployzd::role_cli::DaemonRoleParseError),
+    #[error("{0}")]
     Config(ployzd::config::DaemonProcessConfigError),
+    #[error("{0}")]
     Runtime(ployzd::dispatch::DaemonError),
 }
 
@@ -35,16 +38,6 @@ impl MainError {
         match self {
             Self::Role(_) | Self::Config(_) => 2,
             Self::Runtime(_) => 3,
-        }
-    }
-}
-
-impl std::fmt::Display for MainError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Role(error) => write!(formatter, "{error}"),
-            Self::Config(error) => write!(formatter, "{error}"),
-            Self::Runtime(error) => write!(formatter, "{error}"),
         }
     }
 }

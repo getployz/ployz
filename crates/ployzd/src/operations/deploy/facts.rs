@@ -10,7 +10,6 @@ use ployz_core::state::{
     IntentSnapshot, MachineLifecycle, MachineUsabilityReason, placement_rejection,
 };
 use std::collections::BTreeMap;
-use std::fmt;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
@@ -162,17 +161,8 @@ fn classify_machine_usability(
 
 /// An intent read failed before deploy execution started. The rendered
 /// message is failure evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployFactLoadError {
+    #[error("intent could not be read: {message}")]
     IntentRead { message: String },
-}
-
-impl fmt::Display for DeployFactLoadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IntentRead { message } => {
-                write!(formatter, "intent could not be read: {message}")
-            }
-        }
-    }
 }

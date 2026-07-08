@@ -21,7 +21,6 @@ use crate::roles::nats_failover::{
 };
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
-use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -281,38 +280,19 @@ pub async fn run_dns_until_shutdown(config: &DnsProcessConfig) -> Result<(), Dns
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DnsProcessError {
+    #[error("{0}")]
     AwaitCredentials(AwaitSeedFileError),
+    #[error("{0}")]
     ConnectNats(NatsConnectError),
+    #[error("failed to start runtime facts cache: {0}")]
     StartFactsCache(FactCacheError),
+    #[error("DNS projection refresh timed out after {}s", timeout.as_secs())]
     RefreshTimedOut { timeout: Duration },
+    #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
 }
-
-impl fmt::Display for DnsProcessError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AwaitCredentials(error) => write!(formatter, "{error}"),
-            Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::StartFactsCache(error) => {
-                write!(formatter, "failed to start runtime facts cache: {error}")
-            }
-            Self::RefreshTimedOut { timeout } => {
-                write!(
-                    formatter,
-                    "DNS projection refresh timed out after {}s",
-                    timeout.as_secs()
-                )
-            }
-            Self::ShutdownSignal(error) => {
-                write!(formatter, "failed to wait for shutdown: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for DnsProcessError {}
 
 #[cfg(test)]
 mod tests {

@@ -25,7 +25,6 @@ use ployz_core::state::PendingMachineJoinRecoverySnapshot;
 use ployz_core::subjects::{PENDING_MACHINE_JOINS_CHANGED, machine_facts};
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
-use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
@@ -372,56 +371,29 @@ pub async fn run_machine_until_shutdown(
         .map_err(MachineProcessError::ShutdownMachineService)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum MachineProcessError {
+    #[error("{0}")]
     AwaitCredentials(AwaitSeedFileError),
+    #[error("{0}")]
     ConnectNats(NatsConnectError),
+    #[error("failed to read machine facts: {0}")]
     ReadFacts(MachineFactsReadError),
+    #[error("failed to encode machine facts: {0}")]
     EncodeFacts(serde_json::Error),
+    #[error("failed to publish machine facts: {message}")]
     PublishFacts { message: String },
+    #[error("machine observation publish timed out after {}s", timeout.as_secs())]
     ObservationTimedOut { timeout: Duration },
+    #[error("invalid dataplane WireGuard MTU: {message}")]
     InvalidDataplaneMtu { message: String },
+    #[error("failed to start machine service: {0:?}")]
     StartMachineService(MachineServiceError),
+    #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("failed to stop machine service: {0:?}")]
     ShutdownMachineService(NatsServiceShutdownError),
 }
-
-impl fmt::Display for MachineProcessError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AwaitCredentials(error) => write!(formatter, "{error}"),
-            Self::ConnectNats(error) => write!(formatter, "{error}"),
-            Self::ReadFacts(error) => write!(formatter, "failed to read machine facts: {error}"),
-            Self::EncodeFacts(error) => {
-                write!(formatter, "failed to encode machine facts: {error}")
-            }
-            Self::PublishFacts { message } => {
-                write!(formatter, "failed to publish machine facts: {message}")
-            }
-            Self::ObservationTimedOut { timeout } => {
-                write!(
-                    formatter,
-                    "machine observation publish timed out after {}s",
-                    timeout.as_secs()
-                )
-            }
-            Self::InvalidDataplaneMtu { message } => {
-                write!(formatter, "invalid dataplane WireGuard MTU: {message}")
-            }
-            Self::StartMachineService(error) => {
-                write!(formatter, "failed to start machine service: {error:?}")
-            }
-            Self::ShutdownSignal(error) => {
-                write!(formatter, "failed to wait for shutdown: {error}")
-            }
-            Self::ShutdownMachineService(error) => {
-                write!(formatter, "failed to stop machine service: {error:?}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MachineProcessError {}
 
 #[cfg(test)]
 mod tests {

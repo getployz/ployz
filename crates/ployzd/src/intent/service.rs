@@ -69,17 +69,10 @@ impl NatsIntentReader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IntentReadError {
+    #[error("{message}")]
     Unavailable { message: String },
-}
-
-impl std::fmt::Display for IntentReadError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unavailable { message } => write!(formatter, "{message}"),
-        }
-    }
 }
 
 impl From<NatsJsonServiceRequestError> for IntentReadError {

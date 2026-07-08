@@ -7,19 +7,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{}: {message}", path.display())]
 pub(crate) struct AtomicFileWriteError {
     path: PathBuf,
     message: String,
 }
-
-impl std::fmt::Display for AtomicFileWriteError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.path.display(), self.message)
-    }
-}
-
-impl std::error::Error for AtomicFileWriteError {}
 
 pub(crate) fn write_file_atomically(
     path: &Path,
