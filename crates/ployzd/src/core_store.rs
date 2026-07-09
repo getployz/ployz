@@ -106,6 +106,14 @@ const MIGRATIONS: &[&str] = &[
         json          TEXT NOT NULL
     );
     ",
+    "
+    CREATE TABLE volume_pins (
+        namespace_id TEXT NOT NULL,
+        volume_name  TEXT NOT NULL,
+        json         TEXT NOT NULL,
+        PRIMARY KEY (namespace_id, volume_name)
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -353,6 +361,7 @@ mod tests {
             "operations",
             "route_bindings",
             "serving_targets",
+            "volume_pins",
         ] {
             assert!(tables.contains(&expected.to_owned()), "missing {expected}");
         }

@@ -57,6 +57,11 @@ pub async fn load_deploy_execution_facts_from_nats(
         .into_iter()
         .filter(|entry| entry.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
+    let namespace_volume_pins = intent
+        .volume_pins
+        .into_iter()
+        .filter(|pin| pin.namespace_id == request.namespace_id)
+        .collect::<Vec<_>>();
     let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
     let observed_machines = placement_facts
         .iter()
@@ -74,6 +79,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     Ok(DeployExecutionFacts {
         namespace_route_bindings,
         namespace_serving_entries,
+        namespace_volume_pins,
         eligible_machines,
         unusable_machines,
         dataplane_members,

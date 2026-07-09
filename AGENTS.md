@@ -235,8 +235,16 @@ A change is green when all of these pass on the branch as it will merge:
   serialize runs with `until mkdir /tmp/ployz-dind-e2e.lock 2>/dev/null; do
   sleep 30; done` and always `rmdir` the lock afterwards, including on
   failure. A run after a code change rebuilds product binaries (no
-  `PLOYZ_DIND_SKIP_BUILD`). On failure, read the evidence directory the
-  harness prints before retrying.
+  `PLOYZ_DIND_SKIP_BUILD`). Parallel agents each set their own
+  `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as `/work`, so the shared
+  default target dir serves another branch's binaries as fresh. On failure,
+  read the evidence directory the harness prints before retrying.
+- Cold target dirs — a fresh worktree's `target/` or a per-agent
+  `PLOYZ_DIND_TARGET_DIR` — are seeded from an existing sibling with
+  `scripts/cargo-hardlink-deps.py <src-target-dir> <dst-target-dir>`: it
+  hardlinks third-party dependency artifacts only, so dependencies skip
+  recompilation while workspace crates still rebuild from the branch's own
+  code.
 - When merging main into a branch, compose semantic conflicts: union the
   imports, keep both sides' additions, and give each side's exhaustive
   matches the arms the other side's new enum variants need.

@@ -7,6 +7,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
+use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 pub struct DeployExecutionFacts {
     pub namespace_route_bindings: Vec<RouteBindingState>,
     pub namespace_serving_entries: Vec<ServingTargetEntry>,
+    pub namespace_volume_pins: Vec<VolumePinState>,
     pub eligible_machines: Vec<MachineId>,
     pub unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub dataplane_members: Vec<DataplaneMember>,
@@ -72,6 +74,7 @@ pub fn prepare_deploy_execution_command(
         services.push(DeployServiceExecutionCommand {
             request: prepared.request,
             route_commits: prepared.route_commits,
+            volume_pins: facts.namespace_volume_pins.clone(),
             eligible_machines: prepared.eligible_machines,
             existing_replicas: prepared.existing_replicas,
             cleanup_candidates: prepared.cleanup_candidates,

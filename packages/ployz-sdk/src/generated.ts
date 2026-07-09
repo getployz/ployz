@@ -108,7 +108,15 @@ export type ContainerEntrypoint = "clear" | { "argv": ContainerCommand };
 
 export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
 
-export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, };
+export type VolumeName = Brand<string, "VolumeName">;
+
+export type ContainerMountPath = Brand<string, "ContainerMountPath">;
+
+export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMountPath, };
+
+export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, };
+
+export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, volume_mounts?: Array<ServiceVolumeMount>, };
 
 export type DeployRequest = { namespace_id: NamespaceId, services: Array<DeployServiceSpec>, };
 
@@ -116,7 +124,7 @@ export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, 
 
 export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort, };
 
-export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServicePlan>, cleanup_containers?: Array<DeployCleanupContainer>, };
+export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServicePlan>, volume_pin_commits?: Array<VolumePinState>, cleanup_containers?: Array<DeployCleanupContainer>, };
 
 export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
 
@@ -246,7 +254,7 @@ export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reas
 
 export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
-export type ControlPlaneCommitScope = { "scope": "service_entry", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, } | { "scope": "namespace", namespace_revision_id: NamespaceRevisionId, };
+export type ControlPlaneCommitScope = { "scope": "service_entry", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, } | { "scope": "namespace", namespace_revision_id: NamespaceRevisionId, } | { "scope": "volume_pin", namespace_id: NamespaceId, volume_name: VolumeName, };
 
 export type DeployOperationFailure = { "kind": "no_usable_machines",
 /**

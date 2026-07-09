@@ -174,6 +174,7 @@ pub enum DeployExecutionStep {
     PrepareDataplane { machines: Vec<MachineId> },
     RunContainer { machine_id: MachineId },
     WaitHealthy,
+    CommitVolumePins,
     CommitRoute { route: ployz_core::ops::RouteTarget },
     RemoveRoute { route: ployz_core::ops::RouteTarget },
     CommitServingTarget,
@@ -195,6 +196,7 @@ impl DeployExecutionStep {
             Self::PrepareDataplane { .. } => "prepare_dataplane",
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
+            Self::CommitVolumePins => "commit_volume_pins",
             Self::CommitRoute { .. } => "commit_route",
             Self::RemoveRoute { .. } => "remove_route",
             Self::RemoveServingTarget { .. } => "remove_serving_target",
@@ -232,6 +234,11 @@ impl DeployExecutionStep {
                 health_check: HealthCheckFailure::TimedOut {
                     timeout_seconds: timeout_seconds(timeout),
                 },
+                retained_artifacts,
+            },
+            Self::CommitVolumePins => DeployOperationFailure::ControlPlaneCommitFailed {
+                scope: failure_commit_scope(command),
+                message: timeout_failure_message("volume pin commit", timeout),
                 retained_artifacts,
             },
             Self::CommitRoute { route } | Self::RemoveRoute { route } => {
@@ -300,6 +307,13 @@ impl DeployExecutionError {
             Self::Plan(DeployPlanError::NoEligibleMachines) => {
                 DeployOperationFailure::NoUsableMachines {
                     reasons: command.unusable_machines.clone(),
+                }
+            }
+            Self::Plan(DeployPlanError::ConflictingVolumePins { .. }) => {
+                DeployOperationFailure::PlanningFailed {
+                    service_id: failure_service_id(command),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    message: failure_message("volume-backed service has conflicting volume pins"),
                 }
             }
             Self::StepId(_) => DeployOperationFailure::PlanningFailed {
@@ -386,6 +400,18 @@ impl NamespaceCommitError {
                     message: failure_message(
                         "namespace lock was lost before serving target commit",
                     ),
+                    retained_artifacts,
+                }
+            }
+            Self::VolumePinStore { state, message } => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    scope: ControlPlaneCommitScope::VolumePin {
+                        namespace_id: state.namespace_id.clone(),
+                        volume_name: state.volume_name.clone(),
+                    },
+                    message: failure_message(format!(
+                        "volume pin state could not be committed: {message}"
+                    )),
                     retained_artifacts,
                 }
             }

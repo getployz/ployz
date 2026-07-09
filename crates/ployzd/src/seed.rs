@@ -66,6 +66,9 @@ pub async fn seed_core_from_snapshot(
             .replace_serving_target_entry(entry.clone())
             .await?;
     }
+    for pin in &snapshot.volume_pins {
+        namespace.replace_volume_pin(pin.clone()).await?;
+    }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
     // the same operator, Cloud, and machine credentials, so nothing is locked out
@@ -109,6 +112,7 @@ mod tests {
             }],
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
+            volume_pins: Vec::new(),
             authorized_users: vec![NatsAuthorizedUser {
                 principal: NatsPrincipal::Operator,
                 nkey_public: MintedNatsUser::generate().expect("mint").public,

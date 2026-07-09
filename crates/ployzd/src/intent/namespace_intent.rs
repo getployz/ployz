@@ -2,7 +2,7 @@
 
 use crate::core_store::{CoreStore, CoreStoreError, query_json_list, to_json};
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +76,27 @@ impl NamespaceIntentStore {
             .map_err(store_error)
     }
 
+    pub async fn replace_volume_pin(
+        &self,
+        state: VolumePinState,
+    ) -> Result<(), NamespaceIntentStoreError> {
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO volume_pins (namespace_id, volume_name, json) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(namespace_id, volume_name) DO UPDATE SET json = excluded.json",
+                    params![
+                        state.namespace_id.as_str(),
+                        state.volume_name.as_str(),
+                        to_json(&state)?
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
+    }
+
     pub async fn remove_serving_target_entry(
         &self,
         entry: &ServingTargetEntry,
@@ -108,6 +129,10 @@ fn load_evidence(conn: &mut Connection) -> Result<NamespaceIntentEvidence, rusql
             conn,
             "SELECT json FROM serving_targets ORDER BY namespace_id, service_id",
         )?,
+        volume_pins: query_json_list(
+            conn,
+            "SELECT json FROM volume_pins ORDER BY namespace_id, volume_name",
+        )?,
     })
 }
 
@@ -116,6 +141,8 @@ fn load_evidence(conn: &mut Connection) -> Result<NamespaceIntentEvidence, rusql
 pub struct NamespaceIntentEvidence {
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
+    #[serde(default)]
+    pub volume_pins: Vec<VolumePinState>,
 }
 
 #[derive(Debug, thiserror::Error)]

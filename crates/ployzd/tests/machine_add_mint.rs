@@ -484,6 +484,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
             active_machines: Vec::new(),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
+            volume_pins: Vec::new(),
             authorized_users: Vec::new(),
         })
         .expect("intent mirror stores");
