@@ -190,6 +190,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                         eligible_machines: vec![machine_id("machine_a")],
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),
+                        volume_pins: Vec::new(),
                     }],
                     Vec::new(),
                 )

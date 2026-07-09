@@ -1,10 +1,11 @@
 use ployz_core::deploy::{
-    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployCleanupContainer,
-    DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput, DeployPreparationInput,
-    DeployRoute, DeployServicePlan, DeployServiceRequest, EnvName, EnvValue,
-    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, ServiceEnvironment,
-    StopGracePeriod, namespace_route_binding_removals, namespace_serving_target_removals,
-    plan_namespace_deploy, prepare_deploy,
+    ContainerCommand, ContainerEntrypoint, ContainerMountPath, ContainerRuntimeSpec,
+    DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
+    DeployPreparationInput, DeployRoute, DeployServicePlan, DeployServiceRequest, EnvName,
+    EnvValue, ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
+    prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -12,7 +13,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
@@ -40,7 +41,7 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "4cb6de52f7609df479fe07a411d7312d82ff294b2ac1ee071de284a383be6d5e"
+        "70a7fc5c20743266d4c9f74330da71621caf013151d8e9871063e3a36aacab0c"
     );
 }
 
@@ -57,7 +58,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "7798ddc1990c9db01fdc4258b5685b525c07fd0353d57aa735bf96cf7c4ef623"
+        "de5d914e7bbb6b9f1336f8a116be184289105c47b33f04f36ff0ba88188da8f7"
     );
     assert_ne!(
         base.namespace_revision_entry_id(&namespace_id("default")),
@@ -68,7 +69,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "27aec2fa8baea1fdb41a597a8ad0186198217e4a9fb449528b5afec365a13e91"
+        "896b0ff493082d72f2a8b059db2cdd3a9021cca335d4074c9e3c09b69af41017"
     );
 }
 
@@ -78,7 +79,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
         service_spec("svc_api", "nginx:latest", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "f09905e06be8fda59795a12da5c2058ad0e72425b8cb143f138958787c166d96"
+        "bd9706f5d684fcc17a6ee40ac21a6a201b2c3ee05966245b27dcd1204c9ecb91"
     );
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
@@ -136,6 +137,15 @@ fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
             "svc_api",
             "ghcr.io/acme/api:rev-1",
             runtime_with_stop_grace(30)
+        )
+        .namespace_revision_entry_id(&namespace_id("default"))
+    );
+    assert_ne!(
+        base_id,
+        service_spec_with_runtime(
+            "svc_api",
+            "ghcr.io/acme/api:rev-1",
+            runtime_with_volume_mount("postgres_data", "/var/lib/postgresql/data")
         )
         .namespace_revision_entry_id(&namespace_id("default"))
     );
@@ -284,6 +294,121 @@ fn deploy_plan_requires_eligible_machine() {
 }
 
 #[test]
+fn volume_backed_service_pins_to_first_eligible_machine() {
+    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+
+    assert_eq!(
+        plan_single_service(input).expect("plan succeeds"),
+        deploy_plan_with_volume_pins(
+            vec![run_step("machine_a", 1), run_step("machine_a", 2)],
+            vec![volume_pin("postgres_data", "machine_a")],
+            Vec::new(),
+        )
+    );
+}
+
+#[test]
+fn volume_backed_service_uses_existing_pin() {
+    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
+
+    assert_eq!(
+        plan_single_service(input).expect("plan succeeds"),
+        deploy_plan(
+            vec![run_step("machine_b", 1), run_step("machine_b", 2)],
+            Vec::new()
+        )
+    );
+}
+
+#[test]
+fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
+
+    assert_eq!(
+        plan_single_service(input),
+        Err(DeployPlanError::NoEligibleMachines)
+    );
+}
+
+#[test]
+fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
+    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
+    input.existing_replicas = vec![
+        existing_replica("machine_a", "ctr_off_pin"),
+        existing_replica("machine_b", "ctr_pinned"),
+    ];
+    input.cleanup_candidates = vec![
+        cleanup_container("machine_a", "ctr_off_pin"),
+        cleanup_container("machine_b", "ctr_pinned"),
+    ];
+
+    assert_eq!(
+        plan_single_service(input).expect("plan succeeds"),
+        deploy_plan(
+            vec![
+                use_existing_step("machine_b", "ctr_pinned", 1),
+                run_step("machine_b", 2),
+            ],
+            vec![cleanup_container("machine_a", "ctr_off_pin")],
+        )
+    );
+}
+
+#[test]
+fn namespace_volume_pin_commits_are_visible_to_later_service_plans() {
+    let mut first = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    first.request.runtime.volume_mounts = vec![volume_mount("data", "/data")];
+    let mut second = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    second.request.service_id = service_id("svc_worker");
+    second.request.runtime.volume_mounts = vec![
+        volume_mount("data", "/data"),
+        volume_mount("uploads", "/uploads"),
+    ];
+    second.volume_pins = vec![volume_pin("uploads", "machine_b")];
+
+    assert_eq!(
+        plan_namespace_deploy(
+            namespace_id("default"),
+            namespace_revision_id("rev_1"),
+            vec![first, second],
+            Vec::new(),
+        ),
+        Err(DeployPlanError::ConflictingVolumePins {
+            service_id: service_id("svc_worker"),
+            machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        })
+    );
+}
+
+#[test]
+fn service_with_volumes_on_different_pinned_machines_fails_planning() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    input.request.runtime.volume_mounts = vec![
+        volume_mount("postgres_data", "/var/lib/postgres"),
+        volume_mount("uploads", "/srv/uploads"),
+    ];
+    input.volume_pins = vec![
+        volume_pin("postgres_data", "machine_a"),
+        volume_pin("uploads", "machine_b"),
+    ];
+
+    assert_eq!(
+        plan_single_service(input),
+        Err(DeployPlanError::ConflictingVolumePins {
+            service_id: service_id("svc_api"),
+            machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        })
+    );
+}
+
+#[test]
 fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let prepared = prepare_deploy(DeployPreparationInput {
         request: deploy_request(2),
@@ -383,6 +508,7 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
             eligible_machines: prepared.eligible_machines,
             existing_replicas: prepared.existing_replicas,
             cleanup_candidates: prepared.cleanup_candidates,
+            volume_pins: Vec::new(),
         }],
         Vec::new(),
     )
@@ -589,7 +715,7 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
 
     assert_eq!(
         entry_id.as_str(),
-        "4cb6de52f7609df479fe07a411d7312d82ff294b2ac1ee071de284a383be6d5e"
+        "70a7fc5c20743266d4c9f74330da71621caf013151d8e9871063e3a36aacab0c"
     );
 }
 
@@ -708,6 +834,12 @@ fn runtime_with_stop_grace(seconds: u32) -> ContainerRuntimeSpec {
     runtime
 }
 
+fn runtime_with_volume_mount(volume_name: &str, target: &str) -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.volume_mounts = vec![volume_mount(volume_name, target)];
+    runtime
+}
+
 fn args_to_vec(args: impl IntoIterator<Item = &'static str>) -> Vec<String> {
     args.into_iter().map(str::to_owned).collect()
 }
@@ -721,6 +853,7 @@ fn planning_input(
         eligible_machines: eligible_machines.into_iter().collect(),
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
+        volume_pins: Vec::new(),
     }
 }
 
@@ -761,6 +894,14 @@ fn deploy_plan(
     steps: Vec<DeployPlanStep>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> DeployPlan {
+    deploy_plan_with_volume_pins(steps, Vec::new(), cleanup_containers)
+}
+
+fn deploy_plan_with_volume_pins(
+    steps: Vec<DeployPlanStep>,
+    volume_pin_commits: Vec<VolumePinState>,
+    cleanup_containers: Vec<DeployCleanupContainer>,
+) -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("default"),
         namespace_revision_id: namespace_revision_id("rev_1"),
@@ -768,7 +909,23 @@ fn deploy_plan(
             service_id: service_id("svc_api"),
             steps,
         }],
+        volume_pin_commits,
         cleanup_containers,
+    }
+}
+
+fn volume_mount(volume_name: &str, target: &str) -> ServiceVolumeMount {
+    ServiceVolumeMount {
+        volume_name: VolumeName::try_new(volume_name).expect("valid volume name"),
+        target: ContainerMountPath::try_new(target).expect("valid mount target"),
+    }
+}
+
+fn volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
+    VolumePinState {
+        namespace_id: namespace_id("default"),
+        volume_name: VolumeName::try_new(volume_name).expect("valid volume name"),
+        machine_id: self::machine_id(machine_id),
     }
 }
 

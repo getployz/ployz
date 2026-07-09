@@ -5,8 +5,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
-    ReplicaCount,
+    ContainerMountPath, DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec,
+    ImageReference, ReplicaCount, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -18,7 +18,7 @@ use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
     OperatorHint, RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 pub(crate) use ployz_test_support::containers;
 pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
@@ -246,6 +246,7 @@ pub(super) struct RecordingNamespaceState {
     pub(super) route_removals: Vec<RouteTarget>,
     pub(super) serving_requests: Vec<ServingTargetEntry>,
     pub(super) serving_removals: Vec<ServiceId>,
+    pub(super) volume_pin_requests: Vec<VolumePinState>,
 }
 
 impl RecordingNamespaceState {
@@ -268,6 +269,7 @@ impl RecordingNamespaceState {
             route_removals: Vec::new(),
             serving_requests: Vec::new(),
             serving_removals: Vec::new(),
+            volume_pin_requests: Vec::new(),
         }
     }
 }
@@ -309,6 +311,14 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
                 },
             }),
         }
+    }
+
+    async fn replace_volume_pin(
+        &mut self,
+        state: VolumePinState,
+    ) -> Result<(), NamespaceCommitError> {
+        self.volume_pin_requests.push(state);
+        Ok(())
     }
 
     async fn remove_serving_target_entry(
@@ -640,6 +650,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_machines: Vec::new(),
             observed_machines: Vec::new(),
@@ -651,6 +662,32 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
 
 pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployExecutionCommand {
     prepared_deploy_command(replicas, Vec::new(), Vec::new())
+}
+
+pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionCommand {
+    let mut request = target_deploy_request(replicas);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("deploy request fixture has one service");
+    };
+    service.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("postgres_data"),
+        target: ContainerMountPath::try_new("/var/lib/postgresql/data").expect("valid mount path"),
+    }];
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            dataplane_machines: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            namespace_cleanup_candidates: Vec::new(),
+            observed_machines: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
 }
 
 pub(super) fn deploy_command_with_existing_container(
@@ -720,6 +757,7 @@ fn prepared_deploy_command(
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
             dataplane_machines: Vec::new(),
             eligible_machines,
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
@@ -766,6 +804,7 @@ pub(super) fn empty_deploy_command_with_running_container(
                 service_id: service_id("svc_api"),
                 namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
             }],
+            namespace_volume_pins: Vec::new(),
             dataplane_machines: Vec::new(),
             eligible_machines: vec![self::machine_id("machine_a")],
             namespace_cleanup_candidates,
@@ -846,6 +885,10 @@ pub(super) fn route_target(hostname: &str, port: u16) -> RouteTarget {
 
 pub(super) fn route_port(port: u16) -> RoutePort {
     RoutePort::try_new(port).expect("valid route port")
+}
+
+pub(super) fn volume_name(value: &str) -> VolumeName {
+    VolumeName::try_new(value).expect("valid volume name")
 }
 
 pub(super) fn retained_container(machine_id: &str, container_id: &str) -> RetainedArtifact {

@@ -137,6 +137,7 @@ where
                 eligible_machines: service.eligible_machines.clone(),
                 existing_replicas: service.existing_replicas.clone(),
                 cleanup_candidates: service.cleanup_candidates.clone(),
+                volume_pins: service.volume_pins.clone(),
             })
             .collect(),
         command.namespace_cleanup_candidates().to_vec(),
@@ -149,6 +150,11 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
+    if !plan.volume_pin_commits.is_empty() {
+        commit_volume_pins(command, &plan, &mut *ports.namespace_state)
+            .await
+            .map_err(|source| run.fail(source))?;
+    }
     if !plan.services.is_empty() {
         record_running_stage(
             command,
@@ -553,6 +559,26 @@ where
         namespace_state.replace_serving_target_entry(service.serving_target_entry_state()),
     )
     .await
+}
+
+async fn commit_volume_pins<S>(
+    command: &DeployExecutionCommand,
+    plan: &DeployPlan,
+    namespace_state: &mut S,
+) -> Result<(), DeployExecutionError>
+where
+    S: NamespaceStateCommitter,
+{
+    for state in &plan.volume_pin_commits {
+        with_step_timeout(
+            command,
+            DeployExecutionStep::CommitVolumePins,
+            namespace_state.replace_volume_pin(state.clone()),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 pub(super) async fn cutover_route<S>(

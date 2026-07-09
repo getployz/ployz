@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deploy::VolumeName;
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizedUser;
@@ -28,6 +29,16 @@ pub struct RouteBindingState {
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
+}
+
+/// Core-owned named-volume placement intent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct VolumePinState {
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
+    pub machine_id: MachineId,
 }
 
 /// Core-owned active-machine roster value.
@@ -114,6 +125,8 @@ pub struct IntentSnapshot {
     pub active_machines: Vec<ActiveMachineState>,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
+    #[serde(default)]
+    pub volume_pins: Vec<VolumePinState>,
     pub authorized_users: Vec<NatsAuthorizedUser>,
 }
 

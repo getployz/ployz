@@ -10,11 +10,12 @@ pub use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
-    ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerRuntimeSpec,
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError,
-    ImageReference, ImageReferenceError, ReplicaCount, ReplicaCountError, ReplicaSlot,
-    ServiceEnvironment, StopGracePeriod,
+    ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerMountPath,
+    ContainerMountPathError, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
+    DeployPlanStep, DeployRequest, DeployRoute, DeployServicePlan, DeployServiceSpec, EnvName,
+    EnvNameError, EnvValue, EnvValueError, ImageReference, ImageReferenceError, ReplicaCount,
+    ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+    VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -61,5 +62,5 @@ pub use ployz_core::security::NatsPrincipal;
 pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    MachineLifecycle, RouteBindingState, ServingTargetEntry,
+    MachineLifecycle, RouteBindingState, ServingTargetEntry, VolumePinState,
 };

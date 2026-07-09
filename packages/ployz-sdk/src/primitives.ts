@@ -9,6 +9,7 @@ import {
   type CertId,
   type CertValidAt,
   type ContainerId,
+  type ContainerMountPath,
   type EventSequence,
   type FailureMessage,
   type ImageReference,
@@ -30,6 +31,7 @@ import {
   type RoutePort,
   type ServiceId,
   type StopGracePeriod,
+  type VolumeName,
 } from "./generated.ts";
 
 type U64WireInput = number | string | bigint;
@@ -105,6 +107,22 @@ export function imageReference(value: string): ImageReference {
   }
 
   return value as ImageReference;
+}
+
+export function volumeName(value: string): VolumeName {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new RangeError("volume name must contain only ASCII letters, digits, '_' or '-'");
+  }
+
+  return value as VolumeName;
+}
+
+export function containerMountPath(value: string): ContainerMountPath {
+  if (!value.startsWith("/") || value.includes("\0")) {
+    throw new RangeError("container mount path must be an absolute path without NUL");
+  }
+
+  return value as ContainerMountPath;
 }
 
 export function installArtifactVersion(value: string): InstallArtifactVersion {

@@ -382,6 +382,7 @@ pub(crate) fn classify_service(
                 entrypoint,
                 environment,
                 stop_grace_period,
+                volume_mounts: Vec::new(),
             },
             routes,
         })

@@ -9,6 +9,7 @@ use ployz_core::ids::{
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteTarget,
 };
+use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ pub struct DeployExecutionCommand {
 pub struct DeployServiceExecutionCommand {
     pub(super) request: DeployServiceRequest,
     pub(super) route_commits: Vec<RouteBindingState>,
+    pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
