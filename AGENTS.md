@@ -8,6 +8,17 @@
 - Read `docs/adr/` before architecture work; the accepted ADRs are the
   current control-plane direction.
 
+## Issue Tracking And Wayfinder
+
+Use GitHub issues via `gh`.
+
+For `/wayfinder`: one `wayfinder:map` issue; child issues labelled
+`wayfinder:{research,prototype,grilling,task}`; native sub-issues and
+dependencies when available, otherwise task-list children plus `Part of #...`
+and `Blocked by: #...` body lines. Claim by assigning yourself first. Refer by
+linked title, not bare number. Resolve one ticket per session: comment, close,
+then add a linked one-line gist to the map.
+
 ## Product Direction
 
 Ployz is a small-cluster orchestration core built around explicit operations.
