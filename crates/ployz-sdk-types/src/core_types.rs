@@ -10,11 +10,13 @@ pub use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
-    ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerRuntimeSpec,
-    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError,
-    ImageReference, ImageReferenceError, ReplicaCount, ReplicaCountError, ReplicaSlot,
-    ServiceEnvironment, StopGracePeriod,
+    ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
+    ContainerHealthcheckTest, ContainerResourceLimits, ContainerRestartPolicy,
+    ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployRoute, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,
+    EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
+    ImageReference, ImageReferenceError, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+    ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment, StopGracePeriod,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -33,7 +35,7 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
+    ContainerHealthStatus, ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{

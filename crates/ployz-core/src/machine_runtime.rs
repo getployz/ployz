@@ -217,6 +217,15 @@ impl ManagedContainerKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerHealthStatus {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -227,6 +236,8 @@ pub enum ContainerRuntimeState {
         /// observation carries only the IP gateways dial.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ip: Option<IpAddr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        health: Option<ContainerHealthStatus>,
     },
     Exited,
 }
@@ -234,12 +245,18 @@ pub enum ContainerRuntimeState {
 impl ContainerRuntimeState {
     #[must_use]
     pub const fn running_unroutable() -> Self {
-        Self::Running { ip: None }
+        Self::Running {
+            ip: None,
+            health: None,
+        }
     }
 
     #[must_use]
     pub const fn running_at(ip: IpAddr) -> Self {
-        Self::Running { ip: Some(ip) }
+        Self::Running {
+            ip: Some(ip),
+            health: None,
+        }
     }
 
     #[must_use]
@@ -315,7 +332,7 @@ impl ManagedContainerObservation {
         }
 
         match &self.state {
-            ContainerRuntimeState::Running { ip } => *ip,
+            ContainerRuntimeState::Running { ip, .. } => *ip,
             ContainerRuntimeState::Exited => None,
         }
     }

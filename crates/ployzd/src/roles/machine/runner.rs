@@ -2,6 +2,7 @@ use std::future::Future;
 
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::ContainerId;
+use ployz_core::machine_runtime::ContainerHealthStatus;
 use std::net::IpAddr;
 
 use ployz_core::machine_runtime::ManagedContainerIdentity;
@@ -15,9 +16,14 @@ pub struct ExistingManagedContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExistingManagedContainerState {
-    Running { ip: Option<IpAddr> },
+    Running {
+        ip: Option<IpAddr>,
+        health: Option<ContainerHealthStatus>,
+    },
     StartableStopped,
-    NotStartable { description: String },
+    NotStartable {
+        description: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

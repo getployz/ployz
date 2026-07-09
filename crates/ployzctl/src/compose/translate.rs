@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ployz_core::deploy::{
-    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployRoute, DeployServiceSpec,
-    EnvName, EnvValue, ImageReference, ReplicaCount, ServiceEnvironment, StopGracePeriod,
+    ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
+    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRoute,
+    DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos, HealthcheckRetries,
+    HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+    ReplicaCount, ServiceEnvironment, StopGracePeriod,
 };
 use ployz_core::ids::ServiceId;
 use serde_yaml::Value;
@@ -86,20 +89,6 @@ pub(crate) fn classify_service(
     push_if_some(
         &mut findings,
         &service_path,
-        "cap_add",
-        cap_add,
-        KnownUnsupported::CapAdd,
-    );
-    push_if_some(
-        &mut findings,
-        &service_path,
-        "cap_drop",
-        cap_drop,
-        KnownUnsupported::CapDrop,
-    );
-    push_if_some(
-        &mut findings,
-        &service_path,
         "cgroup_parent",
         cgroup_parent,
         KnownUnsupported::CgroupParent,
@@ -152,13 +141,6 @@ pub(crate) fn classify_service(
         "extra_hosts",
         extra_hosts,
         KnownUnsupported::ExtraHosts,
-    );
-    push_if_some(
-        &mut findings,
-        &service_path,
-        "healthcheck",
-        healthcheck,
-        KnownUnsupported::Healthcheck,
     );
     push_if_some(
         &mut findings,
@@ -226,13 +208,6 @@ pub(crate) fn classify_service(
     push_if_some(
         &mut findings,
         &service_path,
-        "restart",
-        restart,
-        KnownUnsupported::Restart,
-    );
-    push_if_some(
-        &mut findings,
-        &service_path,
         "secrets",
         secrets,
         KnownUnsupported::Secrets,
@@ -281,7 +256,8 @@ pub(crate) fn classify_service(
     );
     classify_unrecognized(&mut findings, &service_path, unrecognized);
 
-    let (replicas, deploy_valid) = classify_deploy(deploy, &service_path, &mut findings);
+    let deploy_runtime = parse_deploy_runtime(deploy, &service_path, &mut findings);
+    let (replicas, restart_policy, resources, deploy_valid) = deploy_runtime;
     let service_id = ServiceId::try_new(name.clone()).map_err(|error| {
         ComposeFinding::invalid(
             service_path.clone(),
@@ -313,6 +289,10 @@ pub(crate) fn classify_service(
         &mut findings,
     );
     let stop_grace_period = parse_stop_grace_period(stop_grace_period, &service_path);
+    let healthcheck = parse_healthcheck(healthcheck, &service_path);
+    let restart_policy = parse_restart_policy(restart, restart_policy, &service_path);
+    let cap_add = parse_capabilities(cap_add, &service_path.field("cap_add"));
+    let cap_drop = parse_capabilities(cap_drop, &service_path.field("cap_drop"));
     let routes = parse_routes(x_route, &service_path);
 
     let mut service_valid = true;
@@ -363,6 +343,38 @@ pub(crate) fn classify_service(
             StopGracePeriod::default_grace()
         }
     };
+    let healthcheck = match healthcheck {
+        Ok(healthcheck) => healthcheck,
+        Err(mut health_findings) => {
+            findings.append(&mut health_findings);
+            service_valid = false;
+            None
+        }
+    };
+    let restart_policy = match restart_policy {
+        Ok(restart_policy) => restart_policy,
+        Err(finding) => {
+            findings.push(finding);
+            service_valid = false;
+            ContainerRestartPolicy::DockerDefault
+        }
+    };
+    let cap_add = match cap_add {
+        Ok(cap_add) => cap_add,
+        Err(mut cap_findings) => {
+            findings.append(&mut cap_findings);
+            service_valid = false;
+            Vec::new()
+        }
+    };
+    let cap_drop = match cap_drop {
+        Ok(cap_drop) => cap_drop,
+        Err(mut cap_findings) => {
+            findings.append(&mut cap_findings);
+            service_valid = false;
+            Vec::new()
+        }
+    };
     let routes = match routes {
         Ok(routes) => routes,
         Err(mut route_findings) => {
@@ -382,6 +394,11 @@ pub(crate) fn classify_service(
                 entrypoint,
                 environment,
                 stop_grace_period,
+                healthcheck,
+                restart_policy,
+                cap_add,
+                cap_drop,
+                resources,
             },
             routes,
         })
@@ -422,16 +439,24 @@ fn classify_unrecognized(
     }
 }
 
-fn classify_deploy(
+fn parse_deploy_runtime(
     deploy: Option<ComposeDeploy>,
     service_path: &ComposePath,
     findings: &mut Vec<ComposeFinding>,
-) -> (ReplicaCount, bool) {
+) -> (
+    ReplicaCount,
+    Option<ContainerRestartPolicy>,
+    ContainerResourceLimits,
+    bool,
+) {
+    let default = (
+        ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+        None,
+        ContainerResourceLimits::default(),
+        true,
+    );
     let Some(deploy) = deploy else {
-        return (
-            ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
-            true,
-        );
+        return default;
     };
     let ComposeDeploy {
         replicas,
@@ -457,20 +482,8 @@ fn classify_deploy(
         placement,
         KnownUnsupported::DeployPlacement,
     );
-    push_if_some(
-        findings,
-        &deploy_path,
-        "resources",
-        resources,
-        KnownUnsupported::DeployResources,
-    );
-    push_if_some(
-        findings,
-        &deploy_path,
-        "restart_policy",
-        restart_policy,
-        KnownUnsupported::DeployRestartPolicy,
-    );
+    let resources = parse_deploy_resources(resources, &deploy_path, findings);
+    let restart_policy = parse_deploy_restart_policy(restart_policy, &deploy_path, findings);
     push_if_some(
         findings,
         &deploy_path,
@@ -497,6 +510,8 @@ fn classify_deploy(
                 ));
                 return (
                     ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+                    restart_policy,
+                    resources,
                     false,
                 );
             }
@@ -504,7 +519,7 @@ fn classify_deploy(
         None => DEFAULT_REPLICA_COUNT,
     };
     match ReplicaCount::try_new(replicas) {
-        Ok(replicas) => (replicas, true),
+        Ok(replicas) => (replicas, restart_policy, resources, true),
         Err(error) => {
             findings.push(ComposeFinding::invalid(
                 deploy_path.field("replicas"),
@@ -512,6 +527,8 @@ fn classify_deploy(
             ));
             (
                 ReplicaCount::try_new(DEFAULT_REPLICA_COUNT).expect("one replica is valid"),
+                restart_policy,
+                resources,
                 false,
             )
         }
@@ -532,6 +549,401 @@ fn parse_replica_count_value(value: Value) -> Result<u16, String> {
         | Value::Sequence(_)
         | Value::Mapping(_)
         | Value::Tagged(_) => Err("replicas must be an integer".to_owned()),
+    }
+}
+
+fn parse_deploy_resources(
+    value: Option<Value>,
+    deploy_path: &ComposePath,
+    findings: &mut Vec<ComposeFinding>,
+) -> ContainerResourceLimits {
+    let Some(value) = value else {
+        return ContainerResourceLimits::default();
+    };
+    let path = deploy_path.field("resources");
+    let Some(map) = value.as_mapping() else {
+        findings.push(ComposeFinding::invalid(
+            path,
+            "resources must be a mapping with limits",
+        ));
+        return ContainerResourceLimits::default();
+    };
+    let mut resources = ContainerResourceLimits::default();
+    for (key, value) in map {
+        let Some(key) = key.as_str() else {
+            findings.push(ComposeFinding::invalid(
+                path.clone(),
+                "resources keys must be strings",
+            ));
+            continue;
+        };
+        match key {
+            "limits" => resources = parse_resource_limits(value, &path.field("limits"), findings),
+            "reservations" => findings.push(ComposeFinding::unsupported(
+                path.field("reservations"),
+                KnownUnsupported::DeployResources,
+            )),
+            other => findings.push(ComposeFinding::unknown(path.field(other))),
+        }
+    }
+    resources
+}
+
+fn parse_resource_limits(
+    value: &Value,
+    path: &ComposePath,
+    findings: &mut Vec<ComposeFinding>,
+) -> ContainerResourceLimits {
+    let Some(map) = value.as_mapping() else {
+        findings.push(ComposeFinding::invalid(
+            path.clone(),
+            "limits must be a mapping",
+        ));
+        return ContainerResourceLimits::default();
+    };
+    let mut limits = ContainerResourceLimits::default();
+    for (key, value) in map {
+        let Some(key) = key.as_str() else {
+            findings.push(ComposeFinding::invalid(
+                path.clone(),
+                "limits keys must be strings",
+            ));
+            continue;
+        };
+        match key {
+            "cpus" => match parse_nano_cpus(value) {
+                Ok(value) => limits.nano_cpus = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            "memory" => match parse_memory_bytes(value) {
+                Ok(value) => limits.memory_bytes = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            "pids" => match parse_pids_limit(value) {
+                Ok(value) => limits.pids = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            other => findings.push(ComposeFinding::unknown(path.field(other))),
+        }
+    }
+    limits
+}
+
+fn parse_deploy_restart_policy(
+    value: Option<Value>,
+    deploy_path: &ComposePath,
+    findings: &mut Vec<ComposeFinding>,
+) -> Option<ContainerRestartPolicy> {
+    let value = value?;
+    let path = deploy_path.field("restart_policy");
+    match value {
+        Value::Mapping(map) => {
+            let mut condition = None;
+            for (key, value) in map {
+                let Some(key) = key.as_str() else {
+                    findings.push(ComposeFinding::invalid(
+                        path.clone(),
+                        "restart_policy keys must be strings",
+                    ));
+                    continue;
+                };
+                match key {
+                    "condition" => match scalar_to_string(&value) {
+                        Some(value) => match parse_restart_policy_text(&value) {
+                            Ok(policy) => condition = Some(policy),
+                            Err(message) => {
+                                findings.push(ComposeFinding::invalid(path.field(key), message));
+                            }
+                        },
+                        None => findings.push(ComposeFinding::invalid(
+                            path.field(key),
+                            "restart condition must be a string",
+                        )),
+                    },
+                    other => findings.push(ComposeFinding::unsupported(
+                        path.field(other),
+                        KnownUnsupported::DeployRestartPolicy,
+                    )),
+                }
+            }
+            condition
+        }
+        Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Sequence(_)
+        | Value::Tagged(_) => {
+            findings.push(ComposeFinding::invalid(
+                path,
+                "restart_policy must be a mapping",
+            ));
+            None
+        }
+    }
+}
+
+fn parse_healthcheck(
+    value: Option<Value>,
+    service_path: &ComposePath,
+) -> Result<Option<ContainerHealthcheck>, Vec<ComposeFinding>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let path = service_path.field("healthcheck");
+    let Some(map) = value.as_mapping() else {
+        return Err(vec![ComposeFinding::invalid(
+            path,
+            "healthcheck must be a mapping",
+        )]);
+    };
+    let mut findings = Vec::new();
+    let mut test = None;
+    let mut interval = None;
+    let mut timeout = None;
+    let mut retries = None;
+    let mut start_period = None;
+    for (key, value) in map {
+        let Some(key) = key.as_str() else {
+            findings.push(ComposeFinding::invalid(
+                path.clone(),
+                "healthcheck keys must be strings",
+            ));
+            continue;
+        };
+        match key {
+            "test" => match parse_healthcheck_test(value, &path.field(key)) {
+                Ok(value) => test = Some(value),
+                Err(finding) => findings.push(finding),
+            },
+            "disable" => match value.as_bool() {
+                Some(true) => test = Some(ContainerHealthcheckTest::Disable),
+                Some(false) => {}
+                None => findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "disable must be a boolean",
+                )),
+            },
+            "interval" => match parse_healthcheck_duration(value) {
+                Ok(value) => interval = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            "timeout" => match parse_healthcheck_duration(value) {
+                Ok(value) => timeout = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            "retries" => match parse_healthcheck_retries(value) {
+                Ok(value) => retries = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            "start_period" => match parse_healthcheck_duration(value) {
+                Ok(value) => start_period = Some(value),
+                Err(message) => findings.push(ComposeFinding::invalid(path.field(key), message)),
+            },
+            other => findings.push(ComposeFinding::unknown(path.field(other))),
+        }
+    }
+    if !findings.is_empty() {
+        return Err(findings);
+    }
+    Ok(Some(ContainerHealthcheck {
+        test: test.unwrap_or(ContainerHealthcheckTest::Inherit),
+        interval,
+        timeout,
+        retries,
+        start_period,
+    }))
+}
+
+fn parse_healthcheck_test(
+    value: &Value,
+    path: &ComposePath,
+) -> Result<ContainerHealthcheckTest, ComposeFinding> {
+    match value {
+        Value::String(command) => HealthcheckShellCommand::try_new(command.clone())
+            .map(ContainerHealthcheckTest::Shell)
+            .map_err(|error| ComposeFinding::invalid(path.clone(), error)),
+        Value::Sequence(items) => {
+            let Some(first) = items.first() else {
+                return Ok(ContainerHealthcheckTest::Inherit);
+            };
+            let Some(kind) = scalar_to_string(first) else {
+                return Err(ComposeFinding::invalid(
+                    path.index(0),
+                    "healthcheck test kind must be a string",
+                ));
+            };
+            match kind.as_str() {
+                "NONE" => Ok(ContainerHealthcheckTest::Disable),
+                "CMD" => ContainerCommand::try_new(exec_argv(items[1..].to_vec(), path)?)
+                    .map(ContainerHealthcheckTest::Exec)
+                    .map_err(|error| ComposeFinding::invalid(path.clone(), error)),
+                "CMD-SHELL" => {
+                    let [_, command] = items.as_slice() else {
+                        return Err(ComposeFinding::invalid(
+                            path.clone(),
+                            "CMD-SHELL healthcheck needs exactly one command",
+                        ));
+                    };
+                    let Some(command) = scalar_to_string(command) else {
+                        return Err(ComposeFinding::invalid(
+                            path.index(1),
+                            "CMD-SHELL command must be scalar",
+                        ));
+                    };
+                    HealthcheckShellCommand::try_new(command)
+                        .map(ContainerHealthcheckTest::Shell)
+                        .map_err(|error| ComposeFinding::invalid(path.clone(), error))
+                }
+                other => Err(ComposeFinding::invalid(
+                    path.index(0),
+                    format!("unsupported healthcheck test kind {other:?}"),
+                )),
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Mapping(_) | Value::Tagged(_) => {
+            Err(ComposeFinding::invalid(
+                path.clone(),
+                "healthcheck test must be a string or list",
+            ))
+        }
+    }
+}
+
+fn parse_restart_policy(
+    value: Option<Value>,
+    deploy_policy: Option<ContainerRestartPolicy>,
+    service_path: &ComposePath,
+) -> Result<ContainerRestartPolicy, ComposeFinding> {
+    let Some(value) = value else {
+        return Ok(deploy_policy.unwrap_or(ContainerRestartPolicy::DockerDefault));
+    };
+    let Some(text) = scalar_to_string(&value) else {
+        return Err(ComposeFinding::invalid(
+            service_path.field("restart"),
+            "restart must be a string",
+        ));
+    };
+    parse_restart_policy_text(&text)
+        .map_err(|message| ComposeFinding::invalid(service_path.field("restart"), message))
+}
+
+fn parse_restart_policy_text(value: &str) -> Result<ContainerRestartPolicy, String> {
+    match value {
+        "" => Ok(ContainerRestartPolicy::DockerDefault),
+        "no" => Ok(ContainerRestartPolicy::No),
+        "always" => Ok(ContainerRestartPolicy::Always),
+        "on-failure" => Ok(ContainerRestartPolicy::OnFailure),
+        "unless-stopped" => Ok(ContainerRestartPolicy::UnlessStopped),
+        other => Err(format!("unsupported restart policy {other:?}")),
+    }
+}
+
+fn parse_capabilities(
+    value: Option<Value>,
+    path: &ComposePath,
+) -> Result<Vec<LinuxCapability>, Vec<ComposeFinding>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let values = match value {
+        Value::String(value) => vec![(path.clone(), value)],
+        Value::Sequence(items) => {
+            let mut parsed = Vec::new();
+            let mut findings = Vec::new();
+            for (index, item) in items.into_iter().enumerate() {
+                let path = path.index(index);
+                match scalar_to_string(&item) {
+                    Some(value) => parsed.push((path, value)),
+                    None => findings.push(ComposeFinding::invalid(
+                        path,
+                        "capability entries must be scalar",
+                    )),
+                }
+            }
+            if !findings.is_empty() {
+                return Err(findings);
+            }
+            parsed
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Mapping(_) | Value::Tagged(_) => {
+            return Err(vec![ComposeFinding::invalid(
+                path.clone(),
+                "capabilities must be a string or list",
+            )]);
+        }
+    };
+    let mut findings = Vec::new();
+    let mut capabilities = Vec::new();
+    for (path, value) in values {
+        match LinuxCapability::try_new(value) {
+            Ok(value) => capabilities.push(value),
+            Err(error) => findings.push(ComposeFinding::invalid(path, error)),
+        }
+    }
+    if findings.is_empty() {
+        Ok(capabilities)
+    } else {
+        Err(findings)
+    }
+}
+
+fn parse_healthcheck_duration(value: &Value) -> Result<HealthcheckDurationNanos, String> {
+    let micros = parse_duration_micros_value(value)?;
+    let nanos = micros
+        .checked_mul(1000)
+        .ok_or_else(|| "duration exceeds u64 nanoseconds".to_owned())?;
+    HealthcheckDurationNanos::try_new(nanos).map_err(|error| error.to_string())
+}
+
+fn parse_healthcheck_retries(value: &Value) -> Result<HealthcheckRetries, String> {
+    let value = parse_u64_value(value, "retries")?;
+    let value = u16::try_from(value).map_err(|_| "retries exceeds u16".to_owned())?;
+    HealthcheckRetries::try_new(value).map_err(|error| error.to_string())
+}
+
+fn parse_nano_cpus(value: &Value) -> Result<NanoCpus, String> {
+    let text = scalar_to_string(value).ok_or_else(|| "cpus must be scalar".to_owned())?;
+    let cpus = text
+        .parse::<f64>()
+        .map_err(|error| format!("cpus must be numeric: {error}"))?;
+    if !cpus.is_finite() || cpus <= 0.0 {
+        return Err("cpus must be greater than zero".to_owned());
+    }
+    let nano_cpus = (cpus * 1_000_000_000.0).round();
+    if nano_cpus > u64::MAX as f64 {
+        return Err("cpus exceeds u64 nanocpus".to_owned());
+    }
+    NanoCpus::try_new(nano_cpus as u64).map_err(|error| error.to_string())
+}
+
+fn parse_memory_bytes(value: &Value) -> Result<MemoryBytes, String> {
+    let text = scalar_to_string(value).ok_or_else(|| "memory must be scalar".to_owned())?;
+    let bytes = parse_byte_quantity(&text)?;
+    MemoryBytes::try_new(bytes).map_err(|error| error.to_string())
+}
+
+fn parse_pids_limit(value: &Value) -> Result<PidsLimit, String> {
+    let text = scalar_to_string(value).ok_or_else(|| "pids must be scalar".to_owned())?;
+    let pids = text
+        .parse::<i64>()
+        .map_err(|error| format!("pids must be an integer: {error}"))?;
+    PidsLimit::try_new(pids).map_err(|error| error.to_string())
+}
+
+fn parse_u64_value(value: &Value, name: &str) -> Result<u64, String> {
+    match value {
+        Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| format!("{name} must be a non-negative integer")),
+        Value::String(value) => value
+            .parse::<u64>()
+            .map_err(|error| format!("{name} must be an integer: {error}")),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Sequence(_)
+        | Value::Mapping(_)
+        | Value::Tagged(_) => Err(format!("{name} must be an integer")),
     }
 }
 
@@ -811,13 +1223,46 @@ fn parse_stop_grace_period(
 
 fn parse_compose_duration(value: &str) -> Result<u64, String> {
     const MICROS_PER_SECOND: u64 = 1_000_000;
+    let total_micros = parse_duration_micros(value)?;
+    if !total_micros.is_multiple_of(MICROS_PER_SECOND) {
+        return Err("stop grace period must be whole seconds".to_owned());
+    }
+    Ok(total_micros / MICROS_PER_SECOND)
+}
+
+fn parse_duration_micros_value(value: &Value) -> Result<u64, String> {
+    match value {
+        Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| "duration number must be a non-negative integer".to_owned())
+            .and_then(|seconds| {
+                seconds
+                    .checked_mul(1_000_000)
+                    .ok_or_else(|| "duration exceeds u64 microseconds".to_owned())
+            }),
+        Value::String(value) => parse_duration_micros(value),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Sequence(_)
+        | Value::Mapping(_)
+        | Value::Tagged(_) => {
+            Err("duration must be a number of seconds or a Compose duration string".to_owned())
+        }
+    }
+}
+
+fn parse_duration_micros(value: &str) -> Result<u64, String> {
+    const MICROS_PER_SECOND: u64 = 1_000_000;
     if value.is_empty() {
         return Err("duration is empty".to_owned());
     }
     if value.chars().all(|ch| ch.is_ascii_digit()) {
-        return value
+        let seconds = value
             .parse::<u64>()
-            .map_err(|error| format!("invalid duration: {error}"));
+            .map_err(|error| format!("invalid duration: {error}"))?;
+        return seconds
+            .checked_mul(MICROS_PER_SECOND)
+            .ok_or_else(|| "duration exceeds u64 microseconds".to_owned());
     }
     let mut total_micros = 0_u64;
     let mut seen_units: Vec<&str> = Vec::new();
@@ -853,10 +1298,41 @@ fn parse_compose_duration(value: &str) -> Result<u64, String> {
         seen_units.push(unit);
         total_micros = total_micros.saturating_add(amount.saturating_mul(micros_per_unit));
     }
-    if !total_micros.is_multiple_of(MICROS_PER_SECOND) {
-        return Err("stop grace period must be whole seconds".to_owned());
+    Ok(total_micros)
+}
+
+fn parse_byte_quantity(value: &str) -> Result<u64, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("memory is empty".to_owned());
     }
-    Ok(total_micros / MICROS_PER_SECOND)
+    let digits_end = value
+        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .unwrap_or(value.len());
+    let amount = value[..digits_end]
+        .parse::<f64>()
+        .map_err(|error| format!("memory must start with a number: {error}"))?;
+    if !amount.is_finite() || amount <= 0.0 {
+        return Err("memory must be greater than zero".to_owned());
+    }
+    let unit = value[digits_end..].trim().to_ascii_lowercase();
+    let multiplier = match unit.as_str() {
+        "" | "b" => 1.0,
+        "k" | "kb" => 1000.0,
+        "m" | "mb" => 1000.0 * 1000.0,
+        "g" | "gb" => 1000.0 * 1000.0 * 1000.0,
+        "t" | "tb" => 1000.0 * 1000.0 * 1000.0 * 1000.0,
+        "ki" | "kib" => 1024.0,
+        "mi" | "mib" => 1024.0 * 1024.0,
+        "gi" | "gib" => 1024.0 * 1024.0 * 1024.0,
+        "ti" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        other => return Err(format!("unsupported memory unit {other:?}")),
+    };
+    let bytes = (amount * multiplier).round();
+    if bytes > u64::MAX as f64 {
+        return Err("memory exceeds u64 bytes".to_owned());
+    }
+    Ok(bytes as u64)
 }
 
 fn parse_routes(

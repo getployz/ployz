@@ -606,7 +606,10 @@ mod tests {
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
             identity: identity_for("run_1"),
-            state: ExistingManagedContainerState::Running { ip: None },
+            state: ExistingManagedContainerState::Running {
+                ip: None,
+                health: None,
+            },
         }]);
         let mut facts_sub = nats
             .client

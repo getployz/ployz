@@ -5,8 +5,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
-    ReplicaCount,
+    ContainerHealthcheck, ContainerHealthcheckTest, DeployCleanupContainer, DeployRequest,
+    DeployRoute, DeployServiceSpec, HealthcheckShellCommand, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -161,6 +161,7 @@ pub(super) struct RecordingRuntime {
     fail_after_first: bool,
     fail_endpoint_network: bool,
     reuse_existing: bool,
+    start_existing: bool,
     fail_start: bool,
     fail_remove: bool,
     fail_stop: bool,
@@ -438,6 +439,7 @@ impl RecordingRuntime {
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: false,
+            start_existing: false,
             fail_start: false,
             fail_remove: false,
             fail_stop: false,
@@ -454,6 +456,24 @@ impl RecordingRuntime {
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: true,
+            start_existing: false,
+            fail_start: false,
+            fail_remove: false,
+            fail_stop: false,
+        }
+    }
+
+    pub(super) fn starting_existing_containers<const N: usize>(containers: [&str; N]) -> Self {
+        Self {
+            endpoint_networks: Vec::new(),
+            requests: Vec::new(),
+            stops: Vec::new(),
+            removals: Vec::new(),
+            containers: containers.into_iter().map(container_id).rev().collect(),
+            fail_after_first: false,
+            fail_endpoint_network: false,
+            reuse_existing: false,
+            start_existing: true,
             fail_start: false,
             fail_remove: false,
             fail_stop: false,
@@ -470,6 +490,7 @@ impl RecordingRuntime {
             fail_after_first: true,
             fail_endpoint_network: false,
             reuse_existing: false,
+            start_existing: false,
             fail_start: false,
             fail_remove: false,
             fail_stop: false,
@@ -486,6 +507,7 @@ impl RecordingRuntime {
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: false,
+            start_existing: false,
             fail_start: true,
             fail_remove: false,
             fail_stop: false,
@@ -561,6 +583,8 @@ impl MachineContainerRuntime for RecordingRuntime {
 
         if self.reuse_existing {
             Ok(MachineRunContainerOutcome::ReusedRunning { container_id })
+        } else if self.start_existing {
+            Ok(MachineRunContainerOutcome::StartedExisting { container_id })
         } else {
             Ok(MachineRunContainerOutcome::Created { container_id })
         }
@@ -617,6 +641,33 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
         replicas,
         vec![machine_id("machine_a"), machine_id("machine_b")],
         Vec::new(),
+    )
+}
+
+pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionCommand {
+    let mut request = target_deploy_request(replicas);
+    request.services[0].runtime.healthcheck = Some(ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("true").expect("valid healthcheck"),
+        ),
+        interval: None,
+        timeout: None,
+        retries: None,
+        start_period: None,
+    });
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            dataplane_machines: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            namespace_cleanup_candidates: Vec::new(),
+            observed_machines: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
     )
 }
 

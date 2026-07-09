@@ -120,7 +120,10 @@ fn existing_container(
     existing_container_with_state(
         container_id,
         identity,
-        ExistingManagedContainerState::Running { ip: None },
+        ExistingManagedContainerState::Running {
+            ip: None,
+            health: None,
+        },
     )
 }
 

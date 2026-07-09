@@ -106,7 +106,29 @@ export type ContainerEntrypoint = "clear" | { "argv": ContainerCommand };
 
 export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
 
-export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, };
+export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
+
+export type HealthcheckDurationNanos = SafeInteger<"HealthcheckDurationNanos">;
+
+export type HealthcheckRetries = SafeInteger<"HealthcheckRetries">;
+
+export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": ContainerCommand } | { "shell": HealthcheckShellCommand };
+
+export type ContainerHealthcheck = { test: ContainerHealthcheckTest, interval?: HealthcheckDurationNanos | null, timeout?: HealthcheckDurationNanos | null, retries?: HealthcheckRetries | null, start_period?: HealthcheckDurationNanos | null, };
+
+export type ContainerRestartPolicy = "docker-default" | "no" | "always" | "on-failure" | "unless-stopped";
+
+export type LinuxCapability = Brand<string, "LinuxCapability">;
+
+export type NanoCpus = SafeInteger<"NanoCpus">;
+
+export type MemoryBytes = SafeInteger<"MemoryBytes">;
+
+export type PidsLimit = SafeInteger<"PidsLimit">;
+
+export type ContainerResourceLimits = { nano_cpus?: NanoCpus | null, memory_bytes?: MemoryBytes | null, pids?: PidsLimit | null, };
+
+export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, healthcheck?: ContainerHealthcheck | null, restart_policy?: ContainerRestartPolicy, cap_add?: Array<LinuxCapability>, cap_drop?: Array<LinuxCapability>, resources?: ContainerResourceLimits, };
 
 export type DeployRequest = { namespace_id: NamespaceId, services: Array<DeployServiceSpec>, };
 
@@ -124,13 +146,15 @@ export type DeployCleanupFailure = { target: DeployCleanupContainer, message: Fa
 
 export type ManagedContainerKind = "service" | "predeploy" | "job";
 
+export type ContainerHealthStatus = "starting" | "healthy" | "unhealthy";
+
 export type ContainerRuntimeState = { "state": "running",
 /**
  * Endpoint-network address of the running container. The routed
  * port is route state, not container state (ADR 0023), so the
  * observation carries only the IP gateways dial.
  */
-ip?: string | null, } | { "state": "exited" };
+ip?: string | null, health?: ContainerHealthStatus | null, } | { "state": "exited" };
 
 export type ManagedContainerIdentity = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
 

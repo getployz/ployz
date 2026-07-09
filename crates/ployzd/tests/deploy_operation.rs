@@ -214,10 +214,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
     assert_eq!(*request_machine_id, machine_id("machine_a"));
     assert_eq!(
         health.checked,
-        vec![vec![
-            DeployContainerForAssert::new("machine_b", "ctr_existing"),
-            DeployContainerForAssert::new("machine_a", "ctr_new"),
-        ]]
+        vec![vec![DeployContainerForAssert::new("machine_a", "ctr_new")]]
     );
     assert_eq!(
         recorder.records,
@@ -492,7 +489,7 @@ async fn deploy_worker_counts_warning_completion_write_failure() {
 }
 
 #[tokio::test]
-async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() {
+async fn deploy_worker_does_not_health_check_existing_container() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers([]);
@@ -500,7 +497,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
     let mut namespace_state = RecordingNamespaceState::stored();
     let command = deploy_command_with_existing_container(1, "machine_b", "ctr_existing");
 
-    let error = execute_deploy(
+    let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -511,28 +508,20 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
         },
     )
     .await
-    .expect_err("existing unhealthy target container fails deploy");
+    .expect("existing target container is not health-gated");
 
-    assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            failure: DeployOperationFailure::HealthCheckFailed {
-                health_check:
-                    ployz_core::ops::HealthCheckFailure::ProbeFailed {
-                        machine_id: failed_machine_id,
-                        container_id: failed_container_id,
-                        ..
-                    },
-                retained_artifacts,
-            },
-            ..
-        } if failed_machine_id == machine_id("machine_b")
-            && failed_container_id == container_id("ctr_existing")
-            && retained_artifacts.is_empty()
-    ));
+    assert_eq!(
+        outcome
+            .containers
+            .iter()
+            .map(|container| container.container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_existing")]
+    );
+    assert!(health.checked.is_empty());
     assert!(runtime.requests.is_empty());
     assert!(runtime.stops.is_empty());
-    assert!(namespace_state.serving_requests.is_empty());
+    assert_eq!(namespace_state.serving_requests.len(), 1);
 }
 
 #[tokio::test]
@@ -578,6 +567,39 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
         Some(&RecordedOperation::Transition(DeployTransition::completed()))
     );
     assert_eq!(runtime.requests.len(), 1);
+}
+
+#[tokio::test]
+async fn deploy_worker_does_not_health_check_started_existing_container() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::starting_existing_containers(["ctr_1"]);
+    let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = deploy_command_with_healthcheck(1);
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("started existing target container is not health-gated");
+
+    assert_eq!(
+        outcome
+            .containers
+            .iter()
+            .map(|container| container.container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_1")]
+    );
+    assert!(health.checked.is_empty());
 }
 
 #[tokio::test]
