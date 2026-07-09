@@ -48,15 +48,17 @@ use ployz_test_support::ids::{
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::adapters::docker::labels::{
-    CONTAINER_TYPE_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL,
+    CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
+    SERVICE_ID_LABEL,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use support::dind::assert::{
-    assert_deploy_event_sequence, assert_machine_add_event_sequence, assert_unit_active,
-    connect_with_event_capture, decode_base64, gateway_http_get, managed_workload_containers,
-    next_permission_violation, operation_events, operation_status, terminal_operation_events,
-    wait_for_inspect, wait_for_machine_observations, wait_for_terminal_deploy_status,
+    all_managed_workload_containers, assert_deploy_event_sequence,
+    assert_machine_add_event_sequence, assert_unit_active, connect_with_event_capture,
+    decode_base64, gateway_http_get, managed_workload_containers, next_permission_violation,
+    operation_events, operation_status, terminal_operation_events, wait_for_inspect,
+    wait_for_machine_observations, wait_for_terminal_deploy_status,
 };
 use support::dind::formation::{
     CoreContext, add_and_join_edge, connect_core_client, finish, host_client_config,
@@ -212,6 +214,126 @@ async fn scenario_init_and_activate_first_machine() {
                 "authorized-users.conf must contain {principal}: {authorized}"
             );
         }
+    })
+    .await;
+
+    finish(core).await;
+}
+
+/// A failed deploy retains its stopped container for inspection until the
+/// next explicit deploy to the namespace sweeps the prior attempt.
+#[tokio::test]
+async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 0).await;
+    with_evidence(&core.cluster, async {
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+
+        let failed = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_convergence_failed"),
+                target: convergence_deploy_target("exit 42"),
+            })
+            .await
+            .expect("failing deploy submits");
+        let failed_operation = failed.operation_id;
+        let failed_status =
+            wait_for_terminal_deploy_status(&core, &failed_operation, DEPLOY_TERMINAL_BUDGET).await;
+        let OperationStatus::Deploy {
+            state:
+                DeployOperationState::Failed {
+                    failure: failed_failure,
+                },
+            ..
+        } = failed_status
+        else {
+            panic!("deploy must fail with readable evidence");
+        };
+        assert_eq!(
+            failed_failure
+                .retained_artifacts()
+                .iter()
+                .filter(|artifact| artifact.is_container())
+                .count(),
+            1
+        );
+
+        let retained = namespace_managed_containers(&core, "converge").await;
+        assert!(
+            retained.iter().any(|container| {
+                container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
+                    == Some(failed_operation.as_str())
+            }),
+            "failed attempt container must be retained before retry: {retained:?}"
+        );
+
+        let retry = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_convergence_retry"),
+                target: convergence_deploy_target("sleep 600"),
+            })
+            .await
+            .expect("retry deploy submits");
+        let retry_operation = retry.operation_id;
+        let retry_status =
+            wait_for_terminal_deploy_status(&core, &retry_operation, DEPLOY_TERMINAL_BUDGET).await;
+        assert!(
+            matches!(
+                retry_status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "retry deploy did not complete: {retry_status:?}"
+        );
+
+        let current = namespace_managed_containers(&core, "converge").await;
+        assert!(
+            current.iter().all(|container| {
+                container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
+                    != Some(failed_operation.as_str())
+            }),
+            "retry must sweep failed attempt containers: {current:?}"
+        );
+        assert!(
+            current.iter().any(|container| {
+                container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
+                    == Some(retry_operation.as_str())
+            }),
+            "retry's current attempt container must survive: {current:?}"
+        );
+
+        let reread = operation_status(&core, &failed_operation).await;
+        let OperationStatus::Deploy {
+            state:
+                DeployOperationState::Failed {
+                    failure: reread_failure,
+                },
+            ..
+        } = reread
+        else {
+            panic!("failed deploy status must remain readable after sweep");
+        };
+        assert_eq!(reread_failure, failed_failure);
+        let events = terminal_operation_events(&core, &failed_operation).await;
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                OperationEvent::DeployFailed {
+                    operation_id,
+                    failure,
+                } if operation_id == &failed_operation && failure == &failed_failure
+            )),
+            "failed deploy event must stay readable after sweep: {events:?}"
+        );
     })
     .await;
 
@@ -579,6 +701,43 @@ fn runtime_fields_spec() -> ContainerRuntimeSpec {
         EnvValue::try_new("present").expect("valid env value"),
     )]));
     runtime
+}
+
+fn convergence_deploy_target(command: &str) -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec!["sh".to_owned(), "-c".to_owned(), command.to_owned()])
+            .expect("valid runtime command"),
+    );
+
+    DeployRequest {
+        namespace_id: namespace_id("converge"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_converge"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime,
+            routes: Vec::new(),
+        }],
+    }
+}
+
+async fn namespace_managed_containers(
+    core: &CoreContext,
+    namespace: &str,
+) -> Vec<support::dind::assert::ManagedWorkloadContainer> {
+    let mut containers = Vec::new();
+    for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+        containers.extend(
+            all_managed_workload_containers(core, machine)
+                .await
+                .into_iter()
+                .filter(|container| {
+                    container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str) == Some(namespace)
+                }),
+        );
+    }
+    containers
 }
 
 /// The route host header: hostname plus the gateway's in-machine listen

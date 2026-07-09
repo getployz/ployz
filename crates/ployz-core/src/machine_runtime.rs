@@ -304,8 +304,13 @@ pub struct ManagedContainerObservation {
 
 impl ManagedContainerObservation {
     #[must_use]
+    pub fn is_service(&self) -> bool {
+        self.identity.kind == ManagedContainerKind::Service
+    }
+
+    #[must_use]
     pub fn is_running_service(&self) -> bool {
-        self.identity.kind == ManagedContainerKind::Service && self.state.is_running()
+        self.is_service() && self.state.is_running()
     }
 
     #[must_use]

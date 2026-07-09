@@ -150,6 +150,61 @@ pub enum DeployOperationFailure {
     },
 }
 
+impl DeployOperationFailure {
+    /// The artifacts this failure retained for inspection; empty for failure
+    /// classes that reject before any container work starts.
+    #[must_use]
+    pub fn retained_artifacts(&self) -> &[RetainedArtifact] {
+        match self {
+            DeployOperationFailure::NoUsableMachines { reasons: _ }
+            | DeployOperationFailure::PlanningFailed {
+                service_id: _,
+                namespace_revision_id: _,
+                message: _,
+            }
+            | DeployOperationFailure::ArtifactUnavailable {
+                service_id: _,
+                namespace_revision_entry_id: _,
+                reason: _,
+            } => &[],
+            DeployOperationFailure::DataplaneUnavailable {
+                machine_id: _,
+                provider_failure: _,
+                message: _,
+                retained_artifacts,
+            }
+            | DeployOperationFailure::DataplanePrepareTimedOut {
+                machines: _,
+                timeout_seconds: _,
+                retained_artifacts,
+            }
+            | DeployOperationFailure::DataplanePrepareInvalidReport {
+                message: _,
+                retained_artifacts,
+            }
+            | DeployOperationFailure::RuntimeUnavailable {
+                machine_id: _,
+                message: _,
+                retained_artifacts,
+            }
+            | DeployOperationFailure::HealthCheckFailed {
+                health_check: _,
+                retained_artifacts,
+            }
+            | DeployOperationFailure::ControlPlaneCommitFailed {
+                scope: _,
+                message: _,
+                retained_artifacts,
+            }
+            | DeployOperationFailure::RouteCutoverFailed {
+                route: _,
+                reason: _,
+                retained_artifacts,
+            } => retained_artifacts.as_slice(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
@@ -203,6 +258,33 @@ pub enum RetainedArtifact {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
+}
+
+impl RetainedArtifact {
+    /// Whether this artifact is a container the failed attempt left behind
+    /// for inspection; false for records of a removal that failed on a
+    /// pre-existing container.
+    #[must_use]
+    pub fn is_container(&self) -> bool {
+        match self {
+            RetainedArtifact::CreatedContainer {
+                machine_id: _,
+                container_id: _,
+                inspect_hint: _,
+            }
+            | RetainedArtifact::StartedContainer {
+                machine_id: _,
+                container_id: _,
+                log_hint: _,
+            } => true,
+            RetainedArtifact::ContainerStopFailed {
+                machine_id: _,
+                container_id: _,
+                message: _,
+                inspect_hint: _,
+            } => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

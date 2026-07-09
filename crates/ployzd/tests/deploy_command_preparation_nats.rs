@@ -110,6 +110,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                 target_namespace_revision_entry_id()
             ),
             cleanup_container("machine_b", "ctr_old", "entry_old"),
+            cleanup_container("machine_b", "ctr_stopped", "entry_target"),
         ]
     );
     assert_eq!(

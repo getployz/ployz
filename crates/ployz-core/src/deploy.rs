@@ -705,7 +705,7 @@ fn cleanup_candidates(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service()
+            container.is_service()
                 && container.identity.namespace_id == request.namespace_id
                 && container.identity.service_id == request.service_id
         })
