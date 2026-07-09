@@ -504,11 +504,12 @@ pub async fn wait_for_machine_observations(core: &CoreContext, machine: &Machine
 }
 
 /// One managed workload container as the inner Docker daemon reports it.
+/// Stopped containers (retained as deploy evidence) carry no endpoint IP.
 #[derive(Debug)]
 pub struct ManagedWorkloadContainer {
     pub id: String,
     pub labels: HashMap<String, String>,
-    pub endpoint_ip: IpAddr,
+    pub endpoint_ip: Option<IpAddr>,
     pub env: Vec<String>,
     pub cmd: Vec<String>,
 }
@@ -598,12 +599,16 @@ async fn managed_workload_containers_with_scope(
                         machine.name
                     )
                 });
-            let endpoint_ip = endpoint_ip.parse::<IpAddr>().unwrap_or_else(|error| {
-                panic!(
-                    "docker inspect endpoint ip on {} is invalid ({error}): {line}",
-                    machine.name
-                )
-            });
+            let endpoint_ip = if endpoint_ip.is_empty() {
+                None
+            } else {
+                Some(endpoint_ip.parse::<IpAddr>().unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect endpoint ip on {} is invalid ({error}): {line}",
+                        machine.name
+                    )
+                }))
+            };
             let env: Vec<String> = serde_json::from_str::<Option<Vec<String>>>(env_json)
                 .unwrap_or_else(|error| {
                     panic!(

@@ -665,6 +665,12 @@ async fn assert_workloads_reach_each_other_by_overlay_ip(
     assert_overlay_http(core, edge, edge_container, core_container, phase).await;
 }
 
+/// Budget for one workload to first reach the other over the overlay: the
+/// WireGuard tunnel and routes converge shortly after the deploy completes,
+/// so first contact is eventually consistent. Repeat contact (after the
+/// control daemon stops) reuses the same helper and settles immediately.
+const OVERLAY_FIRST_CONTACT_BUDGET: Duration = Duration::from_secs(60);
+
 async fn assert_overlay_http(
     core: &CoreContext,
     source_machine: &DindMachine,
@@ -672,20 +678,42 @@ async fn assert_overlay_http(
     target: &ManagedWorkloadContainer,
     phase: &str,
 ) {
-    let url = format!("http://{}/", target.endpoint_ip);
-    let script = format!("wget -qO- {url} | grep -q 'Welcome to nginx'");
-    let outcome = core
-        .exec_on(
+    let Some(source_ip) = source.endpoint_ip else {
+        panic!(
+            "running workload {} on {} has no endpoint IP",
+            source.id, source_machine.name
+        );
+    };
+    let Some(target_ip) = target.endpoint_ip else {
+        panic!("overlay target workload {} has no endpoint IP", target.id);
+    };
+    let script = format!("wget -T 2 -qO- http://{target_ip}/ | grep -q 'Welcome to nginx'");
+    let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+    let last = loop {
+        let outcome = core
+            .exec_on(
+                source_machine,
+                &["docker", "exec", &source.id, "sh", "-c", &script],
+            )
+            .await;
+        if outcome.success() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break outcome;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let diagnostics = core
+        .exec_sh(
             source_machine,
-            &["docker", "exec", &source.id, "sh", "-c", &script],
+            "wg show; ip -br addr; ip route; iptables -S FORWARD | head -30",
         )
         .await;
-    assert!(
-        outcome.success(),
-        "workload overlay HTTP failed {phase} from {}:{} to {}: {outcome:?}",
-        source_machine.name,
-        source.endpoint_ip,
-        target.endpoint_ip
+    panic!(
+        "workload overlay HTTP failed {phase} from {}:{source_ip} to {target_ip}: {last:?}\n\
+         dataplane on {}: {diagnostics:?}",
+        source_machine.name, source_machine.name
     );
 }
 
