@@ -1,6 +1,6 @@
 //! Dataplane preparation models.
 
-use ipnet::IpNet;
+use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -12,6 +12,7 @@ use crate::ids::{MachineId, OperationId};
 use crate::ops::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
+pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataplanePrepareRequest {
@@ -24,14 +25,29 @@ impl DataplanePrepareRequest {
     pub fn for_deploy_plan(
         operation_id: OperationId,
         plan: &DeployPlan,
-        dataplane_machines: &[MachineId],
+        dataplane_members: &[DataplaneMember],
     ) -> Self {
         let machines = sorted_unique_machines(
-            plan.target_machines()
-                .into_iter()
-                .chain(dataplane_machines.iter().cloned()),
+            plan.target_machines().into_iter().chain(
+                dataplane_members
+                    .iter()
+                    .map(|member| member.machine_id.clone()),
+            ),
         );
-        Self::for_machines(operation_id, machines)
+        let membership = machines
+            .into_iter()
+            .map(|machine_id| {
+                dataplane_members
+                    .iter()
+                    .find(|member| member.machine_id == machine_id)
+                    .cloned()
+                    .unwrap_or_else(|| DataplaneMember::default_for_machine(machine_id))
+            })
+            .collect();
+        Self {
+            operation_id,
+            membership,
+        }
     }
 
     #[must_use]
@@ -72,6 +88,95 @@ impl DataplaneMember {
             endpoint_subnet,
         }
     }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineEndpointSupernet(Ipv4Net);
+
+impl MachineEndpointSupernet {
+    pub fn try_new(value: impl AsRef<str>) -> Result<Self, MachineEndpointSupernetError> {
+        let value = value.as_ref();
+        let net = value
+            .parse::<Ipv4Net>()
+            .map_err(|_| MachineEndpointSupernetError::Invalid {
+                value: value.to_owned(),
+            })?;
+        if net.prefix_len() != 16 || net.addr() != net.network() {
+            return Err(MachineEndpointSupernetError::Invalid {
+                value: value.to_owned(),
+            });
+        }
+        Ok(Self(net))
+    }
+
+    #[must_use]
+    pub fn default_v1() -> Self {
+        Self::try_new(DEFAULT_ENDPOINT_SUPERNET).expect("default endpoint supernet is valid")
+    }
+
+    pub fn allocate_next(
+        &self,
+        assigned: impl IntoIterator<Item = MachineEndpointSubnet>,
+    ) -> Result<MachineEndpointSubnet, MachineEndpointSubnetAllocationError> {
+        let assigned = assigned.into_iter().collect::<BTreeSet<_>>();
+        let octets = self.0.network().octets();
+        for third_octet in 0..=u8::MAX {
+            let candidate = MachineEndpointSubnet::try_new(format!(
+                "{}.{}.{}.0/24",
+                octets[0], octets[1], third_octet
+            ))
+            .expect("candidate from /16 supernet is a valid /24");
+            if !assigned.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        Err(MachineEndpointSubnetAllocationError::Exhausted {
+            supernet: self.as_string(),
+        })
+    }
+
+    #[must_use]
+    pub fn as_string(&self) -> String {
+        self.0.to_string()
+    }
+}
+
+impl fmt::Debug for MachineEndpointSupernet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("MachineEndpointSupernet")
+            .field(&self.0.to_string())
+            .finish()
+    }
+}
+
+impl TryFrom<String> for MachineEndpointSupernet {
+    type Error = MachineEndpointSupernetError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineEndpointSupernet> for String {
+    fn from(value: MachineEndpointSupernet) -> Self {
+        value.0.to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineEndpointSupernetError {
+    #[error("machine endpoint supernet {value:?} is not an IPv4 /16 network")]
+    Invalid { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineEndpointSubnetAllocationError {
+    #[error("machine endpoint supernet {supernet} has no free /24 subnets")]
+    Exhausted { supernet: String },
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -365,6 +470,33 @@ pub fn default_endpoint_subnet(machine_id: &MachineId) -> String {
     format!("10.42.{octet}.0/24")
 }
 
+#[cfg(test)]
+mod allocation_tests {
+    use super::{MachineEndpointSubnet, MachineEndpointSupernet};
+
+    #[test]
+    fn endpoint_supernet_allocates_first_free_subnet() {
+        let supernet = MachineEndpointSupernet::try_new("10.199.0.0/16").expect("supernet");
+        let assigned = [
+            MachineEndpointSubnet::try_new("10.199.0.0/24").expect("subnet"),
+            MachineEndpointSubnet::try_new("10.199.1.0/24").expect("subnet"),
+        ];
+
+        assert_eq!(
+            supernet
+                .allocate_next(assigned)
+                .expect("allocated")
+                .as_string(),
+            "10.199.2.0/24"
+        );
+    }
+
+    #[test]
+    fn endpoint_supernet_must_be_ipv4_slash_16() {
+        assert!(MachineEndpointSupernet::try_new("10.199.0.0/24").is_err());
+    }
+}
+
 fn trailing_machine_number(value: &str) -> Option<u16> {
     let digits = value
         .chars()
@@ -611,6 +743,42 @@ mod tests {
                         .expect("valid subnet"),
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn dataplane_prepare_request_uses_supplied_endpoint_subnets() {
+        let plan = DeployPlan {
+            namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
+            namespace_revision_id: crate::ids::NamespaceRevisionId::try_new("rev_1")
+                .expect("valid revision id"),
+            services: vec![crate::deploy::DeployServicePlan {
+                service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+                steps: vec![crate::deploy::DeployPlanStep::RunContainer {
+                    machine_id: machine_id("edge_2"),
+                    slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+                }],
+            }],
+            cleanup_containers: Vec::new(),
+        };
+
+        let request = DataplanePrepareRequest::for_deploy_plan(
+            operation_id("op_1"),
+            &plan,
+            &[DataplaneMember {
+                machine_id: machine_id("edge_2"),
+                endpoint_subnet: MachineEndpointSubnet::try_new("10.198.7.0/24")
+                    .expect("valid subnet"),
+            }],
+        );
+
+        assert_eq!(
+            request.membership,
+            vec![DataplaneMember {
+                machine_id: machine_id("edge_2"),
+                endpoint_subnet: MachineEndpointSubnet::try_new("10.198.7.0/24")
+                    .expect("valid subnet"),
+            }]
         );
     }
 

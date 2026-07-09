@@ -54,7 +54,7 @@ use ployzd::adapters::docker::labels::{
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 use support::dind::assert::{
-    all_managed_workload_containers, assert_deploy_event_sequence,
+    ManagedWorkloadContainer, all_managed_workload_containers, assert_deploy_event_sequence,
     assert_machine_add_event_sequence, assert_unit_active, connect_with_event_capture,
     decode_base64, gateway_http_get, managed_workload_containers, next_permission_violation,
     operation_events, operation_status, terminal_operation_events, wait_for_inspect,
@@ -563,8 +563,59 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     assert_deploy_event_sequence(&events, &deploy_operation);
 
     // Docker is execution reality: each machine runs exactly one managed
-    // workload container carrying the product's exact label values. The
-    // revision entry is the content-derived id of the deployed service spec.
+    // workload container carrying the product's exact label values, and the
+    // two workloads reach each other over the overlay before and after the
+    // control daemon restarts.
+    let core_container =
+        assert_smoke_workload_container(core, cluster.core(), &deploy_operation).await;
+    let edge_container = assert_smoke_workload_container(core, edge, &deploy_operation).await;
+    assert_workloads_reach_each_other_by_overlay_ip(
+        core,
+        cluster.core(),
+        &core_container,
+        edge,
+        &edge_container,
+        "before control shutdown",
+    )
+    .await;
+
+    let stop_control = core
+        .exec_on(cluster.core(), &["systemctl", "stop", "ployzd-control"])
+        .await;
+    assert!(
+        stop_control.success(),
+        "stopping control daemon failed: {stop_control:?}"
+    );
+    assert_workloads_reach_each_other_by_overlay_ip(
+        core,
+        cluster.core(),
+        &core_container,
+        edge,
+        &edge_container,
+        "after control shutdown",
+    )
+    .await;
+    let start_control = core
+        .exec_on(cluster.core(), &["systemctl", "start", "ployzd-control"])
+        .await;
+    assert!(
+        start_control.success(),
+        "starting control daemon failed after overlay assertion: {start_control:?}"
+    );
+    assert_unit_active(core, cluster.core(), "ployzd-control").await;
+
+    // The route serves through BOTH gateways via the published ports.
+    for machine in [cluster.core(), edge] {
+        wait_for_gateway_serving(machine).await;
+    }
+}
+
+async fn assert_smoke_workload_container(
+    core: &CoreContext,
+    machine: &DindMachine,
+    deploy_operation: &ployz_core::ids::OperationId,
+) -> ManagedWorkloadContainer {
+    // The revision entry is the content-derived id of the deployed service spec.
     let smoke_target = smoke_deploy_target();
     let [smoke_service] = smoke_target.services.as_slice() else {
         panic!("smoke deploy target carries one service");
@@ -573,33 +624,69 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
         .namespace_revision_entry_id(&smoke_target.namespace_id)
         .as_str()
         .to_owned();
-    for machine in [cluster.core(), edge] {
-        let containers = managed_workload_containers(core, machine).await;
-        let [container] = containers.as_slice() else {
-            panic!(
-                "expected one managed container on {}, got {containers:?}",
-                machine.name
-            );
-        };
-        for (key, value) in [
-            (SERVICE_ID_LABEL, "svc_smoke".to_owned()),
-            (NAMESPACE_REVISION_ENTRY_LABEL, revision_entry.clone()),
-            (OPERATION_ID_LABEL, deploy_operation.as_str().to_owned()),
-            (CONTAINER_TYPE_LABEL, "service".to_owned()),
-        ] {
-            assert_eq!(
-                container.labels.get(key),
-                Some(&value),
-                "managed container on {} must carry {key}={value}: {container:?}",
-                machine.name
-            );
-        }
+    let containers = managed_workload_containers(core, machine).await;
+    let [container] = containers.as_slice() else {
+        panic!(
+            "expected one managed container on {}, got {containers:?}",
+            machine.name
+        );
+    };
+    for (key, value) in [
+        (SERVICE_ID_LABEL, "svc_smoke".to_owned()),
+        (NAMESPACE_REVISION_ENTRY_LABEL, revision_entry.clone()),
+        (OPERATION_ID_LABEL, deploy_operation.as_str().to_owned()),
+        (CONTAINER_TYPE_LABEL, "service".to_owned()),
+    ] {
+        assert_eq!(
+            container.labels.get(key),
+            Some(&value),
+            "managed container on {} must carry {key}={value}: {container:?}",
+            machine.name
+        );
     }
+    ManagedWorkloadContainer {
+        id: container.id.clone(),
+        labels: container.labels.clone(),
+        endpoint_ip: container.endpoint_ip,
+        env: container.env.clone(),
+        cmd: container.cmd.clone(),
+    }
+}
 
-    // The route serves through BOTH gateways via the published ports.
-    for machine in [cluster.core(), edge] {
-        wait_for_gateway_serving(machine).await;
-    }
+async fn assert_workloads_reach_each_other_by_overlay_ip(
+    core: &CoreContext,
+    core_machine: &DindMachine,
+    core_container: &ManagedWorkloadContainer,
+    edge: &DindMachine,
+    edge_container: &ManagedWorkloadContainer,
+    phase: &str,
+) {
+    assert_overlay_http(core, core_machine, core_container, edge_container, phase).await;
+    assert_overlay_http(core, edge, edge_container, core_container, phase).await;
+}
+
+async fn assert_overlay_http(
+    core: &CoreContext,
+    source_machine: &DindMachine,
+    source: &ManagedWorkloadContainer,
+    target: &ManagedWorkloadContainer,
+    phase: &str,
+) {
+    let url = format!("http://{}/", target.endpoint_ip);
+    let script = format!("wget -qO- {url} | grep -q 'Welcome to nginx'");
+    let outcome = core
+        .exec_on(
+            source_machine,
+            &["docker", "exec", &source.id, "sh", "-c", &script],
+        )
+        .await;
+    assert!(
+        outcome.success(),
+        "workload overlay HTTP failed {phase} from {}:{} to {}: {outcome:?}",
+        source_machine.name,
+        source.endpoint_ip,
+        target.endpoint_ip
+    );
 }
 
 /// Deploys command and environment through the real machine Docker path and

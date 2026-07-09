@@ -309,7 +309,11 @@ control_endpoints: Array<string>,
  * WireGuard dial candidates recorded from machine testimony. The first is
  * programmed initially; later candidates are for endpoint rotation.
  */
-mesh_endpoints: Array<string>, };
+mesh_endpoints: Array<string>,
+/**
+ * Core-owned overlay endpoint subnet allocated from cluster intent.
+ */
+endpoint_subnet: MachineEndpointSubnet, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 

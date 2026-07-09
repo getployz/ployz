@@ -102,6 +102,10 @@ mod tests {
                 lifecycle: MachineLifecycle::Active,
                 control_endpoints: Vec::new(),
                 mesh_endpoints: Vec::new(),
+                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    "10.198.0.0/24",
+                )
+                .expect("valid endpoint subnet"),
             }],
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),

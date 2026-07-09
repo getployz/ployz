@@ -1,4 +1,4 @@
-use ployz_core::dataplane::DataplanePrepareRequest;
+use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
 };
@@ -22,7 +22,7 @@ pub struct DeployExecutionCommand {
     pub(super) route_binding_removals: Vec<RouteTarget>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
-    pub(super) dataplane_machines: Vec<MachineId>,
+    pub(super) dataplane_members: Vec<DataplaneMember>,
     pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub(super) step_timeout: Duration,
 }
@@ -68,8 +68,11 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn dataplane_machines(&self) -> &[MachineId] {
-        &self.dataplane_machines
+    pub fn dataplane_machines(&self) -> Vec<MachineId> {
+        self.dataplane_members
+            .iter()
+            .map(|member| member.machine_id.clone())
+            .collect()
     }
 
     #[must_use]
@@ -92,7 +95,7 @@ impl DeployExecutionCommand {
         DataplanePrepareRequest::for_deploy_plan(
             self.operation_id.clone(),
             plan,
-            &self.dataplane_machines,
+            &self.dataplane_members,
         )
     }
 }

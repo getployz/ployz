@@ -33,6 +33,8 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
             lifecycle: MachineLifecycle::Active,
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+                .expect("valid endpoint subnet"),
         })
         .await
         .expect("active machine stores");
@@ -177,6 +179,8 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
             lifecycle: MachineLifecycle::Draining,
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+                .expect("valid endpoint subnet"),
         })
         .await
         .expect("active machine stores");

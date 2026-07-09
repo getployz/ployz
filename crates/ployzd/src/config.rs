@@ -1,6 +1,6 @@
 //! Role-specific daemon configuration.
 
-use ployz_core::dataplane::default_endpoint_subnet;
+use ployz_core::dataplane::{MachineEndpointSupernet, default_endpoint_subnet};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     InstallContractError, MachineBootstrapUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -49,6 +49,7 @@ pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
 pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
 pub const PLOYZ_DATAPLANE_WG_MTU_ENV: &str = "PLOYZ_DATAPLANE_WG_MTU";
 pub const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
+pub const PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUPERNET";
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +101,8 @@ pub fn load_daemon_process_config(
             control = control.with_seed_from_mirror(load_seed_from_mirror(&env));
             control = control.with_epoch_fence_mirror(epoch_fence_mirror);
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
+            control =
+                control.with_dataplane_endpoint_supernet(load_dataplane_endpoint_supernet(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
         DaemonProcessRole::Machine(machine_id) => {
@@ -334,6 +337,17 @@ fn load_dataplane_endpoint_subnet(
         .unwrap_or_else(|| default_endpoint_subnet(machine_id))
 }
 
+fn load_dataplane_endpoint_supernet(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<MachineEndpointSupernet, DaemonProcessConfigError> {
+    let Some(value) = env_value(env, PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV) else {
+        return Ok(MachineEndpointSupernet::default_v1());
+    };
+    MachineEndpointSupernet::try_new(&value).map_err(|source| {
+        DaemonProcessConfigError::InvalidDataplaneEndpointSupernet { value, source }
+    })
+}
+
 fn load_nats_url(
     role: &DaemonProcessRole,
     env: &impl Fn(&str) -> Option<String>,
@@ -523,6 +537,10 @@ pub enum DaemonProcessConfigError {
         value: String,
         source: std::num::ParseIntError,
     },
+    InvalidDataplaneEndpointSupernet {
+        value: String,
+        source: ployz_core::dataplane::MachineEndpointSupernetError,
+    },
 }
 
 impl fmt::Display for DaemonProcessConfigError {
@@ -617,6 +635,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 "{}={value:?} is invalid",
                 PLOYZ_DATAPLANE_WG_MTU_ENV
             ),
+            Self::InvalidDataplaneEndpointSupernet { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV
+            ),
         }
     }
 }
@@ -638,6 +661,7 @@ pub struct ControlProcessConfig {
     pub deploy_machines: Vec<MachineId>,
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
+    pub dataplane_endpoint_supernet: MachineEndpointSupernet,
 }
 
 impl ControlProcessConfig {
@@ -657,6 +681,7 @@ impl ControlProcessConfig {
             deploy_machines: vec![first_deploy_machine],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
+            dataplane_endpoint_supernet: MachineEndpointSupernet::default_v1(),
         }
     }
 
@@ -702,6 +727,15 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn with_machine_bootstrap(mut self, machine_bootstrap: MachineAddBootstrapConfig) -> Self {
         self.machine_bootstrap = machine_bootstrap;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dataplane_endpoint_supernet(
+        mut self,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
+    ) -> Self {
+        self.dataplane_endpoint_supernet = dataplane_endpoint_supernet;
         self
     }
 
