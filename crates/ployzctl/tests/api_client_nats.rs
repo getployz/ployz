@@ -689,6 +689,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
         }],
     }

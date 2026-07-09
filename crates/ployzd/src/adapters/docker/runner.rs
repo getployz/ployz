@@ -18,6 +18,7 @@ use bollard::query_parameters::{
     LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_core::deploy::ContainerEntrypoint;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use std::collections::{BTreeMap, HashMap};
@@ -500,8 +501,29 @@ const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
 }
 
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
+    let runtime = command.runtime;
+    let env = if runtime.environment.is_empty() {
+        None
+    } else {
+        Some(
+            runtime
+                .environment
+                .iter()
+                .map(|(name, value)| format!("{}={}", name.as_str(), value.as_str()))
+                .collect(),
+        )
+    };
+    let cmd = runtime.command.map(Vec::from);
+    let entrypoint = runtime.entrypoint.map(|entrypoint| match entrypoint {
+        ContainerEntrypoint::Clear => Vec::new(),
+        ContainerEntrypoint::Argv(argv) => Vec::from(argv),
+    });
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
+        env,
+        cmd,
+        entrypoint,
+        stop_timeout: Some(i64::from(runtime.stop_grace_period.as_seconds())),
         labels: Some(hashmap_from_btree(labels::render(&command.identity))),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
@@ -596,7 +618,10 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::deploy::ImageReference;
+    use ployz_core::deploy::{
+        ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, EnvName, EnvValue,
+        ImageReference, ServiceEnvironment, StopGracePeriod,
+    };
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
 
@@ -618,6 +643,7 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
             identity: managed_identity(),
         });
 
@@ -629,12 +655,54 @@ mod tests {
     }
 
     #[test]
+    fn create_body_sets_runtime_fields() {
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            runtime: runtime_spec(),
+            identity: managed_identity(),
+        });
+
+        assert_eq!(
+            body.env,
+            Some(vec!["ALPHA=1".to_owned(), "BETA=two".to_owned()])
+        );
+        assert_eq!(body.cmd, Some(vec!["serve".to_owned(), "api".to_owned()]));
+        assert_eq!(body.entrypoint, Some(vec!["/init".to_owned()]));
+        assert_eq!(body.stop_timeout, Some(30));
+    }
+
+    #[test]
+    fn create_body_clears_entrypoint_when_runtime_requests_clear() {
+        let mut runtime = ContainerRuntimeSpec::image_defaults();
+        runtime.entrypoint = Some(ContainerEntrypoint::Clear);
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            runtime,
+            identity: managed_identity(),
+        });
+
+        assert_eq!(body.entrypoint, Some(Vec::new()));
+    }
+
+    #[test]
+    fn create_body_sets_default_stop_timeout() {
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            identity: managed_identity(),
+        });
+
+        assert_eq!(body.stop_timeout, Some(10));
+    }
+
+    #[test]
     fn create_body_always_joins_the_endpoint_network() {
         // Ports never influence network membership (ADR 0023): even a
         // route-less service container joins the endpoint network so a
         // later route attach can reach it without recreation.
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
             identity: managed_identity(),
         });
 
@@ -894,5 +962,28 @@ mod tests {
 
     fn image(value: &str) -> ImageReference {
         ImageReference::try_new(value).expect("valid image")
+    }
+
+    fn runtime_spec() -> ContainerRuntimeSpec {
+        let mut runtime = ContainerRuntimeSpec::image_defaults();
+        runtime.command = Some(
+            ContainerCommand::try_new(vec!["serve".to_owned(), "api".to_owned()])
+                .expect("valid command"),
+        );
+        runtime.entrypoint = Some(ContainerEntrypoint::Argv(
+            ContainerCommand::try_new(vec!["/init".to_owned()]).expect("valid entrypoint"),
+        ));
+        runtime.environment = ServiceEnvironment::from(BTreeMap::from([
+            (
+                EnvName::try_new("BETA").expect("valid env name"),
+                EnvValue::try_new("two").expect("valid env value"),
+            ),
+            (
+                EnvName::try_new("ALPHA").expect("valid env name"),
+                EnvValue::try_new("1").expect("valid env value"),
+            ),
+        ]));
+        runtime.stop_grace_period = StopGracePeriod::from(30);
+        runtime
     }
 }

@@ -477,6 +477,7 @@ fn smoke_deploy_target() -> DeployRequest {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: vec![DeployRoute {
                 target: RouteTarget::new(
                     route_hostname(ROUTE_HOSTNAME),

@@ -204,6 +204,7 @@ fn deploy_request() -> DeployRequest {
             image: ImageReference::try_new("registry.example/api:rev_2")
                 .expect("valid image reference"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
         }],
     }

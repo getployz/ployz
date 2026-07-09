@@ -4,7 +4,7 @@ use ployz_core::dataplane::{
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareRequest,
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
-use ployz_core::deploy::ImageReference;
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::machine_runtime::{
@@ -138,6 +138,7 @@ pub enum MachineContainerInspectDomainError {
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunRpcRequest {
     pub image: ImageReference,
+    pub runtime: ContainerRuntimeSpec,
     /// The identity the machine stamps onto the created container; the
     /// wire shape is identical to the dissolved per-RPC run spec.
     pub container: ManagedContainerIdentity,

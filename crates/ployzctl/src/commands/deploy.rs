@@ -168,6 +168,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             service_id,
             image,
             replicas,
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes,
         }],
         detach,

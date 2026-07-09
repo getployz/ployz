@@ -57,6 +57,7 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .as_slice(),
         [MachineContainerRunRpcRequest {
             image: image("registry.example/api:rev_2"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             container: managed_identity()
         }]
     );
@@ -557,6 +558,7 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_identity(),
     }
 }
@@ -584,6 +586,12 @@ fn container_run_request_wire_shape_survived_run_spec_dissolution() {
         json,
         serde_json::json!({
             "image": "registry.example/api:rev_2",
+            "runtime": {
+                "command": null,
+                "entrypoint": null,
+                "environment": {},
+                "stop_grace_period": 10,
+            },
             "container": {
                 "namespace_id": "default",
                 "service_id": "svc_api",

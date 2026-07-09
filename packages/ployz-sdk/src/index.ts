@@ -58,9 +58,11 @@ import {
   routeHostname,
   routePort,
   serviceId,
+  stopGracePeriod,
 } from "./primitives.ts";
 import type {
   AcceptedOperation,
+  ContainerRuntimeSpec,
   DeploySubmitError,
   DeploySubmitRequest,
   EventSequence,
@@ -315,6 +317,19 @@ export async function connectPloyzNats(
   return (await connectPloyzNatsClient(options)).client;
 }
 
+/**
+ * Image defaults: no command/entrypoint overrides, empty environment, and the
+ * runtime's default stop grace period. Mirrors ContainerRuntimeSpec::image_defaults().
+ */
+export function imageDefaultRuntime(): ContainerRuntimeSpec {
+  return {
+    command: null,
+    entrypoint: null,
+    environment: {},
+    stop_grace_period: stopGracePeriod(10),
+  };
+}
+
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
   return {
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
@@ -325,6 +340,7 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
           service_id: serviceId(input.serviceId),
           image: imageReference(input.image),
           replicas: replicaCount(input.replicas),
+          runtime: imageDefaultRuntime(),
           routes: (input.routes ?? []).map((route) => ({
             target: {
               hostname: routeHostname(route.hostname),

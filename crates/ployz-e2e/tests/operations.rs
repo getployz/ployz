@@ -732,6 +732,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             replicas: replicas(1),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
         }],
     }
@@ -765,6 +766,7 @@ fn deploy_target_with_route(
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:probe"),
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: containers::identity("svc_probe")
             .entry("rev_probe")
             .operation("op_probe")

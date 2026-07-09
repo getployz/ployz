@@ -79,6 +79,7 @@ where
                 .runner
                 .create_managed_container(CreateManagedContainer {
                     image: request.image,
+                    runtime: request.runtime,
                     identity,
                 })
                 .await

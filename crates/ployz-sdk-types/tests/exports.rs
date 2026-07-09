@@ -52,6 +52,7 @@ fn sdk_exports_core_wire_types() {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
         }],
     };
@@ -148,6 +149,7 @@ fn sdk_exports_operation_api_wire_types() {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 routes: Vec::new(),
             }],
         },
@@ -162,7 +164,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"idempotency_key":"idem_deploy_123","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1}]}}"#
+        r#"{"idempotency_key":"idem_deploy_123","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1,"runtime":{"command":null,"entrypoint":null,"environment":{},"stop_grace_period":10}}]}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),

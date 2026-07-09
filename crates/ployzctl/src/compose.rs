@@ -50,6 +50,7 @@ pub(crate) fn parse_deploy_file(
             service_id,
             image,
             replicas,
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes,
         });
     }

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 
 use crate::ids::{
@@ -56,6 +57,7 @@ impl DeployRequest {
                     .namespace_revision_entry_id(&self.namespace_id),
                 image: service.image.clone(),
                 replicas: service.replicas,
+                runtime: service.runtime.clone(),
                 routes: service.routes.clone(),
             })
             .collect()
@@ -69,21 +71,22 @@ pub struct DeployServiceSpec {
     pub service_id: ServiceId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
+    pub runtime: ContainerRuntimeSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
 }
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v2";
-    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v1";
+        "ployz.namespace_revision_entry.v3";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v2";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
         &self,
         namespace_id: &NamespaceId,
     ) -> NamespaceRevisionEntryId {
-        namespace_revision_entry_id_for(namespace_id, &self.service_id, &self.image)
+        namespace_revision_entry_id_for(namespace_id, &self.service_id, &self.image, &self.runtime)
     }
 }
 
@@ -96,16 +99,29 @@ pub fn namespace_revision_id_for(
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
 
     let mut hasher = Sha256::new();
-    hasher.update(DeployServiceSpec::NAMESPACE_REVISION_ENCODING_VERSION);
-    hasher.update(b"\nnamespace_id=");
-    hasher.update(namespace_id.as_str());
+    hash_frame(
+        &mut hasher,
+        "version",
+        DeployServiceSpec::NAMESPACE_REVISION_ENCODING_VERSION.as_bytes(),
+    );
+    hash_frame(
+        &mut hasher,
+        "namespace_id",
+        namespace_id.as_str().as_bytes(),
+    );
     for service in services {
-        hasher.update(b"\nservice_id=");
-        hasher.update(service.service_id.as_str());
-        hasher.update(b"\nimage=");
-        hasher.update(service.image.0.as_str());
-        hasher.update(b"\nreplicas=");
-        hasher.update(service.replicas.get().to_string());
+        hash_frame(
+            &mut hasher,
+            "service_id",
+            service.service_id.as_str().as_bytes(),
+        );
+        hash_frame(&mut hasher, "image", service.image.as_str().as_bytes());
+        hash_frame(
+            &mut hasher,
+            "replicas",
+            service.replicas.get().to_string().as_bytes(),
+        );
+        hash_runtime_spec(&mut hasher, &service.runtime);
 
         let mut routes = service.routes.iter().collect::<Vec<_>>();
         routes.sort_by(|left, right| {
@@ -114,15 +130,23 @@ pub fn namespace_revision_id_for(
                 .then_with(|| left.endpoint_port.cmp(&right.endpoint_port))
         });
         for route in routes {
-            hasher.update(b"\nroute=");
-            hasher.update(route.target.hostname.as_str());
-            hasher.update(b":");
-            hasher.update(route.target.port.get().to_string());
-            hasher.update(b"->");
-            hasher.update(route.endpoint_port.get().to_string());
+            hash_frame(
+                &mut hasher,
+                "route_hostname",
+                route.target.hostname.as_str().as_bytes(),
+            );
+            hash_frame(
+                &mut hasher,
+                "route_public_port",
+                route.target.port.get().to_string().as_bytes(),
+            );
+            hash_frame(
+                &mut hasher,
+                "route_endpoint_port",
+                route.endpoint_port.get().to_string().as_bytes(),
+            );
         }
     }
-    hasher.update(b"\n");
     let digest = hasher.finalize();
     NamespaceRevisionId::try_new(format!("{digest:x}"))
         .expect("sha256 hex digest is a subject token")
@@ -133,19 +157,71 @@ pub fn namespace_revision_entry_id_for(
     namespace_id: &NamespaceId,
     service_id: &ServiceId,
     image: &ImageReference,
+    runtime: &ContainerRuntimeSpec,
 ) -> NamespaceRevisionEntryId {
     let mut hasher = Sha256::new();
-    hasher.update(DeployServiceSpec::NAMESPACE_REVISION_ENTRY_ENCODING_VERSION);
-    hasher.update(b"\nnamespace_id=");
-    hasher.update(namespace_id.as_str());
-    hasher.update(b"\nservice_id=");
-    hasher.update(service_id.as_str());
-    hasher.update(b"\nimage=");
-    hasher.update(image.as_str());
-    hasher.update(b"\n");
+    hash_frame(
+        &mut hasher,
+        "version",
+        DeployServiceSpec::NAMESPACE_REVISION_ENTRY_ENCODING_VERSION.as_bytes(),
+    );
+    hash_frame(
+        &mut hasher,
+        "namespace_id",
+        namespace_id.as_str().as_bytes(),
+    );
+    hash_frame(&mut hasher, "service_id", service_id.as_str().as_bytes());
+    hash_frame(&mut hasher, "image", image.as_str().as_bytes());
+    hash_runtime_spec(&mut hasher, runtime);
     let digest = hasher.finalize();
     NamespaceRevisionEntryId::try_new(format!("{digest:x}"))
         .expect("sha256 hex digest is a subject token")
+}
+
+fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
+    let ContainerRuntimeSpec {
+        command,
+        entrypoint,
+        environment,
+        stop_grace_period,
+    } = runtime;
+
+    match command {
+        Some(command) => {
+            hash_frame(hasher, "command", b"some");
+            for arg in command.as_slice() {
+                hash_frame(hasher, "command_arg", arg.as_bytes());
+            }
+        }
+        None => hash_frame(hasher, "command", b"none"),
+    }
+
+    match entrypoint {
+        Some(ContainerEntrypoint::Clear) => hash_frame(hasher, "entrypoint", b"clear"),
+        Some(ContainerEntrypoint::Argv(argv)) => {
+            hash_frame(hasher, "entrypoint", b"argv");
+            for arg in argv.as_slice() {
+                hash_frame(hasher, "entrypoint_arg", arg.as_bytes());
+            }
+        }
+        None => hash_frame(hasher, "entrypoint", b"none"),
+    }
+
+    for (name, value) in environment.iter() {
+        hash_frame(hasher, "env_name", name.as_str().as_bytes());
+        hash_frame(hasher, "env_value", value.as_str().as_bytes());
+    }
+    hash_frame(
+        hasher,
+        "stop_grace_period",
+        stop_grace_period.as_seconds().to_string().as_bytes(),
+    );
+}
+
+fn hash_frame(hasher: &mut Sha256, tag: &str, bytes: &[u8]) {
+    hasher.update(tag.as_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,8 +234,231 @@ pub struct DeployServiceRequest {
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
+    pub runtime: ContainerRuntimeSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"EnvName\">"))]
+#[serde(try_from = "String", into = "String")]
+pub struct EnvName(String);
+
+impl EnvName {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, EnvNameError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(EnvNameError::Empty);
+        }
+        if value.contains('=') {
+            return Err(EnvNameError::ContainsEquals { value });
+        }
+        if value.contains('\0') {
+            return Err(EnvNameError::ContainsNul { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for EnvName {
+    type Error = EnvNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<EnvName> for String {
+    fn from(value: EnvName) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EnvNameError {
+    #[error("environment variable name is empty")]
+    Empty,
+    #[error("environment variable name contains '=': {value}")]
+    ContainsEquals { value: String },
+    #[error("environment variable name contains NUL: {value}")]
+    ContainsNul { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"EnvValue\">"))]
+#[serde(try_from = "String", into = "String")]
+pub struct EnvValue(String);
+
+impl EnvValue {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, EnvValueError> {
+        let value = value.into();
+        if value.contains('\0') {
+            return Err(EnvValueError::ContainsNul { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for EnvValue {
+    type Error = EnvValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<EnvValue> for String {
+    fn from(value: EnvValue) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EnvValueError {
+    #[error("environment variable value contains NUL: {value}")]
+    ContainsNul { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Record<EnvName, EnvValue>"))]
+#[serde(transparent)]
+pub struct ServiceEnvironment(BTreeMap<EnvName, EnvValue>);
+
+impl ServiceEnvironment {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&EnvName, &EnvValue)> {
+        self.0.iter()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<BTreeMap<EnvName, EnvValue>> for ServiceEnvironment {
+    fn from(value: BTreeMap<EnvName, EnvValue>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Array<string>"))]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct ContainerCommand(Vec<String>);
+
+impl ContainerCommand {
+    pub fn try_new(value: Vec<String>) -> Result<Self, ContainerCommandError> {
+        if value.is_empty() {
+            return Err(ContainerCommandError::Empty);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<String>> for ContainerCommand {
+    type Error = ContainerCommandError;
+
+    fn try_from(value: Vec<String>) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<ContainerCommand> for Vec<String> {
+    fn from(value: ContainerCommand) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ContainerCommandError {
+    #[error("container command must not be empty")]
+    Empty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerEntrypoint {
+    Clear,
+    Argv(ContainerCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"StopGracePeriod\">"))]
+#[serde(from = "u32", into = "u32")]
+pub struct StopGracePeriod(u32);
+
+impl StopGracePeriod {
+    pub const DEFAULT_SECONDS: u32 = 10;
+
+    #[must_use]
+    pub const fn default_grace() -> Self {
+        Self(Self::DEFAULT_SECONDS)
+    }
+
+    #[must_use]
+    pub const fn as_seconds(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for StopGracePeriod {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<StopGracePeriod> for u32 {
+    fn from(value: StopGracePeriod) -> Self {
+        value.as_seconds()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRuntimeSpec {
+    pub command: Option<ContainerCommand>,
+    pub entrypoint: Option<ContainerEntrypoint>,
+    pub environment: ServiceEnvironment,
+    pub stop_grace_period: StopGracePeriod,
+}
+
+impl ContainerRuntimeSpec {
+    #[must_use]
+    pub fn image_defaults() -> Self {
+        Self {
+            command: None,
+            entrypoint: None,
+            environment: ServiceEnvironment::empty(),
+            stop_grace_period: StopGracePeriod::default_grace(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

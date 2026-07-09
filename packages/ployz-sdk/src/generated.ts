@@ -94,9 +94,23 @@ export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
 export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
 
+export type EnvName = Brand<string, "EnvName">;
+
+export type EnvValue = Brand<string, "EnvValue">;
+
+export type ServiceEnvironment = Record<EnvName, EnvValue>;
+
+export type ContainerCommand = Array<string>;
+
+export type ContainerEntrypoint = "clear" | { "argv": ContainerCommand };
+
+export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
+
+export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, };
+
 export type DeployRequest = { namespace_id: NamespaceId, services: Array<DeployServiceSpec>, };
 
-export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, routes?: Array<DeployRoute>, };
+export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, runtime: ContainerRuntimeSpec, routes?: Array<DeployRoute>, };
 
 export type DeployRoute = { target: RouteTarget, endpoint_port: RoutePort, };
 

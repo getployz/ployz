@@ -1,9 +1,10 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
-    DeployPreparationInput, DeployRoute, DeployServicePlan, DeployServiceRequest,
-    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy,
+    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployCleanupContainer,
+    DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput, DeployPreparationInput,
+    DeployRoute, DeployServicePlan, DeployServiceRequest, EnvName, EnvValue,
+    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, ServiceEnvironment,
+    StopGracePeriod, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -17,6 +18,7 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     service_id,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
@@ -38,7 +40,7 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "fd4d6147bc732c2c346e384ed64af5f31a61d47008b6ff7f03c2a9e97ddd5422"
+        "4cb6de52f7609df479fe07a411d7312d82ff294b2ac1ee071de284a383be6d5e"
     );
 }
 
@@ -55,7 +57,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "78fa2c3fc094fa2155b302d6aa0852b08ec0e700df8c04d3c9383747e773871f"
+        "7798ddc1990c9db01fdc4258b5685b525c07fd0353d57aa735bf96cf7c4ef623"
     );
     assert_ne!(
         base.namespace_revision_entry_id(&namespace_id("default")),
@@ -66,7 +68,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "8be3fe361e233e2c3d96f5ecd0eebe187ecef4eaa843fb043b2efcd55c3fa31a"
+        "27aec2fa8baea1fdb41a597a8ad0186198217e4a9fb449528b5afec365a13e91"
     );
 }
 
@@ -76,7 +78,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
         service_spec("svc_api", "nginx:latest", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "807f86a22b5c896d141d935b6317008e62c0f73a2947775fe9ab98b11ddc6578"
+        "f09905e06be8fda59795a12da5c2058ad0e72425b8cb143f138958787c166d96"
     );
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
@@ -91,6 +93,89 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
             })
         )
         .namespace_revision_entry_id(&namespace_id("default"))
+    );
+}
+
+#[test]
+fn namespace_revision_entry_identity_changes_for_each_runtime_field() {
+    let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+    let base_id = base.namespace_revision_entry_id(&namespace_id("default"));
+
+    assert_ne!(
+        base_id,
+        service_spec_with_runtime(
+            "svc_api",
+            "ghcr.io/acme/api:rev-1",
+            runtime_with_command(["bundle", "exec"])
+        )
+        .namespace_revision_entry_id(&namespace_id("default"))
+    );
+    assert_ne!(
+        base_id,
+        service_spec_with_runtime(
+            "svc_api",
+            "ghcr.io/acme/api:rev-1",
+            runtime_with_entrypoint(ContainerEntrypoint::Argv(
+                ContainerCommand::try_new(vec!["/init".to_owned()]).expect("non-empty argv")
+            ))
+        )
+        .namespace_revision_entry_id(&namespace_id("default"))
+    );
+    assert_ne!(
+        base_id,
+        service_spec_with_runtime(
+            "svc_api",
+            "ghcr.io/acme/api:rev-1",
+            runtime_with_env([("LOG_LEVEL", "debug")])
+        )
+        .namespace_revision_entry_id(&namespace_id("default"))
+    );
+    assert_ne!(
+        base_id,
+        service_spec_with_runtime(
+            "svc_api",
+            "ghcr.io/acme/api:rev-1",
+            runtime_with_stop_grace(30)
+        )
+        .namespace_revision_entry_id(&namespace_id("default"))
+    );
+}
+
+#[test]
+fn namespace_revision_entry_identity_is_stable_for_environment_order() {
+    let left = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_env([("BETA", "2"), ("ALPHA", "1")]),
+    );
+    let right = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_env([("ALPHA", "1"), ("BETA", "2")]),
+    );
+
+    assert_eq!(
+        left.namespace_revision_entry_id(&namespace_id("default")),
+        right.namespace_revision_entry_id(&namespace_id("default"))
+    );
+}
+
+#[test]
+fn namespace_revision_entry_identity_frames_environment_values() {
+    let env_injected = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-1",
+        runtime_with_env([("PAYLOAD", "value\nimage=ghcr.io/acme/api:rev-2")]),
+    );
+    let image_changed = service_spec_with_runtime(
+        "svc_api",
+        "ghcr.io/acme/api:rev-2",
+        runtime_with_env([("PAYLOAD", "value")]),
+    );
+
+    assert_ne!(
+        env_injected.namespace_revision_entry_id(&namespace_id("default")),
+        image_changed.namespace_revision_entry_id(&namespace_id("default"))
     );
 }
 
@@ -504,7 +589,7 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
 
     assert_eq!(
         entry_id.as_str(),
-        "fd4d6147bc732c2c346e384ed64af5f31a61d47008b6ff7f03c2a9e97ddd5422"
+        "4cb6de52f7609df479fe07a411d7312d82ff294b2ac1ee071de284a383be6d5e"
     );
 }
 
@@ -561,6 +646,7 @@ fn service_spec(
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        runtime: ContainerRuntimeSpec::image_defaults(),
         routes: route
             .map(|route| {
                 vec![deploy_route(
@@ -571,6 +657,59 @@ fn service_spec(
             })
             .unwrap_or_default(),
     }
+}
+
+fn service_spec_with_runtime(
+    service: &str,
+    image: &str,
+    runtime: ContainerRuntimeSpec,
+) -> ployz_core::deploy::DeployServiceSpec {
+    ployz_core::deploy::DeployServiceSpec {
+        service_id: service_id(service),
+        image: ImageReference::try_new(image).expect("valid image"),
+        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        runtime,
+        routes: Vec::new(),
+    }
+}
+
+fn runtime_with_command(args: impl IntoIterator<Item = &'static str>) -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(ContainerCommand::try_new(args_to_vec(args)).expect("valid command"));
+    runtime
+}
+
+fn runtime_with_entrypoint(entrypoint: ContainerEntrypoint) -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.entrypoint = Some(entrypoint);
+    runtime
+}
+
+fn runtime_with_env(
+    items: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    let environment = items
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                EnvName::try_new(name).expect("valid env name"),
+                EnvValue::try_new(value).expect("valid env value"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    runtime.environment = ServiceEnvironment::from(environment);
+    runtime
+}
+
+fn runtime_with_stop_grace(seconds: u32) -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.stop_grace_period = StopGracePeriod::from(seconds);
+    runtime
+}
+
+fn args_to_vec(args: impl IntoIterator<Item = &'static str>) -> Vec<String> {
+    args.into_iter().map(str::to_owned).collect()
 }
 
 fn planning_input(
@@ -602,6 +741,7 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
         namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        runtime: ContainerRuntimeSpec::image_defaults(),
         routes: Vec::new(),
     }
 }

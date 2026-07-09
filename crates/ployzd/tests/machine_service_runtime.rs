@@ -185,6 +185,7 @@ async fn machine_role_service_creates_missing_container() {
         state.creates(),
         vec![CreateManagedContainer {
             image: image("registry.example/api:rev_2"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             identity: managed_identity(),
         }]
     );
@@ -265,6 +266,7 @@ async fn machine_role_service_creates_when_sibling_service_uses_same_operation_s
         state.creates(),
         vec![CreateManagedContainer {
             image: image("registry.example/api:rev_2"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             identity: managed_identity(),
         }]
     );
@@ -1385,6 +1387,7 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_container_spec(),
     }
 }

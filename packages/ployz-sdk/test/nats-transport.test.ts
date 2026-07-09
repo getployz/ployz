@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   eventSequence,
+  imageDefaultRuntime,
   imageReference,
   machineJoinToken,
   namespaceId,
@@ -43,6 +44,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
           service_id: "svc_api",
           image: "ghcr.io/acme/api:rev-2",
           replicas: 1,
+          runtime: { command: null, entrypoint: null, environment: {}, stop_grace_period: 10 },
         },
       ],
     },
@@ -199,6 +201,7 @@ function deploySubmitRequest(): DeploySubmitRequest {
           service_id: serviceId("svc_api"),
           image: imageReference("ghcr.io/acme/api:rev-2"),
           replicas: replicaCount(1),
+          runtime: imageDefaultRuntime(),
         },
       ],
     },

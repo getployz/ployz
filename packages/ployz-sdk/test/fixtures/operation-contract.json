@@ -81,6 +81,12 @@
         {
           "image": "ghcr.io/acme/api:rev-2",
           "replicas": 2,
+          "runtime": {
+            "command": null,
+            "entrypoint": null,
+            "environment": {},
+            "stop_grace_period": 10
+          },
           "service_id": "svc_api"
         }
       ]
@@ -258,6 +264,12 @@
               {
                 "image": "ghcr.io/acme/api:rev-2",
                 "replicas": 2,
+                "runtime": {
+                  "command": null,
+                  "entrypoint": null,
+                  "environment": {},
+                  "stop_grace_period": 10
+                },
                 "service_id": "svc_api"
               }
             ]
@@ -324,6 +336,12 @@
                 {
                   "image": "ghcr.io/acme/api:rev-2",
                   "replicas": 2,
+                  "runtime": {
+                    "command": null,
+                    "entrypoint": null,
+                    "environment": {},
+                    "stop_grace_period": 10
+                  },
                   "service_id": "svc_api"
                 }
               ]

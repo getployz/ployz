@@ -180,6 +180,7 @@ fn assert_observed_running(
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:rev-2"),
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_identity(step),
     }
 }

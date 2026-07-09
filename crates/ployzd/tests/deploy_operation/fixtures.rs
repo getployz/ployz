@@ -629,6 +629,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
                 replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+                runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 routes: vec![DeployRoute {
                     target: route_target("api.example.com", 443),
                     endpoint_port: route_port(8080),
@@ -701,6 +702,7 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
         }],
     }
@@ -827,6 +829,7 @@ pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
         &namespace_id("default"),
         &service_id("svc_api"),
         &image("registry.example/api:rev_2"),
+        &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
     )
 }
 

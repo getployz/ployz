@@ -756,6 +756,7 @@ where
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let request = MachineContainerRunRpcRequest {
         image: service.request.image.clone(),
+        runtime: service.request.runtime.clone(),
         container: ManagedContainerIdentity {
             namespace_id: service.request.namespace_id.clone(),
             service_id: service.request.service_id.clone(),

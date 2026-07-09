@@ -29,6 +29,7 @@ import {
   type RouteHostname,
   type RoutePort,
   type ServiceId,
+  type StopGracePeriod,
 } from "./generated.ts";
 
 type U64WireInput = number | string | bigint;
@@ -172,6 +173,14 @@ export function routeHostname(value: string): RouteHostname {
 
 export function routePort(value: number): RoutePort {
   return positiveU16(value, "route port") as RoutePort;
+}
+
+export function stopGracePeriod(value: number): StopGracePeriod {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new RangeError("stop grace period must be an integer number of seconds within u32 range");
+  }
+
+  return value as StopGracePeriod;
 }
 
 export function acmeChallengeToken(value: string): AcmeChallengeToken {
