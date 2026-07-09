@@ -29,11 +29,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+        working-directory: packages/ployz-sdk
+      - run: pnpm check:generated
         working-directory: packages/ployz-sdk
       - run: pnpm typecheck
         working-directory: packages/ployz-sdk
