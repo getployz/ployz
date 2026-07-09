@@ -1,0 +1,4 @@
+name: fixture_required_interpolation
+services:
+  web:
+    image: nginx:${TAG:?set TAG}

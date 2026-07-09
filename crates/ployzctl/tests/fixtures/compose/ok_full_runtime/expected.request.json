@@ -1,0 +1,37 @@
+{
+  "namespace_id": "fixture_full_runtime",
+  "services": [
+    {
+      "service_id": "web",
+      "image": "ghcr.io/acme/web:1",
+      "replicas": 2,
+      "runtime": {
+        "command": [
+          "serve",
+          "--port",
+          "8080"
+        ],
+        "entrypoint": {
+          "argv": [
+            "/usr/local/bin/web"
+          ]
+        },
+        "environment": {
+          "FEATURE_FLAG": "true",
+          "LOG_LEVEL": "debug",
+          "WORKERS": "4"
+        },
+        "stop_grace_period": 90
+      },
+      "routes": [
+        {
+          "target": {
+            "hostname": "app.example.com",
+            "port": 80
+          },
+          "endpoint_port": 8080
+        }
+      ]
+    }
+  ]
+}

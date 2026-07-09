@@ -11,7 +11,7 @@ use ployz_core::deploy::DeployServiceSpec;
 use ployz_core::ids::NamespaceId;
 use serde_yaml::Value;
 
-pub(crate) use diagnostics::{RenderedWarning, UnsupportedFieldMode};
+pub use diagnostics::{RenderedWarning, UnsupportedFieldMode};
 
 use self::diagnostics::{ComposeDiagnostics, ComposeFinding, ComposePath, KnownUnsupported};
 use self::interpolate::{InterpolationFindingKind, apply_merge, interpolate_value};
@@ -19,7 +19,7 @@ use self::model::{ComposeDocument, ComposeService};
 use self::translate::{ServiceTranslateInput, classify_service};
 use crate::commands::{PloyzctlCliError, cli_error};
 
-pub(crate) struct ComposeInput<'a> {
+pub struct ComposeInput<'a> {
     pub source: &'a str,
     pub base_dir: &'a Path,
     pub interpolation_env: BTreeMap<String, String>,
@@ -27,7 +27,7 @@ pub(crate) struct ComposeInput<'a> {
     pub mode: UnsupportedFieldMode,
 }
 
-pub(crate) fn parse_deploy_file(
+pub fn parse_deploy_file(
     input: ComposeInput<'_>,
 ) -> Result<(ParsedComposeDeploy, Vec<RenderedWarning>), PloyzctlCliError> {
     let ComposeInput {
@@ -194,7 +194,7 @@ fn path_from_interpolation(path: &str) -> ComposePath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedComposeDeploy {
+pub struct ParsedComposeDeploy {
     pub namespace_id: NamespaceId,
     pub services: Vec<DeployServiceSpec>,
 }

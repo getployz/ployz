@@ -1,0 +1,6 @@
+name: fixture_missing_env_file
+services:
+  web:
+    image: nginx:latest
+    env_file:
+      - missing.env

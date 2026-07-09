@@ -1,0 +1,10 @@
+name: fixture_env_merge
+services:
+  web:
+    image: nginx:latest
+    env_file:
+      - base.env
+      - override.env
+    environment:
+      C: inline
+      D: inline

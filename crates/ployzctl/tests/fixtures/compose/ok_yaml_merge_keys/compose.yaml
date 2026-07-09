@@ -1,0 +1,8 @@
+name: fixture_yaml_merge
+services:
+  web:
+    image: nginx:latest
+    environment:
+      <<: &shared_env
+        SHARED: yes
+      LOCAL: value

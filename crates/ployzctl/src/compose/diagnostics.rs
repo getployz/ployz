@@ -85,7 +85,19 @@ impl ComposeFinding {
     }
 
     fn render(&self) -> RenderedWarning {
-        let detail = match &self.kind {
+        RenderedWarning(format!("{}  {}", self.path.render(), self.render_detail()))
+    }
+
+    fn render_warning(&self) -> RenderedWarning {
+        RenderedWarning(format!(
+            "{}  warning  {}",
+            self.path.render(),
+            self.render_detail()
+        ))
+    }
+
+    fn render_detail(&self) -> String {
+        match &self.kind {
             ComposeFindingKind::InvalidValue { message } => {
                 format!("invalid value  {message}")
             }
@@ -102,8 +114,7 @@ impl ComposeFinding {
             ComposeFindingKind::Advisory { message } => {
                 format!("advisory  {message}")
             }
-        };
-        RenderedWarning(format!("{}  {detail}", self.path.render()))
+        }
     }
 }
 
@@ -116,7 +127,7 @@ pub(crate) enum ComposeFindingKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnsupportedFieldMode {
+pub enum UnsupportedFieldMode {
     Strict,
     AllowUnsupported,
 }
@@ -244,7 +255,7 @@ impl KnownUnsupported {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RenderedWarning(pub String);
+pub struct RenderedWarning(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposeRejection {
@@ -272,11 +283,11 @@ impl ComposeDiagnostics {
                 .cmp(&right.path)
                 .then_with(|| left.render().0.cmp(&right.render().0))
         });
-        let rendered = findings
-            .iter()
-            .map(ComposeFinding::render)
-            .collect::<Vec<_>>();
         if findings.iter().any(|finding| finding.is_fatal(mode)) {
+            let rendered = findings
+                .iter()
+                .map(ComposeFinding::render)
+                .collect::<Vec<_>>();
             return Err(ComposeRejection {
                 rendered: rendered
                     .into_iter()
@@ -285,7 +296,10 @@ impl ComposeDiagnostics {
                     .join("\n"),
             });
         }
-        Ok(rendered)
+        Ok(findings
+            .iter()
+            .map(ComposeFinding::render_warning)
+            .collect())
     }
 }
 

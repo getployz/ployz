@@ -1,0 +1,7 @@
+name: ${NAMESPACE}
+services:
+  api:
+    image: ghcr.io/acme/api:${IMAGE_TAG}
+    command: "echo ${GREETING:-hello} ${TARGET}"
+    deploy:
+      replicas: ${REPLICAS}

@@ -1,0 +1,16 @@
+{
+  "namespace_id": "fixture_entrypoint_clear",
+  "services": [
+    {
+      "service_id": "web",
+      "image": "nginx:latest",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": "clear",
+        "environment": {},
+        "stop_grace_period": 10
+      }
+    }
+  ]
+}

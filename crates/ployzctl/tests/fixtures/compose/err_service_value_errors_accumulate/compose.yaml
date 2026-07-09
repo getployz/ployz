@@ -1,0 +1,9 @@
+name: fixture_service_errors
+services:
+  alpha:
+    image: nginx:latest
+    command: ["echo", ["nested"]]
+  beta:
+    image: nginx:latest
+    stop_grace_period:
+      seconds: 10

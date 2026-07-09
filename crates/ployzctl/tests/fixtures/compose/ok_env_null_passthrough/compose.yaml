@@ -1,0 +1,6 @@
+name: fixture_env_null
+services:
+  web:
+    image: nginx:latest
+    environment:
+      FROM_CASE:

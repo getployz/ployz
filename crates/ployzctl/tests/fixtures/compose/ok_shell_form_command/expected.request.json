@@ -1,0 +1,20 @@
+{
+  "namespace_id": "fixture_shell_command",
+  "services": [
+    {
+      "service_id": "web",
+      "image": "nginx:latest",
+      "replicas": 1,
+      "runtime": {
+        "command": [
+          "sh",
+          "-c",
+          "echo hello world"
+        ],
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      }
+    }
+  ]
+}

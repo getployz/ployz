@@ -1,0 +1,16 @@
+{
+  "namespace_id": "fixture_kitchen_sink",
+  "services": [
+    {
+      "service_id": "web",
+      "image": "nginx:latest",
+      "replicas": 2,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      }
+    }
+  ]
+}

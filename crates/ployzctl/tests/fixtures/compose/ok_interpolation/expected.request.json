@@ -1,0 +1,20 @@
+{
+  "namespace_id": "fixture_interpolation",
+  "services": [
+    {
+      "service_id": "api",
+      "image": "ghcr.io/acme/api:v1",
+      "replicas": 3,
+      "runtime": {
+        "command": [
+          "echo",
+          "hello",
+          "dotenv-target"
+        ],
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      }
+    }
+  ]
+}

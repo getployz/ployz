@@ -1,0 +1,5 @@
+name: fixture_entrypoint_clear
+services:
+  web:
+    image: nginx:latest
+    entrypoint: []
