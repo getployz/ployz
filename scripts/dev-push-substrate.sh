@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACT_DIR="${PLOYZ_DEV_ARTIFACT_DIR:-${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}/release}"
-ARTIFACTS=(ployzd ployz-keeper ployz-ebpf-ctl ployz-ebpf-tc)
+ARTIFACTS=(ployzd ployz ployz-ebpf-ctl ployz-ebpf-tc)
 
 usage() {
   cat >&2 <<EOF
 usage: scripts/dev-push-substrate.sh root@server [root@server...]
 
 Builds linux dev artifacts locally, copies them to each server, then asks the
-staged ployz-keeper to install them from a local manifest.
+staged ployz Host Runner to install them from a local manifest.
 
 env:
   PLOYZ_DEV_SKIP_BUILD=1      reuse ${ARTIFACT_DIR}
@@ -53,10 +53,12 @@ sha256_of() {
   sha256sum "$1" | cut -d ' ' -f 1
 }
 
-chmod 0755 "${PLOYZ_REMOTE_DIR}/ployz-keeper"
-install -m 0755 "${PLOYZ_REMOTE_DIR}/ployz-keeper" /usr/local/bin/ployz-keeper
+chmod 0755 "${PLOYZ_REMOTE_DIR}/ployz"
+install -m 0755 "${PLOYZ_REMOTE_DIR}/ployz" /usr/local/bin/ployz
 cat > "${PLOYZ_REMOTE_DIR}/release.env" <<EOF
 PLOYZ_VERSION=dev-local
+PLOYZ_URL=${PLOYZ_REMOTE_DIR}/ployz
+PLOYZ_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployz")
 PLOYZD_URL=${PLOYZ_REMOTE_DIR}/ployzd
 PLOYZD_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployzd")
 PLOYZ_EBPF_CTL_URL=${PLOYZ_REMOTE_DIR}/ployz-ebpf-ctl
@@ -65,7 +67,7 @@ PLOYZ_EBPF_TC_URL=${PLOYZ_REMOTE_DIR}/ployz-ebpf-tc
 PLOYZ_EBPF_TC_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployz-ebpf-tc")
 EOF
 
-"${PLOYZ_REMOTE_DIR}/ployz-keeper" substrate-update --manifest-file "${PLOYZ_REMOTE_DIR}/release.env"
+"${PLOYZ_REMOTE_DIR}/ployz" host substrate-update --manifest-file "${PLOYZ_REMOTE_DIR}/release.env"
 rm -rf "${PLOYZ_REMOTE_DIR}"
 REMOTE
 }

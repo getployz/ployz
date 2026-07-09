@@ -64,7 +64,7 @@ Grilled decisions:
 - Status/classification/projection arms per the machine-update
   pattern; minimal state machine.
 - Endpoints `MachineDrain` / `MachineResume` on `OperationApiEndpoint`
-  (both submit the one kind); ployzctl `machine drain <id>` /
+  (both submit the one kind); ployz `machine drain <id>` /
   `machine resume <id>`; SDK types + TS regen.
 - Worker: validate machine exists → write the evidence file → commit
   lifecycle to the KV machine record (projection after evidence, per

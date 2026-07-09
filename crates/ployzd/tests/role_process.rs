@@ -86,7 +86,7 @@ fn role_parser_accepts_the_supervisor_process_commands() {
 }
 
 #[test]
-fn nats_client_roles_load_the_keeper_written_nats_url() {
+fn nats_client_roles_load_the_host_runner_written_nats_url() {
     let config = load_daemon_process_config(
         DaemonProcessRole::Machine(machine_id("machine_7")),
         |name| match name {
@@ -428,7 +428,7 @@ fn nats_client_roles_require_ca_and_seed_file_envs() {
 }
 
 /// A configured-but-missing seed file is a config error only for control:
-/// keeper wrote `controller.seed` at install. Machine and gateway carry the
+/// Host Runner wrote `controller.seed` at install. Machine and gateway carry the
 /// path into the typed `AwaitingSeedFile` startup state instead.
 #[test]
 fn control_role_requires_a_readable_controller_seed_file() {

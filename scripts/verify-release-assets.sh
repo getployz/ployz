@@ -205,10 +205,10 @@ verify_platform() {
   done
 }
 
-verify_platform linux-amd64 PLOYZCTL:ployzctl PLOYZ_KEEPER:ployz-keeper PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
-verify_platform linux-arm64 PLOYZCTL:ployzctl PLOYZ_KEEPER:ployz-keeper PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
-verify_platform darwin-amd64 PLOYZCTL:ployzctl
-verify_platform darwin-arm64 PLOYZCTL:ployzctl
+verify_platform linux-amd64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
+verify_platform linux-arm64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
+verify_platform darwin-amd64 PLOYZ:ployz
+verify_platform darwin-arm64 PLOYZ:ployz
 
 channel_content() {
   cat <<EOF

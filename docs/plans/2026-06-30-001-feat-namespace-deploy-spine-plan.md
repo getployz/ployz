@@ -77,7 +77,7 @@ That creates the exact scary gap: Cloud wants to deploy a whole namespace, but c
 - Add namespace lock acquisition around deploy submit.
 - Add a flat namespace planner and executor using current machine-runtime ports.
 - Add namespace serving-target state sufficient for gateways/DNS/Cloud read paths to consume after deploy.
-- Update `ployzctl` and Cloud deploy worker to submit the new request.
+- Update `ployz` and Cloud deploy worker to submit the new request.
 - Delete the Cloud legacy SSH deploy apply path once replaced.
 
 #### Deferred to Follow-Up Work
@@ -158,7 +158,7 @@ flowchart TB
 - Cloud can reach the core NATS endpoint using the existing SDK/NATS client path or a narrow addition to it.
 - The first Cloud payload can omit full volume/hook semantics if current Cloud deploys do not require them for the target alpha path.
 - Gateway/DNS read paths can temporarily consume a simple namespace serving target without full role observation windows.
-- The current dirty `ployz-keeper` changes in the worktree are unrelated and must not be reverted by this work.
+- The current dirty `ployz host` changes in the worktree are unrelated and must not be reverted by this work.
 
 ### Risks & Dependencies
 
@@ -317,15 +317,15 @@ flowchart TB
 
 ### U6. Update CLI and API client surfaces
 
-- **Goal:** Make `ployzctl` and API client tests submit namespace deploys.
+- **Goal:** Make `ployz` and API client tests submit namespace deploys.
 - **Requirements:** R1, R6, F1.
 - **Dependencies:** U1, U2, U5.
 - **Files:**
-  - `crates/ployzctl/src/commands/deploy.rs`
-  - `crates/ployzctl/src/runtime.rs`
-  - `crates/ployzctl/tests/deploy_cli_contract.rs`
-  - `crates/ployzctl/tests/api_client_nats.rs`
-  - `crates/ployzctl/tests/deploy_binary_nats.rs`
+  - `crates/ployz/src/commands/deploy.rs`
+  - `crates/ployz/src/runtime.rs`
+  - `crates/ployz/tests/deploy_cli_contract.rs`
+  - `crates/ployz/tests/api_client_nats.rs`
+  - `crates/ployz/tests/deploy_binary_nats.rs`
   - `crates/ployz-nats/src/operation_api_client.rs`
 - **Approach:** Keep the CLI minimal: update existing deploy flags only enough to build a namespace-shaped request. Defer new CLI ergonomics and expert flag expansion.
 - **Patterns to follow:** Current `derive_service_id`, `derive_revision_id`, and API client request handling.
@@ -371,7 +371,7 @@ flowchart TB
 | `cargo test -p ployz-core deploy_planner` | U1, U4 | Namespace deploy request and planner behavior pass focused core tests. |
 | `cargo test -p ployz-nats operations_nats` | U2, U3 | Locking, serving-target watch, and state commit behavior pass NATS-backed tests. |
 | `cargo test -p ployzd deploy_operation deploy_runtime_nats control_runtime` | U5 | Worker executes flat namespace plan, refreshes locks, handles shutdown, and preserves failure semantics. |
-| `cargo test -p ployzctl deploy_cli_contract api_client_nats deploy_binary_nats` | U6 | CLI/API submit the namespace request. |
+| `cargo test -p ployz deploy_cli_contract api_client_nats deploy_binary_nats` | U6 | CLI/API submit the namespace request. |
 | `cargo test -p ployz-sdk-types` plus SDK package tests | U1, U6 | Generated TypeScript contract matches Rust. |
 | `pnpm test src/inggest/functions/environment-deployments/deploy.test.ts src/models/services/environment-deployments.server.test.ts` in `ployz-cloud` | U7 | Cloud deploy uses core submit and not SSH controller apply. |
 | `pnpm typecheck` in `ployz-cloud` | U7 | Cloud compile surface accepts the new SDK shape. |

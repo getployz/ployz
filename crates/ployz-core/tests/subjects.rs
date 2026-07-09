@@ -244,7 +244,7 @@ fn machine_update_completed(operation_id: &OperationId) -> OperationEvent {
         machine_id: machine_id("machine_7"),
         reported: MachineSubstrateVersions {
             ployzd: None,
-            keeper: None,
+            host_runner: None,
         },
     }
 }

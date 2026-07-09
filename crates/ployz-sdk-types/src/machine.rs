@@ -221,7 +221,7 @@ pub enum MachineJoinRedeemError {
     #[error("join token is unknown")]
     UnknownJoinToken,
     /// The operation is accepted but its per-machine credential has not
-    /// reached `material-ready` yet. The keeper retries redeem boundedly
+    /// reached `material-ready` yet. The Host Runner retries redeem boundedly
     /// until the material lands or the join token TTL expires.
     #[error("material for operation {} is not ready yet", .operation_id.as_str())]
     MaterialNotReady { operation_id: OperationId },

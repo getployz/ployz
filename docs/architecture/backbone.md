@@ -33,7 +33,7 @@ core is a rendezvous and a rebuildable index; the machines are the facts.
 2. **The machine fact ledger is machine truth** (ADR-0018). Each machine
    keeps a local SQLite ledger of durable machine-owned facts: route
    attachments applied there, served certificate material, assigned substrate
-   state, keeper state, last-known-good gateway/DNS projections. Facts that
+   state, Host Runner state, last-known-good gateway/DNS projections. Facts that
    cannot live in immutable container labels — anything applied after deploy
    — live here. The ledger is authoritative for its machine and is never
    cluster truth.

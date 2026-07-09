@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const EPOCH_ENFORCE_INTERVAL: Duration = Duration::from_secs(5);
 const INTENT_REPAIR_TIMEOUT: Duration = Duration::from_secs(5);
-/// The port a promoted core's `nats-server` listens on (keeper's
+/// The port a promoted core's `nats-server` listens on (Host Runner's
 /// `DEFAULT_NATS_PORT`), used to build failover candidate URLs.
 const CORE_NATS_PORT: u16 = 4222;
 

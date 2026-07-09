@@ -1,6 +1,6 @@
 //! Seed a fresh core store from a mirrored `IntentSnapshot` on promotion.
 //!
-//! keeper cannot open the core store (it does not depend on ployzd), so
+//! Host Runner cannot open the core store (it does not depend on ployzd), so
 //! promotion drives this through a one-shot ployzd invocation: replay the
 //! mirror's roster, routes, and serving targets into the fresh store, and set a
 //! strictly higher epoch than the core being succeeded (ADR 0031). Every write

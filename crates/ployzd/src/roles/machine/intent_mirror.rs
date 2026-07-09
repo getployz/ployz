@@ -35,7 +35,7 @@ impl MachineIntentMirror {
     }
 
     /// The canonical mirror location: `intent-mirror.json` beside the
-    /// machine's NKey seed file. Every role and keeper derives the path this
+    /// machine's NKey seed file. Every role and Host Runner derives the path this
     /// way so promotion always finds the mirror the roles wrote.
     #[must_use]
     pub fn beside_seed_file(seed_file: &Path) -> Self {

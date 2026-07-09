@@ -4,7 +4,7 @@
 # The workspace crates that produce the linux binaries the harnesses stage
 # onto machines. scripts/build-dind-machine-image.sh builds exactly these
 # (plus the ployz-ebpf-tc bytecode) into its release artifact dir.
-PLOYZ_BINARY_CRATES=(ployzd ployzctl ployz-keeper ployz-ebpf-ctl ployz-lease-worker)
+PLOYZ_BINARY_CRATES=(ployzd ployz ployz-ebpf-ctl ployz-lease-worker)
 
 # The host docker server architecture as a --platform value — never hardcode
 # amd64. An optional first argument (a caller-specific override env var)

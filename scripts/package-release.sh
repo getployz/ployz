@@ -6,9 +6,9 @@ set -euo pipefail
 #
 # Linux platforms (linux/amd64, linux/arm64) stage the full machine artifact
 # set built by scripts/build-dind-machine-image.sh through Docker. macOS
-# platforms (darwin/amd64, darwin/arm64) stage only the local operator CLI
-# (ployzctl) built with the host cargo toolchain; machine bootstrap stays
-# Linux-only. Select the platform with PLOYZ_RELEASE_PLATFORM, e.g.:
+# platforms (darwin/amd64, darwin/arm64) stage the unified local operator CLI.
+# Host Runner commands compile in and fail cleanly off Linux at runtime. Select
+# the platform with PLOYZ_RELEASE_PLATFORM, e.g.:
 #
 #   PLOYZ_RELEASE_PLATFORM=darwin/arm64 scripts/package-release.sh
 
@@ -48,8 +48,7 @@ case "${platform_os}" in
     artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${target_dir}/release}"
     required_artifacts=(
       ployzd
-      ployzctl
-      ployz-keeper
+      ployz
       ployz-ebpf-ctl
       ployz-ebpf-tc
     )
@@ -74,7 +73,7 @@ case "${platform_os}" in
     export CARGO_TARGET_DIR="${release_cargo_target_dir}"
     artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${release_cargo_target_dir}/${darwin_triple}/release}"
     required_artifacts=(
-      ployzctl
+      ployz
     )
     if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
       if [ "$(uname -s)" != "Darwin" ]; then
@@ -82,7 +81,7 @@ case "${platform_os}" in
         exit 1
       fi
       rustup target add "${darwin_triple}"
-      cargo build --release --package ployzctl --target "${darwin_triple}"
+      cargo build --release --package ployz --target "${darwin_triple}"
     fi
     ;;
   *)
@@ -123,8 +122,8 @@ write_manifest_pair() {
 
 staged_assets=("${manifest_asset}")
 
-ployzctl_asset="$(copy_asset ployzctl 0755)"
-staged_assets+=("${ployzctl_asset}")
+ployz_asset="$(copy_asset ployz 0755)"
+staged_assets+=("${ployz_asset}")
 
 if [ "${platform_os}" = "linux" ]; then
   : "${PLOYZ_NATS_SERVER_VERSION:?PLOYZ_NATS_SERVER_VERSION is required for Linux release manifests}"
@@ -132,11 +131,9 @@ if [ "${platform_os}" = "linux" ]; then
   : "${PLOYZ_NATS_SERVER_SHA256:?PLOYZ_NATS_SERVER_SHA256 is required for Linux release manifests}"
 
   ployzd_asset="$(copy_asset ployzd 0755)"
-  keeper_asset="$(copy_asset ployz-keeper 0755)"
   ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
   ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
   staged_assets+=(
-    "${keeper_asset}"
     "${ployzd_asset}"
     "${ebpf_ctl_asset}"
     "${ebpf_tc_asset}"
@@ -147,11 +144,10 @@ fi
   printf 'PLOYZ_VERSION=%s\n' "${semver}"
   printf 'PLOYZ_RELEASE_TAG=%s\n' "${release_tag}"
   printf 'PLOYZ_RELEASE_PLATFORM=%s\n' "${platform_slug}"
-  write_manifest_pair PLOYZCTL "${ployzctl_asset}"
-  # Machine bootstrap artifacts are Linux-only; darwin manifests carry just
-  # the operator CLI, and the installer's machine modes are Linux-gated.
+  write_manifest_pair PLOYZ "${ployz_asset}"
+  # Machine substrate artifacts are Linux-only; darwin manifests carry just
+  # the unified ployz binary, and Host Runner commands are Linux-gated.
   if [ "${platform_os}" = "linux" ]; then
-    write_manifest_pair PLOYZ_KEEPER "${keeper_asset}"
     write_manifest_pair PLOYZD "${ployzd_asset}"
     write_manifest_pair PLOYZ_EBPF_CTL "${ebpf_ctl_asset}"
     write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"

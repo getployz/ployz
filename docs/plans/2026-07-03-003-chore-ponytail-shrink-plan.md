@@ -6,8 +6,8 @@ A whole-repo ponytail audit (over-engineering scan; fresh-context subagent)
 found ~1050 deletable lines and 6 removable dependencies, all
 behavior-preserving. Every finding below was independently re-verified by
 reference grep before entering this plan; two name collisions were checked
-and cleared (ployz-keeper defines its own `redeem_join_token` trait method,
-and ployzctl's `MachineAddCommand` is an unrelated clap struct).
+and cleared (ployz host defines its own `redeem_join_token` trait method,
+and ployz's `MachineAddCommand` is an unrelated clap struct).
 
 Git history is the parking lot: the two staged-feature deletions (cert
 planning, machine-add lifecycle API) are recoverable verbatim from this
@@ -19,7 +19,7 @@ commit's parent when the wiring PR arrives.
   (zero references in src or tests; ~100 transitive crates) and `sha2`
   (only string literals named "sha256" appear, in tests).
 - D2. `crates/ployz-e2e/Cargo.toml`: remove `thiserror` (unused).
-- D3. `crates/ployz-keeper/Cargo.toml`: remove `async-nats` (unused).
+- D3. `crates/ployz-host-runner/Cargo.toml`: remove `async-nats` (unused).
 - D4. `crates/ployz-nats`: remove `semver`. `NatsServerVersion::parse`
   (schedules.rs) keeps its shape but parses by hand: trim at the first
   `-` or `+`, `split('.')`, three `u16::parse` calls. Existing unit tests
@@ -55,7 +55,7 @@ commit's parent when the wiring PR arrives.
   single-service request.
 - C3. `crates/ployzd/src/controllers.rs`: delete
   `OperationControllers::for_test` (unused even by tests).
-- C4. `crates/ployz-keeper/src/fsx.rs`: drop the ignored `_staged_tag`
+- C4. `crates/ployz-host-runner/src/fsx.rs`: drop the ignored `_staged_tag`
   parameter from `write_durable_file`; update the ~14 call sites in
   local.rs, cloud_bootstrap.rs, main.rs.
 - C5. Delete `load_gateway_projection_input_from_nats`
@@ -68,13 +68,13 @@ commit's parent when the wiring PR arrives.
   the observer returns deliberately, with a consumer, not as a counter
   nothing reads.
 - C8. Delete `ControlProcessConfig::with_machine_bootstrap_url`
-  (ployzd config.rs), `load_default_cluster_context` (ployzctl
+  (ployzd config.rs), `load_default_cluster_context` (ployz
   config.rs), `NatsRequestFailure` + `SERVICE_API_INFO_SUBJECT` +
   `SERVICE_API_STATS_SUBJECT` (ployz-nats services.rs),
   `RECOMMENDED_NATS_SERVER_VERSION` (ployz-nats bootstrap.rs),
   `SecuredTestNats::system_config` (test-support),
-  `CloudClient::get_text` and `KeeperTextRecorder::writer`
-  (ployz-keeper).
+  `CloudClient::get_text` and `Host RunnerTextRecorder::writer`
+  (ployz host).
 
 ## Phase 4 — Shrinks
 
@@ -97,7 +97,7 @@ commit's parent when the wiring PR arrives.
 
 1. `cargo check --workspace --all-targets` — zero warnings (proves the
    dep and code removals left no dangling references).
-2. `cargo test --workspace --exclude ployz-e2e --exclude ployz-keeper` —
+2. `cargo test --workspace --exclude ployz-e2e --exclude ployz host` —
    full suite green; C2's ported planner tests still cover single-service
    planning.
 3. `cargo clippy --workspace --all-targets` — clean, including the K3

@@ -7,8 +7,8 @@ channel_base_url="https://ployz.sh/channels"
 usage() {
   echo "usage: [PLOYZ_CHANNEL=alpha] sh ployz.sh [--channel <channel>] [--version <version>]" >&2
   echo "" >&2
-  echo "installs the verified ployz-keeper binary to /usr/local/bin/ployz-keeper" >&2
-  echo "then run: sudo ployz-keeper bootstrap" >&2
+  echo "installs the verified ployz binary to /usr/local/bin/ployz" >&2
+  echo "then run: sudo ployz host bootstrap" >&2
 }
 
 version_input="${PLOYZ_VERSION:-}"
@@ -87,7 +87,7 @@ command -v install >/dev/null || {
 }
 if [ "$(id -u)" -ne 0 ]; then
   command -v sudo >/dev/null || {
-    echo "ployz installer requires sudo to install /usr/local/bin/ployz-keeper" >&2
+    echo "ployz installer requires sudo to install /usr/local/bin/ployz" >&2
     exit 1
   }
 fi
@@ -101,7 +101,7 @@ else
 fi
 
 install_dir="/usr/local/bin"
-keeper_bin="${install_dir}/ployz-keeper"
+ployz_bin="${install_dir}/ployz"
 release_env_file="${PLOYZ_RELEASE_ENV_FILE:-/etc/ployz/release.env}"
 manifest_file="$(mktemp)"
 channel_file="$(mktemp)"
@@ -342,18 +342,18 @@ persist_release_env() {
   install_checked -m 0644 "$tmp_file" "$release_env_file"
 }
 
-PLOYZ_KEEPER_URL="$(resolve_release_value PLOYZ_KEEPER_URL "${PLOYZ_KEEPER_URL:-}")"
-PLOYZ_KEEPER_SHA256="$(resolve_release_value PLOYZ_KEEPER_SHA256 "${PLOYZ_KEEPER_SHA256:-}")"
+PLOYZ_URL="$(resolve_release_value PLOYZ_URL "${PLOYZ_URL:-}")"
+PLOYZ_SHA256="$(resolve_release_value PLOYZ_SHA256 "${PLOYZ_SHA256:-}")"
 
-download_verified "$PLOYZ_KEEPER_URL" "$PLOYZ_KEEPER_SHA256" "$tmp_file"
+download_verified "$PLOYZ_URL" "$PLOYZ_SHA256" "$tmp_file"
 install_checked -d -m 0755 "$install_dir"
-install_checked -m 0755 "$tmp_file" "$keeper_bin"
+install_checked -m 0755 "$tmp_file" "$ployz_bin"
 persist_release_env
 
-echo "installed $keeper_bin"
-echo "run: sudo ployz-keeper bootstrap"
+echo "installed $ployz_bin"
+echo "run: sudo ployz host bootstrap"
 if [ -n "${release_tag:-}" ]; then
-  echo "update existing substrate: sudo ployz-keeper substrate-update --version $release_tag"
+  echo "update existing substrate: sudo ployz host substrate-update --version $release_tag"
 else
-  echo "update existing substrate: sudo ployz-keeper substrate-update --version <release-tag>"
+  echo "update existing substrate: sudo ployz host substrate-update --version <release-tag>"
 fi

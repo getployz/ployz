@@ -4,6 +4,11 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use ployz::bootstrap_command::BootstrapRelease;
+use ployz::commands::PloyzctlCommand;
+use ployz::commands::machine::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
+use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
+use ployz::ssh::SshTarget;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::InstallRolePolicy;
@@ -19,11 +24,6 @@ use ployz_nats::connect::{
 };
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{MachineAddAccepted, MachineAddRequest, MachineListRequest};
-use ployzctl::bootstrap_command::BootstrapRelease;
-use ployzctl::commands::PloyzctlCommand;
-use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
-use ployzctl::runtime::{PloyzctlRuntimeConfig, execute_command};
-use ployzctl::ssh::SshTarget;
 
 use super::join::{INSTALLER_WRAPPER_PATH, write_installer_wrapper};
 use super::{CONNECT_TIMEOUT, NATS_MATERIAL_DIR, with_evidence};
@@ -31,7 +31,7 @@ use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::machine_name;
 use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 
-/// One formed core: provisioned machines, keeper-installed secured NATS +
+/// One formed core: provisioned machines, Host Runner-installed secured NATS +
 /// ployzd units on the core, the cluster material copied to the host, and an
 /// authenticated host-side operator API client through the published port.
 pub struct CoreContext {
@@ -77,7 +77,7 @@ pub struct ClusterMaterial {
 }
 
 /// Provisions the machines and forms the secured core through the product
-/// `ployzctl machine init root@core` command, driven in-process from the
+/// `ployz machine init root@core` command, driven in-process from the
 /// host over a docker-exec-backed stand-in `ssh`. Includes first-machine
 /// activation, so callers must not activate again.
 pub async fn init_core_cluster(docker: &Docker, edge_count: usize) -> CoreContext {
@@ -222,7 +222,7 @@ impl HostCliHarness {
             nats_seed_file: material.map(|material| material.operator_seed_file.clone()),
             join_seed_file: material.map(|material| material.join_seed_file.clone()),
             nats_connect_timeout: None,
-            keeper_install_timeout: None,
+            host_runner_install_timeout: None,
             ops_watch_timeout: None,
             ops_watch_poll_interval: None,
             ssh_program: Some(self.ssh_program.clone()),
@@ -256,7 +256,7 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
     .expect("write release manifest");
 }
 
-/// Forms the core through the product `ployzctl machine init` command: the
+/// Forms the core through the product `ployz machine init` command: the
 /// CLI builds the install spec internally, runs the wrapped installer in
 /// first-machine mode over the stand-in ssh, writes the join template/CA
 /// ordering itself, records a local cluster context, and activates the
@@ -307,7 +307,7 @@ async fn product_init_core(
 }
 
 /// Pinned artifact digests computed inside the core machine, with the
-/// in-machine source/install paths the keeper consumes.
+/// in-machine source/install paths the Host Runner consumes.
 pub struct ArtifactShas {
     pub ployzd: String,
     pub ebpf_bytecode: String,
@@ -417,7 +417,7 @@ pub async fn submit_machine_add(core: &CoreContext) -> MachineAddAccepted {
         .expect("machine add submits")
 }
 
-/// Adds the edge machine through the product `ployzctl machine add
+/// Adds the edge machine through the product `ployz machine add
 /// root@edge` command (submit + remote installer join + watch to
 /// completion); scenarios 3–5 use this as plumbing (scenario 2 owns the
 /// detailed join assertions through the explicit low-level path).

@@ -1,0 +1,41 @@
+[package]
+name = "ployz-host-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autobins = false
+
+[lints]
+workspace = true
+
+[dependencies]
+argon2 = "0.5"
+atomic-write-file.workspace = true
+chacha20poly1305 = "0.10"
+clap.workspace = true
+gethostname = "1"
+ployz-core.workspace = true
+rand = "0.8"
+rcgen = "0.14"
+rpassword = "7"
+zeroize = "1"
+ployz-nats.workspace = true
+ployz-sdk-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+local-ip-address.workspace = true
+sha2.workspace = true
+tempfile = "3"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+nuid.workspace = true
+url = "2"
+wait-timeout.workspace = true
+
+[dev-dependencies]
+ployz-test-support.workspace = true
+
+[lib]
+path = "src/lib.rs"

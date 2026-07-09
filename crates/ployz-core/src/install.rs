@@ -12,7 +12,7 @@ pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://ployz.sh";
 
 /// The machine-local intent mirror's file name, persisted beside the machine's
 /// NKey seed file (ADR 0031). Shared by `ployzd` (which writes and reads the
-/// mirror) and `ployz-keeper` (which reads it for core promotion) so both
+/// mirror) and `ployz host` (which reads it for core promotion) so both
 /// always derive the same path.
 pub const INTENT_MIRROR_FILE_NAME: &str = "intent-mirror.json";
 
@@ -235,7 +235,7 @@ pub struct MachineJoinTrustedNats {
 
 /// Well-known on-machine NATS material paths.
 ///
-/// This is the single owner of the Phase B file-ownership table: keeper
+/// This is the single owner of the Phase B file-ownership table: Host Runner
 /// writes the TLS material and the controller/operator/join seeds at
 /// install; `ployzd` control writes `machine.seed` at activate-first-machine.
 /// `machine.seed` deliberately does not exist at install time — machine and
@@ -308,7 +308,7 @@ impl NatsMachineMaterialPaths {
         self.state_dir.join("join.seed")
     }
 
-    /// Written by `ployzd` control at activate-first-machine, never by keeper.
+    /// Written by `ployzd` control at activate-first-machine, never by Host Runner.
     #[must_use]
     pub fn machine_seed_file(&self) -> PathBuf {
         self.state_dir.join("machine.seed")

@@ -25,7 +25,8 @@ pub(crate) async fn handle_substrate_update(
         Err(response) => return response,
     };
     let update = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("ployz-keeper")
+        std::process::Command::new("ployz")
+            .arg("host")
             .arg("substrate-update")
             .arg("--operation-id")
             .arg(request.operation_id.as_str())
@@ -45,8 +46,10 @@ pub(crate) async fn handle_substrate_update(
         Ok(Err(error)) => machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
             machine_id,
             error: MachineSubstrateUpdateDomainError::UpdateFailed {
-                message: FailureMessage::try_new(format!("failed to run ployz-keeper: {error}"))
-                    .expect("process failure message is non-empty"),
+                message: FailureMessage::try_new(format!(
+                    "failed to run ployz host substrate-update: {error}"
+                ))
+                .expect("process failure message is non-empty"),
             },
         }),
         Err(error) => machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
@@ -117,6 +120,6 @@ fn read_substrate_update_evidence(
     }
     Ok(MachineSubstrateVersions {
         ployzd: Some(evidence.ployzd),
-        keeper: None,
+        host_runner: None,
     })
 }

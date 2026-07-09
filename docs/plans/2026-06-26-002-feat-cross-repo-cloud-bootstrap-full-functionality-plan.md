@@ -10,11 +10,11 @@ date: 2026-06-26
 
 Implement the first Cloud bootstrap adoption flow across `ployz-rust` and
 `ployz-cloud`: the generic no-token command creates an interactive Cloud
-Bootstrap Session, the user approves it in Cloud, and keeper executes the
+Bootstrap Session, the user approves it in Cloud, and Host Runner executes the
 returned founder or joiner envelope.
 
 This plan is the implementation source for Cloud Bootstrap Session, Cloud
-Bootstrap Redemption, sticky Cloud Founder Claim, keeper-owned session polling,
+Bootstrap Redemption, sticky Cloud Founder Claim, Host Runner-owned session polling,
 typed JSON envelopes, Cloud-safe callbacks, and Cloud Lens direct TLS NATS
 reachability.
 
@@ -30,7 +30,7 @@ It supersedes these same-day plans:
 
 The important correction is that `ployz.sh` does not redeem Cloud tokens and
 Cloud does not return a shell env manifest. `ployz.sh` installs only
-`ployz-keeper`; `ployz-keeper bootstrap` owns the Cloud HTTPS protocol and
+`ployz host`; `ployz host bootstrap` owns the Cloud HTTPS protocol and
 consumes typed JSON from the shared SDK contract.
 
 ---
@@ -40,21 +40,21 @@ consumes typed JSON from the shared SDK contract.
 Cloud adoption should require one simple command on the target machine:
 
 ```sh
-curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap cloud
+curl -fsSL https://ployz.sh | sh && sudo ployz host bootstrap cloud
 ```
 
 That command is for users already SSHed into the machine. `ployz.sh` remains a
-small release-delivery script: Linux-only, keeper-only, verified artifact
-install, and no Cloud protocol. The second command runs as root because keeper
+small release-delivery script: Linux-only, Host Runner-only, verified artifact
+install, and no Cloud protocol. The second command runs as root because Host Runner
 mutates local machine substrate.
 
-Cloud is optional to Ployz adoption, but `ployz-keeper bootstrap` does not own
-CLI-managed cluster creation in v1. Keeper shows a visible `Use local CLI
-setup` choice. If the user chooses it, keeper exits nonzero before machine
+Cloud is optional to Ployz adoption, but `ployz host bootstrap` does not own
+CLI-managed cluster creation in v1. Host Runner shows a visible `Use local CLI
+setup` choice. If the user chooses it, Host Runner exits nonzero before machine
 mutation without creating a Cloud Bootstrap Session, Cloud Bootstrap
 Redemption, callback token, or Cloud Founder Claim, and tells the user to run
-`ployzctl machine init USER@HOST` from their workstation. Handoff material from
-keeper to a workstation-local `ployzctl` context is deferred.
+`ployz machine init USER@HOST` from their workstation. Handoff material from
+Host Runner to a workstation-local `ployz` context is deferred.
 
 The organization decision is Cloud-side:
 
@@ -77,21 +77,21 @@ operation events; Cloud callback rows are product workflow evidence.
 
 ### `ployz-rust`
 
-- `scripts/ployz.sh` is already keeper-only release delivery. It installs
-  `/usr/local/bin/ployz-keeper`, rejects old `--first-machine`, `--join-token`,
+- `scripts/ployz.sh` is already Host Runner-only release delivery. It installs
+  `/usr/local/bin/ployz`, rejects old `--first-machine`, `--join-token`,
   and `--cloud-token` shell-script modes, and fails on non-Linux platforms.
-- `ployz-keeper bootstrap` parses interactive mode, `--cloud-token`, and
+- `ployz host bootstrap` parses interactive mode, `--cloud-token`, and
   optional `--cloud-host`. The actual Cloud session path is still a stub, and
   token redemption is deferred.
 - `ployz-sdk-types` already defines most Cloud bootstrap JSON types:
   session create/poll, future token redeem, decision, envelope, callback,
   founder result, joiner result, failures, protocol version, and TypeScript
   export.
-- `ployz-keeper/src/cloud_bootstrap.rs` has safe joiner helper functions, but
-  they are not wired into the keeper command.
+- `ployz host/src/cloud_bootstrap.rs` has safe joiner helper functions, but
+  they are not wired into the Host Runner command.
 - Founder groundwork exists for adding Cloud's NATS user public key to the
   authorized users render, but Cloud-mediated founder execution is not wired.
-- `ployzctl` has a `CloudBootstrapCommand` renderer, but older remote init/add
+- `ployz` has a `CloudBootstrapCommand` renderer, but older remote init/add
   paths still render public script commands with flags that `ployz.sh` now
   rejects.
 
@@ -116,25 +116,25 @@ operation events; Cloud callback rows are product workflow evidence.
 ### Command and UX Contract
 
 - R1. The primary human command remains
-  `curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap`.
+  `curl -fsSL https://ployz.sh | sh && sudo ployz host bootstrap`.
 - R2. The no-token command is the only v1 Cloud adoption command. Existing
   `--cloud-token` parsing may remain, but token redemption is deferred and must
   not be used by provider workflows in this slice.
-- R3. `--cloud-host <host-or-https-url>` may point interactive keeper bootstrap
+- R3. `--cloud-host <host-or-https-url>` may point interactive Host Runner bootstrap
   at staging or self-hosted Cloud. It does not identify the organization,
   cluster, machine, or runtime endpoint.
-- R4. `ployz.sh` installs only the verified keeper artifact and never parses
+- R4. `ployz.sh` installs only the verified Host Runner artifact and never parses
   Cloud protocol data, founder/joiner intent, join tokens, callback tokens, or
   NATS credentials.
-- R5. Interactive keeper bootstrap offers Ployz Cloud, custom/self-hosted
+- R5. Interactive Host Runner bootstrap offers Ployz Cloud, custom/self-hosted
   Cloud, and visible `Use local CLI setup` guidance choices.
 - R5a. `Use local CLI setup` exits nonzero before machine mutation, creates no
   Cloud session, redemption, callback token, or Cloud Founder Claim, and points
-  the user at `ployzctl machine init USER@HOST`.
-- R5b. Keeper-to-workstation handoff material is deferred until there is an
+  the user at `ployz machine init USER@HOST`.
+- R5b. Host Runner-to-workstation handoff material is deferred until there is an
   explicit import format, secret-handling story, and cleanup behavior.
-- R6. `ployzctl machine init USER@HOST` remains the deterministic local/direct
-  SSH path. `ployzctl cloud link` and `machine init --link-cloud` remain
+- R6. `ployz machine init USER@HOST` remains the deterministic local/direct
+  SSH path. `ployz cloud link` and `machine init --link-cloud` remain
   deferred until Cloud and local operators can be authorized as distinct NATS
   clients.
 
@@ -146,39 +146,39 @@ operation events; Cloud callback rows are product workflow evidence.
   Redemption. Browser approval creates the redemption by binding the session to
   an organization; Cloud derives the bootstrap target from that organization's
   Organization Cluster state.
-- R8a. If keeper disconnects after browser approval but before receiving the
+- R8a. If Host Runner disconnects after browser approval but before receiving the
   poll result, the Cloud Bootstrap Redemption remains durable as an
-  approved-but-not-delivered attempt. Later keeper polls for the same session
+  approved-but-not-delivered attempt. Later Host Runner polls for the same session
   receive the same redemption and intent idempotently until terminal state.
 - R8b. If a Cloud Bootstrap Session expires before browser approval, it becomes
-  terminal expired and creates no Cloud Bootstrap Redemption. Keeper polling
+  terminal expired and creates no Cloud Bootstrap Redemption. Host Runner polling
   exits with approval-expired rerun guidance. A later
-  `sudo ployz-keeper bootstrap` creates a fresh session.
+  `sudo ployz host bootstrap` creates a fresh session.
 - R8c. V1 browser approval has no explicit `Reject` action. Closing the page
   or doing nothing leaves the Cloud Bootstrap Session unapproved until it
   expires.
 - R9. Session secrets and callback credentials are sent in HTTPS headers or
   JSON bodies, never URL query strings.
 - R9a. The browser URL may include a non-secret user code so the approval page
-  opens prefilled. The user code is display and lookup material, not the keeper
+  opens prefilled. The user code is display and lookup material, not the Host Runner
   session secret.
-- R9b. Keeper terminal output prints one direct approval URL and
+- R9b. Host Runner terminal output prints one direct approval URL and
   `Waiting for approval...`. It should not add a separate manual code-entry
   instruction unless a future terminal/path fallback needs it.
-- R9c. Keeper does not try to open the browser automatically in v1. The target
+- R9c. Host Runner does not try to open the browser automatically in v1. The target
   machine is usually reached over SSH and the process may run under `sudo`, so
   printing the URL is the only v1 behavior.
 - R10. Cloud stores only hashes for session secrets and callback tokens. Private
   NATS seeds and join material are encrypted when they must be retained, and
   are never exposed through UI projections, logs, Inngest events, or public API
   rows.
-- R11. Keeper generates and persists a stable per-machine bootstrap attempt id
+- R11. Host Runner generates and persists a stable per-machine bootstrap attempt id
   before the first Cloud request. Cloud uses `(session, attempt_id)` replay
-  semantics so retrying after a keeper crash returns the same redemption and
+  semantics so retrying after a Host Runner crash returns the same redemption and
   envelope instead of creating duplicate `machine.add` operations.
 - R11a. Once `machine.add` produces join material for a Cloud Bootstrap
   Redemption, Cloud binds that redemption to exactly one Joiner Bootstrap
-  envelope. If the keeper response is interrupted, later polls return the same
+  envelope. If the Host Runner response is interrupted, later polls return the same
   envelope. If the Cloud-to-runtime call fails before join material exists,
   Cloud retries that same step.
 - R12. Cloud exposes expiry for active sessions and redemptions. Explicit
@@ -188,12 +188,12 @@ operation events; Cloud callback rows are product workflow evidence.
 
 - R13. The Rust `ployz-sdk-types` Cloud bootstrap contract is the source of
   truth for machine-facing JSON payloads and generated TypeScript types.
-- R14. The v1 contract includes the protocol version, keeper version, attempt
+- R14. The v1 contract includes the protocol version, Host Runner version, attempt
   id, machine facts, session create/poll requests, typed decisions, typed
   envelopes, callback requests, and callback accepted responses.
 - R15. Cloud returns pending, ready, expired, or failed decisions. It does not
   return text manifests and has no user rejection branch in v1.
-- R16. Keeper validates every envelope before mutating local state. Missing,
+- R16. Host Runner validates every envelope before mutating local state. Missing,
   malformed, cross-origin, expired, unsupported, or intent-inconsistent
   envelopes fail before bootstrap mutation.
 - R17. Callback URLs must be HTTPS, same-origin with the configured Cloud host,
@@ -202,27 +202,27 @@ operation events; Cloud callback rows are product workflow evidence.
 - R18. Callback tokens are separate from session secrets, expire, are
   hashed at rest, are sent as authorization credentials, and allow idempotent
   replay of the same terminal payload only.
-- R18a. After Cloud has accepted a terminal callback, a keeper rerun for the
+- R18a. After Cloud has accepted a terminal callback, a Host Runner rerun for the
   same attempt asks Cloud for terminal status, exits success with current Cloud
   status evidence, and performs no local mutation. This may report a Cloud
   Connection or a formed-but-unreachable founder redemption state.
 
 ### Machine and Cluster Boundaries
 
-- R19. Keeper refuses Cloud bootstrap locally on a Bootstrapped Machine before
+- R19. Host Runner refuses Cloud bootstrap locally on a Bootstrapped Machine before
   it creates a Cloud session or posts any callback.
 - R20. The local preflight distinguishes fresh machine, partial same-attempt
   resume, already joined same cluster, and already joined different cluster.
   Cross-cluster reruns must not overwrite local credentials.
 - R21. Founder Bootstrap authorizes Cloud by NATS user public key. The Cloud
-  private NATS seed stays encrypted in Cloud; the founder envelope gives keeper
+  private NATS seed stays encrypted in Cloud; the founder envelope gives Host Runner
   only the public key to authorize.
 - R22. Founder callbacks return machine id, runtime NATS URL, and trusted NATS
   material. They never upload the local operator seed or Join seed.
 - R22a. If founder bootstrap succeeds locally but the Cloud callback fails,
-  keeper exits failed with local evidence and starts no background retry worker.
-  Keeper persists the exact Cloud-safe terminal callback payload in root-owned
-  attempt state before posting it. Rerunning keeper on the same machine resumes
+  Host Runner exits failed with local evidence and starts no background retry worker.
+  Host Runner persists the exact Cloud-safe terminal callback payload in root-owned
+  attempt state before posting it. Rerunning Host Runner on the same machine resumes
   the same attempt, replays that persisted payload, and refuses to recompute or
   mutate founder state for the terminal attempt. If Cloud has already accepted
   the terminal callback, rerun exits success with current Cloud status evidence
@@ -231,7 +231,7 @@ operation events; Cloud callback rows are product workflow evidence.
   Connection exists and before waiters receive joiner envelopes.
 - R23a. Cloud Connection is a durable Organization Cluster-level product
   relationship, separate from per-machine Cloud Bootstrap Redemptions. Bootstrap
-  can establish it, and future `ployzctl cloud link` can establish it through a
+  can establish it, and future `ployz cloud link` can establish it through a
   different explicit flow. Cloud creates the Cloud Connection only after the
   reachability probe succeeds.
 - R23b. Formed-but-unreachable is a founder Cloud Bootstrap Redemption or Cloud
@@ -257,19 +257,19 @@ operation events; Cloud callback rows are product workflow evidence.
   material is issued, Cloud does not auto-promote another waiter to founder
   after failure.
 - R25a. Wait-for-founder is polling-only from the target machine's perspective.
-  Keeper prints that it is waiting for the first machine to finish, respects
+  Host Runner prints that it is waiting for the first machine to finish, respects
   Cloud retry hints, and performs no local mutation until Cloud has a Cloud
   Connection and returns a Joiner Bootstrap envelope.
-- R25aa. Wait-for-founder uses the same bounded keeper polling deadline as the
+- R25aa. Wait-for-founder uses the same bounded Host Runner polling deadline as the
   Cloud session flow. A separate post-approval waiter TTL is post-v1.
 - R25b. Cloud does not submit `machine.add`, mint join material, or issue a
   Joiner Bootstrap envelope when a waiter is approved. Runtime join authority
-  is created only when a waiting keeper polls after Cloud Connection exists.
+  is created only when a waiting Host Runner polls after Cloud Connection exists.
 - R26. Joiner Bootstrap is still core `machine.add`, Machine Join Redemption,
   and Machine Join Report. Cloud brokers delivery and watches operation events;
   it does not make callback evidence cluster truth.
 - R26a. If joiner bootstrap succeeds locally but the Cloud callback fails,
-  keeper uses the same terminal-payload rule as founder bootstrap: it persists
+  Host Runner uses the same terminal-payload rule as founder bootstrap: it persists
   the exact Cloud-safe terminal callback payload before posting it, exits failed
   with local evidence and no background retry worker on post failure, and
   replays the persisted payload on rerun. If Cloud has already accepted the
@@ -315,7 +315,7 @@ operation events; Cloud callback rows are product workflow evidence.
 
 ## Key Technical Decisions
 
-- KTD1. `ployz-keeper`, not `ployz.sh`, owns the Cloud bootstrap protocol.
+- KTD1. `ployz host`, not `ployz.sh`, owns the Cloud bootstrap protocol.
 - KTD2. Typed JSON from `ployz-sdk-types` replaces shell env manifests.
 - KTD3. Cloud Bootstrap Invite and Cloud Bootstrap Token remain glossary terms,
   but are deferred from v1 implementation. The v1 command always starts with a
@@ -327,16 +327,16 @@ operation events; Cloud callback rows are product workflow evidence.
   promotion.
 - KTD6. Cloud callback evidence is product workflow evidence. NATS operations,
   current state, and operation events remain runtime truth.
-- KTD6a. Cloud is optional to Ployz setup, but keeper does not own local
+- KTD6a. Cloud is optional to Ployz setup, but Host Runner does not own local
   CLI-managed cluster creation. The visible `Use local CLI setup` choice exits
   nonzero before machine mutation and points at
-  `ployzctl machine init USER@HOST`. Handoff material is deferred.
+  `ployz machine init USER@HOST`. Handoff material is deferred.
 - KTD6b. Callback failure after local founder or joiner success is a visible
-  adoption failure, not background work. Keeper exits failed with evidence;
+  adoption failure, not background work. Host Runner exits failed with evidence;
   rerun resumes the same attempt and replays the exact persisted terminal
   callback payload.
 - KTD6c. Rerun after Cloud has already accepted the terminal callback is a
-  successful no-op: keeper asks Cloud for terminal status, prints current Cloud
+  successful no-op: Host Runner asks Cloud for terminal status, prints current Cloud
   status evidence, and performs no local mutation.
 - KTD7. Cloud receives product-client authority by authorizing a Cloud NATS
   user public key during founder bootstrap. Cloud's private seed is encrypted
@@ -349,7 +349,7 @@ operation events; Cloud callback rows are product workflow evidence.
   workflows.
 - KTD8. Provider cloud-init stays on the legacy path for this slice; migrating
   it to Cloud Bootstrap Invites is deferred.
-- KTD9. `ployzctl cloud link` stays out of this implementation because the
+- KTD9. `ployz cloud link` stays out of this implementation because the
   multi-operator NATS credential model is not ready.
 
 ---
@@ -360,13 +360,13 @@ operation events; Cloud callback rows are product workflow evidence.
 
 ```mermaid
 flowchart LR
-  User["User SSH session"] --> Script["ployz.sh<br/>keeper-only installer"]
-  Script --> Keeper["ployz-keeper bootstrap"]
-  Keeper --> CloudAPI["Cloud bootstrap JSON API"]
+  User["User SSH session"] --> Script["ployz.sh<br/>Host Runner-only installer"]
+  Script --> Host Runner["ployz host bootstrap"]
+  Host Runner --> CloudAPI["Cloud bootstrap JSON API"]
   CloudUI["Cloud UI<br/>org/session approval"] --> CloudAPI
   CloudAPI --> CloudDB["Cloud session/redemption tables"]
   CloudAPI --> NATS["Organization Cluster<br/>direct TLS NATS"]
-  Keeper --> Local["Machine-local substrate"]
+  Host Runner --> Local["Machine-local substrate"]
   NATS --> Core["ployzd core services"]
 ```
 
@@ -375,12 +375,12 @@ flowchart LR
 ```mermaid
 sequenceDiagram
   participant U as User on SSH target
-  participant K as ployz-keeper
+  participant K as ployz host
   participant C as Ployz Cloud API
   participant B as Browser Cloud UI
   participant N as Runtime TLS NATS
 
-  U->>K: ployz-keeper bootstrap cloud
+  U->>K: ployz host bootstrap cloud
   K->>K: local bootstrapped-machine preflight
   K->>C: create session (client, attempt id, machine facts)
   C-->>K: browser_url with user_code, session_secret, ttl
@@ -460,71 +460,71 @@ stateDiagram-v2
 - **Verification:** Run Rust SDK export tests and Cloud typecheck for the
   imported/generated contract boundary.
 
-### U2. Implement Keeper Prompt, Cloud Client, and Session Flow
+### U2. Implement Host Runner Prompt, Cloud Client, and Session Flow
 
-- **Goal:** Turn `ployz-keeper bootstrap` from a prompt/stub into the actual
+- **Goal:** Turn `ployz host bootstrap` from a prompt/stub into the actual
   Cloud session driver while preserving no-Cloud guidance.
 - **Repos and files:**
-  - `ployz-rust: crates/ployz-keeper/Cargo.toml`
-  - `ployz-rust: crates/ployz-keeper/src/cli.rs`
-  - `ployz-rust: crates/ployz-keeper/src/main.rs`
-  - `ployz-rust: crates/ployz-keeper/src/cloud_bootstrap.rs`
-  - `ployz-rust: crates/ployz-keeper/src/cloud_client.rs` (new)
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_cloud.rs` (new or
+  - `ployz-rust: crates/ployz-host-runner/Cargo.toml`
+  - `ployz-rust: crates/ployz-host-runner/src/cli.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/main.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/cloud_bootstrap.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/cloud_client.rs` (new)
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap_cloud.rs` (new or
     equivalent)
 - **Approach:** Add a narrow HTTPS client module with timeouts,
   no-secret-in-URL behavior, redacted errors, JSON serialization, and test
   fakes. The Cloud choice creates a session, prints the browser URL with the
   non-secret user code prefilled, and polls. The `Use local CLI setup` choice
   skips Cloud client creation, exits nonzero before machine mutation, and prints
-  `ployzctl machine init USER@HOST` guidance. The Cloud flow creates or loads a
+  `ployz machine init USER@HOST` guidance. The Cloud flow creates or loads a
   persisted attempt id before Cloud contact, and honors pending/wait retry hints
   with bounded backoff.
 - **Test scenarios:**
   - Session secrets never appear in request URLs, logs, panic/debug
     output, or user-facing errors.
   - Browser URLs may contain the user code, and tests prove the user code is
-    not accepted as the keeper polling secret.
-  - Keeper prints `Open this link to connect this machine:`, the prefilled URL,
+    not accepted as the Host Runner polling secret.
+  - Host Runner prints `Open this link to connect this machine:`, the prefilled URL,
     and `Waiting for approval...` without extra Cloud-token or manual-code
     instructions.
-  - Keeper does not invoke `xdg-open`, `open`, or another browser launcher in
+  - Host Runner does not invoke `xdg-open`, `open`, or another browser launcher in
     v1.
   - The prompt includes a visible `Use local CLI setup` choice.
   - `Use local CLI setup` performs no session create, session poll, callback,
     Cloud host request, local bootstrap, or Operator Context write, exits
-    nonzero, and prints `ployzctl machine init USER@HOST` guidance.
+    nonzero, and prints `ployz machine init USER@HOST` guidance.
   - `--cloud-host` accepts bare HTTPS hosts through normalization and rejects
     insecure hosts outside an explicit local-test seam.
   - Retry after crash with the same attempt id reuses the same redemption.
   - Unsupported client, expired session, unauthorized session, malformed
     envelope, and wait-for-founder all produce explicit terminal or retry
     behavior.
-- **Verification:** Run keeper Cloud bootstrap tests plus existing CLI parser
+- **Verification:** Run Host Runner Cloud bootstrap tests plus existing CLI parser
   and installer tests.
 
-### U3. Add Keeper Local Bootstrap Preflight and Attempt Resume
+### U3. Add Host Runner Local Bootstrap Preflight and Attempt Resume
 
 - **Goal:** Refuse unsafe reruns locally before any Cloud mutation and resume
   partial same-attempt work safely.
 - **Repos and files:**
-  - `ployz-rust: crates/ployz-keeper/src/local.rs`
-  - `ployz-rust: crates/ployz-keeper/src/main.rs`
-  - `ployz-rust: crates/ployz-keeper/src/cloud_bootstrap.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_cloud.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/local.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/main.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/cloud_bootstrap.rs`
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap.rs`
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap_cloud.rs`
 - **Approach:** Add explicit local bootstrap states for fresh, partial
   same-attempt, already joined same cluster, and already joined different
   cluster. Check durable Ployz machine-local material, role env, NATS material,
   join material, and managed units before Cloud session/redeem. Store attempt
-  state under keeper-owned local state with root-only permissions.
+  state under Host Runner-owned local state with root-only permissions.
 - **Test scenarios:**
   - Fresh machines proceed to Cloud request.
   - Existing NATS material, join material, or role units refuse before any
     fake Cloud request is observed.
   - Partial same-attempt state resumes without generating a second attempt id.
   - Different-cluster material refuses without overwriting credentials.
-- **Verification:** Run keeper local/bootstrap tests.
+- **Verification:** Run Host Runner local/bootstrap tests.
 
 ### U4. Wire Cloud-Mediated Founder Bootstrap and Callback
 
@@ -534,15 +534,15 @@ stateDiagram-v2
   - `ployz-rust: crates/ployz-core/src/install.rs`
   - `ployz-rust: crates/ployz-core/tests/install_contract.rs`
   - `ployz-rust: crates/ployz-core/tests/nats_config.rs`
-  - `ployz-rust: crates/ployz-keeper/src/main.rs`
-  - `ployz-rust: crates/ployz-keeper/src/steps.rs`
-  - `ployz-rust: crates/ployz-keeper/src/steps/nats_material.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_first_machine.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_cloud.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/main.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/steps.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/steps/nats_material.rs`
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap_first_machine.rs`
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap_cloud.rs`
 - **Approach:** Extend serializable first-machine install material so Cloud's
   public NATS user key is an explicit founder input. Validate the public key
   before writing auth files. Keep local/direct founder output unchanged for
-  `ployzctl machine init`, but Cloud callback output only includes machine id,
+  `ployz machine init`, but Cloud callback output only includes machine id,
   runtime NATS URL, and trusted NATS material.
 - **Test scenarios:**
   - Valid Cloud public key appears as an authorized `User` with least-privilege
@@ -550,13 +550,13 @@ stateDiagram-v2
   - Invalid Cloud public key fails before local NATS auth mutation.
   - Founder Cloud callback excludes local operator seed and Join seed.
   - Cloud-mediated founder bootstrap does not emit the local operator seed,
-    Join seed, or Operator Context that belong to the `ployzctl machine init`
+    Join seed, or Operator Context that belong to the `ployz machine init`
     path.
   - Callback timeout after local success leaves explicit evidence, exits failed,
     starts no background retry worker, persists the exact terminal callback
     payload before posting, and a rerun replays that payload without recomputing
     or mutating founder state.
-- **Verification:** Run core install contract tests and keeper first-machine Cloud
+- **Verification:** Run core install contract tests and Host Runner first-machine Cloud
   tests.
 
 ### U5. Wire Cloud-Mediated Joiner Bootstrap and Wait Handling
@@ -564,10 +564,10 @@ stateDiagram-v2
 - **Goal:** Execute joiner envelopes through the existing Machine Join
   Redemption and Machine Join Report flow.
 - **Repos and files:**
-  - `ployz-rust: crates/ployz-keeper/src/cloud_bootstrap.rs`
-  - `ployz-rust: crates/ployz-keeper/src/main.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_join.rs`
-  - `ployz-rust: crates/ployz-keeper/tests/bootstrap_cloud.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/cloud_bootstrap.rs`
+  - `ployz-rust: crates/ployz-host-runner/src/main.rs`
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap_join.rs`
+  - `ployz-rust: crates/ployz-host-runner/tests/bootstrap_cloud.rs`
 - **Approach:** Validate runtime NATS URL, trusted CA, join token, Join
   credential delivery, release selection, and callback fields before mutation.
   Reuse the existing join executor. Implement wait-for-founder as bounded
@@ -582,7 +582,7 @@ stateDiagram-v2
     worker, and a rerun replays that payload.
   - Joiner callback excludes join token and Join credential.
   - Wait-for-founder retries until ready, expired, or failed.
-- **Verification:** Run keeper join and Cloud bootstrap tests.
+- **Verification:** Run Host Runner join and Cloud bootstrap tests.
 
 ### U6. Add Cloud Session, Redemption, and Secret Handling
 
@@ -618,7 +618,7 @@ stateDiagram-v2
 
 ### U7. Add Cloud Machine-Facing JSON Routes and Decision Service
 
-- **Goal:** Expose the typed JSON API that keeper calls.
+- **Goal:** Expose the typed JSON API that Host Runner calls.
 - **Repos and files:**
   - `ployz-cloud: src/routes/api/bootstrap/sessions.ts` (new)
   - `ployz-cloud: src/routes/api/bootstrap/sessions/poll.ts` (new or
@@ -675,7 +675,7 @@ stateDiagram-v2
 
 ### U9. Add Cloud Session Approval UI and Status Projections
 
-- **Goal:** Let a signed-in Cloud user approve a keeper session and see the
+- **Goal:** Let a signed-in Cloud user approve a Host Runner session and see the
   resulting bootstrap status without exposing secrets.
 - **Repos and files:**
   - `ployz-cloud: src/models/servers/bootstrap-sessions.server.ts`
@@ -721,9 +721,9 @@ stateDiagram-v2
 
 1. Land U1 in `ployz-rust` and wire Cloud to the generated TypeScript
    contract before either side implements route behavior.
-2. Land U6 and U7 in `ployz-cloud` with fake decision outputs so keeper can
+2. Land U6 and U7 in `ployz-cloud` with fake decision outputs so Host Runner can
    integration-test against stable routes.
-3. Land U2 and U3 in `ployz-rust` to make keeper session polling real and
+3. Land U2 and U3 in `ployz-rust` to make Host Runner session polling real and
    locally safe.
 4. Land U4 and U5 in `ployz-rust` to execute founder/joiner envelopes.
 5. Land U8 in `ployz-cloud` so founder usability and join requests use direct
@@ -738,12 +738,12 @@ stateDiagram-v2
 
 - AE1. Given a user SSHes to a fresh server and runs the no-arg command, when
   they approve the browser session for an organization with no Cloud
-  Connection, then keeper forms the founder, Cloud receives a
+  Connection, then Host Runner forms the founder, Cloud receives a
   Cloud-safe callback, Cloud proves direct TLS NATS reachability, and the
   Organization Cluster has a Cloud Connection.
 - AE2. Given a user SSHes to a second fresh server and runs the same no-arg
   command, when they approve an organization whose Organization Cluster has a
-  Cloud Connection, then Cloud submits `machine.add`, keeper joins through
+  Cloud Connection, then Cloud submits `machine.add`, Host Runner joins through
   Machine Join Redemption, and Cloud watches the core operation to terminal
   state.
 - AE3. Given three users run the same generic no-token command on three fresh
@@ -755,33 +755,33 @@ stateDiagram-v2
   its direct TLS NATS endpoint, when the reachability timeout expires, then the
   founder redemption or Founder Claim is formed-but-unreachable and waiting
   redemptions are not promoted to founder.
-- AE5. Given keeper crashes after session approval but before callback, when it
+- AE5. Given Host Runner crashes after session approval but before callback, when it
   restarts on the same machine, then it resumes the same attempt id and Cloud
   returns the same redemption/envelope instead of creating another machine add.
 - AE5a. Given founder bootstrap succeeds locally but the Cloud callback times
-  out or is unavailable, when keeper handles the failure, then keeper exits
-  failed with local evidence and no background retry worker; rerunning keeper
+  out or is unavailable, when Host Runner handles the failure, then Host Runner exits
+  failed with local evidence and no background retry worker; rerunning Host Runner
   resumes the same attempt and replays the exact terminal callback payload that
   was persisted before the first post attempt.
 - AE6. Given the same callback payload is retried after a network timeout, when
   Cloud receives it again, then Cloud accepts it idempotently; a different
   terminal payload for the same redemption is rejected.
 - AE6a. Given joiner bootstrap succeeds locally but the Cloud callback times
-  out or is unavailable, when keeper handles the failure, then keeper exits
-  failed with local evidence and no background retry worker; rerunning keeper
+  out or is unavailable, when Host Runner handles the failure, then Host Runner exits
+  failed with local evidence and no background retry worker; rerunning Host Runner
   resumes the same attempt and replays the exact terminal callback payload that
   was persisted before the first post attempt.
 - AE6b. Given Cloud has already accepted the terminal callback for a persisted
-  attempt, when keeper reruns on the same machine, then keeper asks Cloud for
+  attempt, when Host Runner reruns on the same machine, then Host Runner asks Cloud for
   terminal status, exits success with current Cloud status evidence, and
   performs no local mutation.
 - AE7. Given a machine already contains Ployz NATS or join material, when
-  `ployz-keeper bootstrap` runs, then keeper refuses before contacting Cloud
+  `ployz host bootstrap` runs, then Host Runner refuses before contacting Cloud
   and does not overwrite local credentials.
-- AE8. Given a user chooses `Use local CLI setup`, when keeper handles that
+- AE8. Given a user chooses `Use local CLI setup`, when Host Runner handles that
   choice, then no Cloud session, redemption, callback token, Cloud Founder
-  Claim, local founder bootstrap, or Operator Context is created, keeper exits
-  nonzero, and the user sees `ployzctl machine init USER@HOST` guidance.
+  Claim, local founder bootstrap, or Operator Context is created, Host Runner exits
+  nonzero, and the user sees `ployz machine init USER@HOST` guidance.
 ---
 
 ## Risks and Mitigations
@@ -790,7 +790,7 @@ stateDiagram-v2
   browser approval to bind the machine to an organization and Organization
   Cluster. Show enough machine facts for the user to recognize the target, but
   do not treat hostname as identity.
-- **Duplicate redemptions on keeper retry:** Require persisted attempt id and
+- **Duplicate redemptions on Host Runner retry:** Require persisted attempt id and
   Cloud-side replay semantics before any `machine.add` side effects.
 - **Split founder authority:** Enforce a transactional founder claim and never
   auto-promote another founder after material is issued.
@@ -813,11 +813,11 @@ stateDiagram-v2
 - Cloud Bootstrap Invite, Cloud Bootstrap Token, and provider cloud-init
   migration.
 - Founder bootstrap option UI for cluster initialization.
-- Browser auto-open from keeper; a future explicit `--open` or local desktop
+- Browser auto-open from Host Runner; a future explicit `--open` or local desktop
   flow can add that behavior.
 - Tunnels, private overlay transport, or NAT traversal.
-- Automatic public-IP preflight in keeper as proof of Cloud reachability.
-- `ployzctl cloud link` and `ployzctl machine init --link-cloud`.
+- Automatic public-IP preflight in Host Runner as proof of Cloud reachability.
+- `ployz cloud link` and `ployz machine init --link-cloud`.
 - Substrate Uninstall and destructive runtime wipe.
 - Control-Plane Core recovery UX.
 - Re-adoption, repair, or takeover of already Bootstrapped Machines.
@@ -833,11 +833,11 @@ stateDiagram-v2
 | --- | --- |
 | Rust format | `cargo fmt --check` |
 | Rust SDK contract | `cargo test -p ployz-sdk-types` |
-| Keeper installer | `cargo test -p ployz-keeper --test bootstrap_script` |
-| Keeper Cloud flow | `cargo test -p ployz-keeper --test bootstrap_cloud` |
-| Keeper founder/joiner | `cargo test -p ployz-keeper --test bootstrap_first_machine --test bootstrap_join` |
+| Host Runner installer | `cargo test -p ployz-host-runner --test bootstrap_script` |
+| Host Runner Cloud flow | `cargo test -p ployz-host-runner --test bootstrap_cloud` |
+| Host Runner founder/joiner | `cargo test -p ployz-host-runner --test bootstrap_first_machine --test bootstrap_join` |
 | Core install contract | `cargo test -p ployz-core --test install_contract --test nats_config` |
-| Ployzctl boundaries | `cargo test -p ployzctl --test machine_cli_contract --test machine_remote_nats` |
+| Ployzctl boundaries | `cargo test -p ployz --test machine_cli_contract --test machine_remote_nats` |
 | Cloud typecheck/lint/test | `pnpm pr:check` |
 | Cloud bootstrap models/routes | `pnpm test -- src/models/servers/bootstrap-*.test.ts src/routes/api/bootstrap` |
 | Cross-repo smoke | Founder plus joiner copied-command run against staging Cloud and direct TLS NATS |
@@ -848,13 +848,13 @@ stateDiagram-v2
 
 - The plan keeps the planning boundary intact: it records implementation units
   and tests, but does not change runtime code.
-- The biggest correction from previous plans is explicit: Cloud and keeper use
+- The biggest correction from previous plans is explicit: Cloud and Host Runner use
   typed JSON, not shell env manifests, and `ployz.sh` never redeems tokens.
 - The security state machine is explicit enough for implementation: attempt
   replay, callback authority, founder claiming, already-bootstrapped refusal,
   Cloud NATS reachability, and secret retention are all requirements.
 - The sequencing reduces contract drift risk by landing the shared SDK contract
-  before keeper and Cloud route work.
+  before Host Runner and Cloud route work.
 - The only open technical selection is the exact narrow HTTP/NATS client
   dependency choice in implementation. The plan constrains behavior and tests
   without forcing a premature library decision.

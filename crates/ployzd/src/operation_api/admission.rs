@@ -87,7 +87,7 @@ pub struct NamespaceRemoveSubmitCommand {
 ///
 /// The per-machine secret is still minted afterwards as bounded operation
 /// work. `join_secret_delivery` is the low-privilege Join credential used by
-/// the target keeper to redeem and report this one join token.
+/// the target Host Runner to redeem and report this one join token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddBootstrapMaterial {
     pub raw_join_token: RawJoinToken,

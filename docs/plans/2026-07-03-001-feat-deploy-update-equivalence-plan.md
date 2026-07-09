@@ -212,7 +212,7 @@ flowchart TB
   - `crates/ployz-core/src/state.rs`
   - `crates/ployz-nats/src/core_state/active_route.rs`
   - `crates/ployzd/src/deploy_worker/preparation.rs`
-  - `crates/ployzctl/src/commands/deploy.rs`
+  - `crates/ployz/src/commands/deploy.rs`
   - `crates/ployz-core/tests/deploy_planner.rs`
   - `crates/ployzd/tests/deploy_command_preparation.rs`
 - **Approach:** `DeployServiceSpec.route: Option<DeployRoute>` becomes `routes: Vec<DeployRoute>` (empty = no routes). Store `ActiveRouteState` keyed per route target; route commit upserts declared targets, updates changed endpoint ports in place (endpoint reroute), and removes records for targets the manifest no longer declares. Drop the single-route `ActiveRouteMismatch` shape in favor of per-target reconciliation. CLI `--route` may repeat.

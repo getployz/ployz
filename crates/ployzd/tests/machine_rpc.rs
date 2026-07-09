@@ -224,7 +224,7 @@ async fn nats_machine_runtime_reports_substrate_versions() {
         reported.ployzd.as_ref().map(|version| version.as_str()),
         Some("0.2.0")
     );
-    assert_eq!(reported.keeper, None);
+    assert_eq!(reported.host_runner, None);
 }
 
 #[tokio::test]
@@ -432,7 +432,7 @@ async fn start_substrate_report_service(
                                     ployz_core::install::InstallArtifactVersion::try_new("0.2.0")
                                         .expect("test version is valid"),
                                 ),
-                                keeper: None,
+                                host_runner: None,
                             },
                         },
                     ))

@@ -2,7 +2,7 @@
 
 ## Context
 
-Ployz's Compose parser accepts only `name`/`image`/`deploy.replicas`/`x-route` and `deny_unknown_fields` rejects every real Compose file — the #1 blocker in `~/dev/ployz-planning/docs/uncloud-ployz-feature-gap.md` and P2 of the parity roadmap. This slice makes `ployzctl deploy -f` accept real Uncloud-shaped Compose files: full parse with exhaustive diagnostics, plus four container fields threaded end-to-end to Docker. Greenfield — no deployments exist; wire types, digests, and evidence shapes change in place with no compat shims. Long-term shapes everywhere.
+Ployz's Compose parser accepts only `name`/`image`/`deploy.replicas`/`x-route` and `deny_unknown_fields` rejects every real Compose file — the #1 blocker in `~/dev/ployz-planning/docs/uncloud-ployz-feature-gap.md` and P2 of the parity roadmap. This slice makes `ployz deploy -f` accept real Uncloud-shaped Compose files: full parse with exhaustive diagnostics, plus four container fields threaded end-to-end to Docker. Greenfield — no deployments exist; wire types, digests, and evidence shapes change in place with no compat shims. Long-term shapes everywhere.
 
 **Decided scope**: (1) parser + diagnostics for everything, with `command`/`entrypoint`/`environment`/`stop_grace_period` deployed for real; healthcheck/volumes/ports/global-mode/update-order/x-pre_deploy parsed + typed but diagnose-only. (2) `${VAR}` interpolation + `.env` + `env_file`; profiles deferred. (3) Strict by default — unsupported field = hard error listing ALL findings; `--allow-unsupported` downgrades to warnings and deploys the supported subset. No silent ignores (Uncloud silently ignores `profiles`/`restart`/`deploy.placement`; we classify everything).
 
@@ -35,7 +35,7 @@ pub struct ContainerRuntimeSpec {
 // DeployServiceSpec + DeployServiceRequest gain `runtime: ContainerRuntimeSpec` (required, no serde default)
 ```
 
-## New parser module (ployzctl/src/compose/ replaces compose.rs)
+## New parser module (ployz/src/compose/ replaces compose.rs)
 
 ```
 mod.rs         load → merge-keys → interpolate → parse → classify → decide
@@ -60,7 +60,7 @@ New dependency: `shell-words` (shell-form command splitting). Everything else st
 
 ## Phases (each leaves the tree green)
 
-1. **Core types + digest v3/v2** (ployz-core): types above; `runtime` on both spec/request; digest rewrite with framing + constant bumps; update every `DeployServiceSpec {` construction site (ployzctl, ployzd tests, ployz-e2e, sdk-types typescript.rs:459) via `image_defaults()`; regenerate TS + contract test. Tests: per-field digest change, env-order stability, framing collision (env value containing `\nimage=`).
+1. **Core types + digest v3/v2** (ployz-core): types above; `runtime` on both spec/request; digest rewrite with framing + constant bumps; update every `DeployServiceSpec {` construction site (ployz, ployzd tests, ployz-e2e, sdk-types typescript.rs:459) via `image_defaults()`; regenerate TS + contract test. Tests: per-field digest change, env-order stability, framing collision (env value containing `\nimage=`).
 2. **Runtime threading** (ployzd): `runtime` on `MachineContainerRunRpcRequest` (roles/machine/protocol.rs), `CreateManagedContainer` (roles/machine/runner.rs), containers.rs handler, operations/deploy/mod.rs:757 pass-through; `create_body` (adapters/docker/runner.rs:502) sets env (K=V vec), cmd, entrypoint (Clear→`vec![]`), `stop_timeout: Some(grace as i64)`. Extend create_body unit tests (~619) + machine RPC test builders.
 3. **Preprocessing** (compose/interpolate.rs, env_files.rs): pure modules, full grammar unit tests, not yet wired.
 4. **Parser rewrite + taxonomy**: model/diagnostics/translate/mod as sketched; `--allow-unsupported` flag on DeployCli (rejected without `-f`); `PloyzctlCliError::ComposeRejected { rendered }`; warnings to stderr before submit; update deploy_cli_contract.rs.
@@ -70,8 +70,8 @@ New dependency: `shell-words` (shell-form command splitting). Everything else st
 ## Critical files
 
 - `crates/ployz-core/src/deploy.rs` — types + digests
-- `crates/ployzctl/src/compose.rs` → `crates/ployzctl/src/compose/` module tree
-- `crates/ployzctl/src/commands/deploy.rs` — flag, ComposeInput wiring, route shorthand reuse (parse_route_shorthand:244)
+- `crates/ployz/src/compose.rs` → `crates/ployz/src/compose/` module tree
+- `crates/ployz/src/commands/deploy.rs` — flag, ComposeInput wiring, route shorthand reuse (parse_route_shorthand:244)
 - `crates/ployzd/src/roles/machine/{protocol,runner,containers}.rs` — RPC hop
 - `crates/ployzd/src/operations/deploy/mod.rs` — step pass-through
 - `crates/ployzd/src/adapters/docker/runner.rs` — create_body
@@ -81,7 +81,7 @@ New dependency: `shell-words` (shell-form command splitting). Everything else st
 
 - Per phase: `cargo test -p <crate>`, clippy. Final: `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, TS generated-contract test, fixture suite.
 - End-to-end: dind e2e (`PLOYZ_DIND_E2E=1 scripts/dind-e2e.sh`) with the env+command deploy assertion.
-- Manual smoke: `ployzctl deploy -f` with kitchen-sink fixture in strict mode (see all findings rendered) and with `--allow-unsupported` (warns + deploys subset).
+- Manual smoke: `ployz deploy -f` with kitchen-sink fixture in strict mode (see all findings rendered) and with `--allow-unsupported` (warns + deploys subset).
 
 ## Risks
 

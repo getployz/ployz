@@ -9,7 +9,7 @@ set -euo pipefail
 #    so the image is rebuilt rarely.
 # 2. Builds the eBPF bytecode (bpfel target, host-arch-independent) inside a
 #    derived builder image with nightly + bpf-linker baked, and copies it next
-#    to the binaries so the keeper install spec can reference it.
+#    to the binaries so the Host Runner install spec can reference it.
 # 3. Saves the workload image tarball for the host arch into the build
 #    context so inner Docker daemons never pull from a registry.
 # 4. Builds the machine image: systemd PID 1 + inner dockerd + nats-server.
@@ -131,8 +131,7 @@ cat <<EOF
 DinD machine image built: ${MACHINE_IMAGE}
 Host-arch linux artifacts (volume-mount these at test time):
   ployzd:         ${TARGET_DIR}/release/ployzd
-  ployzctl:       ${TARGET_DIR}/release/ployzctl
-  ployz-keeper:   ${TARGET_DIR}/release/ployz-keeper
+  ployz:          ${TARGET_DIR}/release/ployz
   lease worker:   ${TARGET_DIR}/release/ployz-lease-worker
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc

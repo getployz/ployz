@@ -113,7 +113,7 @@ async fn machine_role_service_reports_unknown_substrate_without_evidence() {
     };
     assert_eq!(ok.machine_id, machine_id("machine_a"));
     assert_eq!(ok.reported.ployzd, None);
-    assert_eq!(ok.reported.keeper, None);
+    assert_eq!(ok.reported.host_runner, None);
 }
 
 #[tokio::test]

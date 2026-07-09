@@ -5,7 +5,7 @@
 A cold architecture review found that the operation API's unavailability
 taxonomy is write-only: ~17 `*UnavailableSource` / `*Failure` enums are
 exported through `ployz-sdk-types` and `generated.ts`, and no client —
-ployzctl, the TS SDK, or Cloud — matches a single variant. The enums are
+ployz, the TS SDK, or Cloud — matches a single variant. The enums are
 `Copy` and carry no evidence, so they are also useless for debugging:
 `open_bucket` does not say which bucket, `timeout` does not say against
 what. Every internal storage change currently ripples through four layers
@@ -90,14 +90,14 @@ gain `message`). Update `packages/ployz-sdk/src/index.ts` /
 `primitives.ts` helpers only if they name a deleted type. SDK typecheck
 is the gate.
 
-### 6. ployzctl
+### 6. ployz
 
 No variant matching exists; update any `Debug`-formatted error output to
 print the `message` field so the evidence chain reaches the terminal.
 
 ## Not in scope
 
-- Keeper/bootstrap domain failure enums and typed operation failure
+- Host Runner/bootstrap domain failure enums and typed operation failure
   details on durable records — they are the Operation Rules' audience.
 - Retry semantics or a retryable flag: nothing branches today; adding one
   is a deliberate future decision.
@@ -108,7 +108,7 @@ print the `message` field so the evidence chain reaches the terminal.
 
 1. Grep gate: `UnavailableSource` and the deleted enum names appear
    nowhere in the workspace or `generated.ts`.
-2. `cargo test --workspace --exclude ployz-e2e --exclude ployz-keeper` —
+2. `cargo test --workspace --exclude ployz-e2e --exclude ployz host` —
    endpoint envelope tests updated to the new `Unavailable { message }`
    wire shape, with at least one pin asserting a rendered message
    preserves the inner chain (bucket/key + source text).

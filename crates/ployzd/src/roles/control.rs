@@ -138,7 +138,7 @@ pub async fn start_control_process_with_client_and_reload(
         )
     };
     // The grant store is the source of truth; the conf is its projection. On a
-    // fresh core, import the keeper-written conf into the store once — before the
+    // fresh core, import the Host Runner-written conf into the store once — before the
     // first render, or rendering the empty store would wipe the conf.
     let nats_authorizations = NatsAuthorizationStore::new(core_store.clone());
     nats_authorizations

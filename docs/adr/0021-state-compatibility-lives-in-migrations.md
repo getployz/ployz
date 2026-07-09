@@ -10,7 +10,7 @@ operation evidence, and fail with typed errors. Until that exists, an alpha
 release with an incompatible persisted state change requires an explicit
 reset/re-bootstrap or an operator-run one-off migration.
 
-Keeper compatibility checks are a release and development safety signal, not a
+Host Runner compatibility checks are a release and development safety signal, not a
 normal user recovery path. A blocked check means the target release needs an
 explicit migration, reset path, or schema change before it should be pushed to
 clusters.

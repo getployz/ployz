@@ -133,7 +133,7 @@ fn first_machine_install_spec_parses_explicit_dns_opt_out() {
 }
 
 #[test]
-fn keeper_install_contract_validates_artifact_inputs() {
+fn host_runner_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinClusterName::try_new("").is_err());
     assert!(MachineJoinClusterName::try_new("prod\nother").is_err());
     assert!(MachineJoinClusterName::try_new("prod=west").is_err());
