@@ -1,9 +1,10 @@
 use futures_util::StreamExt;
+use ployz_core::deploy::VolumeName;
 use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
     ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-    PendingMachineJoinRecoverySnapshot, RouteBindingState,
+    PendingMachineJoinRecoverySnapshot, RouteBindingState, VolumePinState,
 };
 use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_test_support::fixtures::{machine_join_bundle, serving_target_entry};
@@ -226,6 +227,14 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         })
         .await
         .expect("route binding stores");
+    namespace_intent
+        .replace_volume_pin(VolumePinState {
+            namespace_id: ployz_test_support::ids::namespace_id("default"),
+            volume_name: volume_name("postgres_data"),
+            machine_id: machine_id("machine_a"),
+        })
+        .await
+        .expect("volume pin stores");
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
@@ -247,6 +256,38 @@ async fn intent_reader_gets_namespace_intent_from_file() {
 
     assert_eq!(intent.route_bindings.len(), 1);
     assert_eq!(intent.serving_target_entries.len(), 1);
+    assert_eq!(
+        intent.volume_pins,
+        vec![VolumePinState {
+            namespace_id: ployz_test_support::ids::namespace_id("default"),
+            volume_name: volume_name("postgres_data"),
+            machine_id: machine_id("machine_a"),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn namespace_intent_store_persists_volume_pins() {
+    let namespace_intent = temp_namespace_intent().await;
+    let state = VolumePinState {
+        namespace_id: ployz_test_support::ids::namespace_id("default"),
+        volume_name: volume_name("postgres_data"),
+        machine_id: machine_id("machine_a"),
+    };
+
+    namespace_intent
+        .replace_volume_pin(state.clone())
+        .await
+        .expect("volume pin stores");
+
+    assert_eq!(
+        namespace_intent
+            .load()
+            .await
+            .expect("namespace intent loads")
+            .volume_pins,
+        vec![state]
+    );
 }
 
 async fn temp_namespace_intent() -> NamespaceIntentStore {
@@ -270,4 +311,8 @@ fn route_target(hostname: &str, port: u16) -> ployz_core::ops::RouteTarget {
         ployz_core::ops::RouteHostname::try_new(hostname).expect("valid route hostname"),
         ployz_core::ops::RoutePort::try_new(port).expect("valid route port"),
     )
+}
+
+fn volume_name(value: &str) -> VolumeName {
+    VolumeName::try_new(value).expect("valid volume name")
 }

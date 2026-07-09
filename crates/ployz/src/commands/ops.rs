@@ -715,7 +715,8 @@ fn deploy_failure_service_id(failure: &DeployOperationFailure) -> Option<&Servic
         | DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
         DeployOperationFailure::ControlPlaneCommitFailed { scope, .. } => match scope {
             ControlPlaneCommitScope::ServiceEntry { service_id, .. } => Some(service_id),
-            ControlPlaneCommitScope::Namespace { .. } => None,
+            ControlPlaneCommitScope::Namespace { .. }
+            | ControlPlaneCommitScope::VolumePin { .. } => None,
         },
         DeployOperationFailure::NoUsableMachines { .. }
         | DeployOperationFailure::DataplaneUnavailable { .. }

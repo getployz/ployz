@@ -20,6 +20,7 @@ export {
   certBundleRef,
   certValidAt,
   containerId,
+  containerMountPath,
   eventSequence,
   failureMessage,
   imageReference,
@@ -40,6 +41,7 @@ export {
   routeHostname,
   routePort,
   serviceId,
+  volumeName,
 } from "./primitives.ts";
 
 import {
@@ -327,6 +329,7 @@ export function imageDefaultRuntime(): ContainerRuntimeSpec {
     entrypoint: null,
     environment: {},
     stop_grace_period: stopGracePeriod(10),
+    volume_mounts: [],
   };
 }
 

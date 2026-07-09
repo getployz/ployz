@@ -25,6 +25,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![
@@ -67,6 +68,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![
@@ -134,6 +136,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             serving_target_entry("svc_api", "entry_api"),
             serving_target_entry("svc_worker", "entry_worker"),
         ],
+        namespace_volume_pins: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: vec![omitted_container.clone()],
@@ -163,6 +166,7 @@ async fn empty_manifest_prepares_no_services() {
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
         observed_machines: Vec::new(),

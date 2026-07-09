@@ -8,7 +8,7 @@ use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
     RouteHostname, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::operations::deploy::{
     DataplanePreparer, DeployCleanupResult, DeployExecutionCommand, DeployExecutionError,
@@ -178,6 +178,47 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = volume_backed_deploy_command(1);
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds");
+
+    assert_eq!(
+        namespace_state.volume_pin_requests,
+        vec![VolumePinState {
+            namespace_id: namespace_id("default"),
+            volume_name: volume_name("postgres_data"),
+            machine_id: machine_id("machine_a"),
+        }]
+    );
+    let [(request_machine_id, request)] = runtime.requests.as_slice() else {
+        panic!("expected one runtime request");
+    };
+    assert_eq!(*request_machine_id, machine_id("machine_a"));
+    let [mount] = request.runtime.volume_mounts.as_slice() else {
+        panic!("expected one runtime volume mount");
+    };
+    assert_eq!(mount.volume_name, volume_name("postgres_data"));
+    assert_eq!(mount.target.as_str(), "/var/lib/postgresql/data");
 }
 
 #[tokio::test]

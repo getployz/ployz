@@ -4,7 +4,7 @@ use ployz_core::dataplane::{
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use std::future::Future;
 
 use crate::roles::machine::protocol::{
@@ -101,6 +101,11 @@ pub trait NamespaceStateCommitter {
         &mut self,
         entry: ServingTargetEntry,
     ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
+
+    fn replace_volume_pin(
+        &mut self,
+        state: VolumePinState,
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 }
 
 /// One error for every namespace-state commit; variants carry the subject
@@ -120,6 +125,10 @@ pub enum NamespaceCommitError {
     },
     ServingTargetLockLost {
         scope: ControlPlaneCommitScope,
+    },
+    VolumePinStore {
+        state: VolumePinState,
+        message: String,
     },
 }
 

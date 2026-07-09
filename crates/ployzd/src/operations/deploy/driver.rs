@@ -228,6 +228,21 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
         self.publish_intent_changed().await;
         Ok(())
     }
+
+    async fn replace_volume_pin(
+        &mut self,
+        state: ployz_core::state::VolumePinState,
+    ) -> Result<(), NamespaceCommitError> {
+        self.namespace_intent
+            .replace_volume_pin(state.clone())
+            .await
+            .map_err(|error| NamespaceCommitError::VolumePinStore {
+                state,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
