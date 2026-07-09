@@ -133,6 +133,7 @@ Host-arch linux artifacts (volume-mount these at test time):
   ployzd:         ${TARGET_DIR}/release/ployzd
   ployzctl:       ${TARGET_DIR}/release/ployzctl
   ployz-keeper:   ${TARGET_DIR}/release/ployz-keeper
+  lease worker:   ${TARGET_DIR}/release/ployz-lease-worker
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
 EOF

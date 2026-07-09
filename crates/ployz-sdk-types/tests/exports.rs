@@ -11,24 +11,26 @@ use ployz_sdk_types::{
     DeployOperationState, DeployRequest, DeployRunningStage, DeployServiceSpec, DeploySubmitError,
     DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference,
     ImageReferenceError, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
-    InitFirstMachineActivated, InstallContractError, InstallRolePolicy, LogsTailError,
-    LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted,
-    MachineAddError, MachineAddRequest, MachineAddResponse, MachineBootstrapUrl,
-    MachineInspectError, MachineInspectRequest, MachineJoinBundle, MachineJoinMaterial,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
-    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineListError, MachineListRequest,
-    MachineListResult, MachineName, MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
-    MachineUpdateResponse, NamespaceId, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError,
-    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceSnapshot, SubjectTokenError,
+    InitFirstMachineActivated, InstallContractError, InstallRolePolicy, LeaseBearerToken,
+    LeaseExpiresAt, LeaseIssuedAt, LogsTailError, LogsTailRequest, LogsTailResult,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineAddResponse, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
+    MachineJoinBundle, MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
+    MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
+    ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, NamespaceId,
+    NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
@@ -135,6 +137,32 @@ fn sdk_exports_cert_wire_types() {
         r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem","validity":{"not_before":"1700000000","not_after":"1707776000"}}}"#
     );
     assert_eq!(challenge.ttl_seconds().get(), 60);
+
+    let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
+    let lease_record = ManagedLeaseRecord::try_new(
+        lease,
+        LeaseBearerToken::try_new("lease_token_123").expect("valid token"),
+        LeaseIssuedAt::try_new(1_700_000_000).expect("valid issued timestamp"),
+        LeaseExpiresAt::try_new(1_700_604_800).expect("valid expiry timestamp"),
+    )
+    .expect("valid lease record");
+    let managed = ManagedLeaseAcquired {
+        lease: lease_record.clone(),
+        bundle: ManagedCertBundle::try_new(
+            lease_record.name.clone(),
+            lease_record.name.wildcard_and_apex(),
+            "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
+            "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
+            lease_record.issued_at,
+            lease_record.expires_at,
+        )
+        .expect("valid bundle"),
+    };
+    assert!(
+        serde_json::to_string(&managed)
+            .expect("managed lease serializes")
+            .contains("*.brisk-river-x7f3.up.ployz.app")
+    );
 }
 
 #[test]
