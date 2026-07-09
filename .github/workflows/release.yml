@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -42,6 +43,7 @@ jobs:
             exit 1
           fi
           pnpm install --frozen-lockfile
+          pnpm check:generated
           pnpm typecheck
           pnpm test
           npm publish --dry-run --access public --tag alpha
@@ -201,6 +203,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -212,6 +215,7 @@ jobs:
       - name: Verify SDK
         working-directory: packages/ployz-sdk
         run: |
+          pnpm check:generated
           pnpm typecheck
           pnpm test
       - name: Publish SDK to npm
