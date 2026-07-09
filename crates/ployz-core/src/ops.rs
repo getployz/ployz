@@ -33,9 +33,9 @@ pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertT
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployOperationState,
-    DeployRunningStage, DeployTransition, HealthCheckFailure, RetainedArtifact,
-    RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
+    DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployOperationFailure,
+    DeployOperationState, DeployRunningStage, DeployTransition, HealthCheckFailure,
+    RetainedArtifact, RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
     validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};

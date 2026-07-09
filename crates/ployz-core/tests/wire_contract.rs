@@ -5,12 +5,14 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ops::{
-    DeployOperationFailure, DeployOperationState, DeployRunningStage, EventSequence,
-    HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationKind, OperationStatus, OperatorHint,
-    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+    ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
+    DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationKind, OperationStatus, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteTarget,
 };
+use ployz_core::state::MachineUsabilityReason;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
@@ -186,6 +188,195 @@ fn dataplane_timeout_failures_keep_machine_scope() {
         serde_json::to_string(&failure).expect("failure serializes"),
         r#"{"kind":"dataplane_prepare_timed_out","machines":["machine_7","machine_8"],"timeout_seconds":30,"retained_artifacts":[]}"#
     );
+}
+
+#[test]
+fn container_start_failures_keep_container_scope() {
+    let failure = DeployOperationFailure::ContainerStartFailed {
+        machine_id: machine_id("machine_7"),
+        container_id: container_id("ctr_123"),
+        message: failure_message("container start failed"),
+        retained_artifacts: vec![RetainedArtifact::CreatedContainer {
+            machine_id: machine_id("machine_7"),
+            container_id: container_id("ctr_123"),
+            inspect_hint: operator_hint("ployzctl container inspect ctr_123"),
+        }],
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"container_start_failed","machine_id":"machine_7","container_id":"ctr_123","message":"container start failed","retained_artifacts":[{"type":"created_container","machine_id":"machine_7","container_id":"ctr_123","inspect_hint":"ployzctl container inspect ctr_123"}]}"#
+    );
+}
+
+#[test]
+fn deploy_failures_map_to_closed_failure_classes() {
+    let cases = [
+        (
+            DeployOperationFailure::NoUsableMachines {
+                reasons: vec![ployz_core::ops::UnusableMachine {
+                    machine_id: machine_id("machine_7"),
+                    reason: MachineUsabilityReason::Draining,
+                }],
+            },
+            DeployFailureClass::PreconditionRejected,
+        ),
+        (
+            DeployOperationFailure::NoUsableMachines {
+                reasons: vec![ployz_core::ops::UnusableMachine {
+                    machine_id: machine_id("machine_7"),
+                    reason: MachineUsabilityReason::FactsUnavailable,
+                }],
+            },
+            DeployFailureClass::MachineNoAnswer,
+        ),
+        (
+            DeployOperationFailure::PlanningFailed {
+                service_id: service_id("svc_api"),
+                namespace_revision_id: ployz_test_support::ids::namespace_revision_id("rev_1"),
+                message: failure_message("invalid deploy input"),
+            },
+            DeployFailureClass::PreconditionRejected,
+        ),
+        (
+            DeployOperationFailure::ArtifactUnavailable {
+                service_id: service_id("svc_api"),
+                namespace_revision_entry_id: ployz_test_support::ids::namespace_revision_entry_id(
+                    "entry_1",
+                ),
+                reason: ArtifactUnavailableReason::BundleMissing,
+            },
+            DeployFailureClass::ImageResolvePullFailed,
+        ),
+        (
+            DeployOperationFailure::DataplaneUnavailable {
+                machine_id: machine_id("machine_7"),
+                provider_failure: DataplaneProviderFailure::PloyzNativeMesh {
+                    component: PloyzNativeMeshComponent::EbpfForwarding,
+                },
+                message: failure_message("dataplane unavailable"),
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::DataplanePrepareFailed,
+        ),
+        (
+            DeployOperationFailure::DataplanePrepareTimedOut {
+                machines: vec![machine_id("machine_7")],
+                timeout_seconds: 30,
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::Timeout,
+        ),
+        (
+            DeployOperationFailure::DataplanePrepareInvalidReport {
+                message: failure_message("invalid dataplane report"),
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::DataplanePrepareFailed,
+        ),
+        (
+            DeployOperationFailure::RuntimeUnavailable {
+                machine_id: machine_id("machine_7"),
+                message: failure_message("runtime unavailable"),
+                retained_artifacts: vec![RetainedArtifact::CreatedContainer {
+                    machine_id: machine_id("machine_8"),
+                    container_id: container_id("ctr_unrelated"),
+                    inspect_hint: operator_hint("ployzctl container inspect ctr_unrelated"),
+                }],
+            },
+            DeployFailureClass::RuntimeUnavailable,
+        ),
+        (
+            DeployOperationFailure::ContainerStartFailed {
+                machine_id: machine_id("machine_7"),
+                container_id: container_id("ctr_123"),
+                message: failure_message("container start failed"),
+                retained_artifacts: vec![RetainedArtifact::CreatedContainer {
+                    machine_id: machine_id("machine_7"),
+                    container_id: container_id("ctr_123"),
+                    inspect_hint: operator_hint("ployzctl container inspect ctr_123"),
+                }],
+            },
+            DeployFailureClass::ContainerStartFailed,
+        ),
+        (
+            DeployOperationFailure::HealthCheckFailed {
+                health_check: HealthCheckFailure::ProbeFailed {
+                    machine_id: machine_id("machine_7"),
+                    container_id: container_id("ctr_123"),
+                    message: failure_message("probe failed"),
+                    log_hint: operator_hint("ployzctl logs ctr_123"),
+                },
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::HealthGateFailed,
+        ),
+        (
+            DeployOperationFailure::HealthCheckFailed {
+                health_check: HealthCheckFailure::TimedOut {
+                    timeout_seconds: 30,
+                },
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::Timeout,
+        ),
+        (
+            DeployOperationFailure::ControlPlaneCommitFailed {
+                scope: ControlPlaneCommitScope::ServiceEntry {
+                    service_id: service_id("svc_api"),
+                    namespace_revision_entry_id:
+                        ployz_test_support::ids::namespace_revision_entry_id("entry_1"),
+                },
+                message: failure_message("commit failed"),
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::ControlPlaneCommitFailed,
+        ),
+        (
+            DeployOperationFailure::RouteCutoverFailed {
+                route: route_target("api.example.com", 443),
+                reason: RouteCutoverFailureReason::GatewayUnavailable {
+                    machine_id: machine_id("machine_7"),
+                },
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::MachineNoAnswer,
+        ),
+        (
+            DeployOperationFailure::RouteCutoverFailed {
+                route: route_target("api.example.com", 443),
+                reason: RouteCutoverFailureReason::RouteRejected {
+                    message: failure_message("route rejected"),
+                },
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::RouteCutoverFailed,
+        ),
+        (
+            DeployOperationFailure::RouteCutoverFailed {
+                route: route_target("api.example.com", 443),
+                reason: RouteCutoverFailureReason::StateStoreFailed {
+                    message: failure_message("state store failed"),
+                },
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::RouteCutoverFailed,
+        ),
+        (
+            DeployOperationFailure::RouteCutoverFailed {
+                route: route_target("api.example.com", 443),
+                reason: RouteCutoverFailureReason::TimedOut {
+                    timeout_seconds: 30,
+                },
+                retained_artifacts: Vec::new(),
+            },
+            DeployFailureClass::Timeout,
+        ),
+    ];
+
+    for (failure, expected) in cases {
+        assert_eq!(failure.failure_class(), expected);
+    }
 }
 
 #[test]

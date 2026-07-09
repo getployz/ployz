@@ -668,14 +668,16 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
         DeployExecutionError::Failed {
             source,
             failure:
-                DeployOperationFailure::RuntimeUnavailable {
+                DeployOperationFailure::ContainerStartFailed {
                     machine_id: failure_machine_id,
+                    container_id: failure_container_id,
                     message,
                     retained_artifacts,
                 },
             ..
         } if matches!(*source, DeployExecutionError::RunContainer(MachineContainerRuntimeError::CreatedContainerStartFailed { .. }))
             && failure_machine_id == machine_id("machine_a")
+            && failure_container_id == container_id("ctr_created")
             && message == failure_message("container start failed: exec format error")
             && retained_artifacts == vec![retained_created_container("machine_a", "ctr_created")]
     ));

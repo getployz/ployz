@@ -11,6 +11,7 @@ use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
+use crate::state::MachineUsabilityReason;
 
 use super::events::OperationEvent;
 use super::projection::{
@@ -96,6 +97,40 @@ pub enum ControlPlaneCommitScope {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployFailureClass {
+    PreconditionRejected,
+    ImageResolvePullFailed,
+    PreStartHookFailed,
+    ContainerStartFailed,
+    HealthGateFailed,
+    MachineNoAnswer,
+    Timeout,
+    DataplanePrepareFailed,
+    RuntimeUnavailable,
+    ControlPlaneCommitFailed,
+    RouteCutoverFailed,
+}
+
+impl DeployFailureClass {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreconditionRejected => "precondition-rejected",
+            Self::ImageResolvePullFailed => "image-resolve-pull-failed",
+            Self::PreStartHookFailed => "pre-start-hook-failed",
+            Self::ContainerStartFailed => "container-start-failed",
+            Self::HealthGateFailed => "health-gate-failed",
+            Self::MachineNoAnswer => "machine-no-answer",
+            Self::Timeout => "timeout",
+            Self::DataplanePrepareFailed => "dataplane-prepare-failed",
+            Self::RuntimeUnavailable => "runtime-unavailable",
+            Self::ControlPlaneCommitFailed => "control-plane-commit-failed",
+            Self::RouteCutoverFailed => "route-cutover-failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -134,6 +169,12 @@ pub enum DeployOperationFailure {
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
+    ContainerStartFailed {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
     HealthCheckFailed {
         health_check: HealthCheckFailure,
         retained_artifacts: Vec<RetainedArtifact>,
@@ -151,56 +192,77 @@ pub enum DeployOperationFailure {
 }
 
 impl DeployOperationFailure {
+    #[must_use]
+    pub fn failure_class(&self) -> DeployFailureClass {
+        match self {
+            Self::NoUsableMachines { reasons } => {
+                if reasons
+                    .iter()
+                    .any(|reason| matches!(reason.reason, MachineUsabilityReason::FactsUnavailable))
+                {
+                    DeployFailureClass::MachineNoAnswer
+                } else {
+                    DeployFailureClass::PreconditionRejected
+                }
+            }
+            Self::PlanningFailed { .. } => DeployFailureClass::PreconditionRejected,
+            Self::ArtifactUnavailable { .. } => DeployFailureClass::ImageResolvePullFailed,
+            Self::DataplaneUnavailable { .. } | Self::DataplanePrepareInvalidReport { .. } => {
+                DeployFailureClass::DataplanePrepareFailed
+            }
+            Self::DataplanePrepareTimedOut { .. } => DeployFailureClass::Timeout,
+            Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
+            Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
+            Self::HealthCheckFailed { health_check, .. } => match health_check {
+                HealthCheckFailure::ProbeFailed { .. } => DeployFailureClass::HealthGateFailed,
+                HealthCheckFailure::TimedOut { .. } => DeployFailureClass::Timeout,
+            },
+            Self::ControlPlaneCommitFailed { .. } => DeployFailureClass::ControlPlaneCommitFailed,
+            Self::RouteCutoverFailed { reason, .. } => match reason {
+                RouteCutoverFailureReason::GatewayUnavailable { .. } => {
+                    DeployFailureClass::MachineNoAnswer
+                }
+                RouteCutoverFailureReason::RouteRejected { .. }
+                | RouteCutoverFailureReason::StateStoreFailed { .. } => {
+                    DeployFailureClass::RouteCutoverFailed
+                }
+                RouteCutoverFailureReason::TimedOut { .. } => DeployFailureClass::Timeout,
+            },
+        }
+    }
+
     /// The artifacts this failure retained for inspection; empty for failure
     /// classes that reject before any container work starts.
     #[must_use]
     pub fn retained_artifacts(&self) -> &[RetainedArtifact] {
         match self {
-            DeployOperationFailure::NoUsableMachines { reasons: _ }
-            | DeployOperationFailure::PlanningFailed {
-                service_id: _,
-                namespace_revision_id: _,
-                message: _,
+            Self::DataplaneUnavailable {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::ArtifactUnavailable {
-                service_id: _,
-                namespace_revision_entry_id: _,
-                reason: _,
-            } => &[],
-            DeployOperationFailure::DataplaneUnavailable {
-                machine_id: _,
-                provider_failure: _,
-                message: _,
-                retained_artifacts,
+            | Self::DataplanePrepareTimedOut {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::DataplanePrepareTimedOut {
-                machines: _,
-                timeout_seconds: _,
-                retained_artifacts,
+            | Self::DataplanePrepareInvalidReport {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::DataplanePrepareInvalidReport {
-                message: _,
-                retained_artifacts,
+            | Self::RuntimeUnavailable {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::RuntimeUnavailable {
-                machine_id: _,
-                message: _,
-                retained_artifacts,
+            | Self::ContainerStartFailed {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::HealthCheckFailed {
-                health_check: _,
-                retained_artifacts,
+            | Self::HealthCheckFailed {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: _,
-                message: _,
-                retained_artifacts,
+            | Self::ControlPlaneCommitFailed {
+                retained_artifacts, ..
             }
-            | DeployOperationFailure::RouteCutoverFailed {
-                route: _,
-                reason: _,
-                retained_artifacts,
-            } => retained_artifacts.as_slice(),
+            | Self::RouteCutoverFailed {
+                retained_artifacts, ..
+            } => retained_artifacts,
+            Self::NoUsableMachines { .. }
+            | Self::PlanningFailed { .. }
+            | Self::ArtifactUnavailable { .. } => &[],
         }
     }
 }

@@ -489,23 +489,31 @@ impl MachineContainerRuntimeError {
                     retained_artifacts.push(retained_artifact);
                 }
 
-                DeployOperationFailure::RuntimeUnavailable {
+                DeployOperationFailure::ContainerStartFailed {
                     machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
                     message: message.clone(),
                     retained_artifacts,
                 }
             }
             Self::ExistingContainerStartFailed {
                 machine_id,
+                container_id,
                 message,
                 ..
             }
             | Self::OperationStepContainerNotStartable {
                 machine_id,
+                container_id,
                 message,
                 ..
-            }
-            | Self::RemoveContainerFailed {
+            } => DeployOperationFailure::ContainerStartFailed {
+                machine_id: machine_id.clone(),
+                container_id: container_id.clone(),
+                message: message.clone(),
+                retained_artifacts,
+            },
+            Self::RemoveContainerFailed {
                 machine_id,
                 message,
                 ..
@@ -640,6 +648,9 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
             retained_artifacts, ..
         }
         | DeployOperationFailure::RuntimeUnavailable {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::ContainerStartFailed {
             retained_artifacts, ..
         }
         | DeployOperationFailure::HealthCheckFailed {
