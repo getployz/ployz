@@ -52,7 +52,10 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
     assert!(service.existing_replicas().is_empty());
     assert_eq!(
         service.cleanup_candidates(),
-        [cleanup_container("machine_a", "ctr_old", "entry_old")]
+        [
+            cleanup_container("machine_a", "ctr_old", "entry_old"),
+            cleanup_container("machine_a", "ctr_stopped", "entry_target"),
+        ]
     );
 }
 

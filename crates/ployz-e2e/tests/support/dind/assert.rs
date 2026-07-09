@@ -507,6 +507,12 @@ pub struct ManagedWorkloadContainer {
     pub cmd: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+enum DockerPsScope {
+    Running,
+    All,
+}
+
 /// Lists the running managed workload containers inside one machine's inner
 /// Docker daemon (the product's `plz.managed` label schema), with their
 /// exact label maps from `docker inspect`.
@@ -514,13 +520,31 @@ pub async fn managed_workload_containers(
     core: &CoreContext,
     machine: &DindMachine,
 ) -> Vec<ManagedWorkloadContainer> {
+    managed_workload_containers_with_scope(core, machine, DockerPsScope::Running).await
+}
+
+/// Lists all managed workload containers inside one machine's inner Docker
+/// daemon, including stopped containers retained as deploy evidence.
+pub async fn all_managed_workload_containers(
+    core: &CoreContext,
+    machine: &DindMachine,
+) -> Vec<ManagedWorkloadContainer> {
+    managed_workload_containers_with_scope(core, machine, DockerPsScope::All).await
+}
+
+async fn managed_workload_containers_with_scope(
+    core: &CoreContext,
+    machine: &DindMachine,
+    scope: DockerPsScope,
+) -> Vec<ManagedWorkloadContainer> {
     let filter = format!("label={MANAGED_LABEL}=true");
-    let listed = core
-        .exec_on(
-            machine,
-            &["docker", "ps", "--no-trunc", "--quiet", "--filter", &filter],
-        )
-        .await;
+    let mut ps_command = vec!["docker", "ps", "--no-trunc", "--quiet"];
+    match scope {
+        DockerPsScope::Running => {}
+        DockerPsScope::All => ps_command.push("--all"),
+    }
+    ps_command.extend(["--filter", &filter]);
+    let listed = core.exec_on(machine, &ps_command).await;
     assert!(
         listed.success(),
         "inner docker ps on {} failed: {listed:?}",

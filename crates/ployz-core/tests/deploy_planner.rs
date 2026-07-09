@@ -342,6 +342,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
         vec![
             cleanup_container_with_entry("machine_b", "ctr_target", "entry_1"),
             cleanup_container_with_entry("machine_b", "ctr_old", "entry_old"),
+            cleanup_container_with_entry("machine_b", "ctr_exited", "entry_1"),
         ]
     );
 }

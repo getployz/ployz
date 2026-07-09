@@ -107,7 +107,7 @@ pub fn namespace_cleanup_candidates(
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
-            container.is_running_service() && container.identity.namespace_id == *namespace_id
+            container.is_service() && container.identity.namespace_id == *namespace_id
         })
         .map(|container| DeployCleanupContainer {
             machine_id: container.machine_id.clone(),
