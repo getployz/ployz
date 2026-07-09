@@ -44,6 +44,7 @@ pub mod core_store;
 pub mod dispatch;
 pub mod fact_cache;
 pub mod intent;
+pub mod lease;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;

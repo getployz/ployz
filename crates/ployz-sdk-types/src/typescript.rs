@@ -49,7 +49,8 @@ use crate::{
     MachineUpdateFailure, MachineUpdateOperationState, MachineUpdateRequest, MachineUpdateResponse,
     MachineUsabilityReason, ManagedCertBundle, ManagedContainerHealthStatus,
     ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName,
+    ManagedLeaseOperationFailure, ManagedLeaseOperationState, ManagedLeaseRecord,
     ManagedLeaseRenewed, MemoryBytes, NamespaceId, NamespaceRemoveError, NamespaceRemoveFailure,
     NamespaceRemoveOperationState, NamespaceRemoveRequest, NamespaceRemoveRunningStage,
     NamespaceRevisionEntryId, NamespaceRevisionId, NanoCpus, NatsAuthorizedUser, NatsPrincipal,
@@ -59,7 +60,7 @@ use crate::{
     OperationStatus, OperationStatusSnapshot, OperationSubject, OperatorHint, OpsListError,
     OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse,
     OpsWatchError, OpsWatchResponse, PidsLimit, PloyzNativeMeshComponent,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
+    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, PublicUrlMode,
     ReplayedOperationEvent, ReplicaCount, ReplicaSlot, RetainedArtifact, RouteBindingState,
     RouteCutoverFailureReason, RouteHostname, RoutePort, RouteTarget,
     RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimeProjectionSource,
@@ -221,6 +222,8 @@ macro_rules! exported_types {
             ServiceRestartOperationState,
             ServiceRestartRunningStage,
             ServiceRestartFailure,
+            ManagedLeaseOperationState,
+            ManagedLeaseOperationFailure,
             NamespaceRemoveOperationState,
             NamespaceRemoveRunningStage,
             NamespaceRemoveFailure,
@@ -272,6 +275,7 @@ macro_rules! exported_types {
             ManagedLeaseAcquireRequest,
             ManagedLeaseAcquired,
             ManagedLeaseRenewed,
+            PublicUrlMode,
             AcmeChallengeToken,
             AcmeChallengeValue,
             AcmeChallengeTtlSeconds,
@@ -573,6 +577,7 @@ pub fn operation_contract_fixture() -> Value {
         "init_first_machine_activate_request": value(InitFirstMachineActivateRequest {
             machine_id: machine_id("core_1"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            public_url_mode: PublicUrlMode::Auto,
         }),
         "init_first_machine_activate_response": value(InitFirstMachineActivateResponse::Ok {
             value: InitFirstMachineActivated {

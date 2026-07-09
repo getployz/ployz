@@ -15,6 +15,60 @@ pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
 pub const DEFAULT_MANAGED_LEASE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+pub const DEFAULT_LEASE_WORKER_URL: &str = "https://up.ployz.app";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PublicUrlMode {
+    Auto,
+    BringYourOwn,
+    None,
+}
+
+impl PublicUrlMode {
+    #[must_use]
+    pub const fn default_mode() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedLeaseIntent {
+    pub mode: PublicUrlMode,
+    pub lease: Option<ManagedLeaseRecord>,
+    pub bundle: Option<ManagedCertBundle>,
+}
+
+impl ManagedLeaseIntent {
+    #[must_use]
+    pub const fn empty(mode: PublicUrlMode) -> Self {
+        Self {
+            mode,
+            lease: None,
+            bundle: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn needs_acquisition(&self) -> bool {
+        matches!(self.mode, PublicUrlMode::Auto) && self.lease.is_none()
+    }
+
+    #[must_use]
+    pub fn needs_renewal(&self, now_seconds: u64) -> bool {
+        let Some(lease) = &self.lease else {
+            return false;
+        };
+        matches!(self.mode, PublicUrlMode::Auto)
+            && now_seconds
+                >= lease
+                    .issued_at
+                    .unix_seconds()
+                    .saturating_add(DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2)
+    }
+}
 
 /// Active certificate intent/evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -637,4 +691,69 @@ fn bundle_digest(
 
 fn is_base64_url_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+}
+
+#[cfg(test)]
+mod managed_lease_intent_tests {
+    use super::*;
+
+    fn lease(issued_at: u64) -> ManagedLeaseRecord {
+        ManagedLeaseRecord::try_new(
+            ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
+            LeaseBearerToken::try_new("lease-token").expect("valid token"),
+            LeaseIssuedAt::try_new(issued_at).expect("positive issued timestamp"),
+            LeaseExpiresAt::try_new(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS)
+                .expect("positive expiry timestamp"),
+        )
+        .expect("valid lease window")
+    }
+
+    #[test]
+    fn auto_without_lease_needs_acquisition() {
+        assert!(ManagedLeaseIntent::empty(PublicUrlMode::Auto).needs_acquisition());
+    }
+
+    #[test]
+    fn non_auto_without_lease_does_not_need_acquisition() {
+        assert!(
+            !ManagedLeaseIntent::empty(PublicUrlMode::BringYourOwn).needs_acquisition()
+                && !ManagedLeaseIntent::empty(PublicUrlMode::None).needs_acquisition()
+        );
+    }
+
+    #[test]
+    fn auto_lease_needs_renewal_at_half_ttl() {
+        let issued_at = 1_000;
+        let intent = ManagedLeaseIntent {
+            mode: PublicUrlMode::Auto,
+            lease: Some(lease(issued_at)),
+            bundle: None,
+        };
+
+        assert!(intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2));
+    }
+
+    #[test]
+    fn auto_lease_does_not_need_renewal_before_half_ttl() {
+        let issued_at = 1_000;
+        let intent = ManagedLeaseIntent {
+            mode: PublicUrlMode::Auto,
+            lease: Some(lease(issued_at)),
+            bundle: None,
+        };
+
+        assert!(!intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2 - 1));
+    }
+
+    #[test]
+    fn non_auto_lease_never_needs_renewal() {
+        let issued_at = 1_000;
+        let intent = ManagedLeaseIntent {
+            mode: PublicUrlMode::None,
+            lease: Some(lease(issued_at)),
+            bundle: None,
+        };
+
+        assert!(!intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS));
+    }
 }

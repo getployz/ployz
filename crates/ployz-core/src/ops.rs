@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cert::ManagedLeaseName;
 use crate::ids::{
     CertId, MachineId, NamespaceId, OperationId, ServiceId, SubjectToken, SubjectTokenError,
 };
@@ -23,6 +24,7 @@ mod events;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
+mod managed_lease;
 mod namespace_remove;
 mod projection;
 mod replay;
@@ -48,6 +50,10 @@ pub use machine_lifecycle::{
 pub use machine_update::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     MachineUpdateTransition,
+};
+pub use managed_lease::{
+    MANAGED_LEASE_ACQUISITION_SUBJECT, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
+    ManagedLeaseTransition,
 };
 pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
@@ -80,6 +86,7 @@ pub enum OperationKind {
     MachineLifecycle,
     CoreReplace,
     ServiceRestart,
+    ManagedLease,
     NamespaceRemove,
 }
 
@@ -138,6 +145,12 @@ pub enum OperationStatus {
         namespace_id: NamespaceId,
         service_id: ServiceId,
         state: ServiceRestartOperationState,
+        last_event_sequence: EventSequence,
+    },
+    ManagedLease {
+        id: OperationId,
+        lease_name: ManagedLeaseName,
+        state: ManagedLeaseOperationState,
         last_event_sequence: EventSequence,
     },
     NamespaceRemove {
@@ -287,6 +300,20 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn managed_lease_accepted(
+        id: OperationId,
+        lease_name: ManagedLeaseName,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::ManagedLease {
+            id,
+            lease_name,
+            state: ManagedLeaseOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
@@ -296,6 +323,7 @@ impl OperationStatus {
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
+            Self::ManagedLease { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
         }
     }

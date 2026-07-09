@@ -26,10 +26,10 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
-use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus,
 };
+use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
@@ -44,7 +44,7 @@ use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
-    MachineSnapshot, MachineTestimony,
+    MachineSnapshot, MachineTestimony, OpsListRequest,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
@@ -217,6 +217,30 @@ async fn scenario_init_and_activate_first_machine() {
                 "authorized-users.conf must contain {principal}: {authorized}"
             );
         }
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut last_operations = Vec::new();
+        while Instant::now() < deadline {
+            last_operations = core
+                .api
+                .ops_list(&OpsListRequest { active_only: false })
+                .await
+                .expect("list operations")
+                .operations;
+            if last_operations.iter().any(|snapshot| {
+                matches!(
+                    &snapshot.status,
+                    OperationStatus::ManagedLease {
+                        state: ManagedLeaseOperationState::Completed,
+                        ..
+                    }
+                )
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("managed lease acquisition did not complete: {last_operations:?}");
     })
     .await;
 
@@ -774,12 +798,15 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
         ]
     );
     assert_eq!(
-        container.healthcheck["Test"],
-        serde_json::json!(["CMD-SHELL", "test \"$PLOYZ_E2E_RUNTIME\" = present"])
+        container.healthcheck.get("Test"),
+        Some(&serde_json::json!([
+            "CMD-SHELL",
+            "test \"$PLOYZ_E2E_RUNTIME\" = present"
+        ]))
     );
     assert_eq!(
-        container.restart_policy["Name"],
-        serde_json::json!("unless-stopped")
+        container.restart_policy.get("Name"),
+        Some(&serde_json::json!("unless-stopped"))
     );
     assert_eq!(container.cap_add, vec!["NET_ADMIN".to_owned()]);
     assert_eq!(container.cap_drop, vec!["MKNOD".to_owned()]);

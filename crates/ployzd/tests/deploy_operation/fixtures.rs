@@ -675,7 +675,10 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
 
 pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionCommand {
     let mut request = target_deploy_request(replicas);
-    request.services[0].runtime.healthcheck = Some(ContainerHealthcheck {
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.runtime.healthcheck = Some(ContainerHealthcheck {
         test: ContainerHealthcheckTest::Shell(
             HealthcheckShellCommand::try_new("true").expect("valid healthcheck"),
         ),
@@ -696,6 +699,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
             namespace_cleanup_candidates: Vec::new(),
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
+            has_managed_lease: false,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -730,6 +734,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             dataplane_members: Vec::new(),
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
+            has_managed_lease: false,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -760,6 +765,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionComm
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             namespace_cleanup_candidates: Vec::new(),
             observed_machines: Vec::new(),
+            has_managed_lease: false,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -837,6 +843,7 @@ fn prepared_deploy_command(
             eligible_machines,
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
             observed_machines,
+            has_managed_lease: false,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -880,6 +887,7 @@ pub(super) fn empty_deploy_command_with_running_container(
             eligible_machines: vec![self::machine_id("machine_a")],
             namespace_cleanup_candidates,
             observed_machines: vec![snapshot],
+            has_managed_lease: false,
             step_timeout: Duration::from_secs(5),
         },
     )

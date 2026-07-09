@@ -312,6 +312,11 @@ impl ServiceRestartOperation {
                     StatusProjectionError::InvalidTransition { .. },
                 ),
             ) => Err(error),
+            Err(
+                error @ RecordOperationEventError::ProjectStatus(
+                    StatusProjectionError::ManagedLeaseCancellationUnsupported { .. },
+                ),
+            ) => Err(error),
         }
     }
 

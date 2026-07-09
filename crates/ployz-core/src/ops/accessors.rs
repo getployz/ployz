@@ -13,6 +13,7 @@ impl OperationStatus {
             | Self::MachineLifecycle { id, .. }
             | Self::CoreReplace { id, .. }
             | Self::ServiceRestart { id, .. }
+            | Self::ManagedLease { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
         }
     }
@@ -27,6 +28,7 @@ impl OperationStatus {
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
             Self::CoreReplace { .. } => OperationKind::CoreReplace,
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
+            Self::ManagedLease { .. } => OperationKind::ManagedLease,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
         }
     }
@@ -41,7 +43,7 @@ impl OperationStatus {
             | Self::NamespaceRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
-            Self::Cert { .. } => OperationProgressScope::Cluster,
+            Self::Cert { .. } | Self::ManagedLease { .. } => OperationProgressScope::Cluster,
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineLifecycle { machine_id, .. }
@@ -75,6 +77,10 @@ impl OperationStatus {
                 ..
             }
             | Self::ServiceRestart {
+                last_event_sequence,
+                ..
+            }
+            | Self::ManagedLease {
                 last_event_sequence,
                 ..
             }

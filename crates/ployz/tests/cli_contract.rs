@@ -90,6 +90,65 @@ fn cli_init_activate_first_machine_is_explicit_subcommand() {
 
     assert_eq!(command.machine_id, machine_id("machine_1"));
     assert_eq!(command.roles, InstallRolePolicy::install_all());
+    assert_eq!(
+        command.public_url_mode,
+        ployz_core::cert::PublicUrlMode::Auto
+    );
+}
+
+#[test]
+fn cli_init_activate_first_machine_parses_public_url_choice() {
+    for (value, expected) in [
+        ("auto", ployz_core::cert::PublicUrlMode::Auto),
+        (
+            "bring-your-own",
+            ployz_core::cert::PublicUrlMode::BringYourOwn,
+        ),
+        ("none", ployz_core::cert::PublicUrlMode::None),
+    ] {
+        let command = parse_command(
+            [
+                "internal",
+                "init",
+                "activate-first-machine",
+                "--machine",
+                "machine_1",
+                "--public-url",
+                value,
+            ]
+            .map(str::to_owned),
+        )
+        .expect("public URL choice parses");
+        let PloyzctlCommand::InitFirstMachineActivate(command) = command else {
+            panic!("expected first-machine activation command");
+        };
+        assert_eq!(command.public_url_mode, expected);
+    }
+}
+
+#[test]
+fn cli_init_activate_first_machine_rejects_unknown_public_url_choice() {
+    let error = parse_command(
+        [
+            "internal",
+            "init",
+            "activate-first-machine",
+            "--machine",
+            "machine_1",
+            "--public-url",
+            "managed-ish",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("unknown public URL choice fails");
+
+    assert!(matches!(
+        error,
+        ployz::commands::PloyzctlCliError::InvalidValue {
+            flag: "--public-url",
+            ..
+        }
+    ));
 }
 
 #[test]
