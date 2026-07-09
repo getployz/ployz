@@ -18,7 +18,8 @@
 mod support;
 
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+    ContainerCommand, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployServiceSpec, EnvName,
+    EnvValue, ImageReference, ReplicaCount, ServiceEnvironment,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
@@ -49,7 +50,7 @@ use ployz_test_support::nats::SecuredTestNats;
 use ployzd::adapters::docker::labels::{
     CONTAINER_TYPE_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use support::dind::assert::{
     assert_deploy_event_sequence, assert_machine_add_event_sequence, assert_unit_active,
@@ -395,6 +396,7 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         scenario_cross_machine_deploy(&core, edge).await;
         scenario_daemon_restart_invisibility(&core, edge).await;
         scenario_auth_rejection(&core, edge).await;
+        scenario_runtime_fields_deploy(&core).await;
     })
     .await;
 
@@ -468,6 +470,66 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     }
 }
 
+/// Deploys command and environment through the real machine Docker path and
+/// checks the created container's Docker config.
+async fn scenario_runtime_fields_deploy(core: &CoreContext) {
+    let accepted = core
+        .api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_dind_runtime_fields"),
+            target: runtime_fields_deploy_target(),
+        })
+        .await
+        .expect("runtime fields deploy submits");
+    let deploy_operation = accepted.operation_id;
+
+    let status =
+        wait_for_terminal_deploy_status(core, &deploy_operation, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            &status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "runtime fields deploy did not complete: {status:?}"
+    );
+
+    let mut runtime_containers = Vec::new();
+    for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+        runtime_containers.extend(
+            managed_workload_containers(core, machine)
+                .await
+                .into_iter()
+                .filter(|container| {
+                    container.labels.get(SERVICE_ID_LABEL).map(String::as_str)
+                        == Some("svc_runtime")
+                }),
+        );
+    }
+    let [container] = runtime_containers.as_slice() else {
+        panic!("expected one runtime container, got {runtime_containers:?}");
+    };
+    assert!(
+        container
+            .env
+            .iter()
+            .any(|value| value == "PLOYZ_E2E_RUNTIME=present"),
+        "runtime container env missing PLOYZ_E2E_RUNTIME=present: {container:?}"
+    );
+    assert_eq!(
+        container.cmd,
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "env; sleep 600".to_owned()
+        ]
+    );
+}
+
 /// The smoke service: the baked workload image, one replica per machine,
 /// routed on every gateway's listen port.
 fn smoke_deploy_target() -> DeployRequest {
@@ -487,6 +549,36 @@ fn smoke_deploy_target() -> DeployRequest {
             }],
         }],
     }
+}
+
+fn runtime_fields_deploy_target() -> DeployRequest {
+    DeployRequest {
+        namespace_id: namespace_id("runtime"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_runtime"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime: runtime_fields_spec(),
+            routes: Vec::new(),
+        }],
+    }
+}
+
+fn runtime_fields_spec() -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "env; sleep 600".to_owned(),
+        ])
+        .expect("valid runtime command"),
+    );
+    runtime.environment = ServiceEnvironment::from(BTreeMap::from([(
+        EnvName::try_new("PLOYZ_E2E_RUNTIME").expect("valid env name"),
+        EnvValue::try_new("present").expect("valid env value"),
+    )]));
+    runtime
 }
 
 /// The route host header: hostname plus the gateway's in-machine listen

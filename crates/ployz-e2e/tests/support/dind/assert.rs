@@ -503,6 +503,8 @@ pub async fn wait_for_machine_observations(core: &CoreContext, machine: &Machine
 pub struct ManagedWorkloadContainer {
     pub id: String,
     pub labels: HashMap<String, String>,
+    pub env: Vec<String>,
+    pub cmd: Vec<String>,
 }
 
 /// Lists the running managed workload containers inside one machine's inner
@@ -538,7 +540,7 @@ pub async fn managed_workload_containers(
         "docker",
         "inspect",
         "--format",
-        "{{.Id}}\t{{json .Config.Labels}}",
+        "{{.Id}}\t{{json .Config.Labels}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}",
     ];
     command.extend(ids);
     let inspected = core.exec_on(machine, &command).await;
@@ -552,9 +554,10 @@ pub async fn managed_workload_containers(
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let Some((id, labels_json)) = line.split_once('\t') else {
+            let parts = line.split('\t').collect::<Vec<_>>();
+            let [id, labels_json, env_json, cmd_json] = parts.as_slice() else {
                 panic!(
-                    "docker inspect line on {} has no id/labels separator: {line}",
+                    "docker inspect line on {} has unexpected columns: {line}",
                     machine.name
                 );
             };
@@ -565,9 +568,27 @@ pub async fn managed_workload_containers(
                         machine.name
                     )
                 });
+            let env: Vec<String> = serde_json::from_str::<Option<Vec<String>>>(env_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect env on {} is not a JSON array ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
+            let cmd: Vec<String> = serde_json::from_str::<Option<Vec<String>>>(cmd_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect cmd on {} is not a JSON array ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
             ManagedWorkloadContainer {
-                id: id.to_owned(),
+                id: id.to_string(),
                 labels,
+                env,
+                cmd,
             }
         })
         .collect()
