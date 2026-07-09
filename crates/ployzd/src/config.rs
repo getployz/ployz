@@ -1,6 +1,8 @@
 //! Role-specific daemon configuration.
 
-use ployz_core::dataplane::{MachineEndpointSupernet, default_endpoint_subnet};
+use ployz_core::dataplane::{
+    MachineEndpointSubnet, MachineEndpointSupernet, default_endpoint_subnet,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     InstallContractError, MachineBootstrapUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -136,8 +138,18 @@ pub fn load_daemon_process_config(
         DaemonProcessRole::Dns => {
             let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
+            let endpoint_subnet = load_dataplane_endpoint_subnet(&env, &machine_id);
+            let endpoint_subnet =
+                MachineEndpointSubnet::try_new(&endpoint_subnet).map_err(|source| {
+                    DaemonProcessConfigError::InvalidDataplaneEndpointSubnet {
+                        value: endpoint_subnet,
+                        source,
+                    }
+                })?;
             Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(
-                machine_id, connect,
+                machine_id,
+                connect,
+                endpoint_subnet,
             )))
         }
     }
@@ -541,6 +553,10 @@ pub enum DaemonProcessConfigError {
         value: String,
         source: ployz_core::dataplane::MachineEndpointSupernetError,
     },
+    InvalidDataplaneEndpointSubnet {
+        value: String,
+        source: ployz_core::dataplane::MachineEndpointSubnetError,
+    },
 }
 
 impl fmt::Display for DaemonProcessConfigError {
@@ -639,6 +655,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV
+            ),
+            Self::InvalidDataplaneEndpointSubnet { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV
             ),
         }
     }
@@ -833,11 +854,20 @@ impl GatewayProcessConfig {
 pub struct DnsProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
+    pub endpoint_subnet: MachineEndpointSubnet,
 }
 
 impl DnsProcessConfig {
     #[must_use]
-    pub fn new(machine_id: MachineId, nats: RoleNatsConnect) -> Self {
-        Self { machine_id, nats }
+    pub fn new(
+        machine_id: MachineId,
+        nats: RoleNatsConnect,
+        endpoint_subnet: MachineEndpointSubnet,
+    ) -> Self {
+        Self {
+            machine_id,
+            nats,
+            endpoint_subnet,
+        }
     }
 }
