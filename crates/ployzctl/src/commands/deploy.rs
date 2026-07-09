@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use clap::Args;
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
 use crate::client_ids::generate_client_deploy_id;
@@ -282,7 +282,7 @@ pub(crate) fn parse_route_shorthand(value: &str) -> Result<DeployRoute, Ployzctl
     let endpoint_port =
         RoutePort::try_new(endpoint_port).map_err(|error| invalid_value("--route", error))?;
     Ok(DeployRoute {
-        target: RouteTarget {
+        target: DeployRouteTarget::Hostname {
             hostname,
             port: RoutePort::try_new(ROUTE_SHORTHAND_PUBLIC_HTTP_PORT)
                 .expect("80 is a valid route port"),
@@ -318,7 +318,7 @@ fn parse_deploy_route(
 ) -> Result<Option<DeployRoute>, PloyzctlCliError> {
     match (hostname, port, endpoint_port) {
         (Some(hostname), Some(port), Some(endpoint_port)) => Ok(Some(DeployRoute {
-            target: RouteTarget { hostname, port },
+            target: DeployRouteTarget::Hostname { hostname, port },
             endpoint_port,
         })),
         (None, None, None) => Ok(None),

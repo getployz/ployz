@@ -130,16 +130,25 @@ pub fn namespace_revision_id_for(
                 .then_with(|| left.endpoint_port.cmp(&right.endpoint_port))
         });
         for route in routes {
-            hash_frame(
-                &mut hasher,
-                "route_hostname",
-                route.target.hostname.as_str().as_bytes(),
-            );
-            hash_frame(
-                &mut hasher,
-                "route_public_port",
-                route.target.port.get().to_string().as_bytes(),
-            );
+            match &route.target {
+                DeployRouteTarget::AutoHostname { port } => {
+                    hash_frame(&mut hasher, "route_target_kind", b"auto_hostname");
+                    hash_frame(
+                        &mut hasher,
+                        "route_public_port",
+                        port.get().to_string().as_bytes(),
+                    );
+                }
+                DeployRouteTarget::Hostname { hostname, port } => {
+                    hash_frame(&mut hasher, "route_target_kind", b"hostname");
+                    hash_frame(&mut hasher, "route_hostname", hostname.as_str().as_bytes());
+                    hash_frame(
+                        &mut hasher,
+                        "route_public_port",
+                        port.get().to_string().as_bytes(),
+                    );
+                }
+            }
             hash_frame(
                 &mut hasher,
                 "route_endpoint_port",
@@ -465,8 +474,38 @@ impl ContainerRuntimeSpec {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployRoute {
-    pub target: RouteTarget,
+    pub target: DeployRouteTarget,
     pub endpoint_port: RoutePort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployRouteTarget {
+    AutoHostname {
+        port: RoutePort,
+    },
+    Hostname {
+        hostname: crate::ops::RouteHostname,
+        port: RoutePort,
+    },
+}
+
+impl DeployRouteTarget {
+    /// The route table target this declaration binds to, if it already names
+    /// one. `AutoHostname` is declared intent without a hostname: it commits
+    /// no `RouteBindingState` until the lease flow mints its hostname, so it
+    /// yields `None` here rather than a sentinel target.
+    #[must_use]
+    pub fn concrete_target(&self) -> Option<RouteTarget> {
+        match self {
+            Self::AutoHostname { port: _ } => None,
+            Self::Hostname { hostname, port } => Some(RouteTarget {
+                hostname: hostname.clone(),
+                port: *port,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -722,11 +761,16 @@ fn route_binding_commits(request: &DeployServiceRequest) -> Vec<RouteBindingStat
         .routes
         .iter()
         .cloned()
-        .map(|route| RouteBindingState {
-            namespace_id: request.namespace_id.clone(),
-            target: route.target,
-            endpoint_port: route.endpoint_port,
-            service_id: request.service_id.clone(),
+        .filter_map(|route| {
+            route
+                .target
+                .concrete_target()
+                .map(|target| RouteBindingState {
+                    namespace_id: request.namespace_id.clone(),
+                    target,
+                    endpoint_port: route.endpoint_port,
+                    service_id: request.service_id.clone(),
+                })
         })
         .collect()
 }

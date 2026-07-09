@@ -1,13 +1,13 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
-    ReplicaCount,
+    DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, OperationId};
 use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::{RouteHostname, RouteTarget};
+use ployz_core::ops::RouteHostname;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{ActiveMachineState, ServingTargetEntry};
 use ployz_nats::service_runtime::RunningNatsService;
@@ -577,7 +577,7 @@ fn routed_deploy_request() -> DeployRequest {
         panic!("deploy request fixture has one service");
     };
     service.routes = vec![DeployRoute {
-        target: RouteTarget {
+        target: DeployRouteTarget::Hostname {
             hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
             port: route_port(8080),
         },

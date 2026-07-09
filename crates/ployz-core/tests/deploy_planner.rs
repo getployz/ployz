@@ -1,7 +1,7 @@
 use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployCleanupContainer,
     DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput, DeployPreparationInput,
-    DeployRoute, DeployServicePlan, DeployServiceRequest, EnvName, EnvValue,
+    DeployRoute, DeployRouteTarget, DeployServicePlan, DeployServiceRequest, EnvName, EnvValue,
     ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, ServiceEnvironment,
     StopGracePeriod, namespace_route_binding_removals, namespace_serving_target_removals,
     plan_namespace_deploy, prepare_deploy,
@@ -16,7 +16,7 @@ use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
-    service_id,
+    route_hostname, service_id,
 };
 use std::collections::BTreeMap;
 
@@ -775,7 +775,10 @@ fn deploy_plan(
 
 fn deploy_route(hostname: &str, public_port: u16, endpoint_port: u16) -> DeployRoute {
     DeployRoute {
-        target: route_target(hostname, public_port),
+        target: DeployRouteTarget::Hostname {
+            hostname: route_hostname(hostname),
+            port: route_port(public_port),
+        },
         endpoint_port: route_port(endpoint_port),
     }
 }

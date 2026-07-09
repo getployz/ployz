@@ -27,6 +27,8 @@ pub(crate) struct ComposeService {
     pub stop_grace_period: Option<Value>,
     #[serde(rename = "x-route")]
     pub x_route: Option<ComposeRoutes>,
+    #[serde(rename = "x-ports")]
+    pub x_ports: Option<Value>,
     pub build: Option<Value>,
     pub cap_add: Option<Value>,
     pub cap_drop: Option<Value>,

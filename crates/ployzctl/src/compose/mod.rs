@@ -232,7 +232,7 @@ mod tests {
             services:
               web:
                 image: nginx
-                ports: ["8080:80"]
+                healthcheck: {}
                 mystery: true
               worker:
                 command: []
@@ -245,7 +245,7 @@ mod tests {
         .expect_err("strict compose rejects");
 
         let rendered = error.to_string();
-        assert!(rendered.contains("services.web.ports"));
+        assert!(rendered.contains("services.web.healthcheck"));
         assert!(rendered.contains("services.web.mystery"));
         assert!(rendered.contains("services.worker.image"));
         assert!(rendered.contains("services.worker.command"));
@@ -259,7 +259,7 @@ mod tests {
             services:
               web:
                 image: nginx
-                ports: ["8080:80"]
+                healthcheck: {}
             "#,
             base_dir: Path::new("."),
             interpolation_env: BTreeMap::new(),
@@ -270,6 +270,28 @@ mod tests {
 
         assert_eq!(parsed.services.len(), 1);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn standard_ports_reject_even_under_allow_unsupported() {
+        let error = parse_deploy_file(ComposeInput {
+            source: r#"
+            name: default
+            services:
+              web:
+                image: nginx
+                ports: ["8080:80"]
+            "#,
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::AllowUnsupported,
+        })
+        .expect_err("standard ports reject even with --allow-unsupported");
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("services.web.ports"));
+        assert!(rendered.contains("x-ports"));
     }
 
     #[test]

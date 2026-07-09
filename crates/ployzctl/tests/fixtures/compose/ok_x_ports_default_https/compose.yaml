@@ -1,0 +1,7 @@
+name: fixture_x_ports_default_https
+services:
+  web:
+    image: nginx
+    x-ports:
+      - 8080
+      - 8081/https

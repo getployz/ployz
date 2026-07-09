@@ -231,7 +231,7 @@ impl KnownUnsupported {
             Self::DeployRestartPolicy => "restart policy is not deployed yet",
             Self::DeployUpdateConfig => "update order is not deployed yet",
             Self::Dns | Self::DnsSearch => "custom DNS settings are not deployed yet",
-            Self::Expose | Self::Ports => "use x-route for ingress in this slice",
+            Self::Expose | Self::Ports => "use x-ports for Ployz Route Bindings",
             Self::ExtraHosts => "extra hosts are not deployed yet",
             Self::Healthcheck => "healthchecks are parsed but not deployed yet",
             Self::Init => "init process selection is not deployed yet",

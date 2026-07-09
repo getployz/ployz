@@ -26,6 +26,7 @@
       "routes": [
         {
           "target": {
+            "kind": "hostname",
             "hostname": "app.example.com",
             "port": 80
           },

@@ -7,7 +7,7 @@
 
 use futures_util::StreamExt;
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{MachineId, NamespaceRevisionEntryId};
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
@@ -893,7 +893,10 @@ fn deploy_target_with_route(
         panic!("deploy target fixture has one service");
     };
     service.routes = vec![DeployRoute {
-        target: RouteTarget::new(route_hostname("api.example.com"), route_port(gateway_port)),
+        target: DeployRouteTarget::Hostname {
+            hostname: route_hostname("api.example.com"),
+            port: route_port(gateway_port),
+        },
         endpoint_port: route_port(endpoint_port),
     }];
     target

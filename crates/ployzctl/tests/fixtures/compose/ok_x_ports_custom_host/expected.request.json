@@ -1,0 +1,34 @@
+{
+  "namespace_id": "fixture_x_ports_custom_host",
+  "services": [
+    {
+      "service_id": "web",
+      "image": "nginx",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      },
+      "routes": [
+        {
+          "target": {
+            "kind": "hostname",
+            "hostname": "app.example.com",
+            "port": 443
+          },
+          "endpoint_port": 8080
+        },
+        {
+          "target": {
+            "kind": "hostname",
+            "hostname": "plain.example.com",
+            "port": 80
+          },
+          "endpoint_port": 8081
+        }
+      ]
+    }
+  ]
+}
