@@ -1,0 +1,41 @@
+{
+  "namespace_id": "fixture_runtime_controls",
+  "services": [
+    {
+      "service_id": "web",
+      "image": "nginx:latest",
+      "replicas": 1,
+      "runtime": {
+        "command": [
+          "nginx",
+          "-g",
+          "daemon off;"
+        ],
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10,
+        "healthcheck": {
+          "test": {
+            "shell": "wget -q -O - http://127.0.0.1/ || exit 1"
+          },
+          "interval": 5000000000,
+          "timeout": 2000000000,
+          "retries": 3,
+          "start_period": 1000000000
+        },
+        "restart_policy": "unless-stopped",
+        "cap_add": [
+          "NET_ADMIN"
+        ],
+        "cap_drop": [
+          "MKNOD"
+        ],
+        "resources": {
+          "nano_cpus": 500000000,
+          "memory_bytes": 64000000,
+          "pids": 64
+        }
+      }
+    }
+  ]
+}

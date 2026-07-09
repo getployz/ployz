@@ -510,6 +510,13 @@ pub struct ManagedWorkloadContainer {
     pub labels: HashMap<String, String>,
     pub env: Vec<String>,
     pub cmd: Vec<String>,
+    pub healthcheck: serde_json::Value,
+    pub restart_policy: serde_json::Value,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+    pub nano_cpus: i64,
+    pub memory: i64,
+    pub pids_limit: i64,
 }
 
 #[derive(Clone, Copy)]
@@ -569,7 +576,7 @@ async fn managed_workload_containers_with_scope(
         "docker",
         "inspect",
         "--format",
-        "{{.Id}}\t{{json .Config.Labels}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}",
+        "{{.Id}}\t{{json .Config.Labels}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}\t{{json .Config.Healthcheck}}\t{{json .HostConfig.RestartPolicy}}\t{{json .HostConfig.CapAdd}}\t{{json .HostConfig.CapDrop}}\t{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.Memory}}\t{{json .HostConfig.PidsLimit}}",
     ];
     command.extend(ids);
     let inspected = core.exec_on(machine, &command).await;
@@ -584,7 +591,20 @@ async fn managed_workload_containers_with_scope(
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let parts = line.split('\t').collect::<Vec<_>>();
-            let [id, labels_json, env_json, cmd_json] = parts.as_slice() else {
+            let [
+                id,
+                labels_json,
+                env_json,
+                cmd_json,
+                healthcheck_json,
+                restart_policy_json,
+                cap_add_json,
+                cap_drop_json,
+                nano_cpus_json,
+                memory_json,
+                pids_limit_json,
+            ] = parts.as_slice()
+            else {
                 panic!(
                     "docker inspect line on {} has unexpected columns: {line}",
                     machine.name
@@ -613,11 +633,71 @@ async fn managed_workload_containers_with_scope(
                     )
                 })
                 .unwrap_or_default();
+            let healthcheck = serde_json::from_str(healthcheck_json).unwrap_or_else(|error| {
+                panic!(
+                    "docker inspect healthcheck on {} is not JSON ({error}): {line}",
+                    machine.name
+                )
+            });
+            let restart_policy =
+                serde_json::from_str(restart_policy_json).unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect restart policy on {} is not JSON ({error}): {line}",
+                        machine.name
+                    )
+                });
+            let cap_add: Vec<String> = serde_json::from_str::<Option<Vec<String>>>(cap_add_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect cap_add on {} is not JSON ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
+            let cap_drop: Vec<String> = serde_json::from_str::<Option<Vec<String>>>(cap_drop_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect cap_drop on {} is not JSON ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
+            let nano_cpus: i64 = serde_json::from_str::<Option<i64>>(nano_cpus_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect nano_cpus on {} is not JSON ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
+            let memory: i64 = serde_json::from_str::<Option<i64>>(memory_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect memory on {} is not JSON ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
+            let pids_limit: i64 = serde_json::from_str::<Option<i64>>(pids_limit_json)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "docker inspect pids_limit on {} is not JSON ({error}): {line}",
+                        machine.name
+                    )
+                })
+                .unwrap_or_default();
             ManagedWorkloadContainer {
                 id: id.to_string(),
                 labels,
                 env,
                 cmd,
+                healthcheck,
+                restart_policy,
+                cap_add,
+                cap_drop,
+                nano_cpus,
+                memory,
+                pids_limit,
             }
         })
         .collect()

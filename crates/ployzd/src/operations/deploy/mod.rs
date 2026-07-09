@@ -75,6 +75,7 @@ where
 struct DeployRun<'a> {
     command: &'a DeployExecutionCommand,
     started_containers: Vec<DeployContainer>,
+    health_check_containers: Vec<DeployContainer>,
 }
 
 impl<'a> DeployRun<'a> {
@@ -82,10 +83,14 @@ impl<'a> DeployRun<'a> {
         Self {
             command,
             started_containers: Vec::new(),
+            health_check_containers: Vec::new(),
         }
     }
 
-    fn container_started(&mut self, started: DeployContainer) {
+    fn container_started(&mut self, started: DeployContainer, created: bool) {
+        if created {
+            self.health_check_containers.push(started.clone());
+        }
         self.started_containers.push(started);
     }
 
@@ -209,6 +214,7 @@ where
                     container_id: container_id.clone(),
                     step_id: deploy_step_id(*slot)
                         .map_err(|source| run.fail(DeployExecutionError::StepId(source)))?,
+                    requires_docker_healthcheck: false,
                 }),
                 DeployPlanStep::RunContainer { machine_id, slot } => {
                     let run_result = with_step_timeout(
@@ -225,12 +231,12 @@ where
                         ),
                     )
                     .await;
-                    let started = match run_result {
+                    let (started, created) = match run_result {
                         Ok(started) => started,
                         Err(source) => return Err(run.fail_run_container(service, *slot, source)),
                     };
                     containers.push(started.clone());
-                    run.container_started(started.clone());
+                    run.container_started(started.clone(), created);
                     record_evidence(
                         command,
                         &mut *ports.recorder,
@@ -262,11 +268,11 @@ where
     .await
     .map_err(|source| run.fail(source))?;
 
-    if !containers.is_empty() {
+    if !run.health_check_containers.is_empty() {
         let health_result = with_step_timeout(
             command,
             DeployExecutionStep::WaitHealthy,
-            (*ports.health_checker).wait_healthy(&containers),
+            (*ports.health_checker).wait_healthy(&run.health_check_containers),
         )
         .await;
         if let Err(source) = health_result {
@@ -468,6 +474,7 @@ fn retained_created_container(
         machine_id: machine_id.clone(),
         container_id: container_id.clone(),
         step_id,
+        requires_docker_healthcheck: service.request.runtime.healthcheck.is_some(),
     })
 }
 
@@ -776,11 +783,12 @@ async fn run_deploy_step<N>(
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
-) -> Result<DeployContainer, DeployExecutionError>
+) -> Result<(DeployContainer, bool), DeployExecutionError>
 where
     N: MachineContainerRuntime,
 {
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
+    let requires_docker_healthcheck = service.request.runtime.healthcheck.is_some();
     let request = MachineContainerRunRpcRequest {
         image: service.request.image.clone(),
         runtime: service.request.runtime.clone(),
@@ -797,12 +805,25 @@ where
     machine_runtime
         .run_container(machine_id, request)
         .await
-        .map(|outcome| DeployContainer {
-            service_id: service.request.service_id.clone(),
-            namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
-            machine_id: machine_id.clone(),
-            container_id: outcome.container_id().clone(),
-            step_id,
+        .map(|outcome| {
+            let created = matches!(
+                outcome,
+                crate::roles::machine::protocol::MachineRunContainerOutcome::Created { .. }
+            );
+            (
+                DeployContainer {
+                    service_id: service.request.service_id.clone(),
+                    namespace_revision_entry_id: service
+                        .request
+                        .namespace_revision_entry_id
+                        .clone(),
+                    machine_id: machine_id.clone(),
+                    container_id: outcome.container_id().clone(),
+                    step_id,
+                    requires_docker_healthcheck,
+                },
+                created,
+            )
         })
         .map_err(DeployExecutionError::RunContainer)
 }

@@ -19,25 +19,28 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.environment` | Translated | Map and list forms are merged into container environment. |
 | `services.*.env_file` | Translated | Files are read relative to the Compose file and merged into container environment. |
 | `services.*.deploy.replicas` | Translated | Maps to Ployz replica count; omitted defaults to 1. |
+| `services.*.deploy.resources.limits` | Translated | `cpus`, `memory`, and `pids` map to Docker container limits. |
+| `services.*.deploy.restart_policy.condition` | Translated | Maps to Docker restart policy when `services.*.restart` is absent. |
 | `services.*.stop_grace_period` | Translated | Maps to Ployz stop grace period; omitted defaults to 10 seconds. |
+| `services.*.cap_add` | Translated | Adds Linux capabilities to the created container. |
+| `services.*.cap_drop` | Translated | Drops Linux capabilities from the created container. |
+| `services.*.healthcheck` | Translated | Maps to Docker healthcheck and gates only newly-created containers. |
+| `services.*.restart` | Translated | Maps to Docker restart policy. |
 | `services.*.x-route` | Translated | Ployz extension for route bindings; Compose `ports` do not imply routes. |
 | `services.*.build` | Unsupported (planned) | build images before deploy |
-| `services.*.cap_add` | Unsupported (unsupported) | host capability controls are not deployed yet |
-| `services.*.cap_drop` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `services.*.cgroup_parent` | Unsupported (unsupported) | cgroup parent is not part of the deploy model |
 | `configs`, `services.*.configs` | Unsupported (planned) | configs are not deployed yet |
 | `services.*.depends_on` | Unsupported (planned) | service dependency phases are not imported yet |
 | `services.*.deploy.mode` | Unsupported (planned) | global deploy mode is not deployed yet |
 | `services.*.deploy.placement` | Unsupported (planned) | placement constraints are not deployed yet |
-| `services.*.deploy.resources` | Unsupported (planned) | resource limits are not deployed yet |
-| `services.*.deploy.restart_policy` | Unsupported (planned) | restart policy is not deployed yet |
+| `services.*.deploy.resources.reservations` | Unsupported (planned) | reservations are not deployed yet |
+| `services.*.deploy.restart_policy` subfields other than `condition` | Unsupported (planned) | restart policy delay/window fields are not deployed yet |
 | `services.*.deploy.update_config` | Unsupported (planned) | update order is not deployed yet |
 | `services.*.devices` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `services.*.dns` | Unsupported (unsupported) | custom DNS settings are not deployed yet |
 | `services.*.dns_search` | Unsupported (unsupported) | custom DNS settings are not deployed yet |
 | `services.*.expose` | Unsupported (unsupported) | use x-route for ingress in this slice |
 | `services.*.extra_hosts` | Unsupported (unsupported) | extra hosts are not deployed yet |
-| `services.*.healthcheck` | Unsupported (planned) | healthchecks are parsed but not deployed yet |
 | `services.*.init` | Unsupported (unsupported) | init process selection is not deployed yet |
 | `services.*.labels` | Unsupported (unsupported) | container labels are owned by Ployz |
 | `services.*.logging` | Unsupported (unsupported) | logging driver settings are not deployed yet |
@@ -47,7 +50,6 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.privileged` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `services.*.profiles` | Unsupported (planned) | profile resolution is deferred |
 | `services.*.pull_policy` | Unsupported (unsupported) | pull policy is not deployed yet |
-| `services.*.restart` | Unsupported (unsupported) | restart policy is not deployed yet |
 | `secrets`, `services.*.secrets` | Unsupported (planned) | secrets are planned separately |
 | `services.*.security_opt` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `networks` | Unsupported (planned) | top-level networks are not deployed yet |

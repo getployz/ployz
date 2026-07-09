@@ -135,8 +135,6 @@ pub enum UnsupportedFieldMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KnownUnsupported {
     Build,
-    CapAdd,
-    CapDrop,
     CgroupParent,
     Configs,
     DependsOn,
@@ -150,7 +148,6 @@ pub(crate) enum KnownUnsupported {
     DnsSearch,
     Expose,
     ExtraHosts,
-    Healthcheck,
     Init,
     Labels,
     Logging,
@@ -160,7 +157,6 @@ pub(crate) enum KnownUnsupported {
     Privileged,
     Profiles,
     PullPolicy,
-    Restart,
     Secrets,
     SecurityOpt,
     TopLevelNetworks,
@@ -182,9 +178,8 @@ impl KnownUnsupported {
             | Self::DeployMode
             | Self::DeployPlacement
             | Self::DeployResources
-            | Self::DeployRestartPolicy
             | Self::DeployUpdateConfig
-            | Self::Healthcheck
+            | Self::DeployRestartPolicy
             | Self::Networks
             | Self::Ports
             | Self::Profiles
@@ -193,9 +188,7 @@ impl KnownUnsupported {
             | Self::TopLevelVolumes
             | Self::Volumes
             | Self::XPreDeploy => "planned",
-            Self::CapAdd
-            | Self::CapDrop
-            | Self::CgroupParent
+            Self::CgroupParent
             | Self::Devices
             | Self::Dns
             | Self::DnsSearch
@@ -207,7 +200,6 @@ impl KnownUnsupported {
             | Self::Platform
             | Self::Privileged
             | Self::PullPolicy
-            | Self::Restart
             | Self::SecurityOpt
             | Self::Ulimits
             | Self::User
@@ -219,7 +211,7 @@ impl KnownUnsupported {
     pub(crate) const fn guidance(self) -> &'static str {
         match self {
             Self::Build => "build images before deploy",
-            Self::CapAdd | Self::CapDrop | Self::Devices | Self::Privileged | Self::SecurityOpt => {
+            Self::Devices | Self::Privileged | Self::SecurityOpt => {
                 "host capability controls are not deployed yet"
             }
             Self::CgroupParent => "cgroup parent is not part of the deploy model",
@@ -227,13 +219,12 @@ impl KnownUnsupported {
             Self::DependsOn => "service dependency phases are not imported yet",
             Self::DeployMode => "global deploy mode is not deployed yet",
             Self::DeployPlacement => "placement constraints are not deployed yet",
-            Self::DeployResources => "resource limits are not deployed yet",
-            Self::DeployRestartPolicy => "restart policy is not deployed yet",
+            Self::DeployResources => "resource reservations are not deployed yet",
+            Self::DeployRestartPolicy => "restart policy subfields are not deployed yet",
             Self::DeployUpdateConfig => "update order is not deployed yet",
             Self::Dns | Self::DnsSearch => "custom DNS settings are not deployed yet",
             Self::Expose | Self::Ports => "use x-ports for Ployz Route Bindings",
             Self::ExtraHosts => "extra hosts are not deployed yet",
-            Self::Healthcheck => "healthchecks are parsed but not deployed yet",
             Self::Init => "init process selection is not deployed yet",
             Self::Labels => "container labels are owned by Ployz",
             Self::Logging => "logging driver settings are not deployed yet",
@@ -241,7 +232,6 @@ impl KnownUnsupported {
             Self::Platform => "platform selection is not deployed yet",
             Self::Profiles => "profile resolution is deferred",
             Self::PullPolicy => "pull policy is not deployed yet",
-            Self::Restart => "restart policy is not deployed yet",
             Self::Secrets => "secrets are planned separately",
             Self::TopLevelNetworks => "top-level networks are not deployed yet",
             Self::TopLevelVolumes => "top-level named volumes are not deployed yet",
@@ -307,8 +297,6 @@ impl ComposeDiagnostics {
 pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
     match key {
         "build" => Some(KnownUnsupported::Build),
-        "cap_add" => Some(KnownUnsupported::CapAdd),
-        "cap_drop" => Some(KnownUnsupported::CapDrop),
         "cgroup_parent" => Some(KnownUnsupported::CgroupParent),
         "configs" => Some(KnownUnsupported::Configs),
         "depends_on" => Some(KnownUnsupported::DependsOn),
@@ -322,7 +310,6 @@ pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
         "dns_search" => Some(KnownUnsupported::DnsSearch),
         "expose" => Some(KnownUnsupported::Expose),
         "extra_hosts" => Some(KnownUnsupported::ExtraHosts),
-        "healthcheck" => Some(KnownUnsupported::Healthcheck),
         "init" => Some(KnownUnsupported::Init),
         "labels" => Some(KnownUnsupported::Labels),
         "logging" => Some(KnownUnsupported::Logging),
@@ -332,7 +319,6 @@ pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
         "privileged" => Some(KnownUnsupported::Privileged),
         "profiles" => Some(KnownUnsupported::Profiles),
         "pull_policy" => Some(KnownUnsupported::PullPolicy),
-        "restart" => Some(KnownUnsupported::Restart),
         "secrets" => Some(KnownUnsupported::Secrets),
         "security_opt" => Some(KnownUnsupported::SecurityOpt),
         "ulimits" => Some(KnownUnsupported::Ulimits),

@@ -189,6 +189,7 @@ pub struct DeployContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub step_id: StepId,
+    pub requires_docker_healthcheck: bool,
 }
 
 impl DeployContainer {

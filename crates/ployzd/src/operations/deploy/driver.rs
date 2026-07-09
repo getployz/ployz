@@ -20,6 +20,7 @@ use crate::roles::machine::client::{
 };
 use crate::roles::machine::protocol::MachineContainerInspectRpcRequest;
 use crate::tasks::TaskRegistry;
+use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
@@ -400,8 +401,12 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
                     .await
                     .map_err(|error| unhealthy_container(container, health_read_error(error)))?;
                 match observation {
-                    Some(observation) => match observed_container_health(&observation) {
+                    Some(observation) => match observed_container_health(
+                        &observation,
+                        container.requires_docker_healthcheck,
+                    ) {
                         ObservedContainerHealth::Healthy => {}
+                        ObservedContainerHealth::Pending => all_running = false,
                         ObservedContainerHealth::Failed(message) => {
                             return Err(unhealthy_container(container, message));
                         }
@@ -419,22 +424,28 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
     }
 }
 
-/// Running is healthy: deploy input defines no healthchecks yet, and when it
-/// does they will gate only first container creation (ADR 0025) - reused
-/// containers and phase continuation never re-run health gates.
 fn observed_container_health(
     observation: &ployz_core::machine_runtime::ManagedContainerObservation,
+    requires_docker_healthcheck: bool,
 ) -> ObservedContainerHealth {
-    if !observation.state.is_running() {
-        return ObservedContainerHealth::Failed("container exited");
+    match &observation.state {
+        ContainerRuntimeState::Running { health, .. } => match health {
+            ContainerHealth::Starting => ObservedContainerHealth::Pending,
+            ContainerHealth::Healthy => ObservedContainerHealth::Healthy,
+            ContainerHealth::Unhealthy => ObservedContainerHealth::Failed("unhealthy"),
+            ContainerHealth::None if requires_docker_healthcheck => {
+                ObservedContainerHealth::Pending
+            }
+            ContainerHealth::None => ObservedContainerHealth::Healthy,
+        },
+        ContainerRuntimeState::Exited => ObservedContainerHealth::Failed("container exited"),
     }
-
-    ObservedContainerHealth::Healthy
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObservedContainerHealth {
     Healthy,
+    Pending,
     Failed(&'static str),
 }
 
@@ -474,30 +485,51 @@ mod tests {
         ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
     };
     use ployz_core::machine_runtime::{
-        ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
+        ContainerHealth, ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };
 
     #[test]
     fn health_accepts_running_without_endpoint() {
         assert_eq!(
-            observed_container_health(&observation(
-                "machine_a",
-                "ctr_1",
-                ContainerRuntimeState::running_unroutable()
-            )),
+            observed_container_health(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_unroutable()
+                ),
+                false,
+            ),
             ObservedContainerHealth::Healthy
+        );
+    }
+
+    #[test]
+    fn health_waits_for_missing_configured_docker_health() {
+        assert_eq!(
+            observed_container_health(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_unroutable()
+                ),
+                true,
+            ),
+            ObservedContainerHealth::Pending
         );
     }
 
     #[test]
     fn health_accepts_running_endpoint() {
         assert_eq!(
-            observed_container_health(&observation(
-                "machine_a",
-                "ctr_1",
-                ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-            )),
+            observed_container_health(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
+                ),
+                false,
+            ),
             ObservedContainerHealth::Healthy
         );
     }
@@ -505,11 +537,14 @@ mod tests {
     #[test]
     fn health_accepts_running_endpoint_without_matching_route_port() {
         assert_eq!(
-            observed_container_health(&observation(
-                "machine_a",
-                "ctr_1",
-                ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-            )),
+            observed_container_health(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
+                ),
+                false,
+            ),
             ObservedContainerHealth::Healthy
         );
     }
@@ -517,12 +552,43 @@ mod tests {
     #[test]
     fn health_fails_exited_container() {
         assert_eq!(
-            observed_container_health(&observation(
-                "machine_a",
-                "ctr_1",
-                ContainerRuntimeState::Exited
-            )),
+            observed_container_health(
+                &observation("machine_a", "ctr_1", ContainerRuntimeState::Exited),
+                false,
+            ),
             ObservedContainerHealth::Failed("container exited")
+        );
+    }
+
+    #[test]
+    fn health_waits_for_starting_and_fails_unhealthy() {
+        assert_eq!(
+            observed_container_health(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::Running {
+                        ip: None,
+                        health: ContainerHealth::Starting,
+                    }
+                ),
+                true,
+            ),
+            ObservedContainerHealth::Pending
+        );
+        assert_eq!(
+            observed_container_health(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::Running {
+                        ip: None,
+                        health: ContainerHealth::Unhealthy,
+                    }
+                ),
+                true,
+            ),
+            ObservedContainerHealth::Failed("unhealthy")
         );
     }
 
