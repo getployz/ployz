@@ -602,7 +602,12 @@ fn machine_facts(machine_id: &MachineId, public_ip_octet: Option<u8>) -> Machine
                 DEFAULT_WIREGUARD_LISTEN_PORT,
             )],
         }),
+        test_disk_space(),
         1,
     )
     .expect("machine facts are valid")
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }

@@ -119,14 +119,23 @@ pub struct MachineListResult {
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub active: ActiveMachineState,
-    pub endpoints: Option<MachineEndpointObservation>,
-    pub gateway: Option<GatewayStatusObservation>,
-    pub observed_container_count: usize,
-    /// When this machine last self-reported, as display evidence for the
-    /// operator. Never an input to behavior: liveness surfaces at the point
-    /// of use (ADR 0027).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_observed_at_unix_seconds: Option<u64>,
+    pub testimony: MachineTestimony,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineTestimony {
+    Answered {
+        endpoints: Option<MachineEndpointObservation>,
+        gateway: Option<GatewayStatusObservation>,
+        observed_container_count: usize,
+        disk_space: MachineDiskSpace,
+        /// When this machine last self-reported, as display evidence for the
+        /// operator. Never an input to behavior: liveness surfaces at the point
+        /// of use (ADR 0027).
+        last_observed_at_unix_seconds: u64,
+    },
+    NoAnswer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

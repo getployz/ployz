@@ -83,7 +83,7 @@ impl OperationApiHandlers {
         } = workers;
         let machine_query =
             MachineQueryService::new(intent_reader.clone(), facts.clone(), facts_reader.clone());
-        let service_query = ServiceQueryService::new(intent_reader.clone());
+        let service_query = ServiceQueryService::new(intent_reader.clone(), facts_reader.clone());
         let runtime_snapshot_query = RuntimeSnapshotQueryService::new(
             intent_reader.clone(),
             facts.clone(),

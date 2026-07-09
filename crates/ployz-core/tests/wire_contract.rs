@@ -727,6 +727,9 @@ fn managed_container_observation_wire_shape_nests_identity() {
             .step("step_1")
             .build(),
         state: ployz_core::machine_runtime::ContainerRuntimeState::running_unroutable(),
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
     };
 
     assert_eq!(

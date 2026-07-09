@@ -181,9 +181,14 @@ fn gateway_machine_facts(machine_id_value: &str, address: [u8; 4]) -> MachineFac
             control_endpoints: vec![IpAddr::V4(Ipv4Addr::from(address))],
             mesh_endpoints: Vec::new(),
         }),
+        test_disk_space(),
         1,
     )
     .expect("machine facts are valid")
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {

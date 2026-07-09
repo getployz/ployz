@@ -42,6 +42,7 @@ impl FactCache {
                 observed_at_unix_ms,
                 observation,
             } => {
+                let observation = *observation;
                 let machine_id = observation.machine_id.clone();
                 let next = match state.machine_facts.get(&machine_id) {
                     Some(facts) => facts.with_container_replaced(observation, observed_at_unix_ms),
@@ -286,7 +287,20 @@ fn empty_machine_facts(
     let containers =
         MachineContainerObservationSnapshot::try_new(machine_id.clone(), Vec::new())
             .map_err(ployz_core::machine_runtime::MachineFactsSnapshotError::BuildContainers)?;
-    MachineFactsSnapshot::try_new(machine_id, containers, None, observed_at_unix_ms)
+    MachineFactsSnapshot::try_new(
+        machine_id,
+        containers,
+        None,
+        test_disk_space(),
+        observed_at_unix_ms,
+    )
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_core::machine_runtime::MachineDiskSpace {
+        available_bytes: 40,
+        total_bytes: 100,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -337,10 +351,10 @@ mod tests {
 
         cache.record_machine_container_fact(MachineContainerFactDelta::ContainerObserved {
             observed_at_unix_ms: 2,
-            observation: ManagedContainerObservation {
+            observation: Box::new(ManagedContainerObservation {
                 state: ContainerRuntimeState::Exited,
                 ..observation("ctr_1")
-            },
+            }),
         });
 
         let facts = cache
@@ -396,7 +410,7 @@ mod tests {
 
         cache.record_machine_container_fact(MachineContainerFactDelta::ContainerObserved {
             observed_at_unix_ms: 7,
-            observation: observation("ctr_1"),
+            observation: Box::new(observation("ctr_1")),
         });
 
         let facts = cache
@@ -446,7 +460,7 @@ mod tests {
         let cache = FactCache::default();
         let delta = MachineContainerFactDelta::ContainerObserved {
             observed_at_unix_ms: 1,
-            observation: observation("ctr_1"),
+            observation: Box::new(observation("ctr_1")),
         };
 
         ingest_machine_fact(
@@ -490,6 +504,7 @@ mod tests {
             MachineContainerObservationSnapshot::try_new(machine_id, containers)
                 .expect("valid container snapshot"),
             None,
+            ployz_test_support::fixtures::test_disk_space(),
             observed_at_unix_ms,
         )
         .expect("valid machine facts")
@@ -509,6 +524,9 @@ mod tests {
                 kind: ManagedContainerKind::Service,
             },
             state: ContainerRuntimeState::running_unroutable(),
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
         }
     }
 

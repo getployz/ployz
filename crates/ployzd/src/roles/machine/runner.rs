@@ -4,13 +4,16 @@ use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::ContainerId;
 use std::net::IpAddr;
 
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine_runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {
     pub container_id: ContainerId,
     pub identity: ManagedContainerIdentity,
     pub state: ExistingManagedContainerState,
+    pub health_status: Option<ManagedContainerHealthStatus>,
+    pub resolved_image_identity: Option<String>,
+    pub created_at_unix_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

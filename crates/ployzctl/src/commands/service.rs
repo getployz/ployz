@@ -1,7 +1,9 @@
 use clap::Args;
 use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerHealthStatus};
 use ployz_sdk_types::{
-    ServiceInspectRequest, ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    ServiceContainerMembership, ServiceInspectRequest, ServiceListRequest, ServiceListResult,
+    ServiceMachineTestimony, ServiceSnapshot,
 };
 
 use crate::commands::{PloyzctlCliError, invalid_value};
@@ -108,17 +110,131 @@ impl ServiceInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "service {}\nnamespace-revision-entry {}\n",
+            "service {}\nintent namespace-revision-entry {}\nintent image {}\nintent desired-replicas {}\nintent routes {}\n{}",
             self.service.active.service_id.as_str(),
             self.service.active.namespace_revision_entry_id.as_str(),
+            self.service.active.image.as_str(),
+            self.service.active.desired_replicas.get(),
+            render_routes(&self.service),
+            render_service_container_rows(&self.service),
         )
     }
 }
 
 fn render_service_summary(service: &ServiceSnapshot) -> String {
     format!(
-        "{} namespace-revision-entry {}",
+        "{} image {} testimony ready-replicas {} intent desired-replicas {} machines {} routes {}",
         service.active.service_id.as_str(),
-        service.active.namespace_revision_entry_id.as_str(),
+        service.active.image.as_str(),
+        service.testimony.ready_container_count,
+        service.active.desired_replicas.get(),
+        render_machine_counts(service, "", ", "),
+        render_routes(service),
     )
+}
+
+fn render_routes(service: &ServiceSnapshot) -> String {
+    if service.route_bindings.is_empty() {
+        return "none".to_owned();
+    }
+    service
+        .route_bindings
+        .iter()
+        .map(|route| route.target.hostname.as_str().to_owned())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn render_machine_counts(service: &ServiceSnapshot, prefix: &str, separator: &str) -> String {
+    if service.testimony.machines.is_empty() {
+        return "none".to_owned();
+    }
+    service
+        .testimony
+        .machines
+        .iter()
+        .map(|machine| match machine {
+            ServiceMachineTestimony::Answered {
+                machine_id,
+                containers,
+            } => format!(
+                "{}{}: {} containers",
+                prefix,
+                machine_id.as_str(),
+                containers.len()
+            ),
+            ServiceMachineTestimony::NoAnswer { machine_id } => {
+                format!("{}{}: no answer", prefix, machine_id.as_str())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn render_service_container_rows(service: &ServiceSnapshot) -> String {
+    let rows = service
+        .testimony
+        .machines
+        .iter()
+        .flat_map(|machine| match machine {
+            ServiceMachineTestimony::Answered {
+                machine_id,
+                containers,
+            } => containers
+                .iter()
+                .map(|container| {
+                    let observation = &container.observation;
+                    format!(
+                        "container {} machine {} docker-state {} health {} resolved-image {} created {} operation {} {}",
+                        observation.container_id.as_str(),
+                        machine_id.as_str(),
+                        render_container_state(&observation.state),
+                        observation
+                            .health_status
+                            .map(render_health_status)
+                            .unwrap_or("absent"),
+                        observation.resolved_image_identity.as_deref().unwrap_or("absent"),
+                        observation
+                            .created_at_unix_seconds
+                            .map(|created| created.to_string())
+                            .unwrap_or_else(|| "absent".to_owned()),
+                        observation.identity.operation_id.as_str(),
+                        render_container_membership(container.membership),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            ServiceMachineTestimony::NoAnswer { machine_id } => {
+                vec![format!("machine {}: no answer", machine_id.as_str())]
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if rows.is_empty() {
+        "containers none\n".to_owned()
+    } else {
+        format!("{rows}\n")
+    }
+}
+
+fn render_container_state(state: &ContainerRuntimeState) -> &'static str {
+    match state {
+        ContainerRuntimeState::Running { .. } => "running",
+        ContainerRuntimeState::Exited => "exited",
+    }
+}
+
+fn render_health_status(health_status: ManagedContainerHealthStatus) -> &'static str {
+    match health_status {
+        ManagedContainerHealthStatus::Starting => "starting",
+        ManagedContainerHealthStatus::Healthy => "healthy",
+        ManagedContainerHealthStatus::Unhealthy => "unhealthy",
+    }
+}
+
+fn render_container_membership(membership: ServiceContainerMembership) -> &'static str {
+    match membership {
+        ServiceContainerMembership::ServingTargetMember => "serving-target-member",
+        ServiceContainerMembership::RetainedEvidence => "retained-evidence",
+    }
 }

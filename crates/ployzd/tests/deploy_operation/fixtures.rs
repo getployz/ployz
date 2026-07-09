@@ -20,6 +20,7 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 pub(crate) use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
@@ -765,11 +766,7 @@ pub(super) fn empty_deploy_command_with_running_container(
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
             }],
-            namespace_serving_entries: vec![ServingTargetEntry {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_api"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-            }],
+            namespace_serving_entries: vec![serving_target_entry("svc_api", "entry_old")],
             dataplane_machines: Vec::new(),
             eligible_machines: vec![self::machine_id("machine_a")],
             namespace_cleanup_candidates,

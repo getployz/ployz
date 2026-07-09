@@ -10,9 +10,13 @@ use ployz_core::install::{
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
 };
+use ployz_core::machine_runtime::MachineDiskSpace;
 use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::state::ServingTargetEntry;
 
-use crate::ids::{namespace_id, route_hostname, route_port, service_id};
+use crate::ids::{
+    namespace_id, namespace_revision_entry_id, route_hostname, route_port, service_id,
+};
 
 /// A syntactically valid (not real) PEM literal for join-material fixtures.
 pub const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
@@ -20,6 +24,30 @@ pub const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END C
 /// A syntactically valid sha256 hex digest for artifact fixtures.
 pub const TEST_SHA256_DIGEST: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+#[must_use]
+pub const fn test_disk_space() -> MachineDiskSpace {
+    MachineDiskSpace {
+        available_bytes: 40,
+        total_bytes: 100,
+    }
+}
+
+#[must_use]
+pub fn serving_target_entry(service: &str, entry: &str) -> ServingTargetEntry {
+    serving_target_entry_in("default", service, entry)
+}
+
+#[must_use]
+pub fn serving_target_entry_in(namespace: &str, service: &str, entry: &str) -> ServingTargetEntry {
+    ServingTargetEntry {
+        namespace_id: namespace_id(namespace),
+        service_id: service_id(service),
+        namespace_revision_entry_id: namespace_revision_entry_id(entry),
+        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+        desired_replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+    }
+}
 
 #[must_use]
 pub fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {

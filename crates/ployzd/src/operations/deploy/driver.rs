@@ -528,6 +528,9 @@ mod tests {
                 kind: ManagedContainerKind::Service,
             },
             state,
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
         }
     }
 

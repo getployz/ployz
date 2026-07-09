@@ -3,6 +3,7 @@ mod fixtures;
 
 use fixtures::*;
 use ployz_core::dataplane::DataplaneMember;
+use ployz_core::deploy::ReplicaCount;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
     RouteHostname, RouteTarget,
@@ -154,6 +155,8 @@ async fn deploy_worker_runs_containers_then_completes() {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: target_namespace_revision_entry_id(),
+            image: image("registry.example/api:rev_2"),
+            desired_replicas: ReplicaCount::try_new(2).expect("valid replica count"),
         }]
     );
     assert_eq!(

@@ -8,10 +8,11 @@ use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteHostname;
+use ployz_core::state::ActiveMachineState;
 use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{ActiveMachineState, ServingTargetEntry};
 use ployz_nats::service_runtime::RunningNatsService;
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, route_port,
     service_id,
@@ -39,11 +40,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let intent_reader = nats.intent_reader();
 
     nats.namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_old"))
         .await
         .expect("serving target entry stores");
     let _machine_a = nats
@@ -397,6 +394,9 @@ impl StaticRunner {
                 container_id: container.container_id.clone(),
                 identity: container.identity.clone(),
                 state: existing_state(&container.state),
+                health_status: container.health_status,
+                resolved_image_identity: container.resolved_image_identity.clone(),
+                created_at_unix_seconds: container.created_at_unix_seconds,
             })
             .collect();
         Self { existing }

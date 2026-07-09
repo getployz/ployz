@@ -2,11 +2,11 @@ use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::RouteBindingState;
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
-    route_port, service_id,
+    container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
 use ployzd::fact_cache::FactCache;
 use ployzd::intent::machine_roster::MachineRosterStore;
@@ -24,11 +24,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let target = route_target("api.example.com", 443);
 
     nats.namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_1"))
         .await
         .expect("serving target entry stores");
     nats.namespace_intent
@@ -131,8 +127,18 @@ fn machine_snapshot(
 }
 
 fn machine_facts(snapshot: MachineContainerObservationSnapshot) -> MachineFactsSnapshot {
-    MachineFactsSnapshot::try_new(snapshot.machine_id().clone(), snapshot, None, 1)
-        .expect("machine facts are valid")
+    MachineFactsSnapshot::try_new(
+        snapshot.machine_id().clone(),
+        snapshot,
+        None,
+        test_disk_space(),
+        1,
+    )
+    .expect("machine facts are valid")
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 fn managed_observation(

@@ -12,8 +12,9 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::RouteBindingState;
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
     route_hostname, service_id,
@@ -517,26 +518,14 @@ fn namespace_serving_removals_unpublish_omitted_services_only() {
         &namespace_id("default"),
         &[service_id("svc_api")],
         &[
-            ServingTargetEntry {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_api"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-            },
-            ServingTargetEntry {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_omitted"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-            },
+            serving_target_entry("svc_api", "entry_1"),
+            serving_target_entry("svc_omitted", "entry_old"),
         ],
     );
 
     assert_eq!(
         removals,
-        vec![ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_omitted"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_old"),
-        }]
+        vec![serving_target_entry("svc_omitted", "entry_old")]
     );
 }
 

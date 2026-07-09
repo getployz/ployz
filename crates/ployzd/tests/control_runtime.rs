@@ -21,7 +21,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    RouteBindingState, ServingTargetEntry,
+    RouteBindingState,
 };
 use ployz_core::subjects::{
     MachineServiceEndpoint, OperationApiEndpoint, gateway_status,
@@ -32,9 +32,9 @@ use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineUpdateError,
-    MachineUpdateRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest,
-    ServiceInspectRequest, ServiceListRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineTestimony,
+    MachineUpdateError, MachineUpdateRequest, RuntimeDerivedCollectionStatus,
+    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::intent::machine_roster::MachineRosterStore;
@@ -57,6 +57,7 @@ use tokio::net::TcpStream;
 mod support;
 
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     event_sequence, idempotency_key, machine_id, namespace_id, namespace_revision_entry_id,
     operation_id, route_hostname, route_port, service_id,
@@ -215,9 +216,14 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .expect("machine inspects");
     assert_eq!(inspected.active.machine_id, machine_id("machine_2"));
     assert_eq!(inspected.active.name.as_str(), "edge_2");
+    let MachineTestimony::Answered {
+        endpoints, gateway, ..
+    } = &inspected.testimony
+    else {
+        panic!("machine answered");
+    };
     assert_eq!(
-        inspected
-            .endpoints
+        endpoints
             .as_ref()
             .expect("endpoints exist")
             .control_endpoints
@@ -226,11 +232,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)))
     );
     assert_eq!(
-        inspected
-            .gateway
-            .as_ref()
-            .expect("gateway status exists")
-            .serving,
+        gateway.as_ref().expect("gateway status exists").serving,
         GatewayServingStatus::Current
     );
     let machines = api
@@ -257,11 +259,7 @@ async fn control_runtime_serves_active_service_queries() {
     );
     let runtime = nats.start_control(&config).await;
     namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_2"))
         .await
         .expect("service state stores");
     let api = nats.api();
@@ -315,11 +313,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .await
         .expect("active machine stores");
     namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_2"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_2"))
         .await
         .expect("serving target entry stores");
     namespace_intent
@@ -851,9 +845,14 @@ fn machine_facts(
             control_endpoints: vec![public_ip],
             mesh_endpoints: Vec::new(),
         }),
+        test_disk_space(),
         1,
     )
     .expect("machine facts are valid")
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 fn empty_machine_snapshot(value: &str) -> MachineContainerObservationSnapshot {

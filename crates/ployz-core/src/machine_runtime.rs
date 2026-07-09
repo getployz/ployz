@@ -23,6 +23,7 @@ pub struct MachineFactsSnapshot {
     containers: MachineContainerObservationSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
+    disk_space: MachineDiskSpace,
     observed_at_unix_ms: u64,
 }
 
@@ -31,6 +32,7 @@ impl MachineFactsSnapshot {
         machine_id: MachineId,
         containers: MachineContainerObservationSnapshot,
         endpoints: Option<MachineEndpointObservation>,
+        disk_space: MachineDiskSpace,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
         if containers.machine_id() != &machine_id {
@@ -58,6 +60,7 @@ impl MachineFactsSnapshot {
             machine_id,
             containers,
             endpoints,
+            disk_space,
             observed_at_unix_ms,
         })
     }
@@ -78,6 +81,11 @@ impl MachineFactsSnapshot {
     }
 
     #[must_use]
+    pub const fn disk_space(&self) -> MachineDiskSpace {
+        self.disk_space
+    }
+
+    #[must_use]
     pub const fn observed_at_unix_ms(&self) -> u64 {
         self.observed_at_unix_ms
     }
@@ -93,6 +101,7 @@ impl MachineFactsSnapshot {
                 .with_container_replaced(observation)
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
             self.endpoints.clone(),
+            self.disk_space,
             observed_at_unix_ms,
         )
     }
@@ -108,9 +117,18 @@ impl MachineFactsSnapshot {
                 .with_container_removed(container_id)
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
             self.endpoints.clone(),
+            self.disk_space,
             observed_at_unix_ms,
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineDiskSpace {
+    pub available_bytes: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -144,7 +162,7 @@ pub enum MachineFactsSnapshotError {
 pub enum MachineContainerFactDelta {
     ContainerObserved {
         observed_at_unix_ms: u64,
-        observation: ManagedContainerObservation,
+        observation: Box<ManagedContainerObservation>,
     },
     ContainerRemoved {
         machine_id: MachineId,
@@ -160,6 +178,7 @@ struct MachineFactsSnapshotWire {
     containers: MachineContainerObservationSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
+    disk_space: MachineDiskSpace,
     observed_at_unix_ms: u64,
 }
 
@@ -171,6 +190,7 @@ impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
             value.machine_id,
             value.containers,
             value.endpoints,
+            value.disk_space,
             value.observed_at_unix_ms,
         )
     }
@@ -182,6 +202,7 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
             machine_id: value.machine_id,
             containers: value.containers,
             endpoints: value.endpoints,
+            disk_space: value.disk_space,
             observed_at_unix_ms: value.observed_at_unix_ms,
         }
     }
@@ -291,6 +312,15 @@ impl ManagedContainerIdentity {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedContainerHealthStatus {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
 /// Machine-owned container fact payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -300,6 +330,12 @@ pub struct ManagedContainerObservation {
     pub container_id: ContainerId,
     pub identity: ManagedContainerIdentity,
     pub state: ContainerRuntimeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_status: Option<ManagedContainerHealthStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_image_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_seconds: Option<i64>,
 }
 
 impl ManagedContainerObservation {

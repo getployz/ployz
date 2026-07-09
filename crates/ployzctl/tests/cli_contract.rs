@@ -8,15 +8,19 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
+use ployz_core::machine_runtime::ManagedContainerHealthStatus;
 use ployz_core::ops::{
     DeployOperationFailure, DeployOperationState, DeployRunningStage, HealthCheckFailure,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit, OperationIdempotencyKey,
     OperationStatus, OperationStatusSnapshot, OperatorHint, ReplayedOperationEvent,
     RetainedArtifact,
 };
-use ployz_core::state::{MachineLifecycle, ServingTargetEntry};
-use ployz_sdk_types::{LogsTailLines, LogsTailTarget, ServiceSnapshot};
+use ployz_core::state::MachineLifecycle;
+use ployz_sdk_types::{
+    LogsTailLines, LogsTailTarget, ServiceContainerMembership, ServiceContainerTestimony,
+    ServiceSnapshot,
+};
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::commands::init::{
     FirstMachineInitOutput, InstallRolePolicy, plan_first_machine_process_set,
@@ -1085,7 +1089,7 @@ fn service_list_renders_service_summaries() {
 
     assert_eq!(
         output,
-        "svc_api namespace-revision-entry rev_2\nsvc_worker namespace-revision-entry rev_1\n"
+        "svc_api image ghcr.io/acme/api:rev-2 testimony ready-replicas 0 intent desired-replicas 1 machines none routes none\nsvc_worker image ghcr.io/acme/api:rev-2 testimony ready-replicas 0 intent desired-replicas 1 machines none routes none\n"
     );
 }
 
@@ -1103,7 +1107,67 @@ fn service_list_renders_no_output_without_services() {
 fn service_inspect_renders_active_revision() {
     let output = ServiceInspectOutput::new(service_snapshot("svc_api", "rev_2")).render();
 
-    assert_eq!(output, "service svc_api\nnamespace-revision-entry rev_2\n");
+    assert_eq!(
+        output,
+        "service svc_api\nintent namespace-revision-entry rev_2\nintent image ghcr.io/acme/api:rev-2\nintent desired-replicas 1\nintent routes none\ncontainers none\n"
+    );
+}
+
+#[test]
+fn service_inspect_renders_container_rows() {
+    let mut service = service_snapshot("svc_api", "rev_2");
+    service.testimony = ployz_sdk_types::ServiceTestimony {
+        ready_container_count: 0,
+        observed_container_count: 1,
+        machines: vec![
+            ployz_sdk_types::ServiceMachineTestimony::Answered {
+                machine_id: machine_id("machine_a"),
+                containers: vec![
+                    ServiceContainerTestimony {
+                        observation: ployz_test_support::containers::observation(
+                            "machine_a",
+                            "ctr_active",
+                        )
+                        .with(
+                            ployz_test_support::containers::identity("svc_api")
+                                .entry("rev_2")
+                                .operation("op_deploy"),
+                        )
+                        .running_unroutable()
+                        .build(),
+                        membership: ServiceContainerMembership::ServingTargetMember,
+                    },
+                    ServiceContainerTestimony {
+                        observation: ployz_test_support::containers::observation(
+                            "machine_a",
+                            "ctr_failed",
+                        )
+                        .with(
+                            ployz_test_support::containers::identity("svc_api")
+                                .entry("rev_failed")
+                                .operation("op_deploy"),
+                        )
+                        .health_status(ManagedContainerHealthStatus::Unhealthy)
+                        .resolved_image_identity("sha256:abc123")
+                        .created_at_unix_seconds(123)
+                        .exited()
+                        .build(),
+                        membership: ServiceContainerMembership::RetainedEvidence,
+                    },
+                ],
+            },
+            ployz_sdk_types::ServiceMachineTestimony::NoAnswer {
+                machine_id: machine_id("machine_b"),
+            },
+        ],
+    };
+
+    let output = ServiceInspectOutput::new(service).render();
+
+    assert_eq!(
+        output,
+        "service svc_api\nintent namespace-revision-entry rev_2\nintent image ghcr.io/acme/api:rev-2\nintent desired-replicas 1\nintent routes none\ncontainer ctr_active machine machine_a docker-state running health absent resolved-image absent created absent operation op_deploy serving-target-member\ncontainer ctr_failed machine machine_a docker-state exited health unhealthy resolved-image sha256:abc123 created 123 operation op_deploy retained-evidence\nmachine machine_b: no answer\n"
+    );
 }
 
 fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOperationEvent {
@@ -1115,14 +1179,15 @@ fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOp
 
 fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
-        active: ServingTargetEntry {
-            namespace_id: ployz_core::ids::NamespaceId::try_new("default")
-                .expect("valid namespace id"),
-            service_id: ServiceId::try_new(service_id).expect("valid service id"),
-            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(
-                namespace_revision_entry_id,
-            )
-            .expect("valid revision id"),
+        active: ployz_test_support::fixtures::serving_target_entry(
+            service_id,
+            namespace_revision_entry_id,
+        ),
+        route_bindings: Vec::new(),
+        testimony: ployz_sdk_types::ServiceTestimony {
+            ready_container_count: 0,
+            observed_container_count: 0,
+            machines: Vec::new(),
         },
     }
 }

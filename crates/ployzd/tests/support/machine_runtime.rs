@@ -77,6 +77,9 @@ impl MachineContainerRunner for ObservingContainerRunner {
             container_id: container_id.clone(),
             identity: command.identity,
             state: ContainerRuntimeState::Exited,
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
         };
         let snapshot = self
             .snapshot()
@@ -274,6 +277,9 @@ fn existing_container_from_observation(
         container_id: observation.container_id.clone(),
         identity: observation.identity.clone(),
         state: existing_container_state(&observation.state),
+        health_status: observation.health_status,
+        resolved_image_identity: observation.resolved_image_identity.clone(),
+        created_at_unix_seconds: observation.created_at_unix_seconds,
     }
 }
 

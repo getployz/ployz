@@ -1,5 +1,4 @@
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
-use ployz_core::ids::NamespaceRevisionEntryId;
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
@@ -9,7 +8,6 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    ServingTargetEntry,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::connect::connect_authenticated;
@@ -649,7 +647,6 @@ fn machine_join_bundle() -> MachineJoinBundle {
 fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
     let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
-        last_observed_at_unix_seconds: None,
         active: ActiveMachineState {
             lifecycle: MachineLifecycle::Active,
             machine_id: machine_id.clone(),
@@ -658,18 +655,22 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
         },
-        endpoints: Some(MachineEndpointObservation {
-            machine_id: machine_id.clone(),
-            control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
-            mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
-        }),
-        gateway: Some(GatewayStatusObservation {
-            machine_id,
-            listen_addr: "127.0.0.1:8080".parse().expect("valid gateway listen addr"),
-            serving: GatewayServingStatus::Current,
-            route_count: 2,
-        }),
-        observed_container_count: 3,
+        testimony: ployz_sdk_types::MachineTestimony::Answered {
+            endpoints: Some(MachineEndpointObservation {
+                machine_id: machine_id.clone(),
+                control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
+                mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
+            }),
+            gateway: Some(GatewayStatusObservation {
+                machine_id,
+                listen_addr: "127.0.0.1:8080".parse().expect("valid gateway listen addr"),
+                serving: GatewayServingStatus::Current,
+                route_count: 2,
+            }),
+            observed_container_count: 3,
+            disk_space: ployz_test_support::fixtures::test_disk_space(),
+            last_observed_at_unix_seconds: 60,
+        },
     }
 }
 
@@ -697,14 +698,15 @@ fn deploy_target(service_id: &str) -> DeployRequest {
 
 fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> ServiceSnapshot {
     ServiceSnapshot {
-        active: ServingTargetEntry {
-            namespace_id: ployz_core::ids::NamespaceId::try_new("default")
-                .expect("valid namespace id"),
-            service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
-            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(
-                namespace_revision_entry_id,
-            )
-            .expect("valid revision id"),
+        active: ployz_test_support::fixtures::serving_target_entry(
+            service_id,
+            namespace_revision_entry_id,
+        ),
+        route_bindings: Vec::new(),
+        testimony: ployz_sdk_types::ServiceTestimony {
+            ready_container_count: 0,
+            observed_container_count: 0,
+            machines: Vec::new(),
         },
     }
 }
