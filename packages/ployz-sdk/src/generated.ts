@@ -116,7 +116,29 @@ export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMou
 
 export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, };
 
-export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, volume_mounts?: Array<ServiceVolumeMount>, };
+export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
+
+export type HealthcheckDurationNanos = SafeInteger<"HealthcheckDurationNanos">;
+
+export type HealthcheckRetries = SafeInteger<"HealthcheckRetries">;
+
+export type ContainerHealthcheckTest = "inherit" | "disable" | { "exec": ContainerCommand } | { "shell": HealthcheckShellCommand };
+
+export type ContainerHealthcheck = { test: ContainerHealthcheckTest, interval?: HealthcheckDurationNanos | null, timeout?: HealthcheckDurationNanos | null, retries?: HealthcheckRetries | null, start_period?: HealthcheckDurationNanos | null, };
+
+export type ContainerRestartPolicy = "docker-default" | "no" | "always" | "on-failure" | "unless-stopped";
+
+export type LinuxCapability = Brand<string, "LinuxCapability">;
+
+export type NanoCpus = SafeInteger<"NanoCpus">;
+
+export type MemoryBytes = SafeInteger<"MemoryBytes">;
+
+export type PidsLimit = SafeInteger<"PidsLimit">;
+
+export type ContainerResourceLimits = { nano_cpus?: NanoCpus | null, memory_bytes?: MemoryBytes | null, pids?: PidsLimit | null, };
+
+export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoint: ContainerEntrypoint | null, environment: ServiceEnvironment, stop_grace_period: StopGracePeriod, volume_mounts?: Array<ServiceVolumeMount>, healthcheck?: ContainerHealthcheck | null, restart_policy?: ContainerRestartPolicy, cap_add?: Array<LinuxCapability>, cap_drop?: Array<LinuxCapability>, resources?: ContainerResourceLimits, };
 
 export type DeployRequest = { namespace_id: NamespaceId, services: Array<DeployServiceSpec>, };
 

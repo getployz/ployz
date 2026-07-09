@@ -9,7 +9,14 @@
         "command": null,
         "entrypoint": null,
         "environment": {},
-        "stop_grace_period": 10
+        "stop_grace_period": 10,
+        "healthcheck": {
+          "test": {
+            "exec": [
+              "true"
+            ]
+          }
+        }
       },
       "routes": [
         {

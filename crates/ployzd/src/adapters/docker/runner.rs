@@ -11,8 +11,9 @@ use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
-    ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthStatusEnum,
-    HostConfig, Mount, MountType, NetworkInspect, NetworkingConfig,
+    ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
+    HealthStatusEnum, HostConfig, Mount, MountType, NetworkInspect, NetworkingConfig,
+    RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, InspectNetworkOptions,
@@ -20,7 +21,9 @@ use bollard::query_parameters::{
     RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
-use ployz_core::deploy::ContainerEntrypoint;
+use ployz_core::deploy::{
+    ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
+};
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::machine_runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
@@ -616,16 +619,36 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
         ContainerEntrypoint::Clear => Vec::new(),
         ContainerEntrypoint::Argv(argv) => Vec::from(argv),
     });
+    let healthcheck = runtime.healthcheck.as_ref().map(health_config);
+    let restart_policy = restart_policy(runtime.restart_policy);
+    let cap_add = capabilities(&runtime.cap_add);
+    let cap_drop = capabilities(&runtime.cap_drop);
+    let memory = runtime
+        .resources
+        .memory_bytes
+        .map(|value| saturating_i64(value.get()));
+    let nano_cpus = runtime
+        .resources
+        .nano_cpus
+        .map(|value| saturating_i64(value.get()));
+    let pids_limit = runtime.resources.pids.map(|value| value.get());
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
         env,
         cmd,
         entrypoint,
+        healthcheck,
         stop_timeout: Some(i64::from(runtime.stop_grace_period.as_seconds())),
         labels: Some(hashmap_from_btree(labels::render(&command.identity))),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
             mounts: docker_volume_mounts(&command.identity, &runtime.volume_mounts),
+            restart_policy,
+            cap_add,
+            cap_drop,
+            memory,
+            nano_cpus,
+            pids_limit,
             ..Default::default()
         }),
         networking_config: Some(NetworkingConfig {
@@ -675,6 +698,65 @@ fn docker_volume_name(
         namespace_id,
         volume_name.len(),
         volume_name
+    )
+}
+
+fn health_config(healthcheck: &ContainerHealthcheck) -> HealthConfig {
+    HealthConfig {
+        test: Some(match &healthcheck.test {
+            ContainerHealthcheckTest::Inherit => Vec::new(),
+            ContainerHealthcheckTest::Disable => vec!["NONE".to_owned()],
+            ContainerHealthcheckTest::Exec(command) => std::iter::once("CMD".to_owned())
+                .chain(command.as_slice().iter().cloned())
+                .collect(),
+            ContainerHealthcheckTest::Shell(command) => {
+                vec!["CMD-SHELL".to_owned(), command.as_str().to_owned()]
+            }
+        }),
+        interval: healthcheck
+            .interval
+            .map(|value| saturating_i64(value.as_nanos())),
+        timeout: healthcheck
+            .timeout
+            .map(|value| saturating_i64(value.as_nanos())),
+        retries: healthcheck.retries.map(|value| i64::from(value.get())),
+        start_period: healthcheck
+            .start_period
+            .map(|value| saturating_i64(value.as_nanos())),
+        start_interval: None,
+    }
+}
+
+/// Docker's API carries byte and nanosecond quantities as `i64`; product
+/// values are `u64`, so anything past `i64::MAX` (physically impossible
+/// limits) clamps instead of failing the create call.
+fn saturating_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn restart_policy(policy: ContainerRestartPolicy) -> Option<RestartPolicy> {
+    let name = match policy {
+        ContainerRestartPolicy::DockerDefault => return None,
+        ContainerRestartPolicy::No => RestartPolicyNameEnum::NO,
+        ContainerRestartPolicy::Always => RestartPolicyNameEnum::ALWAYS,
+        ContainerRestartPolicy::OnFailure => RestartPolicyNameEnum::ON_FAILURE,
+        ContainerRestartPolicy::UnlessStopped => RestartPolicyNameEnum::UNLESS_STOPPED,
+    };
+    Some(RestartPolicy {
+        name: Some(name),
+        maximum_retry_count: None,
+    })
+}
+
+fn capabilities(capabilities: &[ployz_core::deploy::LinuxCapability]) -> Option<Vec<String>> {
+    if capabilities.is_empty() {
+        return None;
+    }
+    Some(
+        ployz_core::deploy::canonical_capabilities(capabilities)
+            .into_iter()
+            .map(|capability| capability.as_str().to_owned())
+            .collect(),
     )
 }
 
@@ -790,9 +872,11 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerCommand, ContainerEntrypoint, ContainerMountPath, ContainerRuntimeSpec, EnvName,
-        EnvValue, ImageReference, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-        VolumeName,
+        ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
+        ContainerMountPath, ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec,
+        EnvName, EnvValue, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
+        ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ServiceEnvironment,
+        ServiceVolumeMount, StopGracePeriod, VolumeName,
     };
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
@@ -841,6 +925,53 @@ mod tests {
         assert_eq!(body.cmd, Some(vec!["serve".to_owned(), "api".to_owned()]));
         assert_eq!(body.entrypoint, Some(vec!["/init".to_owned()]));
         assert_eq!(body.stop_timeout, Some(30));
+    }
+
+    #[test]
+    fn create_body_sets_runtime_controls() {
+        let mut runtime = ContainerRuntimeSpec::image_defaults();
+        runtime.healthcheck = Some(ContainerHealthcheck {
+            test: ContainerHealthcheckTest::Shell(
+                HealthcheckShellCommand::try_new("wget -q -O - http://127.0.0.1/")
+                    .expect("valid healthcheck"),
+            ),
+            interval: Some(HealthcheckDurationNanos::try_new(5_000_000_000).expect("duration")),
+            timeout: Some(HealthcheckDurationNanos::try_new(2_000_000_000).expect("duration")),
+            retries: Some(HealthcheckRetries::try_new(3).expect("retries")),
+            start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        });
+        runtime.restart_policy = ContainerRestartPolicy::UnlessStopped;
+        runtime.cap_add = vec![LinuxCapability::try_new("NET_ADMIN").expect("capability")];
+        runtime.cap_drop = vec![LinuxCapability::try_new("MKNOD").expect("capability")];
+        runtime.resources = ContainerResourceLimits {
+            nano_cpus: Some(NanoCpus::try_new(500_000_000).expect("nano cpus")),
+            memory_bytes: Some(MemoryBytes::try_new(64_000_000).expect("memory")),
+            pids: Some(PidsLimit::try_new(64).expect("pids")),
+        };
+
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            runtime,
+            identity: managed_identity(),
+        });
+
+        assert_eq!(
+            body.healthcheck.map(|health| health.test),
+            Some(Some(vec![
+                "CMD-SHELL".to_owned(),
+                "wget -q -O - http://127.0.0.1/".to_owned()
+            ]))
+        );
+        let host = body.host_config.expect("host config exists");
+        assert_eq!(
+            host.restart_policy.and_then(|policy| policy.name),
+            Some(RestartPolicyNameEnum::UNLESS_STOPPED)
+        );
+        assert_eq!(host.cap_add, Some(vec!["NET_ADMIN".to_owned()]));
+        assert_eq!(host.cap_drop, Some(vec!["MKNOD".to_owned()]));
+        assert_eq!(host.nano_cpus, Some(500_000_000));
+        assert_eq!(host.memory, Some(64_000_000));
+        assert_eq!(host.pids_limit, Some(64));
     }
 
     #[test]

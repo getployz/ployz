@@ -18,9 +18,11 @@
 mod support;
 
 use ployz_core::deploy::{
-    ContainerCommand, ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, ImageReference, ReplicaCount,
-    ServiceEnvironment, ServiceVolumeMount, VolumeName,
+    ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
+    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest,
+    DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
+    NanoCpus, PidsLimit, ReplicaCount, ServiceEnvironment, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
@@ -646,13 +648,7 @@ async fn assert_smoke_workload_container(
             machine.name
         );
     }
-    ManagedWorkloadContainer {
-        id: container.id.clone(),
-        labels: container.labels.clone(),
-        endpoint_ip: container.endpoint_ip,
-        env: container.env.clone(),
-        cmd: container.cmd.clone(),
-    }
+    container.clone()
 }
 
 async fn assert_workloads_reach_each_other_by_overlay_ip(
@@ -776,6 +772,82 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
             "-c".to_owned(),
             "env; sleep 600".to_owned()
         ]
+    );
+    assert_eq!(
+        container.healthcheck["Test"],
+        serde_json::json!(["CMD-SHELL", "test \"$PLOYZ_E2E_RUNTIME\" = present"])
+    );
+    assert_eq!(
+        container.restart_policy["Name"],
+        serde_json::json!("unless-stopped")
+    );
+    assert_eq!(container.cap_add, vec!["NET_ADMIN".to_owned()]);
+    assert_eq!(container.cap_drop, vec!["MKNOD".to_owned()]);
+    assert_eq!(container.nano_cpus, 500_000_000);
+    assert_eq!(container.memory, 64_000_000);
+    assert_eq!(container.pids_limit, 64);
+
+    scenario_failing_healthcheck_deploy(core).await;
+}
+
+async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
+    let accepted = core
+        .api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_dind_failing_healthcheck"),
+            target: failing_healthcheck_deploy_target(),
+        })
+        .await
+        .expect("failing healthcheck deploy submits");
+    let deploy_operation = accepted.operation_id;
+
+    let status =
+        wait_for_terminal_deploy_status(core, &deploy_operation, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            &status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Failed { .. },
+                ..
+            }
+        ),
+        "failing healthcheck deploy did not fail: {status:?}"
+    );
+
+    let filter = format!("label={SERVICE_ID_LABEL}=svc_bad_health");
+    let mut retained = Vec::new();
+    for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+        let listed = core
+            .exec_on(
+                machine,
+                &[
+                    "docker",
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    "--no-trunc",
+                    "--filter",
+                    &filter,
+                ],
+            )
+            .await;
+        assert!(
+            listed.success(),
+            "inner docker ps -a on {} failed: {listed:?}",
+            machine.name
+        );
+        retained.extend(
+            listed
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    assert!(
+        !retained.is_empty(),
+        "failing healthcheck deploy must retain its failed container"
     );
 }
 
@@ -912,6 +984,37 @@ fn volume_deploy_target(command: &str) -> DeployRequest {
     }
 }
 
+fn failing_healthcheck_deploy_target() -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "sleep 600".to_owned(),
+        ])
+        .expect("valid runtime command"),
+    );
+    runtime.healthcheck = Some(ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("exit 1").expect("valid healthcheck"),
+        ),
+        interval: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        timeout: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        retries: Some(HealthcheckRetries::try_new(1).expect("retries")),
+        start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+    });
+    DeployRequest {
+        namespace_id: namespace_id("bad_health"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_bad_health"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime,
+            routes: Vec::new(),
+        }],
+    }
+}
+
 fn runtime_fields_spec() -> ContainerRuntimeSpec {
     let mut runtime = ContainerRuntimeSpec::image_defaults();
     runtime.command = Some(
@@ -926,6 +1029,24 @@ fn runtime_fields_spec() -> ContainerRuntimeSpec {
         EnvName::try_new("PLOYZ_E2E_RUNTIME").expect("valid env name"),
         EnvValue::try_new("present").expect("valid env value"),
     )]));
+    runtime.healthcheck = Some(ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("test \"$PLOYZ_E2E_RUNTIME\" = present")
+                .expect("valid healthcheck"),
+        ),
+        interval: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        timeout: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        retries: Some(HealthcheckRetries::try_new(3).expect("retries")),
+        start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+    });
+    runtime.restart_policy = ContainerRestartPolicy::UnlessStopped;
+    runtime.cap_add = vec![LinuxCapability::try_new("NET_ADMIN").expect("valid capability")];
+    runtime.cap_drop = vec![LinuxCapability::try_new("MKNOD").expect("valid capability")];
+    runtime.resources = ContainerResourceLimits {
+        nano_cpus: Some(NanoCpus::try_new(500_000_000).expect("valid nano cpus")),
+        memory_bytes: Some(MemoryBytes::try_new(64_000_000).expect("valid memory")),
+        pids: Some(PidsLimit::try_new(64).expect("valid pids")),
+    };
     runtime
 }
 

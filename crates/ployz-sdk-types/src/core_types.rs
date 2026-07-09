@@ -13,13 +13,15 @@ pub use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
-    ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerMountPath,
-    ContainerMountPathError, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
+    ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
+    ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
     DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
-    DeployServiceSpec, EnvName,
-    EnvNameError, EnvValue, EnvValueError, ImageReference, ImageReferenceError, ReplicaCount,
-    ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeName, VolumeNameError,
+    DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError,
+    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ReplicaCount, ReplicaCountError,
+    ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
+    VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,

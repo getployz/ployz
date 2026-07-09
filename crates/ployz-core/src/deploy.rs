@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::num::NonZeroU16;
+use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
@@ -78,7 +78,7 @@ pub struct DeployServiceSpec {
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v4";
+        "ployz.namespace_revision_entry.v5";
     const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v3";
 
     #[must_use]
@@ -194,6 +194,11 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         environment,
         stop_grace_period,
         volume_mounts,
+        healthcheck,
+        restart_policy,
+        cap_add,
+        cap_drop,
+        resources,
     } = runtime;
 
     match command {
@@ -230,12 +235,108 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         hash_frame(hasher, "volume_name", mount.volume_name.as_str().as_bytes());
         hash_frame(hasher, "volume_target", mount.target.as_str().as_bytes());
     }
+
+    match healthcheck {
+        Some(healthcheck) => {
+            hash_frame(hasher, "healthcheck", b"some");
+            hash_healthcheck(hasher, healthcheck);
+        }
+        None => hash_frame(hasher, "healthcheck", b"none"),
+    }
+    hash_frame(
+        hasher,
+        "restart_policy",
+        restart_policy.as_docker_name().as_bytes(),
+    );
+    for capability in canonical_capabilities(cap_add) {
+        hash_frame(hasher, "cap_add", capability.as_str().as_bytes());
+    }
+    for capability in canonical_capabilities(cap_drop) {
+        hash_frame(hasher, "cap_drop", capability.as_str().as_bytes());
+    }
+    if let Some(nano_cpus) = resources.nano_cpus {
+        hash_frame(hasher, "nano_cpus", nano_cpus.get().to_string().as_bytes());
+    }
+    if let Some(memory_bytes) = resources.memory_bytes {
+        hash_frame(
+            hasher,
+            "memory_bytes",
+            memory_bytes.get().to_string().as_bytes(),
+        );
+    }
+    if let Some(pids) = resources.pids {
+        hash_frame(hasher, "pids", pids.get().to_string().as_bytes());
+    }
 }
 
 fn hash_frame(hasher: &mut Sha256, tag: &str, bytes: &[u8]) {
     hasher.update(tag.as_bytes());
     hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
+}
+
+/// The canonical (sorted, deduplicated) order for a capability list. Both
+/// the namespace revision entry hash and the Docker create call go through
+/// this one ordering, so the identity digest can never disagree with what a
+/// container was actually created with.
+#[must_use]
+pub fn canonical_capabilities(capabilities: &[LinuxCapability]) -> Vec<&LinuxCapability> {
+    let mut capabilities = capabilities.iter().collect::<Vec<_>>();
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
+}
+
+fn hash_healthcheck(hasher: &mut Sha256, healthcheck: &ContainerHealthcheck) {
+    let ContainerHealthcheck {
+        test,
+        interval,
+        timeout,
+        retries,
+        start_period,
+    } = healthcheck;
+    match test {
+        ContainerHealthcheckTest::Inherit => hash_frame(hasher, "healthcheck_test", b"inherit"),
+        ContainerHealthcheckTest::Disable => hash_frame(hasher, "healthcheck_test", b"disable"),
+        ContainerHealthcheckTest::Exec(command) => {
+            hash_frame(hasher, "healthcheck_test", b"exec");
+            for arg in command.as_slice() {
+                hash_frame(hasher, "healthcheck_arg", arg.as_bytes());
+            }
+        }
+        ContainerHealthcheckTest::Shell(command) => {
+            hash_frame(hasher, "healthcheck_test", b"shell");
+            hash_frame(hasher, "healthcheck_shell", command.as_str().as_bytes());
+        }
+    }
+    if let Some(value) = interval {
+        hash_frame(
+            hasher,
+            "healthcheck_interval",
+            value.as_nanos().to_string().as_bytes(),
+        );
+    }
+    if let Some(value) = timeout {
+        hash_frame(
+            hasher,
+            "healthcheck_timeout",
+            value.as_nanos().to_string().as_bytes(),
+        );
+    }
+    if let Some(value) = retries {
+        hash_frame(
+            hasher,
+            "healthcheck_retries",
+            value.get().to_string().as_bytes(),
+        );
+    }
+    if let Some(value) = start_period {
+        hash_frame(
+            hasher,
+            "healthcheck_start_period",
+            value.as_nanos().to_string().as_bytes(),
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -521,10 +622,398 @@ pub enum ContainerCommandError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"HealthcheckShellCommand\">")
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct HealthcheckShellCommand(String);
+
+impl HealthcheckShellCommand {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, HealthcheckShellCommandError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(HealthcheckShellCommandError::Empty);
+        }
+        if value.contains('\0') {
+            return Err(HealthcheckShellCommandError::ContainsNul { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HealthcheckShellCommand {
+    type Error = HealthcheckShellCommandError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<HealthcheckShellCommand> for String {
+    fn from(value: HealthcheckShellCommand) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HealthcheckShellCommandError {
+    #[error("healthcheck shell command must not be empty")]
+    Empty,
+    #[error("healthcheck shell command contains NUL: {value}")]
+    ContainsNul { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerEntrypoint {
     Clear,
     Argv(ContainerCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "SafeInteger<\"HealthcheckDurationNanos\">")
+)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct HealthcheckDurationNanos(NonZeroU64);
+
+impl HealthcheckDurationNanos {
+    pub fn try_new(value: u64) -> Result<Self, HealthcheckDurationNanosError> {
+        let Some(value) = NonZeroU64::new(value) else {
+            return Err(HealthcheckDurationNanosError::Zero);
+        };
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn as_nanos(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u64> for HealthcheckDurationNanos {
+    type Error = HealthcheckDurationNanosError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<HealthcheckDurationNanos> for u64 {
+    fn from(value: HealthcheckDurationNanos) -> Self {
+        value.as_nanos()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HealthcheckDurationNanosError {
+    #[error("healthcheck duration must be greater than zero")]
+    Zero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "SafeInteger<\"HealthcheckRetries\">")
+)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct HealthcheckRetries(NonZeroU16);
+
+impl HealthcheckRetries {
+    pub fn try_new(value: u16) -> Result<Self, HealthcheckRetriesError> {
+        let Some(value) = NonZeroU16::new(value) else {
+            return Err(HealthcheckRetriesError::Zero);
+        };
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for HealthcheckRetries {
+    type Error = HealthcheckRetriesError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<HealthcheckRetries> for u16 {
+    fn from(value: HealthcheckRetries) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HealthcheckRetriesError {
+    #[error("healthcheck retries must be greater than zero")]
+    Zero,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerHealthcheckTest {
+    Inherit,
+    Disable,
+    Exec(ContainerCommand),
+    Shell(HealthcheckShellCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ContainerHealthcheck {
+    pub test: ContainerHealthcheckTest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<HealthcheckDurationNanos>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<HealthcheckDurationNanos>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retries: Option<HealthcheckRetries>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_period: Option<HealthcheckDurationNanos>,
+}
+
+impl ContainerHealthcheck {
+    /// Whether this healthcheck makes Docker run a probe and report a
+    /// health status the deploy can wait on. `Disable` turns probing off,
+    /// and `Inherit` only probes when the image defines its own healthcheck,
+    /// so neither guarantees Docker will ever report health: gating a deploy
+    /// on them would wait until the step timeout instead of succeeding.
+    #[must_use]
+    pub const fn reports_docker_health(&self) -> bool {
+        match self.test {
+            ContainerHealthcheckTest::Exec(_) | ContainerHealthcheckTest::Shell(_) => true,
+            ContainerHealthcheckTest::Inherit | ContainerHealthcheckTest::Disable => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "kebab-case")]
+pub enum ContainerRestartPolicy {
+    DockerDefault,
+    No,
+    Always,
+    OnFailure,
+    UnlessStopped,
+}
+
+impl ContainerRestartPolicy {
+    #[must_use]
+    pub const fn as_docker_name(self) -> &'static str {
+        match self {
+            Self::DockerDefault => "",
+            Self::No => "no",
+            Self::Always => "always",
+            Self::OnFailure => "on-failure",
+            Self::UnlessStopped => "unless-stopped",
+        }
+    }
+}
+
+const fn default_restart_policy() -> ContainerRestartPolicy {
+    ContainerRestartPolicy::DockerDefault
+}
+
+fn is_default_restart_policy(value: &ContainerRestartPolicy) -> bool {
+    *value == ContainerRestartPolicy::DockerDefault
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"LinuxCapability\">")
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct LinuxCapability(String);
+
+impl LinuxCapability {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, LinuxCapabilityError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(LinuxCapabilityError::Empty);
+        }
+        if value.contains('\0') {
+            return Err(LinuxCapabilityError::ContainsNul { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for LinuxCapability {
+    type Error = LinuxCapabilityError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<LinuxCapability> for String {
+    fn from(value: LinuxCapability) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LinuxCapabilityError {
+    #[error("Linux capability must not be empty")]
+    Empty,
+    #[error("Linux capability contains NUL: {value}")]
+    ContainsNul { value: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"NanoCpus\">"))]
+#[serde(try_from = "u64", into = "u64")]
+pub struct NanoCpus(NonZeroU64);
+
+impl NanoCpus {
+    pub fn try_new(value: u64) -> Result<Self, ResourceLimitError> {
+        let Some(value) = NonZeroU64::new(value) else {
+            return Err(ResourceLimitError::Zero);
+        };
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u64> for NanoCpus {
+    type Error = ResourceLimitError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NanoCpus> for u64 {
+    fn from(value: NanoCpus) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"MemoryBytes\">"))]
+#[serde(try_from = "u64", into = "u64")]
+pub struct MemoryBytes(NonZeroU64);
+
+impl MemoryBytes {
+    pub fn try_new(value: u64) -> Result<Self, ResourceLimitError> {
+        let Some(value) = NonZeroU64::new(value) else {
+            return Err(ResourceLimitError::Zero);
+        };
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u64> for MemoryBytes {
+    type Error = ResourceLimitError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MemoryBytes> for u64 {
+    fn from(value: MemoryBytes) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"PidsLimit\">"))]
+#[serde(try_from = "i64", into = "i64")]
+pub struct PidsLimit(NonZeroI64);
+
+impl PidsLimit {
+    pub fn try_new(value: i64) -> Result<Self, ResourceLimitError> {
+        let Some(value) = NonZeroI64::new(value) else {
+            return Err(ResourceLimitError::Zero);
+        };
+        if value.get() < -1 {
+            return Err(ResourceLimitError::BelowMinusOne);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<i64> for PidsLimit {
+    type Error = ResourceLimitError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<PidsLimit> for i64 {
+    fn from(value: PidsLimit) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ResourceLimitError {
+    #[error("resource limit must be greater than zero")]
+    Zero,
+    #[error("pids limit must be -1 or greater")]
+    BelowMinusOne,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ContainerResourceLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nano_cpus: Option<NanoCpus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<MemoryBytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pids: Option<PidsLimit>,
+}
+
+impl ContainerResourceLimits {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nano_cpus.is_none() && self.memory_bytes.is_none() && self.pids.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,6 +1058,19 @@ pub struct ContainerRuntimeSpec {
     pub stop_grace_period: StopGracePeriod,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_mounts: Vec<ServiceVolumeMount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthcheck: Option<ContainerHealthcheck>,
+    #[serde(
+        default = "default_restart_policy",
+        skip_serializing_if = "is_default_restart_policy"
+    )]
+    pub restart_policy: ContainerRestartPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cap_add: Vec<LinuxCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cap_drop: Vec<LinuxCapability>,
+    #[serde(default, skip_serializing_if = "ContainerResourceLimits::is_empty")]
+    pub resources: ContainerResourceLimits,
 }
 
 impl ContainerRuntimeSpec {
@@ -580,6 +1082,11 @@ impl ContainerRuntimeSpec {
             environment: ServiceEnvironment::empty(),
             stop_grace_period: StopGracePeriod::default_grace(),
             volume_mounts: Vec::new(),
+            healthcheck: None,
+            restart_policy: ContainerRestartPolicy::DockerDefault,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            resources: ContainerResourceLimits::default(),
         }
     }
 }
