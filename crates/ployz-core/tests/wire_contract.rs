@@ -745,7 +745,7 @@ fn managed_container_observation_wire_shape_nests_identity() {
                 "step_id": "step_1",
                 "kind": "service",
             },
-            "state": { "state": "running" },
+            "state": { "state": "running", "health": "none" },
         })
     );
 }

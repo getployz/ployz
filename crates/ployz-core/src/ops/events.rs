@@ -1,13 +1,12 @@
 //! Durable operation events: the flat stream shape, its subjects and
-//! message ids, and the classification back into per-kind events. Every
-//! match that must enumerate all event variants lives in this file.
+//! message ids, and the classification back into per-kind events.
 
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
-use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
+use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
@@ -22,11 +21,15 @@ use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
+use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
+use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployRunningStage, MachineAddOperationState, MachineLifecycleFailure,
-    MachineSubstrateVersions, MachineUpdateFailure, OperationKind,
+    MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
+    NamespaceRemoveRunningStage, OperationKind, RouteTarget, ServiceRestartFailure,
+    ServiceRestartRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +41,8 @@ pub enum OperationSubject {
     MachineAdd { machine_id: MachineId },
     MachineUpdate { machine_id: MachineId },
     CoreReplace { machine_id: MachineId },
+    ServiceRestart { service_id: ServiceId },
+    NamespaceRemove { namespace_id: NamespaceId },
 }
 
 /// Local operation evidence event and plain NATS progress payload.
@@ -182,6 +187,51 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: CoreReplaceFailure,
     },
+    ServiceRestartSubmitted {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        service_id: ServiceId,
+    },
+    ServiceRestartRunning {
+        operation_id: OperationId,
+        stage: ServiceRestartRunningStage,
+    },
+    ServiceRestartContainerRestarted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        container_id: ContainerId,
+    },
+    ServiceRestartCompleted {
+        operation_id: OperationId,
+    },
+    ServiceRestartFailed {
+        operation_id: OperationId,
+        failure: ServiceRestartFailure,
+    },
+    NamespaceRemoveSubmitted {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+    },
+    NamespaceRemoveRunning {
+        operation_id: OperationId,
+        stage: NamespaceRemoveRunningStage,
+    },
+    NamespaceRemoveRouteBindingRemoved {
+        operation_id: OperationId,
+        target: RouteTarget,
+    },
+    NamespaceRemoveContainerRemoved {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        container_id: ContainerId,
+    },
+    NamespaceRemoveCompleted {
+        operation_id: OperationId,
+    },
+    NamespaceRemoveFailed {
+        operation_id: OperationId,
+        failure: NamespaceRemoveFailure,
+    },
     Cancelled {
         operation_id: OperationId,
         kind: OperationKind,
@@ -223,6 +273,17 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { operation_id, .. }
             | Self::CoreReplaceCompleted { operation_id, .. }
             | Self::CoreReplaceFailed { operation_id, .. }
+            | Self::ServiceRestartSubmitted { operation_id, .. }
+            | Self::ServiceRestartRunning { operation_id, .. }
+            | Self::ServiceRestartContainerRestarted { operation_id, .. }
+            | Self::ServiceRestartCompleted { operation_id }
+            | Self::ServiceRestartFailed { operation_id, .. }
+            | Self::NamespaceRemoveSubmitted { operation_id, .. }
+            | Self::NamespaceRemoveRunning { operation_id, .. }
+            | Self::NamespaceRemoveRouteBindingRemoved { operation_id, .. }
+            | Self::NamespaceRemoveContainerRemoved { operation_id, .. }
+            | Self::NamespaceRemoveCompleted { operation_id }
+            | Self::NamespaceRemoveFailed { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -264,6 +325,17 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::ServiceRestartSubmitted { .. }
+            | Self::ServiceRestartRunning { .. }
+            | Self::ServiceRestartContainerRestarted { .. }
+            | Self::ServiceRestartCompleted { .. }
+            | Self::ServiceRestartFailed { .. }
+            | Self::NamespaceRemoveSubmitted { .. }
+            | Self::NamespaceRemoveRunning { .. }
+            | Self::NamespaceRemoveRouteBindingRemoved { .. }
+            | Self::NamespaceRemoveContainerRemoved { .. }
+            | Self::NamespaceRemoveCompleted { .. }
+            | Self::NamespaceRemoveFailed { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -321,6 +393,17 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::ServiceRestartSubmitted { .. }
+            | Self::ServiceRestartRunning { .. }
+            | Self::ServiceRestartContainerRestarted { .. }
+            | Self::ServiceRestartCompleted { .. }
+            | Self::ServiceRestartFailed { .. }
+            | Self::NamespaceRemoveSubmitted { .. }
+            | Self::NamespaceRemoveRunning { .. }
+            | Self::NamespaceRemoveRouteBindingRemoved { .. }
+            | Self::NamespaceRemoveContainerRemoved { .. }
+            | Self::NamespaceRemoveCompleted { .. }
+            | Self::NamespaceRemoveFailed { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -372,6 +455,41 @@ impl OperationEvent {
             Self::CoreReplaceSubmitted { .. } => "core.replace.submitted".to_owned(),
             Self::CoreReplaceCompleted { .. } => "core.replace.completed".to_owned(),
             Self::CoreReplaceFailed { .. } => "core.replace.failed".to_owned(),
+            Self::ServiceRestartSubmitted { .. } => "service.restart.submitted".to_owned(),
+            Self::ServiceRestartRunning { stage, .. } => {
+                format!("service.restart.running.{}", stage.as_subject())
+            }
+            Self::ServiceRestartContainerRestarted {
+                machine_id,
+                container_id,
+                ..
+            } => format!(
+                "service.restart.container.restarted.{}.{}",
+                machine_id.as_str(),
+                container_id.as_str()
+            ),
+            Self::ServiceRestartCompleted { .. } => "service.restart.completed".to_owned(),
+            Self::ServiceRestartFailed { .. } => "service.restart.failed".to_owned(),
+            Self::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted".to_owned(),
+            Self::NamespaceRemoveRunning { stage, .. } => {
+                format!("namespace.remove.running.{}", stage.as_subject())
+            }
+            Self::NamespaceRemoveRouteBindingRemoved { target, .. } => format!(
+                "namespace.remove.route_binding.removed.{}.{}",
+                target.hostname.as_str(),
+                target.port.get()
+            ),
+            Self::NamespaceRemoveContainerRemoved {
+                machine_id,
+                container_id,
+                ..
+            } => format!(
+                "namespace.remove.container.removed.{}.{}",
+                machine_id.as_str(),
+                container_id.as_str()
+            ),
+            Self::NamespaceRemoveCompleted { .. } => "namespace.remove.completed".to_owned(),
+            Self::NamespaceRemoveFailed { .. } => "namespace.remove.failed".to_owned(),
             Self::Cancelled { .. } => "cancelled".to_owned(),
         }
     }
@@ -426,6 +544,14 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: CoreReplaceEvent,
     },
+    ServiceRestart {
+        operation_id: OperationId,
+        event: ServiceRestartEvent,
+    },
+    NamespaceRemove {
+        operation_id: OperationId,
+        event: NamespaceRemoveEvent,
+    },
 }
 
 impl ClassifiedOperationEvent {
@@ -436,7 +562,9 @@ impl ClassifiedOperationEvent {
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
-            | Self::CoreReplace { operation_id, .. } => operation_id,
+            | Self::CoreReplace { operation_id, .. }
+            | Self::ServiceRestart { operation_id, .. }
+            | Self::NamespaceRemove { operation_id, .. } => operation_id,
         }
     }
 }
@@ -448,7 +576,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: DeployEvent::Submitted,
             },
-            OperationEvent::DeployPlanningStarted { operation_id, .. } => Self::Deploy {
+            OperationEvent::DeployPlanningStarted { operation_id } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Planning),
             },
@@ -461,7 +589,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployRunning {
                 operation_id,
                 stage,
-                ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Running { stage }),
@@ -469,7 +596,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployDataplanePrepared {
                 operation_id,
                 report,
-                ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::DataplanePrepared { report }),
@@ -478,7 +604,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 machine_id,
                 container_id,
-                ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::ContainerStarted {
@@ -486,7 +611,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     container_id,
                 }),
             },
-            OperationEvent::DeployHealthCheckStarted { operation_id, .. } => Self::Deploy {
+            OperationEvent::DeployHealthCheckStarted { operation_id } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::HealthCheckStarted),
             },
@@ -494,7 +619,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 removed,
                 failed,
-                ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::CleanupFinished { removed, failed }),
@@ -502,7 +626,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployCompleted {
                 operation_id,
                 outcome,
-                ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Completed { outcome }),
@@ -510,7 +633,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployFailed {
                 operation_id,
                 failure,
-                ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Failed { failure }),
@@ -518,7 +640,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::CertRenewalSubmitted {
                 operation_id,
                 cert_id,
-                ..
             } => Self::Cert {
                 operation_id,
                 event: CertEvent::Submitted { cert_id },
@@ -539,7 +660,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::CertValidationStarted {
                 operation_id,
                 cert_id,
-                ..
             } => Self::Cert {
                 operation_id,
                 event: CertEvent::Transition {
@@ -552,7 +672,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::CertCompleted {
                 operation_id,
                 active_cert,
-                ..
             } => Self::Cert {
                 operation_id,
                 event: CertEvent::Transition {
@@ -563,7 +682,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::CertFailed {
                 operation_id,
                 failure,
-                ..
             } => Self::Cert {
                 operation_id,
                 event: CertEvent::Transition {
@@ -583,7 +701,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 machine_id,
                 joined_at,
-                ..
             } => Self::MachineAdd {
                 operation_id,
                 event: MachineAddEvent::Transition {
@@ -602,7 +719,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::MachineAddCompleted {
                 operation_id,
                 machine_id,
-                ..
             } => Self::MachineAdd {
                 operation_id,
                 event: MachineAddEvent::Transition {
@@ -614,7 +730,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 machine_id,
                 failure,
-                ..
             } => Self::MachineAdd {
                 operation_id,
                 event: MachineAddEvent::Transition {
@@ -720,9 +835,95 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: CoreReplaceTransition::Failed { failure },
                 },
             },
-            // A cancel classifies by the kind it claims, so a cancel whose
-            // kind disagrees with the status record surfaces as a kind
-            // mismatch in projection instead of silently cancelling.
+            OperationEvent::ServiceRestartSubmitted {
+                operation_id,
+                namespace_id,
+                service_id,
+            } => Self::ServiceRestart {
+                operation_id,
+                event: ServiceRestartEvent::Submitted {
+                    namespace_id,
+                    service_id,
+                },
+            },
+            OperationEvent::ServiceRestartRunning {
+                operation_id,
+                stage,
+            } => Self::ServiceRestart {
+                operation_id,
+                event: ServiceRestartEvent::Transition(ServiceRestartTransition::Running { stage }),
+            },
+            OperationEvent::ServiceRestartContainerRestarted {
+                operation_id,
+                machine_id,
+                container_id,
+            } => Self::ServiceRestart {
+                operation_id,
+                event: ServiceRestartEvent::ContainerRestarted {
+                    machine_id,
+                    container_id,
+                },
+            },
+            OperationEvent::ServiceRestartCompleted { operation_id } => Self::ServiceRestart {
+                operation_id,
+                event: ServiceRestartEvent::Transition(ServiceRestartTransition::Completed),
+            },
+            OperationEvent::ServiceRestartFailed {
+                operation_id,
+                failure,
+            } => Self::ServiceRestart {
+                operation_id,
+                event: ServiceRestartEvent::Transition(ServiceRestartTransition::Failed {
+                    failure,
+                }),
+            },
+            OperationEvent::NamespaceRemoveSubmitted {
+                operation_id,
+                namespace_id,
+            } => Self::NamespaceRemove {
+                operation_id,
+                event: NamespaceRemoveEvent::Submitted { namespace_id },
+            },
+            OperationEvent::NamespaceRemoveRunning {
+                operation_id,
+                stage,
+            } => Self::NamespaceRemove {
+                operation_id,
+                event: NamespaceRemoveEvent::Transition(NamespaceRemoveTransition::Running {
+                    stage,
+                }),
+            },
+            OperationEvent::NamespaceRemoveRouteBindingRemoved {
+                operation_id,
+                target,
+            } => Self::NamespaceRemove {
+                operation_id,
+                event: NamespaceRemoveEvent::RouteBindingRemoved { target },
+            },
+            OperationEvent::NamespaceRemoveContainerRemoved {
+                operation_id,
+                machine_id,
+                container_id,
+            } => Self::NamespaceRemove {
+                operation_id,
+                event: NamespaceRemoveEvent::ContainerRemoved {
+                    machine_id,
+                    container_id,
+                },
+            },
+            OperationEvent::NamespaceRemoveCompleted { operation_id } => Self::NamespaceRemove {
+                operation_id,
+                event: NamespaceRemoveEvent::Transition(NamespaceRemoveTransition::Completed),
+            },
+            OperationEvent::NamespaceRemoveFailed {
+                operation_id,
+                failure,
+            } => Self::NamespaceRemove {
+                operation_id,
+                event: NamespaceRemoveEvent::Transition(NamespaceRemoveTransition::Failed {
+                    failure,
+                }),
+            },
             OperationEvent::Cancelled {
                 operation_id,
                 kind,
@@ -751,6 +952,18 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::CoreReplace => Self::CoreReplace {
                     operation_id,
                     event: CoreReplaceEvent::Cancelled(reason),
+                },
+                OperationKind::ServiceRestart => Self::ServiceRestart {
+                    operation_id,
+                    event: ServiceRestartEvent::Transition(ServiceRestartTransition::Cancelled {
+                        reason,
+                    }),
+                },
+                OperationKind::NamespaceRemove => Self::NamespaceRemove {
+                    operation_id,
+                    event: NamespaceRemoveEvent::Transition(NamespaceRemoveTransition::Cancelled {
+                        reason,
+                    }),
                 },
             },
         }

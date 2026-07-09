@@ -36,7 +36,7 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineDiskSpace, ManagedContainerHealthStatus,
+    ContainerHealth, ContainerRuntimeState, MachineDiskSpace, ManagedContainerHealthStatus,
     ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{
@@ -46,13 +46,15 @@ pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
     FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
     MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
-    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState, NonEmptyTextError,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
+    NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
+    NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationKind, OperationStatus, OperationStatusSnapshot,
     OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    RouteTarget, UnusableMachine,
+    RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
+    UnusableMachine,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,

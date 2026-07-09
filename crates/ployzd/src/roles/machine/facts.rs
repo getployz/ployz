@@ -194,7 +194,9 @@ fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
 
 pub(crate) fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
     match state {
-        ExistingManagedContainerState::Running { ip } => ContainerRuntimeState::Running { ip },
+        ExistingManagedContainerState::Running { ip, health } => {
+            ContainerRuntimeState::running_at_with_health(ip, health)
+        }
         ExistingManagedContainerState::StartableStopped
         | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
     }

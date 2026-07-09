@@ -15,16 +15,17 @@ use ployz_sdk_types::{
     MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
     MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
-    MachineUpdateRequest, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
-    ServiceListError, ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, OperationApiResponse,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi,
+        NamespaceRemoveApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -151,6 +152,20 @@ impl OperationApiClient {
         request: &ServiceInspectRequest,
     ) -> Result<ServiceSnapshot, OperationApiClientError<ServiceInspectError>> {
         self.request_api::<ServiceInspectApi>(request).await
+    }
+
+    pub async fn service_restart(
+        &self,
+        request: &ServiceRestartRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<ServiceRestartError>> {
+        self.request_api::<ServiceRestartApi>(request).await
+    }
+
+    pub async fn namespace_remove(
+        &self,
+        request: &NamespaceRemoveRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<NamespaceRemoveError>> {
+        self.request_api::<NamespaceRemoveApi>(request).await
     }
 
     pub async fn runtime_snapshot(

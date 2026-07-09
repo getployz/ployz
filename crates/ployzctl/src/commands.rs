@@ -10,6 +10,7 @@ pub mod deploy;
 pub mod init;
 pub mod logs;
 pub mod machine;
+pub mod namespace;
 pub mod ops;
 pub mod role_policy;
 pub mod service;
@@ -37,6 +38,8 @@ pub enum PloyzctlCommand {
     MachineInspect(machine::MachineInspectCommand),
     ServiceList(service::ServiceListCommand),
     ServiceInspect(service::ServiceInspectCommand),
+    ServiceRestart(service::ServiceRestartCommand),
+    NamespaceRemove(namespace::NamespaceRemoveCommand),
     LogsTail(logs::LogsTailCommand),
     OpsList(ops::OpsListCommand),
     OpsStatus(ops::OpsStatusCommand),
@@ -101,6 +104,10 @@ enum CommandCli {
         #[command(subcommand)]
         command: ServiceCli,
     },
+    Namespace {
+        #[command(subcommand)]
+        command: NamespaceCli,
+    },
     Logs(logs::LogsCli),
     Ops {
         #[command(subcommand)]
@@ -150,6 +157,12 @@ enum CoreCli {
 enum ServiceCli {
     List(service::EmptyCli),
     Inspect(service::ServiceInspectCli),
+    Restart(service::ServiceRestartCli),
+}
+
+#[derive(Debug, Subcommand)]
+enum NamespaceCli {
+    Rm(namespace::NamespaceRemoveCli),
 }
 
 #[derive(Debug, Subcommand)]
@@ -217,6 +230,14 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             )),
             ServiceCli::Inspect(command) => {
                 service::service_inspect_command(command).map(PloyzctlCommand::ServiceInspect)
+            }
+            ServiceCli::Restart(command) => {
+                service::service_restart_command(command).map(PloyzctlCommand::ServiceRestart)
+            }
+        },
+        CommandCli::Namespace { command } => match command {
+            NamespaceCli::Rm(command) => {
+                namespace::namespace_remove_command(command).map(PloyzctlCommand::NamespaceRemove)
             }
         },
         CommandCli::Logs(command) => {

@@ -10,6 +10,8 @@ use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
+use super::namespace_remove::{self, NamespaceRemoveOperationState};
+use super::service_restart::{self, ServiceRestartOperationState};
 use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,8 @@ pub enum ProjectionOperationState {
     MachineUpdate(MachineUpdateOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
     CoreReplace(CoreReplaceOperationState),
+    ServiceRestart(ServiceRestartOperationState),
+    NamespaceRemove(NamespaceRemoveOperationState),
 }
 
 impl ProjectionOperationState {
@@ -97,6 +101,8 @@ impl ProjectionOperationState {
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
             Self::CoreReplace(_) => OperationKind::CoreReplace,
+            Self::ServiceRestart(_) => OperationKind::ServiceRestart,
+            Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
         }
     }
 }
@@ -109,6 +115,8 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::ServiceRestart => "service-restart",
+        OperationKind::NamespaceRemove => "namespace-remove",
     }
 }
 
@@ -314,6 +322,38 @@ pub fn project_operation_event(
                 event,
                 event_sequence,
             )
+        }
+        ClassifiedOperationEvent::ServiceRestart { event, .. } => {
+            let OperationStatus::ServiceRestart {
+                id,
+                namespace_id,
+                service_id,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::ServiceRestart));
+            };
+            service_restart::project_event(
+                id,
+                namespace_id,
+                service_id,
+                state,
+                event,
+                event_sequence,
+            )
+        }
+        ClassifiedOperationEvent::NamespaceRemove { event, .. } => {
+            let OperationStatus::NamespaceRemove {
+                id,
+                namespace_id,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::NamespaceRemove));
+            };
+            namespace_remove::project_event(id, namespace_id, state, event, event_sequence)
         }
     }
 }

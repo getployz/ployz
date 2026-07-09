@@ -224,6 +224,27 @@ pub enum MachineContainerRemoveDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineContainerRestartRpcRequest {
+    pub operation_id: OperationId,
+    pub container_id: ContainerId,
+    pub expected_identity: ManagedContainerIdentity,
+}
+
+pub type MachineContainerRestartRpcResponse =
+    MachineRpcResponse<MachineContainerRpcOk, MachineContainerRestartDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineContainerRestartDomainError {
+    RestartFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineContainerStopRpcRequest {
     pub operation_id: OperationId,
     pub container_id: ContainerId,

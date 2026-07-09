@@ -6,7 +6,8 @@ use crate::operations::deploy::{
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
-    MachineContainerRemoveRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
+    MachineContainerRemoveRpcRequest, MachineContainerRestartDomainError,
+    MachineContainerRestartRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerStopDomainError,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkDomainError,
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
@@ -517,6 +518,28 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
         })
     }
 
+    async fn restart_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRestartRpcRequest,
+    ) -> Result<(), MachineContainerRuntimeError> {
+        call_machine::<MachineContainerRpcOk, MachineContainerRestartDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerRestart,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => {
+                container_runtime_unavailable(machine_id, reason)
+            }
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
     async fn stop_container(
         &mut self,
         machine_id: &MachineId,
@@ -674,6 +697,23 @@ impl MachineContainerRemoveDomainError {
                 message,
                 inspect_hint,
             } => MachineContainerRuntimeError::RemoveContainerFailed {
+                machine_id,
+                container_id,
+                message,
+                inspect_hint,
+            },
+        }
+    }
+}
+
+impl MachineContainerRestartDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
+        match self {
+            Self::RestartFailed {
+                container_id,
+                message,
+                inspect_hint,
+            } => MachineContainerRuntimeError::RestartContainerFailed {
                 machine_id,
                 container_id,
                 message,

@@ -1,6 +1,6 @@
 //! Client-side operation IDs for ergonomic commands.
 
-use ployz_core::ids::{MachineId, OperationId, ServiceId, SubjectTokenError};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId, SubjectTokenError};
 use ployz_core::ops::OperationIdempotencyKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +61,18 @@ pub(crate) fn generate_client_machine_update_id(
     machine_id: &MachineId,
 ) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
     generate_client_operation_id("update", machine_id.as_str())
+}
+
+pub(crate) fn generate_client_service_restart_id(
+    service_id: &ServiceId,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id("restart", service_id.as_str())
+}
+
+pub(crate) fn generate_client_namespace_remove_id(
+    namespace_id: &NamespaceId,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id("namespace_rm", namespace_id.as_str())
 }
 
 pub(crate) fn generate_client_core_replace_id(

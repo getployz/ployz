@@ -515,6 +515,17 @@ mod tests {
             })
         }
 
+        async fn restart_managed_container(
+            &self,
+            container_id: &ContainerId,
+            _expected_identity: &ManagedContainerIdentity,
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
+
         async fn stop_managed_container(
             &self,
             container_id: &ContainerId,
@@ -575,6 +586,17 @@ mod tests {
             })
         }
 
+        async fn restart_managed_container(
+            &self,
+            container_id: &ContainerId,
+            _expected_identity: &ManagedContainerIdentity,
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
+
         async fn stop_managed_container(
             &self,
             container_id: &ContainerId,
@@ -606,7 +628,10 @@ mod tests {
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
             identity: identity_for("run_1"),
-            state: ExistingManagedContainerState::Running { ip: None },
+            state: ExistingManagedContainerState::Running {
+                ip: None,
+                health: ployz_core::machine_runtime::ContainerHealth::None,
+            },
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,

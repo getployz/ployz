@@ -442,6 +442,12 @@ pub enum MachineContainerRuntimeError {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
+    RestartContainerFailed {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
     StopContainerFailed {
         machine_id: MachineId,
         container_id: ContainerId,
@@ -514,6 +520,11 @@ impl MachineContainerRuntimeError {
                 retained_artifacts,
             },
             Self::RemoveContainerFailed {
+                machine_id,
+                message,
+                ..
+            }
+            | Self::RestartContainerFailed {
                 machine_id,
                 message,
                 ..

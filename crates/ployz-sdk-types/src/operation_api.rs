@@ -9,10 +9,11 @@ use crate::{
     MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
     MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
-    MachineUpdateRequest, OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
-    ServiceListError, ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, OperationStatusSnapshot,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -37,6 +38,8 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineUpdateApi,
             $crate::operation_api::MachineDrainApi,
             $crate::operation_api::MachineResumeApi,
+            $crate::operation_api::ServiceRestartApi,
+            $crate::operation_api::NamespaceRemoveApi,
             $crate::operation_api::CoreReplaceApi,
             $crate::operation_api::CoreReplaceReportApi,
             $crate::operation_api::MachineListApi,
@@ -136,6 +139,30 @@ impl OperationApiContract for CoreReplaceApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::CoreReplace;
     const RESPONSE_ALIAS: &'static str = "CoreReplaceResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceRestartApi;
+
+impl OperationApiContract for ServiceRestartApi {
+    type Request = ServiceRestartRequest;
+    type Success = AcceptedOperation;
+    type Error = ServiceRestartError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::ServiceRestart;
+    const RESPONSE_ALIAS: &'static str = "ServiceRestartResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamespaceRemoveApi;
+
+impl OperationApiContract for NamespaceRemoveApi {
+    type Request = NamespaceRemoveRequest;
+    type Success = AcceptedOperation;
+    type Error = NamespaceRemoveError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::NamespaceRemove;
+    const RESPONSE_ALIAS: &'static str = "NamespaceRemoveResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

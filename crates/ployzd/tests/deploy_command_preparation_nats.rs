@@ -446,6 +446,17 @@ impl MachineContainerRunner for StaticRunner {
         })
     }
 
+    async fn restart_managed_container(
+        &self,
+        container_id: &ployz_core::ids::ContainerId,
+        _expected_identity: &ployz_core::machine_runtime::ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::Restart {
+            container_id: container_id.clone(),
+            message: "not used".to_owned(),
+        })
+    }
+
     async fn remove_managed_container(
         &self,
         container_id: &ployz_core::ids::ContainerId,
@@ -460,7 +471,10 @@ impl MachineContainerRunner for StaticRunner {
 
 fn existing_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
-        ContainerRuntimeState::Running { ip } => ExistingManagedContainerState::Running { ip: *ip },
+        ContainerRuntimeState::Running { ip, health } => ExistingManagedContainerState::Running {
+            ip: *ip,
+            health: *health,
+        },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
 }

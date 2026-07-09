@@ -37,6 +37,8 @@ pub mod operations {
     pub mod log;
     pub mod machine_lifecycle;
     pub mod machine_update;
+    pub mod namespace_remove;
+    pub mod service_restart;
 }
 pub mod core_store;
 pub mod dispatch;

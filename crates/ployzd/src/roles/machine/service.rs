@@ -1,8 +1,9 @@
 //! NATS Service API wiring for machine-local commands.
 
 use super::containers::{
-    MachineContainerState, handle_container_inspect, handle_container_remove, handle_container_run,
-    handle_container_stop, handle_ensure_endpoint_network,
+    MachineContainerState, handle_container_inspect, handle_container_remove,
+    handle_container_restart, handle_container_run, handle_container_stop,
+    handle_ensure_endpoint_network,
 };
 use super::dataplane::handle_dataplane_prepare;
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
@@ -110,6 +111,14 @@ where
         MachineServiceEndpoint::ContainerStop,
         mutation_state.clone(),
         handle_container_stop,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ContainerRestart,
+        mutation_state.clone(),
+        handle_container_restart,
     )
     .await?;
     bind_machine_endpoint(

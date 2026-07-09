@@ -3,7 +3,8 @@
 use crate::operation_api::{
     OperationApiHandlers, core_replace, core_replace_report, deploy_submit,
     init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
-    machine_join_report, machine_resume, machine_update, ops_list, ops_status, ops_watch,
+    machine_join_report, machine_resume, machine_update, namespace_remove, ops_list, ops_status,
+    ops_watch, service_restart,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -17,8 +18,8 @@ use ployz_sdk_types::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi,
+        NamespaceRemoveApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -53,6 +54,22 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { deploy_submit(&handlers, request.into()).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::ServiceRestart => {
+            bind_operation_contract::<ServiceRestartApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { service_restart(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::NamespaceRemove => {
+            bind_operation_contract::<NamespaceRemoveApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { namespace_remove(&handlers, request).await },
             )
             .await
         }

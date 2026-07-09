@@ -1,9 +1,10 @@
 //! Runtime execution for parsed CLI commands.
 
-use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{fmt, io};
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::PloyzctlCommand;
@@ -341,6 +342,39 @@ pub async fn execute_command(
             )
             .await
         }
+        PloyzctlCommand::ServiceRestart(command) => {
+            let detach = command.detach;
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .service_restart(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            if detach {
+                return Ok(PloyzctlExecutionOutput::stdout(
+                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                        .render(),
+                ));
+            }
+            watch_accepted_operation(&api, accepted.operation_id, config).await
+        }
+        PloyzctlCommand::NamespaceRemove(command) => {
+            let detach = command.detach;
+            if !command.force {
+                confirm_namespace_remove(&command.namespace_id)?;
+            }
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .namespace_remove(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            if detach {
+                return Ok(PloyzctlExecutionOutput::stdout(
+                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                        .render(),
+                ));
+            }
+            watch_accepted_operation(&api, accepted.operation_id, config).await
+        }
         PloyzctlCommand::LogsTail(command) => {
             if command.follow {
                 follow_logs(command, config).await
@@ -405,6 +439,35 @@ async fn follow_logs(
         }
         request = command.request_after(next_since);
         async_sleep(config.ops_watch_poll_interval()).await;
+    }
+}
+
+fn confirm_namespace_remove(
+    namespace_id: &ployz_core::ids::NamespaceId,
+) -> Result<(), PloyzctlExecutionError> {
+    let prompt = crate::commands::namespace::NamespaceRemoveConfirmation {
+        namespace_id: namespace_id.clone(),
+        volume_backed_services: Vec::new(),
+    }
+    .prompt();
+    eprint!("{prompt}");
+    io::stderr().flush().map_err(|error| {
+        PloyzctlExecutionError::ReadNamespaceRemoveConfirmation {
+            message: error.to_string(),
+        }
+    })?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).map_err(|error| {
+        PloyzctlExecutionError::ReadNamespaceRemoveConfirmation {
+            message: error.to_string(),
+        }
+    })?;
+    if answer.trim() == namespace_id.as_str() {
+        Ok(())
+    } else {
+        Err(PloyzctlExecutionError::NamespaceRemoveNotConfirmed {
+            namespace_id: namespace_id.clone(),
+        })
     }
 }
 
@@ -693,6 +756,12 @@ pub enum PloyzctlExecutionError {
     },
     #[error("{message}")]
     OperationApi { message: String },
+    #[error("namespace rm {} was not confirmed", namespace_id.as_str())]
+    NamespaceRemoveNotConfirmed {
+        namespace_id: ployz_core::ids::NamespaceId,
+    },
+    #[error("failed to read namespace rm confirmation: {message}")]
+    ReadNamespaceRemoveConfirmation { message: String },
     #[error("first machine activation failed: {source}")]
     FirstMachineActivateApi {
         source: OperationApiClientError<InitFirstMachineActivateError>,

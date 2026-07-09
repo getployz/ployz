@@ -513,6 +513,7 @@ fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessag
         | MachineContainerRuntimeError::ExistingContainerStartFailed { message, .. }
         | MachineContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
         | MachineContainerRuntimeError::StopContainerFailed { message, .. }
+        | MachineContainerRuntimeError::RestartContainerFailed { message, .. }
         | MachineContainerRuntimeError::RemoveContainerFailed { message, .. } => message,
     }
 }

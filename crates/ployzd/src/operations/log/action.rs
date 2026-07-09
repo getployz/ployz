@@ -1,7 +1,8 @@
 use super::{
     CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
-    MachineUpdatePayload,
+    MachineUpdatePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
+    ServiceRestartOperationSubmission, ServiceRestartPayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -175,6 +176,85 @@ impl OperationAction for CoreReplaceOperationSubmission {
             operation_id,
             payload.machine_id.clone(),
             payload.successor_nats_url.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for ServiceRestartOperationSubmission {
+    type Payload = ServiceRestartPayload;
+    const KIND: OperationKind = OperationKind::ServiceRestart;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::ServiceRestartSubmitted {
+            operation_id,
+            namespace_id: payload.namespace_id,
+            service_id: payload.service_id,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::ServiceRestartSubmitted {
+            operation_id,
+            namespace_id,
+            service_id,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            ServiceRestartPayload {
+                namespace_id,
+                service_id,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::service_restart_accepted(
+            operation_id,
+            payload.namespace_id.clone(),
+            payload.service_id.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for NamespaceRemoveOperationSubmission {
+    type Payload = NamespaceRemovePayload;
+    const KIND: OperationKind = OperationKind::NamespaceRemove;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::NamespaceRemoveSubmitted {
+            operation_id,
+            namespace_id: payload.namespace_id,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::NamespaceRemoveSubmitted {
+            operation_id,
+            namespace_id,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, NamespaceRemovePayload { namespace_id }))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::namespace_remove_accepted(
+            operation_id,
+            payload.namespace_id.clone(),
             sequence,
         )
     }

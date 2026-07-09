@@ -23,8 +23,10 @@ use ployzd::roles::machine::client::{
 };
 use ployzd::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
-    MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse, MachineContainerRpcOk,
-    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
+    MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
+    MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
+    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
@@ -708,6 +710,97 @@ async fn machine_role_service_stops_container() {
 }
 
 #[tokio::test]
+async fn machine_role_service_restarts_container() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let response = request_json::<_, MachineContainerRestartRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::ContainerRestart,
+        ),
+        &MachineContainerRestartRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_running"),
+            expected_identity: managed_identity(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine service responds");
+
+    assert_eq!(
+        response,
+        MachineContainerRestartRpcResponse::Ok(MachineContainerRpcOk {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_running"),
+        })
+    );
+    assert_eq!(state.restarts(), vec![container_id("ctr_running")]);
+}
+
+#[tokio::test]
+async fn machine_role_service_reports_restart_failure_as_domain_error() {
+    let nats = test_nats().await;
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_restart_failure("ctr_running", "permission denied"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let response = request_json::<_, MachineContainerRestartRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::ContainerRestart,
+        ),
+        &MachineContainerRestartRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_running"),
+            expected_identity: managed_identity(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine service responds");
+
+    assert_eq!(
+        response,
+        MachineContainerRestartRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: MachineContainerRestartDomainError::RestartFailed {
+                container_id: container_id("ctr_running"),
+                message: failure_message("container restart failed: permission denied"),
+                inspect_hint: inspect_hint("ctr_running"),
+            },
+        }
+    );
+}
+
+#[tokio::test]
 async fn machine_role_service_reports_remove_failure_as_domain_error() {
     let nats = test_nats().await;
     let _service = start_machine_role_service(
@@ -1003,6 +1096,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn restarts(&self) -> Vec<ContainerId> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .restarts
+            .clone()
+    }
+
     fn removes(&self) -> Vec<ContainerId> {
         self.inner
             .lock()
@@ -1025,6 +1126,7 @@ struct RecordingRunnerInner {
     endpoint_networks: usize,
     creates: Vec<CreateManagedContainer>,
     starts: Vec<ContainerId>,
+    restarts: Vec<ContainerId>,
     stops: Vec<ContainerId>,
     removes: Vec<ContainerId>,
 }
@@ -1036,6 +1138,7 @@ struct RecordingRunner {
     next_container: Option<ContainerId>,
     create_failure: Option<String>,
     start_failure: Option<(ContainerId, String)>,
+    restart_failure: Option<(ContainerId, String)>,
     stop_failure: Option<(ContainerId, String)>,
     remove_failure: Option<(ContainerId, String)>,
 }
@@ -1048,6 +1151,7 @@ impl RecordingRunner {
             next_container: None,
             create_failure: None,
             start_failure: None,
+            restart_failure: None,
             stop_failure: None,
             remove_failure: None,
         }
@@ -1091,6 +1195,11 @@ impl RecordingRunner {
 
     fn with_stop_failure(mut self, container_id: &str, message: &str) -> Self {
         self.stop_failure = Some((self::container_id(container_id), message.to_owned()));
+        self
+    }
+
+    fn with_restart_failure(mut self, container_id: &str, message: &str) -> Self {
+        self.restart_failure = Some((self::container_id(container_id), message.to_owned()));
         self
     }
 }
@@ -1196,6 +1305,29 @@ impl MachineContainerRunner for RecordingRunner {
             .lock()
             .expect("recording runner lock is not poisoned")
             .stops
+            .push(container_id.clone());
+        Ok(())
+    }
+
+    async fn restart_managed_container(
+        &self,
+        container_id: &ContainerId,
+        _expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRunnerError> {
+        if let Some((failed_container_id, message)) = self.restart_failure.clone()
+            && failed_container_id == *container_id
+        {
+            return Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message,
+            });
+        }
+
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .restarts
             .push(container_id.clone());
         Ok(())
     }
@@ -1432,7 +1564,10 @@ fn existing_container(
     existing_container_with_state(
         container_id,
         labels,
-        ExistingManagedContainerState::Running { ip: None },
+        ExistingManagedContainerState::Running {
+            ip: None,
+            health: ployz_core::machine_runtime::ContainerHealth::None,
+        },
     )
 }
 

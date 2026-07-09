@@ -31,9 +31,9 @@ use ployzd::operations::deploy::{
     NamespaceCommitError, NamespaceStateCommitter, prepare_deploy_execution_command,
 };
 use ployzd::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
-    MachineRunContainerOutcome,
+    MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
+    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
+    MachineEnsureEndpointNetworkRpcRequest, MachineRunContainerOutcome,
 };
 use std::time::Duration;
 
@@ -609,6 +609,23 @@ impl MachineContainerRuntime for RecordingRuntime {
                 .expect("valid inspect hint"),
             });
         }
+        Ok(())
+    }
+
+    async fn restart_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRestartRpcRequest,
+    ) -> Result<(), MachineContainerRuntimeError> {
+        let container_id = request.container_id.clone();
+        self.stops.push((
+            machine_id.clone(),
+            MachineContainerStopRpcRequest {
+                operation_id: request.operation_id,
+                container_id,
+                expected_identity: request.expected_identity,
+            },
+        ));
         Ok(())
     }
 }

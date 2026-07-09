@@ -23,9 +23,11 @@ mod events;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
+mod namespace_remove;
 mod projection;
 mod replay;
 mod routes;
+mod service_restart;
 mod text;
 
 pub use accessors::NextEventSequenceError;
@@ -47,6 +49,10 @@ pub use machine_update::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     MachineUpdateTransition,
 };
+pub use namespace_remove::{
+    NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
+    NamespaceRemoveTransition, project_namespace_remove_transition,
+};
 pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
@@ -55,6 +61,10 @@ pub use replay::{
     OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
 };
 pub use routes::{RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RouteTarget};
+pub use service_restart::{
+    ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
+    ServiceRestartTransition, project_service_restart_transition,
+};
 pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
 
 pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
@@ -69,6 +79,8 @@ pub enum OperationKind {
     MachineUpdate,
     MachineLifecycle,
     CoreReplace,
+    ServiceRestart,
+    NamespaceRemove,
 }
 
 /// Operation status projection rebuilt from local operation evidence.
@@ -119,6 +131,19 @@ pub enum OperationStatus {
         machine_id: MachineId,
         successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
         state: CoreReplaceOperationState,
+        last_event_sequence: EventSequence,
+    },
+    ServiceRestart {
+        id: OperationId,
+        namespace_id: NamespaceId,
+        service_id: ServiceId,
+        state: ServiceRestartOperationState,
+        last_event_sequence: EventSequence,
+    },
+    NamespaceRemove {
+        id: OperationId,
+        namespace_id: NamespaceId,
+        state: NamespaceRemoveOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -232,6 +257,36 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn service_restart_accepted(
+        id: OperationId,
+        namespace_id: NamespaceId,
+        service_id: ServiceId,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::ServiceRestart {
+            id,
+            namespace_id,
+            service_id,
+            state: ServiceRestartOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn namespace_remove_accepted(
+        id: OperationId,
+        namespace_id: NamespaceId,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::NamespaceRemove {
+            id,
+            namespace_id,
+            state: NamespaceRemoveOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
@@ -240,6 +295,8 @@ impl OperationStatus {
             Self::MachineUpdate { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
+            Self::ServiceRestart { state, .. } => state.is_terminal(),
+            Self::NamespaceRemove { state, .. } => state.is_terminal(),
         }
     }
 }
