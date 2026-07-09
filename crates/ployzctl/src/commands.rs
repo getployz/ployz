@@ -101,7 +101,7 @@ enum CommandCli {
         #[command(subcommand)]
         command: ServiceCli,
     },
-    Logs(logs::LogsTailCli),
+    Logs(logs::LogsCli),
     Ops {
         #[command(subcommand)]
         command: OpsCli,

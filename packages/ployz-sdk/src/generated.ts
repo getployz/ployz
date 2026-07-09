@@ -365,11 +365,15 @@ export type RuntimeSnapshotError = { "error": "unavailable", message: string, };
 
 export type LogsTailLines = SafeInteger<"LogsTailLines">;
 
-export type LogsTailRequest = { container_id: ContainerId, machine_id?: MachineId | null, tail_lines?: LogsTailLines | null, };
+export type LogsTailTarget = { "target": "service", namespace_id: NamespaceId, service_id: ServiceId, } | { "target": "container", container_id: ContainerId, machine_id?: MachineId | null, };
 
-export type LogsTailResult = { machine_id: MachineId, container_id: ContainerId, text: string, truncated: boolean, };
+export type LogsTailRequest = { target: LogsTailTarget, tail_lines?: LogsTailLines | null, since_unix_seconds?: number | null, };
 
-export type LogsTailError = { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", message: string, machine_id?: MachineId | null, };
+export type LogsTailResultTarget = { "target": "service", namespace_id: NamespaceId, service_id: ServiceId, } | { "target": "container", machine_id: MachineId, container_id: ContainerId, };
+
+export type LogsTailResult = { target: LogsTailResultTarget, text: string, truncated: boolean, };
+
+export type LogsTailError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", message: string, machine_id?: MachineId | null, };
 
 export type MachineJoinClusterName = string;
 

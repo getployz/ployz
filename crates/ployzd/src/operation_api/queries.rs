@@ -18,13 +18,13 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
 use ployz_sdk_types::{
-    LogsTailError, LogsTailRequest, LogsTailResult, MachineInspectError, MachineListError,
-    MachineListResult, MachineSnapshot, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
-    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
-    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
-    RuntimeSnapshotResult, ServiceInspectError, ServiceListError, ServiceListResult,
-    ServiceSnapshot,
+    LogsTailError, LogsTailRequest, LogsTailResult, LogsTailResultTarget, LogsTailTarget,
+    MachineInspectError, MachineListError, MachineListResult, MachineSnapshot, OpsListError,
+    OpsListRequest, OpsListResult, OpsStatusError, OpsWatchError, RuntimeDerivedCollectionSource,
+    RuntimeDerivedCollectionStatus, RuntimeProjectionSource, RuntimeProjectionSources,
+    RuntimeServiceInstance, RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot,
+    RuntimeSnapshotError, RuntimeSnapshotResult, ServiceInspectError, ServiceListError,
+    ServiceListResult, ServiceSnapshot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -157,17 +157,52 @@ impl LogsQueryService {
         &self,
         request: LogsTailRequest,
     ) -> Result<LogsTailResult, LogsTailError> {
-        let machine_id = match request.machine_id.clone() {
+        match request.target {
+            LogsTailTarget::Service {
+                namespace_id,
+                service_id,
+            } => {
+                self.tail_service(
+                    namespace_id,
+                    service_id,
+                    request.tail_lines,
+                    request.since_unix_seconds,
+                )
+                .await
+            }
+            LogsTailTarget::Container {
+                container_id,
+                machine_id,
+            } => {
+                self.tail_container(
+                    container_id,
+                    machine_id,
+                    request.tail_lines,
+                    request.since_unix_seconds,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn tail_container(
+        &self,
+        container_id: ContainerId,
+        machine_id: Option<MachineId>,
+        tail_lines: Option<ployz_sdk_types::LogsTailLines>,
+        since_unix_seconds: Option<u64>,
+    ) -> Result<LogsTailResult, LogsTailError> {
+        let machine_id = match machine_id.clone() {
             Some(machine_id) => {
-                self.verify_observed_container_on_machine(&machine_id, &request.container_id)
+                self.verify_observed_container_on_machine(&machine_id, &container_id)
                     .await?;
                 machine_id
             }
             None => self
-                .find_container_machine(&request.container_id)
+                .find_container_machine(&container_id)
                 .await?
                 .ok_or_else(|| LogsTailError::NoSuchContainer {
-                    container_id: request.container_id.clone(),
+                    container_id: container_id.clone(),
                 })?,
         };
 
@@ -175,18 +210,140 @@ impl LogsQueryService {
             .tail_logs(
                 &machine_id,
                 MachineLogsTailRpcRequest {
-                    container_id: request.container_id,
-                    tail_lines: request.tail_lines.map(|lines| lines.get()),
+                    container_id: container_id.clone(),
+                    tail_lines: tail_lines.map(|lines| lines.get()),
+                    since_unix_seconds,
+                    timestamps: false,
                 },
             )
             .await
             .map(|value| LogsTailResult {
-                machine_id: value.machine_id,
-                container_id: value.container_id,
+                target: LogsTailResultTarget::Container {
+                    machine_id: value.machine_id,
+                    container_id: value.container_id,
+                },
                 text: value.text,
                 truncated: value.truncated,
             })
             .map_err(logs_tail_machine_error)
+    }
+
+    async fn tail_service(
+        &self,
+        namespace_id: NamespaceId,
+        service_id: ServiceId,
+        tail_lines: Option<ployz_sdk_types::LogsTailLines>,
+        since_unix_seconds: Option<u64>,
+    ) -> Result<LogsTailResult, LogsTailError> {
+        let intent =
+            self.intent_reader
+                .intent()
+                .await
+                .map_err(|error| LogsTailError::Unavailable {
+                    message: error.to_string(),
+                    machine_id: None,
+                })?;
+        let service_in_intent = intent
+            .serving_target_entries
+            .iter()
+            .any(|entry| entry.namespace_id == namespace_id && entry.service_id == service_id);
+        let machine_ids = intent
+            .active_machines
+            .into_iter()
+            .map(|machine| machine.machine_id)
+            .collect::<Vec<_>>();
+        let facts_by_id =
+            read_available_machine_facts_by_id(&self.facts_reader, machine_ids.clone()).await;
+        let mut containers = Vec::new();
+        for facts in facts_by_id.values() {
+            containers.extend(
+                facts
+                    .containers()
+                    .containers()
+                    .iter()
+                    .filter(|container| {
+                        container.identity.kind == ManagedContainerKind::Service
+                            && container.identity.namespace_id == namespace_id
+                            && container.identity.service_id == service_id
+                    })
+                    .cloned(),
+            );
+        }
+        let missing_machine_ids = missing_machine_ids(&machine_ids, &facts_by_id);
+
+        if containers.is_empty() && !service_in_intent && missing_machine_ids.is_empty() {
+            return Err(LogsTailError::NoSuchService {
+                service_id: service_id.clone(),
+            });
+        }
+
+        let mut lines = Vec::new();
+        let mut truncated = false;
+        for container in containers {
+            match self
+                .tailer
+                .tail_logs(
+                    &container.machine_id,
+                    MachineLogsTailRpcRequest {
+                        container_id: container.container_id.clone(),
+                        tail_lines: tail_lines.map(|lines| lines.get()),
+                        since_unix_seconds,
+                        timestamps: true,
+                    },
+                )
+                .await
+            {
+                Ok(value) => {
+                    truncated |= value.truncated;
+                    lines.extend(service_log_lines(
+                        &value.machine_id,
+                        &value.container_id,
+                        &value.text,
+                    ));
+                }
+                Err(MachineLogsTailError::NotFound { .. }) => {}
+                Err(MachineLogsTailError::ReadFailed {
+                    machine_id,
+                    container_id,
+                    message,
+                }) => lines.push(ServiceLogLine {
+                    sort_key: None,
+                    text: format!(
+                        "{} {} | log read failed: {}\n",
+                        machine_id.as_str(),
+                        container_id.as_str(),
+                        message.as_str()
+                    ),
+                }),
+                Err(MachineLogsTailError::Unavailable { machine_id, .. }) => {
+                    lines.push(ServiceLogLine {
+                        sort_key: None,
+                        text: format!("machine {}: no answer\n", machine_id.as_str()),
+                    });
+                }
+            }
+        }
+
+        for machine_id in missing_machine_ids {
+            lines.push(ServiceLogLine {
+                sort_key: None,
+                text: format!("machine {}: no answer\n", machine_id.as_str()),
+            });
+        }
+        lines.sort_by(|left, right| {
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then(left.text.cmp(&right.text))
+        });
+
+        Ok(LogsTailResult {
+            target: LogsTailResultTarget::Service {
+                namespace_id,
+                service_id,
+            },
+            text: lines.into_iter().map(|line| line.text).collect(),
+            truncated,
+        })
     }
 
     async fn find_container_machine(
@@ -295,6 +452,57 @@ impl ServiceQueryService {
 
         Ok(service_snapshot(active))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceLogLine {
+    sort_key: Option<String>,
+    text: String,
+}
+
+fn service_log_lines(
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    text: &str,
+) -> Vec<ServiceLogLine> {
+    text.split_inclusive('\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (sort_key, message) = docker_timestamped_message(line);
+            ServiceLogLine {
+                sort_key,
+                text: format!(
+                    "{} {} | {}{}",
+                    machine_id.as_str(),
+                    container_id.as_str(),
+                    message,
+                    if message.ends_with('\n') { "" } else { "\n" },
+                ),
+            }
+        })
+        .collect()
+}
+
+fn docker_timestamped_message(line: &str) -> (Option<String>, &str) {
+    let Some((timestamp, message)) = line.split_once(' ') else {
+        return (None, line);
+    };
+    if timestamp.contains('T') {
+        (Some(timestamp.to_owned()), message)
+    } else {
+        (None, line)
+    }
+}
+
+fn missing_machine_ids(
+    machine_ids: &[MachineId],
+    facts_by_id: &BTreeMap<MachineId, impl Sized>,
+) -> Vec<MachineId> {
+    machine_ids
+        .iter()
+        .filter(|machine_id| !facts_by_id.contains_key(*machine_id))
+        .cloned()
+        .collect()
 }
 
 fn service_snapshot(active: ServingTargetEntry) -> ServiceSnapshot {
@@ -655,14 +863,17 @@ pub async fn ops_watch(
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceSnapshot, derive_runtime_instances, derive_runtime_releases,
-        derive_runtime_revisions,
+        ServiceLogLine, ServiceSnapshot, derive_runtime_instances, derive_runtime_releases,
+        derive_runtime_revisions, missing_machine_ids, service_log_lines,
     };
     use ployz_core::machine_runtime::ManagedContainerKind;
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
     use ployz_core::state::{RouteBindingState, ServingTargetEntry};
     use ployz_test_support::containers;
-    use ployz_test_support::ids::{namespace_id, namespace_revision_entry_id, service_id};
+    use ployz_test_support::ids::{
+        container_id, machine_id, namespace_id, namespace_revision_entry_id, service_id,
+    };
+    use std::collections::BTreeMap;
 
     /// Containers whose service has no serving target entry still surface
     /// as instances and revisions under their own identity namespace:
@@ -763,6 +974,47 @@ mod tests {
         assert_eq!(
             release.namespace_revision_entry_id,
             namespace_revision_entry_id("entry_b")
+        );
+    }
+
+    #[test]
+    fn service_log_lines_sort_by_docker_timestamps_and_report_missing_machines() {
+        let mut lines = Vec::new();
+        lines.extend(service_log_lines(
+            &machine_id("machine_b"),
+            &container_id("ctr_b"),
+            "2026-07-09T02:00:02Z second\n",
+        ));
+        lines.extend(service_log_lines(
+            &machine_id("machine_a"),
+            &container_id("ctr_a"),
+            "2026-07-09T02:00:01Z first\n",
+        ));
+        for machine_id in missing_machine_ids(
+            &[machine_id("machine_a"), machine_id("machine_c")],
+            &BTreeMap::from([(
+                machine_id("machine_a"),
+                containers::snapshot("machine_a", []),
+            )]),
+        ) {
+            lines.push(ServiceLogLine {
+                sort_key: None,
+                text: format!("machine {}: no answer\n", machine_id.as_str()),
+            });
+        }
+
+        lines.sort_by(|left, right| {
+            left.sort_key
+                .cmp(&right.sort_key)
+                .then(left.text.cmp(&right.text))
+        });
+
+        let rendered = lines.into_iter().map(|line| line.text).collect::<String>();
+        assert_eq!(
+            rendered,
+            "machine machine_c: no answer\n\
+machine_a ctr_a | first\n\
+machine_b ctr_b | second\n"
         );
     }
 }

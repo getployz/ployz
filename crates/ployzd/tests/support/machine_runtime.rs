@@ -184,7 +184,7 @@ impl MachineLogReader for ObservingContainerRunner {
     async fn tail_container_logs(
         &self,
         container_id: &ContainerId,
-        _tail_lines: Option<u16>,
+        _query: ployzd::roles::machine::runner::MachineLogQuery,
     ) -> Result<MachineLogTail, MachineLogReaderError> {
         let snapshot = self.snapshot();
         if snapshot.container(container_id).is_none() {

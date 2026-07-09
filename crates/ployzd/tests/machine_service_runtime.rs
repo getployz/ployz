@@ -825,6 +825,8 @@ async fn machine_role_service_tails_container_logs() {
         &MachineLogsTailRpcRequest {
             container_id: container_id("ctr_failed"),
             tail_lines: Some(50),
+            since_unix_seconds: None,
+            timestamps: false,
         },
         Duration::from_secs(1),
     )
@@ -1349,7 +1351,7 @@ impl MachineLogReader for RecordingLogReader {
     async fn tail_container_logs(
         &self,
         container_id: &ContainerId,
-        _tail_lines: Option<u16>,
+        _query: ployzd::roles::machine::runner::MachineLogQuery,
     ) -> Result<MachineLogTail, MachineLogReaderError> {
         match &self.container_id {
             Some(expected) if expected == container_id => Ok(MachineLogTail {

@@ -591,7 +591,7 @@ mod tests {
         async fn tail_container_logs(
             &self,
             container_id: &ContainerId,
-            _tail_lines: Option<u16>,
+            _query: crate::roles::machine::runner::MachineLogQuery,
         ) -> Result<MachineLogTail, MachineLogReaderError> {
             Err(MachineLogReaderError::ReadFailed {
                 container_id: container_id.clone(),

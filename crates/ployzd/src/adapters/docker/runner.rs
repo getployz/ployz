@@ -4,8 +4,8 @@ use crate::adapters::host_dataplane::WireGuardMtuPolicy;
 use crate::adapters::host_dataplane::resolve_wireguard_mtu;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
-    MachineLogTail,
+    MachineContainerRunner, MachineContainerRunnerError, MachineLogQuery, MachineLogReader,
+    MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
@@ -276,7 +276,7 @@ impl MachineLogReader for DockerManagedContainerRunner {
     async fn tail_container_logs(
         &self,
         container_id: &ContainerId,
-        tail_lines: Option<u16>,
+        query: MachineLogQuery,
     ) -> Result<MachineLogTail, MachineLogReaderError> {
         let docker = self
             .docker()
@@ -289,7 +289,11 @@ impl MachineLogReader for DockerManagedContainerRunner {
         let mut truncated = false;
         let mut stream = docker.logs(
             container_id.as_str(),
-            Some(logs_options(capped_tail_lines(tail_lines))),
+            Some(logs_options(
+                capped_tail_lines(query.tail_lines),
+                query.since_unix_seconds,
+                query.timestamps,
+            )),
         );
 
         while let Some(chunk) = stream.next().await {
@@ -483,13 +487,22 @@ fn managed_container_list_options() -> bollard::query_parameters::ListContainers
         .build()
 }
 
-fn logs_options(tail_lines: u16) -> bollard::query_parameters::LogsOptions {
+fn logs_options(
+    tail_lines: u16,
+    since_unix_seconds: Option<u64>,
+    timestamps: MachineLogTimestamps,
+) -> bollard::query_parameters::LogsOptions {
     let tail = tail_lines.to_string();
-    LogsOptionsBuilder::default()
+    let mut options = LogsOptionsBuilder::default()
         .stdout(true)
         .stderr(true)
-        .tail(&tail)
-        .build()
+        .timestamps(matches!(timestamps, MachineLogTimestamps::Include))
+        .tail(&tail);
+    if let Some(since_unix_seconds) = since_unix_seconds {
+        let since = i32::try_from(since_unix_seconds).unwrap_or(i32::MAX);
+        options = options.since(since);
+    }
+    options.build()
 }
 
 const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {

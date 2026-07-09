@@ -15,7 +15,7 @@ use ployz_core::ops::{
     ReplayedOperationEvent,
 };
 use ployz_core::state::{MachineLifecycle, ServingTargetEntry};
-use ployz_sdk_types::{LogsTailLines, ServiceSnapshot};
+use ployz_sdk_types::{LogsTailLines, LogsTailTarget, ServiceSnapshot};
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::commands::init::{
     FirstMachineInitOutput, InstallRolePolicy, plan_first_machine_process_set,
@@ -425,6 +425,7 @@ fn cli_dispatches_logs_tail_request() {
     let command = parse_command(
         [
             "logs",
+            "tail",
             "ctr_failed",
             "--machine",
             "machine_a",
@@ -442,9 +443,36 @@ fn cli_dispatches_logs_tail_request() {
     assert_eq!(
         command.into_request(),
         ployz_sdk_types::LogsTailRequest {
-            container_id: ContainerId::try_new("ctr_failed").expect("valid container id"),
-            machine_id: Some(machine_id("machine_a")),
+            target: LogsTailTarget::Container {
+                container_id: ContainerId::try_new("ctr_failed").expect("valid container id"),
+                machine_id: Some(machine_id("machine_a")),
+            },
             tail_lines: Some(LogsTailLines::try_new(50).expect("valid logs tail lines")),
+            since_unix_seconds: None,
+        }
+    );
+}
+
+#[test]
+fn cli_dispatches_service_logs_request() {
+    let command = parse_command(
+        ["logs", "svc_api", "--namespace", "prod", "--tail", "20"].map(str::to_owned),
+    )
+    .expect("service logs command parses");
+
+    let PloyzctlCommand::LogsTail(command) = command else {
+        panic!("expected logs command");
+    };
+
+    assert_eq!(
+        command.into_request(),
+        ployz_sdk_types::LogsTailRequest {
+            target: LogsTailTarget::Service {
+                namespace_id: NamespaceId::try_new("prod").expect("valid namespace id"),
+                service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            },
+            tail_lines: Some(LogsTailLines::try_new(20).expect("valid logs tail lines")),
+            since_unix_seconds: None,
         }
     );
 }
