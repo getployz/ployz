@@ -19,6 +19,37 @@ early and a follow-up turn corrects it. Reach for app-server (appendix) only
 when a run is long or risky enough that mid-turn steering pays for the
 fragility, and only with per-run isolation.
 
+## Where runs execute: the Codex VM first
+
+Prefer running Codex work on the dedicated VM (`ssh codex-vm-public`, repo at
+`/home/codex/work/`) over the local machine. Its `codex app-server` daemon
+(remote-control enabled, unix socket
+`/home/codex/.codex/app-server-control/app-server-control.sock`) is paired to
+the operator's ChatGPT account, and its default model is the required
+`gpt-5.6-sol` — pass `-m gpt-5.6-sol` explicitly on every run regardless.
+
+- **Headless (supervisors)** — `--remote` is TUI-only (0.144.0 rejects it for
+  `exec`), so headless runs go over plain ssh:
+  `ssh codex-vm-public 'cd /home/codex/work/<repo> && codex exec ...'` with the
+  same recipe below.
+- **Interactive TUI on the VM** — forward the daemon socket, then attach:
+
+  ```bash
+  ssh -f -N -o BatchMode=yes -o StreamLocalBindUnlink=yes \
+    -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+    -L /tmp/codex-vm-app-server.sock:/home/codex/.codex/app-server-control/app-server-control.sock \
+    codex-vm-public
+  codex --remote unix:///tmp/codex-vm-app-server.sock
+  ```
+
+  The TUI lands in the VM's working directory; every file op and command runs
+  remotely. The forward is session-scoped — re-run the ssh line if
+  `/tmp/codex-vm-app-server.sock` exists but nothing answers (a stale socket
+  file with no ssh process behind it).
+- CLI-started threads (local or VM) do not surface in the Codex desktop or
+  phone apps — known upstream limitation, no workaround. Watchability comes
+  from the supervisor's own artifacts, not the Codex UI.
+
 ## Launch recipe
 
 ```bash
