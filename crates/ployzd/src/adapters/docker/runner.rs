@@ -662,6 +662,9 @@ fn create_body(
             pids_limit,
             dns,
             dns_search,
+            // musl applies the namespace search domain only when a query has fewer dots
+            // than ndots; an inherited host ndots:0 disables search for plain service names.
+            dns_options: Some(vec!["ndots:1".to_owned()]),
             ..Default::default()
         }),
         networking_config: Some(NetworkingConfig {
@@ -962,6 +965,7 @@ mod tests {
 
         assert_eq!(host.dns, Some(vec!["10.42.7.1".to_owned()]));
         assert_eq!(host.dns_search, Some(vec!["default.internal".to_owned()]));
+        assert_eq!(host.dns_options, Some(vec!["ndots:1".to_owned()]));
     }
 
     #[test]
