@@ -2732,6 +2732,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "ployz"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "base64",
+ "clap",
+ "nuid",
+ "ployz-core",
+ "ployz-host-runner",
+ "ployz-nats",
+ "ployz-sdk-types",
+ "ployz-test-support",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shell-words",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "wait-timeout",
+]
+
+[[package]]
 name = "ployz-core"
 version = "0.1.0"
 dependencies = [
@@ -2755,11 +2778,11 @@ dependencies = [
  "bollard",
  "futures-util",
  "nuid",
+ "ployz",
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",
  "ployz-test-support",
- "ployzctl",
  "ployzd",
  "serde_json",
  "tempfile",
@@ -2786,7 +2809,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-keeper"
+name = "ployz-host-runner"
 version = "0.1.0"
 dependencies = [
  "argon2",
@@ -2848,34 +2871,12 @@ version = "0.1.0"
 dependencies = [
  "async-nats",
  "ployz-core",
- "ployz-keeper",
+ "ployz-host-runner",
  "ployz-nats",
  "ployz-sdk-types",
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "ployzctl"
-version = "0.1.0"
-dependencies = [
- "async-nats",
- "base64",
- "clap",
- "nuid",
- "ployz-core",
- "ployz-nats",
- "ployz-sdk-types",
- "ployz-test-support",
- "serde",
- "serde_json",
- "serde_yaml",
- "shell-words",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "wait-timeout",
 ]
 
 [[package]]

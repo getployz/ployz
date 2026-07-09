@@ -24,7 +24,7 @@ Grilled decisions:
   history); `record_machine_add_joined` / `record_machine_add_completed`
   turned out to have join-flow callers and stay. The
   cert **read model** (event variants, classification, projection,
-  ployzctl rendering) stays — it is the schema of a staged feature and
+  ployz rendering) stays — it is the schema of a staged feature and
   exhaustively matched. Recording returns with the PR that wires cert
   renewal, as `record_cert_transition(CertTransition)`.
 - The committer merge folds the namespace-lock guard into the port's
@@ -106,7 +106,7 @@ Grilled decisions:
 1. Golden pins: subject + message-id strings per event family match the
    pre-refactor renderings (write the pins against current main first,
    then refactor under them).
-2. Full suite green (`--exclude ployz-e2e --exclude ployz-keeper`),
+2. Full suite green (`--exclude ployz-e2e --exclude ployz host`),
    zero workspace warnings — proves the deleted wrappers had no live
    callers.
 3. Grep gates: no `op_cert_`/per-event `op_deploy_`/`op_machine_` free

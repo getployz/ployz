@@ -30,7 +30,7 @@ the authority boundary for every caller.
 - `ployz-nats`: NATS resources and API wrappers.
 - `ployzd`: process wiring, service handlers, controllers, machine services, and
   runtime adapters.
-- `ployzctl`: CLI client.
+- `ployz`: CLI client.
 - `ployz-sdk-types`: public schema/type export surface.
 
 ## Rules

@@ -28,7 +28,7 @@ Ployz already decided in ADR 0030 and ADR 0031 that hub-loss recovery is N indep
 
 ### Problem Frame
 
-The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many places. That lets a process fail over when a pool exists, but it does not make the promoted core become primary after the process observes a higher Control-Plane Epoch. It also leaves connection policy split across `ployz-nats`, `ployzd`, `ployz-keeper`, and `ployzctl`, which makes future promotion bugs likely.
+The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many places. That lets a process fail over when a pool exists, but it does not make the promoted core become primary after the process observes a higher Control-Plane Epoch. It also leaves connection policy split across `ployz-nats`, `ployzd`, `ployz host`, and `ployz`, which makes future promotion bugs likely.
 
 ### Requirements
 
@@ -38,7 +38,7 @@ The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many p
 - R4. If a client later receives a lower-epoch snapshot than its highest accepted epoch, it must reject that snapshot, keep the last good higher-epoch pool, and reconnect away from the stale core.
 - R5. Client-side pool priority must not mutate machine lifecycle, reachable-machine truth, operation evidence, or roster intent.
 - R6. `ployzd` machine, gateway, and DNS roles must share the same epoch/pool state machine and the same intent stream consumer.
-- R7. `ployzd` control, `ployzctl`, keeper join redemption/reporting, cloud bootstrap, and test support must route through the same shared connection API with explicit seed-only or context-only policy when they do not own a mirror.
+- R7. `ployzd` control, `ployz`, Host Runner join redemption/reporting, cloud bootstrap, and test support must route through the same shared connection API with explicit seed-only or context-only policy when they do not own a mirror.
 - R8. Existing stale pre-promotion join behavior must stay explicit: a joiner with only an old bundle and no mirror should fail against the old core rather than silently redeeming against a new authority.
 - R9. `intent.changed` must be the live snapshot stream for role processes. `intent.get` is used at startup and as repair after reconnect, decode failure, or subscription restart; role-local polling/wake refresh loops should go away.
 
@@ -58,7 +58,7 @@ The current shape still treats `PLOYZ_NATS_URL` as the primary URL in too many p
 - KTD2. **Keep mirror interpretation in `ployzd`.** `ployz-nats` should not import `IntentSnapshot` or machine-local mirror storage. `ployzd` owns role-local recovery context and supplies ordered pools to the shared connector.
 - KTD3. **Epoch replaces the bootstrap seed.** Seed-first is correct only before the client sees a higher epoch. After that, the accepted higher-epoch snapshot's `core_machine_id` selects the pool head from the mirrored roster. The old seed is just bootstrap material and should not linger as a special fallback.
 - KTD4. **`intent.changed` carries the live snapshot.** Empty invalidation messages plus per-role polling are the current hack. The live path should apply the snapshot from NATS directly; `intent.get` repairs missed or bad messages.
-- KTD5. **Seed-only remains a first-class policy.** Keeper stale joins, one-shot `ployzctl` calls, control local loopback, and test fixtures should still use the same connection API but with no mirror-driven pool mutation.
+- KTD5. **Seed-only remains a first-class policy.** Host Runner stale joins, one-shot `ployz` calls, control local loopback, and test fixtures should still use the same connection API but with no mirror-driven pool mutation.
 - KTD6. **No new env var.** The existing `PLOYZ_NATS_URL`, CA file, seed file, and local mirror path are enough. Adding `PLOYZ_NATS_URLS` would leak internal recovery policy into install/config before it needs to.
 
 ### High-Level Technical Design
@@ -160,16 +160,16 @@ flowchart TB
 
 ### U4. Migrate seed-only clients onto the shared API explicitly
 
-- **Goal:** Route keeper, ployzctl, control, authorization verification, cloud bootstrap, and test-support clients through the same shared connection API with explicit seed-only/context-only policy.
+- **Goal:** Route Host Runner, ployz, control, authorization verification, cloud bootstrap, and test-support clients through the same shared connection API with explicit seed-only/context-only policy.
 - **Requirements:** R1, R7, R8
 - **Dependencies:** U1
-- **Files:** `crates/ployz-keeper/src/main.rs`, `crates/ployz-keeper/src/cloud_bootstrap_runner.rs`, `crates/ployzctl/src/runtime.rs`, `crates/ployzd/src/roles/control.rs`, `crates/ployzd/src/adapters/nats_authorization/writer.rs`, `crates/ployz-test-support/src/nats.rs`, related tests under each crate
-- **Approach:** Replace direct `connect_authenticated` calls with the shared seed-only wrapper. Do not add mirror logic to join redemption or one-shot operator clients. For `ployzctl`, keep context update on promotion as the authority for which core the operator talks to; context may later store multiple URLs, but that is not required for this fix.
-- **Patterns to follow:** Existing `nats_connect_config` construction in `crates/ployzctl/src/runtime.rs` and keeper join redemption in `crates/ployz-keeper/src/main.rs`.
+- **Files:** `crates/ployz-host-runner/src/main.rs`, `crates/ployz-host-runner/src/cloud_bootstrap_runner.rs`, `crates/ployz/src/runtime.rs`, `crates/ployzd/src/roles/control.rs`, `crates/ployzd/src/adapters/nats_authorization/writer.rs`, `crates/ployz-test-support/src/nats.rs`, related tests under each crate
+- **Approach:** Replace direct `connect_authenticated` calls with the shared seed-only wrapper. Do not add mirror logic to join redemption or one-shot operator clients. For `ployz`, keep context update on promotion as the authority for which core the operator talks to; context may later store multiple URLs, but that is not required for this fix.
+- **Patterns to follow:** Existing `nats_connect_config` construction in `crates/ployz/src/runtime.rs` and Host Runner join redemption in `crates/ployz-host-runner/src/main.rs`.
 - **Test scenarios:**
-  - Keeper stale pre-promotion join with only old A URL still fails explicitly when A is unavailable.
-  - Keeper valid post-promotion join succeeds through the current context/seed URL.
-  - `ployzctl` operation API client still connects with a one-element context URL.
+  - Host Runner stale pre-promotion join with only old A URL still fails explicitly when A is unavailable.
+  - Host Runner valid post-promotion join succeeds through the current context/seed URL.
+  - `ployz` operation API client still connects with a one-element context URL.
   - Control local loopback connect remains one-element and does not subscribe to mirror policy.
 - **Verification:** `rg connect_authenticated` shows only the central wrappers, tests, or intentional low-level adapter code remain.
 
@@ -197,7 +197,7 @@ flowchart TB
 | `cargo fmt --check` | All units | Formatting passes. |
 | `cargo test -p ployz-nats` | U1 | Shared connect API and pool behavior pass. |
 | `cargo test -p ployzd nats_failover` or focused equivalent | U2, U3 | Epoch state machine and role wiring pass. |
-| `cargo test -p ployz-keeper -p ployzctl -p ployz-test-support` | U4 | Seed-only callers still work through shared API. |
+| `cargo test -p ployz-host-runner -p ployz -p ployz-test-support` | U4 | Seed-only callers still work through shared API. |
 | Fresh four-server promotion matrix | U5 | B becomes primary for surviving clients after higher epoch; healed A is not preferred; stale joins fail explicitly; valid joins work. |
 
 ---
@@ -208,6 +208,6 @@ flowchart TB
 - Machine, gateway, and DNS roles all use the same epoch-driven pool-priority state machine.
 - Higher Control-Plane Epoch makes the promoted core primary in client pool order.
 - Lower stale epochs are rejected without mutating cluster truth.
-- Keeper, ployzctl, control, cloud bootstrap, and test-support callers use explicit seed-only/context-only shared connection policy.
+- Host Runner, ployz, control, cloud bootstrap, and test-support callers use explicit seed-only/context-only shared connection policy.
 - The release-blocking four-server matrix proves stragglers find and prefer the new core without relying on remote process restart as policy.
 - Dead-end experimental connection helpers are removed before merge.

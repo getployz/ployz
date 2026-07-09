@@ -5,7 +5,7 @@ There is no background update loop, no `latest` channel, no multi-machine
 rollout policy, and no cancellation support.
 
 The design goal is the simplest reliable update system that is secure,
-idiomatic, and easy to manage. Keeper does local execution; NATS operations own
+idiomatic, and easy to manage. Host Runner does local execution; NATS operations own
 authority and evidence.
 
 ## Commands
@@ -13,30 +13,30 @@ authority and evidence.
 The core operation surfaces are:
 
 ```text
-keeper update <machine> --version <version>
+Host Runner update <machine> --version <version>
 substrate update <machine> --version <version>
 ```
 
 `machine update <machine> --version <version>` may exist as CLI convenience. It
-runs keeper update first, waits for completion, then runs substrate update. Core
+runs Host Runner update first, waits for completion, then runs substrate update. Core
 still records two bounded operations.
 
 Every update targets exactly one machine and one exact Ployz version. Version
 ranges, channels, and `latest` are rejected.
 
-## Keeper
+## Host Runner
 
-Keeper is the long-running machine-local executor for updateable substrate. It
+Host Runner is the long-running machine-local executor for updateable substrate. It
 has its own machine-scoped NATS credentials and exposes machine-scoped service
-endpoints. Keeper does not choose versions and does not mutate cluster truth.
+endpoints. Host Runner does not choose versions and does not mutate cluster truth.
 
-Keeper update is separate from substrate update because keeper is the executor
-for substrate steps. A keeper update stages and verifies the requested keeper
-artifact, records keeper handoff state locally, restarts the keeper service, and
-the new keeper resumes the same operation to report the terminal result.
+Host Runner update is separate from substrate update because Host Runner is the executor
+for substrate steps. A Host Runner update stages and verifies the requested Host Runner
+artifact, records Host Runner handoff state locally, restarts the Host Runner service, and
+the new Host Runner resumes the same operation to report the terminal result.
 
-Substrate update requires keeper to already be at the requested Ployz version.
-If the current keeper version is known and does not match, the API rejects the
+Substrate update requires Host Runner to already be at the requested Ployz version.
+If the current Host Runner version is known and does not match, the API rejects the
 substrate update before creating the operation.
 
 ## Release Source
@@ -51,17 +51,17 @@ joiner or attach artifact URLs/checksums to the joiner envelope.
 
 The public installer may use a mutable channel during Bootstrap Delivery, but
 that channel is resolved before artifact download. The channel is not a Release
-Source, and it is not authority for keeper or substrate updates.
+Source, and it is not authority for Host Runner or substrate updates.
 
 ## Substrate State
 
-Keeper uses assigned substrate state stored locally on the machine to decide
+Host Runner uses assigned substrate state stored locally on the machine to decide
 which components are relevant. That state guides local update execution but is
 not cluster truth.
 
 Relevant components depend on the machine:
 
-- every machine has keeper and assigned `ployzd` roles,
+- every machine has Host Runner and assigned `ployzd` roles,
 - only core machines have `nats-server`,
 - only gateway machines have gateway,
 - only DNS machines have DNS,
@@ -74,7 +74,7 @@ Substrate update uses idempotent check/apply steps:
 ```text
 resolve requested version
 load assigned substrate state
-compute relevant non-keeper components
+compute relevant non-Host Runner components
 stage and verify all relevant artifacts
 run required Dataplane Host Preparation for the requested version
 run substrate preflight for every relevant component
@@ -85,14 +85,14 @@ complete or fail with evidence
 ```
 
 If the requested exact version introduces new or changed machine-local host
-requirements, keeper installs or enforces the missing prerequisites and then
+requirements, Host Runner installs or enforces the missing prerequisites and then
 verifies readiness before activating the affected role or eBPF component. A
 version must not start and discover missing host substrate only through later
 deploy failures.
 
 Already-in-sync components are successful no-ops with evidence.
 
-The machine substrate lock serializes keeper update, substrate update, bootstrap
+The machine substrate lock serializes Host Runner update, substrate update, bootstrap
 finalization, role assignment changes, and future release-source changes for a
 machine. If the lock is busy, the API returns resource busy and does not create
 an operation.
@@ -113,24 +113,24 @@ Bounded restart stages and verifies the new artifact, atomically points the
 unit at the staged version, restarts the affected service, waits for a bounded
 health result, and records the observed result.
 
-NATS server activation uses NATS lame duck mode before restart, then keeper
+NATS server activation uses NATS lame duck mode before restart, then Host Runner
 reconnects and waits for NATS health before reporting completion. If health
-fails, keeper records failure evidence.
+fails, Host Runner records failure evidence.
 
-Gateway activation uses the gateway's graceful upgrade support. Keeper stages
+Gateway activation uses the gateway's graceful upgrade support. Host Runner stages
 the new gateway artifact, starts the new gateway in upgrade mode, signals the
 old gateway to transfer sockets, verifies the new gateway is serving, and lets
 the old gateway drain within its grace period.
 
-DNS activation uses the DNS role's graceful upgrade support. Keeper stages the
+DNS activation uses the DNS role's graceful upgrade support. Host Runner stages the
 new DNS artifact, starts the new DNS process in upgrade mode, verifies that it
 can load current or last-known-good serving state, verifies local UDP and TCP
 answers, transfers or overlaps listener ownership, and lets the old DNS process
 drain within its grace period. The listener should remain available throughout
 the activation path; if the new process cannot serve the expected answers,
-keeper leaves the old process serving and records failure evidence.
+Host Runner leaves the old process serving and records failure evidence.
 
-eBPF activation is not file replacement. Keeper uses the eBPF controller to
+eBPF activation is not file replacement. Host Runner uses the eBPF controller to
 verify/load the new program, check pinned map compatibility, update the attached
 link/program where supported, verify dataplane observations, and only then
 detach the old program.

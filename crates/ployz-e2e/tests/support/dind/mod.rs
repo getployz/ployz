@@ -14,12 +14,12 @@ use std::time::Duration;
 use futures_util::FutureExt as _;
 use ployz_e2e::dind::DindCluster;
 
-/// Where keeper install leaves the cluster CA and the seeds on the core.
+/// Where Host Runner install leaves the cluster CA and the seeds on the core.
 pub const NATS_MATERIAL_DIR: &str = "/var/lib/ployz/nats";
 /// The ployzd-control-owned authority file (recovery evidence).
 pub const AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
-/// Where the keeper join commit leaves the redeemed per-machine seed
-/// (keeper state dir `/var/lib/ployz` + `join-material.d`).
+/// Where the Host Runner join commit leaves the redeemed per-machine seed
+/// (Host Runner state dir `/var/lib/ployz` + `join-material.d`).
 pub const EDGE_NATS_CREDS_FILE: &str = "/var/lib/ployz/join-material.d/nats.creds";
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 

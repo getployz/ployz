@@ -498,7 +498,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
 }
 
 /// Redeem before the mint worker reaches material-ready is the typed
-/// not-ready response, and the keeper-style bounded retry succeeds later.
+/// not-ready response, and the Host Runner-style bounded retry succeeds later.
 #[tokio::test]
 async fn machine_join_redeem_waits_for_material_ready() {
     let _guard = lock_machine_add_mint_test().await;

@@ -8,7 +8,7 @@
 
 use std::error::Error;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -19,7 +19,7 @@ use ployz_core::nats_config::{
     NatsUserPublicKey, NatsUserSeed, render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_keeper::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
+use ployz_host_runner::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
@@ -72,7 +72,7 @@ impl SecuredTestNats {
         let dir = tempfile::TempDir::new()?;
 
         // The cluster CA, server certificate, and base NKey users come from
-        // the production keeper identity minting — no parallel test-only
+        // the production Host Runner identity minting — no parallel test-only
         // TLS recipe.
         let sans = ServerCertificateSans::try_new(None, Some("localhost".to_owned()))?;
         let identity = generate_cluster_nats_identity(&sans)?;
@@ -126,7 +126,7 @@ impl SecuredTestNats {
         // `-p -1` overrides the rendered 4222 with a dynamic port so
         // parallel fixtures do not collide; the actual port comes from the
         // server's ports file.
-        let server = FixtureNatsServer::spawn(&config_path, dir.path())?;
+        let mut server = FixtureNatsServer::spawn(&config_path, dir.path())?;
         let port = server.wait_for_client_port(dir.path()).await?;
         let url = NatsClientUrl::try_new(format!("tls://127.0.0.1:{port}"))
             .expect("fixture-rendered NATS URL is valid");
@@ -342,11 +342,12 @@ fn authorized_user(principal: NatsPrincipal, minted: &MintedNatsUser) -> NatsAut
 /// readable from the server's ports file.
 struct FixtureNatsServer {
     child: Child,
+    stderr: Option<std::process::ChildStderr>,
 }
 
 impl FixtureNatsServer {
     fn spawn(config_path: &Path, ports_file_dir: &Path) -> Result<Self, FixtureError> {
-        let child = Command::new("nats-server")
+        let mut child = Command::new("nats-server")
             .arg("--config")
             .arg(config_path)
             .arg("--port")
@@ -355,12 +356,13 @@ impl FixtureNatsServer {
             .arg(ports_file_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
-        Ok(Self { child })
+        let stderr = child.stderr.take();
+        Ok(Self { child, stderr })
     }
 
-    async fn wait_for_client_port(&self, ports_file_dir: &Path) -> Result<u16, FixtureError> {
+    async fn wait_for_client_port(&mut self, ports_file_dir: &Path) -> Result<u16, FixtureError> {
         let ports_path = ports_file_dir.join(format!("nats-server_{}.ports", self.child.id()));
         for _ in 0..PORTS_FILE_ATTEMPTS {
             if let Ok(contents) = fs::read_to_string(&ports_path)
@@ -368,15 +370,35 @@ impl FixtureNatsServer {
             {
                 return Ok(port);
             }
+            if let Some(status) = self.child.try_wait()? {
+                return Err(Box::new(io::Error::other(format!(
+                    "nats-server exited before writing ports file at {} with status {status}: {}",
+                    ports_path.display(),
+                    self.read_stderr()
+                ))));
+            }
             tokio::time::sleep(PORTS_FILE_DELAY).await;
         }
         Err(Box::new(io::Error::new(
             io::ErrorKind::TimedOut,
             format!(
-                "nats-server ports file never appeared at {}",
-                ports_path.display()
+                "nats-server ports file never appeared at {}: {}",
+                ports_path.display(),
+                self.read_stderr()
             ),
         )))
+    }
+
+    fn read_stderr(&mut self) -> String {
+        let Some(mut stderr) = self.stderr.take() else {
+            return "stderr unavailable".to_owned();
+        };
+        let mut output = String::new();
+        match stderr.read_to_string(&mut output) {
+            Ok(_) if output.trim().is_empty() => "stderr empty".to_owned(),
+            Ok(_) => output.trim().to_owned(),
+            Err(error) => format!("stderr read failed: {error}"),
+        }
     }
 }
 
@@ -406,11 +428,11 @@ struct WrittenTlsMaterial {
     key_path: PathBuf,
 }
 
-/// Writes the keeper-minted cluster CA, server certificate, and server key
+/// Writes the Host Runner-minted cluster CA, server certificate, and server key
 /// into the fixture directory.
 fn write_tls_material(
     dir: &Path,
-    identity: &ployz_keeper::nats_identity::ClusterNatsIdentity,
+    identity: &ployz_host_runner::nats_identity::ClusterNatsIdentity,
 ) -> Result<WrittenTlsMaterial, FixtureError> {
     let ca_path = dir.join("ca.pem");
     let cert_path = dir.join("server.crt");

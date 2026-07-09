@@ -66,7 +66,7 @@ pub struct MachineSubstrateVersions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ployzd: Option<InstallArtifactVersion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keeper: Option<InstallArtifactVersion>,
+    pub host_runner: Option<InstallArtifactVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

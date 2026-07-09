@@ -58,7 +58,7 @@ The fix should address those clusters at their shared source rather than patchin
 **Style gaps that affect execution surfaces**
 
 - R13. Audited async port traits must use the clippy-safe local shape: private traits may use `async fn`; public traits keep explicit future-return signatures unless visibility can be narrowed or a scoped allow is justified.
-- R14. Keeper filesystem commit paths must return `FailureMessage` for invalid target filenames instead of panicking.
+- R14. Host Runner filesystem commit paths must return `FailureMessage` for invalid target filenames instead of panicking.
 - R15. Only audited function-scoped imports, or imports inside functions already changed for these fixes, should move to top-level or module-level imports.
 
 ### Acceptance Examples
@@ -67,7 +67,7 @@ The fix should address those clusters at their shared source rather than patchin
 - AE2. **Wrong submit failure class:** Given a non-deploy submit path receives a failure variant it cannot handle, when the API maps it, then the response is typed unavailable/internal failure rather than a panic.
 - AE3. **Empty deploy command:** Given a deploy execution command has no services, when code needs the single-service accessor, then construction or access returns a typed failure.
 - AE4. **Poisoned process lock:** Given a role process lock is poisoned, when health or route selection is called, then the process returns recovered state or a typed unhealthy/error result rather than panicking.
-- AE5. **Remote machine incomplete:** Given machine-add finishes in a non-completed state, when `ployzctl` renders the error, then the output is stable CLI prose with operation id and status category, not `Failed { ... }`.
+- AE5. **Remote machine incomplete:** Given machine-add finishes in a non-completed state, when `ployz` renders the error, then the output is stable CLI prose with operation id and status category, not `Failed { ... }`.
 - AE6. **Operation wait timeout:** Given status polling sees errors and non-terminal statuses until budget expiry, when the helper times out, then the failure includes the last observed status or error.
 - AE7. **HTTP helper stall:** Given a test upstream never sends a complete request or response, when the helper waits, then the test fails within a bounded timeout.
 - AE8. **Route cutover failure:** Given route binding commit fails in deploy tests, when the operation runs, then the terminal evidence records route cutover failure.
@@ -102,7 +102,7 @@ The fix should address those clusters at their shared source rather than patchin
 
 - KTD1. **Fix shared failure sources first.** The smallest safe path is to repair shared helpers and port boundaries so sibling callers inherit the fix.
 - KTD2. **Typed errors beat sentinel fallbacks.** Overflow, empty services, poisoned locks, invalid filenames, and serialization failure should move through existing `thiserror`-style errors or small local error enums.
-- KTD3. **CLI prose is a boundary contract.** `ployzctl` should render stable status categories and `Display` errors; `Debug` stays inside diagnostics and tests.
+- KTD3. **CLI prose is a boundary contract.** `ployz` should render stable status categories and `Display` errors; `Debug` stays inside diagnostics and tests.
 - KTD4. **Tests get bounded evidence, not perfect harnesses.** The test helper work should add timeouts and last-observed context without turning the test-support crate into a generic polling framework.
 - KTD5. **Style work stays local.** Import cleanup is allowed only for audited function-scoped imports or functions already changed for behavioral fixes.
 - KTD6. **Clippy gate wins.** Public async traits stay in a clippy-safe explicit-future shape unless the trait can become private or a scoped allow is justified in code.
@@ -158,7 +158,7 @@ flowchart TB
 - `crates/ployzd/src/operation_api/submit.rs`
 - `crates/ployzd/src/operations/deploy/types.rs`
 - `crates/ployzd/src/roles/gateway/pingora.rs`
-- `crates/ployzctl/src/remote_machine_runtime.rs`
+- `crates/ployz/src/remote_machine_runtime.rs`
 - `crates/ployz-test-support/src/ops.rs`
 
 ---
@@ -175,11 +175,11 @@ flowchart TB
   - `crates/ployz-core/src/ops/replay.rs`
   - `crates/ployzd/src/operations/deploy/types.rs`
   - `crates/ployzd/src/operations/deploy/driver.rs`
-  - `crates/ployz-keeper/src/fsx.rs`
+  - `crates/ployz-host-runner/src/fsx.rs`
   - `crates/ployz-core/tests/operation_status.rs`
   - `crates/ployzd/tests/deploy_operation.rs`
-  - `crates/ployz-keeper/tests/local.rs`
-- **Approach:** Introduce the smallest typed error shape at each boundary. For event sequencing, return a fallible next-sequence result and update recorders to surface overflow as operation evidence or unavailable status. For deploy services, make non-empty command construction or single-service access return `Result`. For keeper staged directory commits, convert missing or non-UTF-8 filenames into `FailureMessage`.
+  - `crates/ployz-host-runner/tests/local.rs`
+- **Approach:** Introduce the smallest typed error shape at each boundary. For event sequencing, return a fallible next-sequence result and update recorders to surface overflow as operation evidence or unavailable status. For deploy services, make non-empty command construction or single-service access return `Result`. For Host Runner staged directory commits, convert missing or non-UTF-8 filenames into `FailureMessage`.
 - **Execution note:** Start with characterization tests for the panic cases before changing signatures.
 - **Patterns to follow:** `EventSequenceError`, `OperationEventReplayLimitError`, `CoreStoreError`, and existing `FailureMessage` conversions.
 - **Test scenarios:**
@@ -188,7 +188,7 @@ flowchart TB
   - Given an empty deploy execution command, single-service access or construction returns a typed failure.
   - Given a staged directory commit target without a UTF-8 filename, `commit_to` returns `FailureMessage`.
   - Given a valid staged directory commit target, existing commit behavior is unchanged.
-- **Verification:** Core, ployzd deploy-operation, and keeper tests prove the audited panic sites are no longer reachable through valid inputs.
+- **Verification:** Core, ployzd deploy-operation, and Host Runner tests prove the audited panic sites are no longer reachable through valid inputs.
 
 ### U2. Harden Operation API And Role Runtime Error Paths
 
@@ -224,18 +224,18 @@ flowchart TB
 - **Requirements:** R5, R6, R7, AE5.
 - **Dependencies:** U1 where shared error types change.
 - **Files:**
-  - `crates/ployzctl/src/remote_machine_runtime.rs`
-  - `crates/ployzctl/src/config.rs`
-  - `crates/ployzctl/src/keeper_install.rs`
-  - `crates/ployzctl/src/commands/init.rs`
-  - `crates/ployzctl/src/commands/init/join_template.rs`
-  - `crates/ployzctl/src/commands/ops.rs`
-  - `crates/ployzctl/src/runtime.rs`
+  - `crates/ployz/src/remote_machine_runtime.rs`
+  - `crates/ployz/src/config.rs`
+  - `crates/ployz/src/Host Runner_install.rs`
+  - `crates/ployz/src/commands/init.rs`
+  - `crates/ployz/src/commands/init/join_template.rs`
+  - `crates/ployz/src/commands/ops.rs`
+  - `crates/ployz/src/runtime.rs`
   - `crates/ployz-nats/src/connect.rs`
   - `crates/ployz-nats/tests/connect.rs`
-  - `crates/ployzctl/tests/cli_contract.rs`
-  - `crates/ployzctl/tests/deploy_cli_contract.rs`
-  - `crates/ployzctl/tests/machine_cli_contract.rs`
+  - `crates/ployz/tests/cli_contract.rs`
+  - `crates/ployz/tests/deploy_cli_contract.rs`
+  - `crates/ployz/tests/machine_cli_contract.rs`
 - **Approach:** Replace debug-rendered machine-add states with a narrow CLI status category plus operation id. Make JSON render/write helpers return `Result` and map serde failures into existing CLI/runtime errors. Render NATS URL errors with `Display`. Make `NatsClientUrl::from_endpoint` return a typed `Result` and update call sites. Keep `NatsClientUrl::loopback` infallible only by constructing the known-valid loopback URL directly inside the type boundary.
 - **Patterns to follow:** The earlier error-evidence rendering plan's rule that errors render themselves; `PloyzctlExecutionError` and `ClusterContextError` existing `Display` implementations.
 - **Test scenarios:**
@@ -283,9 +283,9 @@ flowchart TB
   - `crates/ployzd/src/roles/machine/runner.rs`
   - `crates/ployzd/src/roles/machine/service.rs`
   - `crates/ployzd/src/adapters/nats_authorization/machine_seed.rs`
-  - `crates/ployz-keeper/src/fsx.rs`
-  - `crates/ployz-keeper/src/artifacts.rs`
-  - `crates/ployz-keeper/src/cloud_bootstrap.rs`
+  - `crates/ployz-host-runner/src/fsx.rs`
+  - `crates/ployz-host-runner/src/artifacts.rs`
+  - `crates/ployz-host-runner/src/cloud_bootstrap.rs`
   - `crates/ployz-ebpf-common/src/lib.rs`
   - `crates/ployz-ebpf-common/tests/bytecode_validation.rs`
 - **Approach:** Convert audited trait port methods from explicit `impl Future` returns to `async fn` only when the trait is private or visibility can be narrowed cleanly. For public traits, keep the explicit future-return signature unless a scoped clippy allow is justified. Move only audited function-scoped production imports, or imports in functions already changed for behavioral fixes, to top-level or module-level imports. Add direct eBPF validation tests rather than changing validation behavior.
@@ -309,8 +309,8 @@ flowchart TB
 | Workspace clippy | `cargo clippy --workspace --all-targets -- -D warnings` | Rust-guide-adjacent lints and no new warnings. |
 | Core and SDK tests | `cargo test -p ployz-core -p ployz-sdk-types` | Typed core invariants and public error surfaces. |
 | NATS and daemon tests | `cargo test -p ployz-nats -p ployzd` | Operation API, role runtime, NATS URL, deploy fixture, and route cutover behavior. |
-| CLI tests | `cargo test -p ployzctl` | Stable CLI rendering and serialization error paths. |
-| Keeper and eBPF tests | `cargo test -p ployz-keeper -p ployz-ebpf-common --features ployz-ebpf-common/validation` | Keeper filesystem failures and eBPF validation coverage. |
+| CLI tests | `cargo test -p ployz` | Stable CLI rendering and serialization error paths. |
+| Host Runner and eBPF tests | `cargo test -p ployz-host-runner -p ployz-ebpf-common --features ployz-ebpf-common/validation` | Host Runner filesystem failures and eBPF validation coverage. |
 | E2E/test-support compile | `cargo test -p ployz-e2e --no-run` | Test helper signature changes are handled by e2e callers. |
 | Grep checks | Search touched files for audited `unreachable!`, `eprintln!`, debug-rendered CLI errors, audited function-scoped imports, and private local port `impl Future` signatures. Public explicit-future traits must have a local rationale. | The audited rust-guide findings were removed or explicitly kept for the clippy-safe exception. |
 

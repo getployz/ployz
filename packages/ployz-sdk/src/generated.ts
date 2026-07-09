@@ -48,7 +48,7 @@ export type CloudBootstrapRedemptionId = Brand<string, "CloudBootstrapRedemption
 
 export type CloudBootstrapAttemptId = Brand<string, "CloudBootstrapAttemptId">;
 
-export type CloudBootstrapClientInfo = { protocol_version: number, keeper_version: string, };
+export type CloudBootstrapClientInfo = { protocol_version: number, host_runner_version: string, };
 
 export type CloudBootstrapMachineFacts = { hostname: string | null, os: string, arch: string, candidate_runtime_nats_url: MachineJoinRuntimeNatsUrl | null, };
 
@@ -468,7 +468,7 @@ export type MachineAddError = { "error": "unavailable", operation_id: OperationI
 
 export type MachineUpdateOperationState = { "state": "accepted" } | { "state": "running" } | { "state": "completed", reported: MachineSubstrateVersions, } | { "state": "failed", failure: MachineUpdateFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
-export type MachineSubstrateVersions = { ployzd?: InstallArtifactVersion | null, keeper?: InstallArtifactVersion | null, };
+export type MachineSubstrateVersions = { ployzd?: InstallArtifactVersion | null, host_runner?: InstallArtifactVersion | null, };
 
 export type MachineUpdateFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "update_rejected", machine_id: MachineId, message: FailureMessage, } | { "kind": "version_not_reported", machine_id: MachineId, target_version: InstallArtifactVersion, reported: MachineSubstrateVersions, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
 

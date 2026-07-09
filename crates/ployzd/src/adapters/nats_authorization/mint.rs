@@ -327,7 +327,7 @@ impl MachineCredentialMint {
         };
         // The step itself ran; only its evidence write failed. Attempt the
         // typed terminal failure so the operation is not stranded
-        // non-terminal with a keeper retrying blind.
+        // non-terminal with a Host Runner retrying blind.
         Some(
             self.fail(
                 request,

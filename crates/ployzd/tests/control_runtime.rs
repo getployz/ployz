@@ -826,7 +826,7 @@ async fn start_substrate_update_service(
                         machine_id,
                         reported: MachineSubstrateVersions {
                             ployzd: Some(reported_ployzd),
-                            keeper: None,
+                            host_runner: None,
                         },
                     },
                 ))

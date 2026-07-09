@@ -193,7 +193,7 @@ impl NatsReloadRunner for RecordingReload {
     }
 }
 
-/// Keeper-style bounded redeem retry: not-ready and transient transport timeouts
+/// Host Runner-style bounded redeem retry: not-ready and transient transport timeouts
 /// are retried (a redeem racing the mint churn can momentarily time out); a genuine
 /// domain error is a test failure. Still bounded — it gives up after ~20s.
 pub async fn redeem_when_ready(

@@ -234,7 +234,7 @@ pub fn load_nats_connect_config(
     })
 }
 
-/// Control reads its seed eagerly: keeper wrote `controller.seed` at
+/// Control reads its seed eagerly: Host Runner wrote `controller.seed` at
 /// install, so a missing file is a configuration error, not an awaiting
 /// state.
 fn read_connect_config_now(

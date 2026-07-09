@@ -8,7 +8,7 @@ helper functions and hand-written `Display` impls instead of being owned
 by the error types. Every individual finding — the truncating
 `MachineSnapshotError`, the `record_operation_event_message` helper, the
 duplicated corrupt-record strings, the parallel kind tables, the Debug
-soup in ployzctl and in a durable `FailureMessage` — is an instance of
+soup in ployz and in a durable `FailureMessage` — is an instance of
 that one gap.
 
 ## The long-term rule
@@ -91,9 +91,9 @@ After change 2, most `"operation record corrupt: …"` strings live in the
 `pub(super) fn corrupt(detail: impl Display) -> String` in `error_map.rs`
 so the greppable sentinel prefix has exactly one definition.
 
-### 8. The last mile: ployzctl prints evidence, not Debug
+### 8. The last mile: ployz prints evidence, not Debug
 
-`api_error` (ployzctl runtime.rs) bounds `E: fmt::Debug`, so operators
+`api_error` (ployz runtime.rs) bounds `E: fmt::Debug`, so operators
 and driving AIs read `Unavailable { operation_id: OperationId("op_…"),
 message: "…" }`. Fix at the type layer, not the CLI: derive
 `thiserror::Error` on the endpoint error envelopes in `ployz-sdk-types`
@@ -122,12 +122,12 @@ so the plan doesn't misdocument the shipped wire break.
 
 1. Exact-string tests in `error_map.rs` pass unchanged — proves the
    thiserror texts are byte-identical for changes 1–3.
-2. Full suite (`--exclude ployz-e2e --exclude ployz-keeper`) green;
+2. Full suite (`--exclude ployz-e2e --exclude ployz host`) green;
    zero workspace warnings.
 3. Grep gates: no `impl fmt::Display` remains on the enums from changes
    1–3; no `:?` inside `operation_api/`, `machine_update_runtime.rs`
    error paths, or `api_error`; `"operation record corrupt: "` literal
    appears in exactly two source files (the derive + the helper).
 4. `git diff` on `packages/ployz-sdk/generated.ts` is empty.
-5. One new unit test on ployzctl's `api_error` pinning a clean rendered
+5. One new unit test on ployz's `api_error` pinning a clean rendered
    `Unavailable` message (the last-mile acceptance).

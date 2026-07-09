@@ -1,7 +1,7 @@
 //! Reachability classification: pure policy for deciding which of a machine's
 //! addresses are fleet-dialable public control endpoints versus mesh dial
 //! candidates. No I/O — address enumeration lives in the crates that run on the
-//! machine (the daemon and the keeper), which share this policy.
+//! machine (the daemon and the Host Runner), which share this policy.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

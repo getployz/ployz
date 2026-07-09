@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
+use ployz::commands::machine::MachineAddOutput;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_e2e::dind::{ARTIFACTS_MOUNT_PATH, DindMachine, shell_quote, write_file_in_container};
 use ployz_sdk_types::MachineAddAccepted;
-use ployzctl::commands::machine::MachineAddOutput;
 
 use super::formation::{CoreContext, sha256_of};
 
@@ -18,7 +18,7 @@ pub struct InstallLine {
     pub join_token: String,
 }
 
-/// Renders the product's machine-add output (the same text `ployzctl
+/// Renders the product's machine-add output (the same text `ployz
 /// machine add` prints) and parses the install env + join token out of it.
 #[must_use]
 pub fn parse_install_line(core: &CoreContext, accepted: MachineAddAccepted) -> InstallLine {
@@ -74,7 +74,7 @@ fn install_line_ca_b64(line: &str) -> String {
 pub const INSTALLER_WRAPPER_PATH: &str = "/tmp/ployz-install.sh";
 
 /// Writes the real `scripts/ployz.sh` into the machine plus a wrapper that
-/// pins the keeper artifact to the baked `file://` source, so the product
+/// pins the Host Runner artifact to the baked `file://` source, so the product
 /// `machine init`/`machine add` commands can run the real installer without
 /// fetching a release from the network.
 pub async fn write_installer_wrapper(docker: &ployz_e2e::bollard::Docker, machine: &DindMachine) {
@@ -90,22 +90,22 @@ pub async fn write_installer_wrapper(docker: &ployz_e2e::bollard::Docker, machin
     .await
     .expect("write ployz.sh into machine");
 
-    let keeper_sha = {
+    let ployz_sha = {
         let outcome = ployz_e2e::dind::exec_in_container(
             docker,
             &machine.container_id,
-            &["sha256sum", &format!("{ARTIFACTS_MOUNT_PATH}/ployz-keeper")],
+            &["sha256sum", &format!("{ARTIFACTS_MOUNT_PATH}/ployz")],
         )
         .await
-        .expect("exec sha256sum for keeper");
-        assert!(outcome.success(), "keeper sha256sum failed: {outcome:?}");
+        .expect("exec sha256sum for ployz");
+        assert!(outcome.success(), "ployz sha256sum failed: {outcome:?}");
         let Some(digest) = outcome.stdout.split_whitespace().next() else {
-            panic!("empty keeper sha256sum output");
+            panic!("empty ployz sha256sum output");
         };
         digest.to_owned()
     };
     let wrapper = format!(
-        "#!/bin/sh\nexport PLOYZ_KEEPER_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz-keeper\nexport PLOYZ_KEEPER_SHA256={keeper_sha}\nexec sh /tmp/ployz.sh \"$@\"\n"
+        "#!/bin/sh\nexport PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz\nexport PLOYZ_SHA256={ployz_sha}\nexec sh /tmp/ployz.sh \"$@\"\n"
     );
     write_file_in_container(
         docker,
@@ -133,12 +133,7 @@ pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &Ins
     .await
     .expect("write ployz.sh into edge");
 
-    let keeper_sha = sha256_of(
-        &core.docker,
-        edge,
-        &format!("{ARTIFACTS_MOUNT_PATH}/ployz-keeper"),
-    )
-    .await;
+    let ployz_sha = sha256_of(&core.docker, edge, &format!("{ARTIFACTS_MOUNT_PATH}/ployz")).await;
     let join = core
         .exec_sh(
             edge,
@@ -146,11 +141,11 @@ pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &Ins
                 "ca_file=\"$(mktemp)\"; \
                  trap 'rm -f \"$ca_file\"' EXIT; \
                  printf '%s' {} | base64 -d > \"$ca_file\"; \
-                 PLOYZ_KEEPER_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz-keeper \
-                 PLOYZ_KEEPER_SHA256={keeper_sha} \
+                 PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz \
+                 PLOYZ_SHA256={ployz_sha} \
                  sh /tmp/ployz.sh && \
                  PLOYZ_NATS_URL={} PLOYZ_NATS_CA_FILE=\"$ca_file\" PLOYZ_JOIN_NKEY_SEED={} \
-                 ployz-keeper bootstrap join --join-token {}",
+                 ployz host bootstrap join --join-token {}",
                 shell_quote(&install.nats_ca_b64),
                 shell_quote(&install.nats_url),
                 shell_quote(&install.join_seed),

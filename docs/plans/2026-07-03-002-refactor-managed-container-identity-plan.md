@@ -102,7 +102,7 @@ type: refactor
 
 - **Files:** `ployz-test-support/src/{ids,fixtures}.rs` (+ new builder
   module), then the integration test files across `ployzd`, `ployz-nats`,
-  `ployzctl`, `ployz-e2e` currently holding literals/helper clones.
+  `ployz`, `ployz-e2e` currently holding literals/helper clones.
 - Builders land first, then U4's mechanical fallout is absorbed by
   converting each touched site to builders in the same pass (one blast
   radius, one pass).
@@ -121,7 +121,7 @@ type: refactor
 |---|---|
 | `cargo test -p ployz-core` | Identity methods, planner, wire contract (new nested shapes pinned). |
 | `cargo test -p ployzd` | Labels codec round-trip, machine RPC wire-pin (unchanged JSON), gateway/preparation suites. |
-| `cargo test -p ployz-nats -p ployzctl -p ployz-sdk-types` | Stores, CLI contract, TS contract. |
+| `cargo test -p ployz-nats -p ployz -p ployz-sdk-types` | Stores, CLI contract, TS contract. |
 | SDK `npm run typecheck` after regeneration | Nested identity type flows through generated.ts. |
 | `cargo clippy --all-targets` | No new warnings. |
 | Grep gate | Zero remaining flattened six-tuple struct literals outside query views; zero local id-helper fns in integration tests. |

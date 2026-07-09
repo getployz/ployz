@@ -46,7 +46,7 @@
   "cloud_bootstrap_session_create_request": {
     "attempt_id": "pcba_123",
     "client": {
-      "keeper_version": "0.1.0",
+      "host_runner_version": "0.1.0",
       "protocol_version": 1
     },
     "machine": {

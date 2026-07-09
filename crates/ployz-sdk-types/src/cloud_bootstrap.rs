@@ -133,15 +133,15 @@ fn validate_cloud_bootstrap_secret(value: &str) -> Result<(), CloudBootstrapSecr
 #[serde(deny_unknown_fields)]
 pub struct CloudBootstrapClientInfo {
     pub protocol_version: u16,
-    pub keeper_version: String,
+    pub host_runner_version: String,
 }
 
 impl CloudBootstrapClientInfo {
     #[must_use]
-    pub fn current(keeper_version: impl Into<String>) -> Self {
+    pub fn current(host_runner_version: impl Into<String>) -> Self {
         Self {
             protocol_version: CLOUD_BOOTSTRAP_PROTOCOL_VERSION,
-            keeper_version: keeper_version.into(),
+            host_runner_version: host_runner_version.into(),
         }
     }
 }

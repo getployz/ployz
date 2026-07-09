@@ -10,21 +10,21 @@ scripts/dev-push-substrate.sh root@server-a root@server-b root@server-c root@ser
 
 By default the script builds `linux/amd64` artifacts with the existing Docker
 builder once, copies them to temporary directories on each server in parallel,
-writes a local release manifest, and runs the staged keeper:
+writes a local release manifest, and runs the staged Host Runner:
 
 ```sh
-/tmp/ployz-dev-push-*/ployz-keeper substrate-update --manifest-file /tmp/ployz-dev-push-*/release.env
+/tmp/ployz-dev-push-*/ployz host substrate-update --manifest-file /tmp/ployz-dev-push-*/release.env
 ```
 
-Keeper owns substrate install paths, verification, and restarts. The script
-also replaces `/usr/local/bin/ployz-keeper` before running the staged update,
+Host Runner owns substrate install paths, verification, and restarts. The script
+also replaces `/usr/local/bin/ployz` before running the staged update,
 and does not touch NATS or release channel state.
 
 Before a hub-loss promotion test, run this on the intended promotion candidate
 after it has been connected long enough to receive an intent drumbeat:
 
 ```sh
-ployz-keeper core-promote --check
+ployz host core-promote --check
 ```
 
 It fails fast if `core-seeds.key`, `ca-recovery.key`, or

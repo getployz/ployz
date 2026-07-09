@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::time::Duration;
 
+use ployz::api_client::OperationApiClient;
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
     PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
@@ -21,7 +22,6 @@ use ployz_core::ops::{
 use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest, ServiceInspectRequest};
-use ployzctl::api_client::OperationApiClient;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,

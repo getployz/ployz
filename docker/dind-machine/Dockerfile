@@ -1,7 +1,7 @@
 # Machine image for the Docker-in-Docker e2e harness (plan C1).
 #
 # One container from this image is one ployz "machine": systemd as PID 1,
-# an inner Docker daemon, and the runtime dependencies the keeper expects
+# an inner Docker daemon, and the runtime dependencies the Host Runner expects
 # (WireGuard tools, iproute2, iptables). Debian bookworm keeps the glibc
 # compatible with the rust:1.91-bookworm artifact builds.
 #

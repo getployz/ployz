@@ -38,7 +38,7 @@ impl NatsAuthorizationStore {
 
     /// Every current grant in insertion order (SQLite `rowid`, preserved across
     /// upserts). Insertion order — not key order — is what makes the render
-    /// byte-stable: seeding from the keeper-written conf and re-rendering it must
+    /// byte-stable: seeding from the Host Runner-written conf and re-rendering it must
     /// reproduce the same file, and a new machine grant appends, exactly as the
     /// prior disk-merge writer behaved. A reorder would make startup's no-op render
     /// write + reload needlessly.
@@ -51,7 +51,7 @@ impl NatsAuthorizationStore {
             .map_err(store_error)
     }
 
-    /// Import the keeper-written `authorized-users.conf` into the store exactly once,
+    /// Import the Host Runner-written `authorized-users.conf` into the store exactly once,
     /// on first boot when the store is empty. Thereafter the store is authoritative
     /// and the conf is its rendered projection. A missing conf is a no-op (a fresh
     /// core that has not written one yet).

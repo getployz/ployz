@@ -9,7 +9,7 @@ Ployz uses two release surfaces:
 - npm publishes `@ployz/sdk` from published GitHub Releases.
 
 The mutable channel is only Bootstrap Delivery convenience. `ployz.sh` resolves
-it before downloading the keeper artifact. Keeper update, substrate update, and
+it before downloading the Host Runner artifact. Host Runner update, substrate update, and
 Release Source resolution continue to require exact versions.
 
 ## Publish An Exact Release
@@ -23,7 +23,7 @@ Use an exact `v*` tag, for example `v0.0.2-alpha.5`.
 
 ```sh
 cargo fmt --check
-cargo test -p ployz-keeper --test bootstrap_first_machine --test local
+cargo test -p ployz-host-runner --test bootstrap_first_machine --test local
 cargo test -p ployzd --lib dataplane_runtime::tests::default_command_plans_ensure_wireguard_interface_and_key
 ```
 
@@ -122,19 +122,19 @@ Do not upload channel pointers as GitHub Release assets, and do not use
 
 ## Smoke A Promoted Release
 
-Verify the public installer resolves the promoted channel and installs keeper:
+Verify the public installer resolves the promoted channel and installs Host Runner:
 
 ```sh
 curl -fsSL https://ployz.sh | PLOYZ_CHANNEL=alpha sh
-ployz-keeper --help
+ployz --help
 ```
 
 For a server smoke, use a controlled test hostname that already points at the
 gateway machine:
 
 ```sh
-ployzctl deploy --image nginx:alpine --route asdf.ployz.dev:80
-ployzctl ops watch <operation-id> --json
+ployz deploy --image nginx:alpine --route asdf.ployz.dev:80
+ployz ops watch <operation-id> --json
 curl -i --max-time 10 http://asdf.ployz.dev/
 ```
 
@@ -183,33 +183,33 @@ Default channel install:
 
 ```sh
 curl -fsSL https://ployz.sh | sh
-ployz-keeper --help
+ployz --help
 ```
 
 Explicit channel install:
 
 ```sh
 curl -fsSL https://ployz.sh | sh -s -- --channel alpha
-ployz-keeper --help
+ployz --help
 ```
 
 Exact release install:
 
 ```sh
 curl -fsSL https://ployz.sh | sh -s -- --version v0.0.2-alpha.1
-ployz-keeper --help
+ployz --help
 ```
 
-Update existing machine substrate to an exact release after keeper is installed:
+Update existing machine substrate to an exact release after Host Runner is installed:
 
 ```sh
 curl -fsSL https://ployz.sh | sh -s -- --version v0.0.2-alpha.1
-sudo ployz-keeper substrate-update --version v0.0.2-alpha.1
+sudo ployz host substrate-update --version v0.0.2-alpha.1
 ```
 
-Cloud Bootstrap Delivery installs keeper first, then runs
-`sudo ployz-keeper bootstrap`. Noninteractive tokens are passed to keeper with
-`--cloud-token`; they are not passed to `ployz.sh`. Keeper and substrate update
+Cloud Bootstrap Delivery installs Host Runner first, then runs
+`sudo ployz host bootstrap`. Noninteractive tokens are passed to Host Runner with
+`--cloud-token`; they are not passed to `ployz.sh`. Host Runner and substrate update
 commands reject channels, version ranges, and `latest`. The public bootstrap
 installer targets Linux machines.
 

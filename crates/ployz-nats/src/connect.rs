@@ -210,7 +210,7 @@ pub async fn connect_authenticated_pool(
 
 /// Fixture-only plaintext connect. Product callers use
 /// [`connect_authenticated`]; the remaining product call sites flip in the
-/// keeper/ployzd auth wiring steps.
+/// Host Runner/ployzd auth wiring steps.
 #[doc(hidden)]
 pub async fn connect_with_timeout(
     nats_url: &NatsClientUrl,

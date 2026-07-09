@@ -7,9 +7,9 @@
 //! `scripts/dind-clean.sh` sweeps leftovers.
 //!
 //! Scenarios form the core through the product quick-start command
-//! `ployzctl machine init root@core` (driven over a docker-exec-backed
+//! `ployz machine init root@core` (driven over a docker-exec-backed
 //! stand-in ssh), and scenarios 2–5 join the edge through the product
-//! `ployzctl machine add root@edge`.
+//! `ployz machine add root@edge`.
 //!
 //! Every scenario body runs inside [`support::dind::with_evidence`], so any
 //! failed assertion captures whole-cluster evidence before the panic

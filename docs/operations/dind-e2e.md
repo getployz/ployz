@@ -1,7 +1,7 @@
 # Docker-in-Docker E2E Harness
 
 The DinD harness is the local acceptance path for multi-machine ployz. It
-boots privileged systemd "machine" containers, installs the real keeper
+boots privileged systemd "machine" containers, installs the real Host Runner
 artifacts, forms a real TLS-authenticated NATS cluster through product
 commands only, and asserts operations, running workloads, daemon-restart
 invisibility, and auth rejection. It supersedes the two-machine bash recipe
@@ -62,7 +62,7 @@ Scenarios in `crates/ployz-e2e/tests/dind_cluster.rs`:
 
 - `boots_machine_image` — smoke: one machine reaches systemd + inner-docker
   readiness; teardown leaves nothing labeled behind.
-- `scenario_init_and_activate_first_machine` — keeper first-machine install +
+- `scenario_init_and_activate_first_machine` — Host Runner first-machine install +
   `init activate-first-machine` through the real product path; mint event
   sequence, unit states, authority file, bootstrap KV/streams.
 - `scenario_machine_add_via_join_bundle` — `machine add` + the

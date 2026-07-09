@@ -4,11 +4,11 @@ members = [
     "crates/ployz-nats",
     "crates/ployz-ebpf-common",
     "crates/ployz-ebpf-ctl",
-    "crates/ployz-keeper",
+    "crates/ployz-host-runner",
     "crates/ployz-test-support",
     "crates/ployz-e2e",
     "crates/ployzd",
-    "crates/ployzctl",
+    "crates/ployz",
     "crates/ployz-sdk-types",
 ]
 resolver = "3"
@@ -28,6 +28,7 @@ local-ip-address = "0.6"
 public-ip-address = { version = "0.4", default-features = false, features = ["blocking"] }
 defguard_wireguard_rs = "0.10"
 ployz-core = { path = "crates/ployz-core" }
+ployz-host-runner = { path = "crates/ployz-host-runner" }
 ployz-nats = { path = "crates/ployz-nats" }
 ployz-sdk-types = { path = "crates/ployz-sdk-types" }
 ployz-test-support = { path = "crates/ployz-test-support" }

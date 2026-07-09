@@ -22,26 +22,26 @@ agent can call with the same guarantees.
 1. Bootstrap your first machine:
 
    ```bash
-   ployzctl init root@your-server-ip
+   ployz init root@your-server-ip
    ```
 
 2. Add more machines:
 
    ```bash
-   ployzctl machine add root@another-server-ip
+   ployz machine add root@another-server-ip
    ```
 
 3. Deploy from a Compose file (routes are declared in the file via `x-route`):
 
    ```bash
-   ployzctl deploy -f compose.yaml -n myapp
+   ployz deploy -f compose.yaml -n myapp
    ```
 
 4. Inspect what's running:
 
    ```bash
-   ployzctl ls
-   ployzctl ops list
+   ployz ls
+   ployz ops list
    ```
 
 Once DNS points a routed hostname at a machine, the gateway serves it. Lifecycle is operations too: `machine drain`,
@@ -102,4 +102,4 @@ while the core stays the runtime authority.
 ## Project status
 
 Pre-1.0 and under active development; expect breaking changes. Bootstrap resolves the `alpha` channel to an exact,
-SHA-256-verified GitHub release and installs only `ployz-keeper`. Ployz never tracks GitHub `latest`.
+SHA-256-verified GitHub release and installs only `ployz host`. Ployz never tracks GitHub `latest`.
