@@ -33,6 +33,11 @@ agent instructions (AGENTS.md).
 Done when: the PR is merged, the issue carries the merge commit and
 verification gist and is closed, and the worktree is removed.
 
+A supervisor waits in the foreground — blocking calls with generous
+timeouts, repeated until the wait ends. A subagent that ends its turn to
+"wait for a notification" has stopped, and only the dispatcher can restart
+it.
+
 1. **Orient** — read the repo's agent instructions, the ticket, and the
    spec it points at; verify the paths and seams yourself before prompting
    Codex. Work in a fresh worktree on a new branch from origin/main.
