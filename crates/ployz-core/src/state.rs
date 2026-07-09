@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::dataplane::MachineEndpointSubnet;
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizedUser;
@@ -50,6 +51,8 @@ pub struct ActiveMachineState {
     /// WireGuard dial candidates recorded from machine testimony. The first is
     /// programmed initially; later candidates are for endpoint rotation.
     pub mesh_endpoints: Vec<SocketAddr>,
+    /// Core-owned overlay endpoint subnet allocated from cluster intent.
+    pub endpoint_subnet: MachineEndpointSubnet,
 }
 
 /// Epoch-stamped non-secret pending machine-add recovery hints mirrored for

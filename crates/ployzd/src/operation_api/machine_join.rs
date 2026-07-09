@@ -207,10 +207,12 @@ async fn activate_reported_machine(
     machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
+    let endpoint_subnet = allocate_endpoint_subnet(handlers, machine_id).await?;
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
+        endpoint_subnet,
         ployz_core::ops::MachineAddOperationState::Completed,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
@@ -228,6 +230,32 @@ async fn activate_reported_machine(
         .publish(INTENT_CHANGED, Vec::new().into())
         .await;
     Ok(())
+}
+
+async fn allocate_endpoint_subnet(
+    handlers: &OperationApiHandlers,
+    machine_id: &MachineId,
+) -> Result<ployz_core::dataplane::MachineEndpointSubnet, MachineJoinReportError> {
+    let machines = handlers
+        .machine_roster
+        .active_machines()
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?;
+    if let Some(machine) = machines
+        .iter()
+        .find(|machine| machine.machine_id == *machine_id)
+    {
+        return Ok(machine.endpoint_subnet.clone());
+    }
+    let assigned = machines.into_iter().map(|machine| machine.endpoint_subnet);
+    handlers
+        .dataplane_endpoint_supernet()
+        .allocate_next(assigned)
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })
 }
 
 fn machine_add_failure_from_join_report_failure(

@@ -31,6 +31,7 @@ use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
+use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
 use std::sync::Arc;
 
@@ -50,6 +51,7 @@ pub struct OperationApiHandlers {
     machine_update: Arc<MachineUpdateOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
     machine_mint: Arc<MachineCredentialMint>,
+    dataplane_endpoint_supernet: MachineEndpointSupernet,
     core_store: CoreStore,
     local_machine_id: MachineId,
     intent_change_client: async_nats::Client,
@@ -66,6 +68,7 @@ impl OperationApiHandlers {
     pub fn execute_operations(
         controllers: OperationControllers,
         workers: OperationWorkers,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
         core_store: CoreStore,
         local_machine_id: MachineId,
         intent_change_client: async_nats::Client,
@@ -96,6 +99,7 @@ impl OperationApiHandlers {
             machine_update: Arc::new(machine_update),
             machine_lifecycle: Arc::new(machine_lifecycle),
             machine_mint: Arc::new(machine_mint),
+            dataplane_endpoint_supernet,
             core_store,
             local_machine_id,
             intent_change_client,
@@ -138,6 +142,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn local_machine_id(&self) -> &MachineId {
         &self.local_machine_id
+    }
+
+    pub(crate) fn dataplane_endpoint_supernet(&self) -> &MachineEndpointSupernet {
+        &self.dataplane_endpoint_supernet
     }
 
     pub(crate) async fn publish_pending_machine_joins(&self) {

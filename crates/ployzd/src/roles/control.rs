@@ -234,6 +234,7 @@ pub async fn start_control_process_with_client_and_reload(
                 machine_lifecycle,
                 machine_mint,
             },
+            config.dataplane_endpoint_supernet.clone(),
             core_store.clone(),
             config
                 .deploy_machines
@@ -465,6 +466,8 @@ mod tests {
             lifecycle: MachineLifecycle::Active,
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+                .expect("valid endpoint subnet"),
         }
     }
 

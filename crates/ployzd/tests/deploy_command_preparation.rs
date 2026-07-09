@@ -25,7 +25,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
-        dataplane_machines: Vec::new(),
+        dataplane_members: Vec::new(),
         observed_machines: vec![
             MachineContainerObservationSnapshot::try_new(
                 machine_id("machine_a"),
@@ -64,7 +64,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
-        dataplane_machines: Vec::new(),
+        dataplane_members: Vec::new(),
         observed_machines: vec![
             MachineContainerObservationSnapshot::try_new(
                 machine_id("machine_a"),
@@ -139,7 +139,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             },
         ],
         eligible_machines: vec![machine_id("machine_a")],
-        dataplane_machines: Vec::new(),
+        dataplane_members: Vec::new(),
         observed_machines: vec![omitted_container.clone()],
         namespace_cleanup_candidates: ployzd::operations::deploy::namespace_cleanup_candidates(
             &namespace_id("default"),
@@ -172,7 +172,7 @@ async fn empty_manifest_prepares_no_services() {
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
         eligible_machines: vec![machine_id("machine_a")],
-        dataplane_machines: Vec::new(),
+        dataplane_members: Vec::new(),
         observed_machines: Vec::new(),
         namespace_cleanup_candidates: Vec::new(),
         step_timeout: Duration::from_secs(5),
