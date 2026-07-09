@@ -8,9 +8,9 @@ use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::future::Future;
 
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
-    MachineRunContainerOutcome,
+    MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
+    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
+    MachineEnsureEndpointNetworkRpcRequest, MachineRunContainerOutcome,
 };
 
 use super::{
@@ -49,6 +49,12 @@ pub trait MachineContainerRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerRemoveRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+
+    fn restart_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRestartRpcRequest,
     ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
 
     fn stop_container(

@@ -1,4 +1,4 @@
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
@@ -132,6 +132,30 @@ pub(super) struct CoreReplacePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRestartOperationSubmission {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub service_id: ServiceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ServiceRestartPayload {
+    pub(super) namespace_id: NamespaceId,
+    pub(super) service_id: ServiceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceRemoveOperationSubmission {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NamespaceRemovePayload {
+    pub(super) namespace_id: NamespaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -170,6 +194,23 @@ pub struct AcceptedCoreReplaceSubmission {
     pub start_sequence: EventSequence,
     pub machine_id: MachineId,
     pub successor_nats_url: MachineJoinRuntimeNatsUrl,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedServiceRestartSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub namespace_id: NamespaceId,
+    pub service_id: ServiceId,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedNamespaceRemoveSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub namespace_id: NamespaceId,
     pub should_start_execution: bool,
 }
 
@@ -244,6 +285,8 @@ pub enum RecordOperationEventError {
 
 pub type RecordDeployTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
+pub type RecordServiceRestartTransitionError = RecordOperationEventError;
+pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
 

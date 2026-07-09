@@ -11,16 +11,18 @@ use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryNetworkSettings,
-    ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkInspect, NetworkingConfig,
+    ContainerSummaryStateEnum, EndpointSettings, HealthStatusEnum, HostConfig, NetworkInspect,
+    NetworkingConfig,
 };
 use bollard::query_parameters::{
-    CreateImageOptionsBuilder, InspectNetworkOptions, ListContainersOptionsBuilder,
-    LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
+    CreateImageOptionsBuilder, InspectContainerOptions, InspectNetworkOptions,
+    ListContainersOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+    RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::deploy::ContainerEntrypoint;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine_runtime::{ContainerHealth, ManagedContainerIdentity};
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -116,13 +118,26 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             })?;
 
-        summaries
+        let mut containers = summaries
             .into_iter()
             .map(existing_container_from_summary)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| MachineContainerRunnerError::ListExisting {
                 message: error.to_string(),
-            })
+            })?;
+
+        for container in &mut containers {
+            let ExistingManagedContainerState::Running { health, .. } = &mut container.state else {
+                continue;
+            };
+            *health = docker_container_health(docker, &container.container_id)
+                .await
+                .map_err(|error| MachineContainerRunnerError::ListExisting {
+                    message: error.to_string(),
+                })?;
+        }
+
+        Ok(containers)
     }
 
     async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
@@ -265,6 +280,51 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             Ok(()) => Ok(()),
             Err(error) if is_container_missing(&error) => Ok(()),
             Err(error) => Err(MachineContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    async fn restart_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRunnerError> {
+        let existing = self
+            .existing_managed_containers()
+            .await?
+            .into_iter()
+            .find(|container| container.container_id == *container_id);
+        let Some(existing) = existing else {
+            return Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: "container was not found".to_owned(),
+            });
+        };
+        if existing.identity != *expected_identity {
+            return Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container identity did not match restart target: expected {:?}, found {:?}",
+                    expected_identity, existing.identity
+                ),
+            });
+        }
+
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        match docker
+            .restart_container(container_id.as_str(), None::<RestartContainerOptions>)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => Err(MachineContainerRunnerError::Restart {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
@@ -454,6 +514,7 @@ fn docker_container_state(
     match state {
         ContainerSummaryStateEnum::RUNNING => Ok(ExistingManagedContainerState::Running {
             ip: container_ip(network_settings)?,
+            health: ContainerHealth::None,
         }),
         ContainerSummaryStateEnum::CREATED | ContainerSummaryStateEnum::EXITED => {
             Ok(ExistingManagedContainerState::StartableStopped)
@@ -467,6 +528,28 @@ fn docker_container_state(
         }),
         ContainerSummaryStateEnum::EMPTY => Err(DockerManagedContainerSummaryError::MissingState),
     }
+}
+
+async fn docker_container_health(
+    docker: &Docker,
+    container_id: &ContainerId,
+) -> Result<ContainerHealth, BollardError> {
+    let inspect = docker
+        .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
+        .await?;
+    Ok(
+        match inspect
+            .state
+            .and_then(|state| state.health)
+            .and_then(|health| health.status)
+            .unwrap_or(HealthStatusEnum::NONE)
+        {
+            HealthStatusEnum::NONE | HealthStatusEnum::EMPTY => ContainerHealth::None,
+            HealthStatusEnum::STARTING => ContainerHealth::Starting,
+            HealthStatusEnum::HEALTHY => ContainerHealth::Healthy,
+            HealthStatusEnum::UNHEALTHY => ContainerHealth::Unhealthy,
+        },
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -778,7 +861,10 @@ mod tests {
             ExistingManagedContainer {
                 container_id: container_id("0123456789abcdef"),
                 identity: managed_identity(),
-                state: ExistingManagedContainerState::Running { ip: None },
+                state: ExistingManagedContainerState::Running {
+                    ip: None,
+                    health: ContainerHealth::None,
+                },
             }
         );
     }
@@ -807,6 +893,7 @@ mod tests {
                 .state,
             ExistingManagedContainerState::Running {
                 ip: Some("10.42.0.9".parse().expect("valid endpoint ip")),
+                health: ContainerHealth::None,
             }
         );
     }
@@ -844,6 +931,7 @@ mod tests {
                 .state,
             ExistingManagedContainerState::Running {
                 ip: Some("10.42.0.9".parse().expect("valid endpoint ip")),
+                health: ContainerHealth::None,
             }
         );
     }
@@ -870,7 +958,10 @@ mod tests {
             existing_container_from_summary(summary)
                 .expect("summary parses")
                 .state,
-            ExistingManagedContainerState::Running { ip: None }
+            ExistingManagedContainerState::Running {
+                ip: None,
+                health: ContainerHealth::None,
+            }
         );
     }
 

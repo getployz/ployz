@@ -2,6 +2,7 @@ use std::future::Future;
 
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::ContainerId;
+use ployz_core::machine_runtime::ContainerHealth;
 use std::net::IpAddr;
 
 use ployz_core::machine_runtime::ManagedContainerIdentity;
@@ -15,9 +16,14 @@ pub struct ExistingManagedContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExistingManagedContainerState {
-    Running { ip: Option<IpAddr> },
+    Running {
+        ip: Option<IpAddr>,
+        health: ContainerHealth,
+    },
     StartableStopped,
-    NotStartable { description: String },
+    NotStartable {
+        description: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +49,10 @@ pub enum MachineContainerRunnerError {
         message: String,
     },
     Stop {
+        container_id: ContainerId,
+        message: String,
+    },
+    Restart {
         container_id: ContainerId,
         message: String,
     },
@@ -89,6 +99,12 @@ pub trait MachineContainerRunner {
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 
     fn stop_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn restart_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,

@@ -11,7 +11,9 @@ impl OperationStatus {
             | Self::MachineAdd { id, .. }
             | Self::MachineUpdate { id, .. }
             | Self::MachineLifecycle { id, .. }
-            | Self::CoreReplace { id, .. } => id,
+            | Self::CoreReplace { id, .. }
+            | Self::ServiceRestart { id, .. }
+            | Self::NamespaceRemove { id, .. } => id,
         }
     }
 
@@ -24,6 +26,8 @@ impl OperationStatus {
             Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
             Self::CoreReplace { .. } => OperationKind::CoreReplace,
+            Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
+            Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
         }
     }
 
@@ -31,6 +35,10 @@ impl OperationStatus {
     pub fn progress_scope(&self) -> OperationProgressScope {
         match self {
             Self::Deploy { namespace_id, .. } => OperationProgressScope::Namespace {
+                namespace_id: namespace_id.clone(),
+            },
+            Self::ServiceRestart { namespace_id, .. }
+            | Self::NamespaceRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
             Self::Cert { .. } => OperationProgressScope::Cluster,
@@ -63,6 +71,14 @@ impl OperationStatus {
                 ..
             }
             | Self::CoreReplace {
+                last_event_sequence,
+                ..
+            }
+            | Self::ServiceRestart {
+                last_event_sequence,
+                ..
+            }
+            | Self::NamespaceRemove {
                 last_event_sequence,
                 ..
             }

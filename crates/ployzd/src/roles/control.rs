@@ -40,6 +40,8 @@ pub struct RunningControlProcess {
     intent: RunningIntentService,
     operation_api: RunningNatsService,
     deploy_tasks: TaskRegistry,
+    service_restart_tasks: TaskRegistry,
+    namespace_remove_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
@@ -53,6 +55,8 @@ impl RunningControlProcess {
         self.operation_api.shutdown().await?;
         self.intent.shutdown().await?;
         self.deploy_tasks.abort_all();
+        self.service_restart_tasks.abort_all();
+        self.namespace_remove_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
@@ -161,6 +165,8 @@ pub async fn start_control_process_with_client_and_reload(
         .map_err(ControlProcessError::StartFactsCache)?;
     let facts = facts_cache.cache();
     let deploy_tasks = TaskRegistry::default();
+    let service_restart_tasks = TaskRegistry::default();
+    let namespace_remove_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
@@ -178,6 +184,19 @@ pub async fn start_control_process_with_client_and_reload(
         DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
+    );
+    let service_restart = crate::operations::service_restart::ServiceRestartOperation::new(
+        client.clone(),
+        controllers.clone(),
+        config.deploy_step_timeout,
+        service_restart_tasks.clone(),
+    );
+    let namespace_remove = crate::operations::namespace_remove::NamespaceRemoveOperation::new(
+        client.clone(),
+        namespace_intent.clone(),
+        controllers.clone(),
+        config.deploy_step_timeout,
+        namespace_remove_tasks.clone(),
     );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
@@ -230,6 +249,8 @@ pub async fn start_control_process_with_client_and_reload(
             controllers,
             OperationWorkers {
                 deploy: deploy_driver,
+                service_restart,
+                namespace_remove,
                 machine_update,
                 machine_lifecycle,
                 machine_mint,
@@ -255,6 +276,8 @@ pub async fn start_control_process_with_client_and_reload(
         intent,
         operation_api,
         deploy_tasks,
+        service_restart_tasks,
+        namespace_remove_tasks,
         machine_update_tasks,
         machine_lifecycle_tasks,
         mint_tasks,

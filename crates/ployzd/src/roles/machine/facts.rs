@@ -156,7 +156,9 @@ pub enum MachineFactsReadError {
 
 pub(crate) fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
     match state {
-        ExistingManagedContainerState::Running { ip } => ContainerRuntimeState::Running { ip },
+        ExistingManagedContainerState::Running { ip, health } => {
+            ContainerRuntimeState::running_at_with_health(ip, health)
+        }
         ExistingManagedContainerState::StartableStopped
         | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
     }

@@ -18,7 +18,7 @@ pub use queries::{
 };
 pub use submit::{
     core_replace, deploy_submit, machine_add, machine_drain, machine_resume, machine_update,
-    owned_operation,
+    namespace_remove, owned_operation, service_restart,
 };
 
 use crate::adapters::nats_authorization::MachineCredentialMint;
@@ -30,6 +30,8 @@ use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
+use crate::operations::namespace_remove::NamespaceRemoveOperation;
+use crate::operations::service_restart::ServiceRestartOperation;
 use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use ployz_core::ids::MachineId;
 use std::sync::Arc;
@@ -38,6 +40,8 @@ use std::sync::Arc;
 /// another positional parameter threaded through `execute_operations`.
 pub struct OperationWorkers {
     pub deploy: DeployOperationDriver,
+    pub service_restart: ServiceRestartOperation,
+    pub namespace_remove: NamespaceRemoveOperation,
     pub machine_update: MachineUpdateOperation,
     pub machine_lifecycle: MachineLifecycleOperation,
     pub machine_mint: MachineCredentialMint,
@@ -47,6 +51,8 @@ pub struct OperationWorkers {
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_driver: Arc<DeployOperationDriver>,
+    service_restart: Arc<ServiceRestartOperation>,
+    namespace_remove: Arc<NamespaceRemoveOperation>,
     machine_update: Arc<MachineUpdateOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
     machine_mint: Arc<MachineCredentialMint>,
@@ -77,6 +83,8 @@ impl OperationApiHandlers {
     ) -> Self {
         let OperationWorkers {
             deploy: deploy_driver,
+            service_restart,
+            namespace_remove,
             machine_update,
             machine_lifecycle,
             machine_mint,
@@ -93,6 +101,8 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_driver: Arc::new(deploy_driver),
+            service_restart: Arc::new(service_restart),
+            namespace_remove: Arc::new(namespace_remove),
             machine_update: Arc::new(machine_update),
             machine_lifecycle: Arc::new(machine_lifecycle),
             machine_mint: Arc::new(machine_mint),
@@ -130,6 +140,14 @@ impl OperationApiHandlers {
 
     pub(crate) fn machine_update(&self) -> &MachineUpdateOperation {
         &self.machine_update
+    }
+
+    pub(crate) fn service_restart(&self) -> &ServiceRestartOperation {
+        &self.service_restart
+    }
+
+    pub(crate) fn namespace_remove(&self) -> &NamespaceRemoveOperation {
+        &self.namespace_remove
     }
 
     pub(crate) fn machine_lifecycle(&self) -> &MachineLifecycleOperation {

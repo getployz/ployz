@@ -218,6 +218,8 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::ServiceRestart => "service-restart",
+        OperationKind::NamespaceRemove => "namespace-remove",
     }
 }
 
@@ -266,6 +268,12 @@ fn operation_subject(status: &OperationStatus) -> String {
             machine_id.as_str(),
             successor_nats_url.as_str()
         ),
+        OperationStatus::ServiceRestart { service_id, .. } => {
+            format!("service {}", service_id.as_str())
+        }
+        OperationStatus::NamespaceRemove { namespace_id, .. } => {
+            format!("namespace {}", namespace_id.as_str())
+        }
     }
 }
 
@@ -297,6 +305,65 @@ fn operation_state(status: &OperationStatus) -> String {
             machine_lifecycle_state(state).to_owned()
         }
         OperationStatus::CoreReplace { state, .. } => core_replace_state(state).to_owned(),
+        OperationStatus::ServiceRestart { state, .. } => service_restart_state(state).to_owned(),
+        OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
+    }
+}
+
+const fn service_restart_state(
+    state: &ployz_sdk_types::ServiceRestartOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::ServiceRestartOperationState::Accepted => "accepted",
+        ployz_sdk_types::ServiceRestartOperationState::Running { stage } => {
+            service_restart_running_stage(*stage)
+        }
+        ployz_sdk_types::ServiceRestartOperationState::Completed => "completed",
+        ployz_sdk_types::ServiceRestartOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::ServiceRestartOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+const fn service_restart_running_stage(
+    stage: ployz_sdk_types::ServiceRestartRunningStage,
+) -> &'static str {
+    match stage {
+        ployz_sdk_types::ServiceRestartRunningStage::RestartingContainers => {
+            "running:restarting-containers"
+        }
+        ployz_sdk_types::ServiceRestartRunningStage::WaitingForHealth => {
+            "running:waiting-for-health"
+        }
+    }
+}
+
+const fn namespace_remove_state(
+    state: &ployz_sdk_types::NamespaceRemoveOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::NamespaceRemoveOperationState::Accepted => "accepted",
+        ployz_sdk_types::NamespaceRemoveOperationState::Running { stage } => {
+            namespace_remove_running_stage(*stage)
+        }
+        ployz_sdk_types::NamespaceRemoveOperationState::Completed => "completed",
+        ployz_sdk_types::NamespaceRemoveOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::NamespaceRemoveOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+const fn namespace_remove_running_stage(
+    stage: ployz_sdk_types::NamespaceRemoveRunningStage,
+) -> &'static str {
+    match stage {
+        ployz_sdk_types::NamespaceRemoveRunningStage::RemovingRouteBindings => {
+            "running:removing-route-bindings"
+        }
+        ployz_sdk_types::NamespaceRemoveRunningStage::RemovingServingTargets => {
+            "running:removing-serving-targets"
+        }
+        ployz_sdk_types::NamespaceRemoveRunningStage::RemovingContainers => {
+            "running:removing-containers"
+        }
     }
 }
 
@@ -459,6 +526,23 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CoreReplaceSubmitted { .. } => "core.replace.submitted",
         OperationEvent::CoreReplaceCompleted { .. } => "core.replace.completed",
         OperationEvent::CoreReplaceFailed { .. } => "core.replace.failed",
+        OperationEvent::ServiceRestartSubmitted { .. } => "service.restart.submitted",
+        OperationEvent::ServiceRestartRunning { .. } => "service.restart.running",
+        OperationEvent::ServiceRestartContainerRestarted { .. } => {
+            "service.restart.container_restarted"
+        }
+        OperationEvent::ServiceRestartCompleted { .. } => "service.restart.completed",
+        OperationEvent::ServiceRestartFailed { .. } => "service.restart.failed",
+        OperationEvent::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted",
+        OperationEvent::NamespaceRemoveRunning { .. } => "namespace.remove.running",
+        OperationEvent::NamespaceRemoveRouteBindingRemoved { .. } => {
+            "namespace.remove.route_binding_removed"
+        }
+        OperationEvent::NamespaceRemoveContainerRemoved { .. } => {
+            "namespace.remove.container_removed"
+        }
+        OperationEvent::NamespaceRemoveCompleted { .. } => "namespace.remove.completed",
+        OperationEvent::NamespaceRemoveFailed { .. } => "namespace.remove.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

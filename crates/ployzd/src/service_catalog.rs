@@ -21,6 +21,8 @@ pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::ServiceRestart,
+    OperationApiEndpoint::NamespaceRemove,
     OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineUpdate,
@@ -148,6 +150,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerInspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRestart),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
@@ -185,6 +188,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         }
         MachineServiceEndpoint::ContainerInspect => "machine.container.inspect",
         MachineServiceEndpoint::ContainerRun => "machine.container.run",
+        MachineServiceEndpoint::ContainerRestart => "machine.container.restart",
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",

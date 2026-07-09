@@ -7,12 +7,14 @@ use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerInspectRpcResponse,
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
-    MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
-    MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineEnsureEndpointNetworkDomainError,
-    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
-    MachineEnsureEndpointNetworkRpcResponse, MachineRunContainerOutcome,
+    MachineContainerRemoveRpcResponse, MachineContainerRestartDomainError,
+    MachineContainerRestartRpcRequest, MachineContainerRestartRpcResponse, MachineContainerRpcOk,
+    MachineContainerRunDomainError, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
+    MachineContainerRunRpcResponse, MachineContainerStopDomainError,
+    MachineContainerStopRpcRequest, MachineContainerStopRpcResponse,
+    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
+    MachineEnsureEndpointNetworkRpcRequest, MachineEnsureEndpointNetworkRpcResponse,
+    MachineRunContainerOutcome,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -297,6 +299,54 @@ where
             error: MachineContainerStopDomainError::StopFailed {
                 container_id: container_id.clone(),
                 message: failure_message(format!("container stop failed: {message}")),
+                inspect_hint: inspect_hint(&container_id),
+            },
+        }),
+        Err(error) => runner_error(error),
+    }
+}
+
+pub(crate) async fn handle_container_restart<R>(
+    machine_id: MachineId,
+    state: MachineContainerState<R>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineContainerRestartRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    match state
+        .runner
+        .restart_managed_container(&request.container_id, &request.expected_identity)
+        .await
+    {
+        Ok(()) => {
+            publish_container_observed_delta(
+                &state.client,
+                &machine_id,
+                &state.runner,
+                &request.container_id,
+            )
+            .await;
+            machine_success(MachineContainerRestartRpcResponse::Ok(
+                MachineContainerRpcOk {
+                    machine_id,
+                    container_id: request.container_id,
+                },
+            ))
+        }
+        Err(MachineContainerRunnerError::Restart {
+            container_id,
+            message,
+        }) => machine_domain_error(MachineContainerRestartRpcResponse::DomainError {
+            machine_id,
+            error: MachineContainerRestartDomainError::RestartFailed {
+                container_id: container_id.clone(),
+                message: failure_message(format!("container restart failed: {message}")),
                 inspect_hint: inspect_hint(&container_id),
             },
         }),

@@ -1,9 +1,11 @@
 use clap::Args;
-use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_sdk_types::{
-    ServiceInspectRequest, ServiceListRequest, ServiceListResult, ServiceSnapshot,
+    ServiceInspectRequest, ServiceListRequest, ServiceListResult, ServiceRestartRequest,
+    ServiceSnapshot,
 };
 
+use crate::client_ids::generate_client_service_restart_id;
 use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,48 @@ pub(crate) fn service_inspect_command(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRestartCommand {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub service_id: ServiceId,
+    pub detach: bool,
+}
+
+impl ServiceRestartCommand {
+    #[must_use]
+    pub fn into_request(self) -> ServiceRestartRequest {
+        ServiceRestartRequest {
+            operation_id: self.operation_id,
+            namespace_id: self.namespace_id,
+            service_id: self.service_id,
+        }
+    }
+}
+
+pub(crate) fn service_restart_command(
+    parsed: ServiceRestartCli,
+) -> Result<ServiceRestartCommand, PloyzctlCliError> {
+    let namespace_id = parsed
+        .namespace
+        .map(NamespaceId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--namespace", error))?
+        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
+    let service_id = ServiceId::try_new(parsed.service_id)
+        .map_err(|error| invalid_value("<service_id>", error))?;
+    let operation_id = generate_client_service_restart_id(&service_id)
+        .map_err(|error| invalid_value("<service_id>", error))?
+        .operation_id;
+
+    Ok(ServiceRestartCommand {
+        operation_id,
+        namespace_id,
+        service_id,
+        detach: parsed.detach,
+    })
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct EmptyCli {}
 
@@ -61,6 +105,15 @@ pub(crate) struct EmptyCli {}
 pub(crate) struct ServiceInspectCli {
     #[arg(short = 'n', long = "namespace")]
     namespace: Option<String>,
+    service_id: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ServiceRestartCli {
+    #[arg(short = 'n', long = "namespace")]
+    namespace: Option<String>,
+    #[arg(long)]
+    detach: bool,
     service_id: String,
 }
 

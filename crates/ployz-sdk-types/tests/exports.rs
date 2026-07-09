@@ -20,20 +20,23 @@ use ployz_sdk_types::{
     MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinToken, MachineJoinTrustedNats, MachineListError, MachineListRequest,
     MachineListResult, MachineName, MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
-    MachineUpdateResponse, NamespaceId, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError,
-    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceSnapshot, SubjectTokenError,
+    MachineUpdateResponse, NamespaceId, NamespaceRemoveError, NamespaceRemoveRequest,
+    NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    SubjectTokenError,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineUpdateApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        MachineListApi, MachineUpdateApi, NamespaceRemoveApi, OperationApiContract, OpsListApi,
+        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        ServiceRestartApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -378,6 +381,18 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
     assert_contract::<MachineUpdateApi, MachineUpdateRequest, AcceptedOperation, MachineUpdateError>(
     );
+    assert_contract::<
+        ServiceRestartApi,
+        ServiceRestartRequest,
+        AcceptedOperation,
+        ServiceRestartError,
+    >();
+    assert_contract::<
+        NamespaceRemoveApi,
+        NamespaceRemoveRequest,
+        AcceptedOperation,
+        NamespaceRemoveError,
+    >();
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
     );
@@ -439,6 +454,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::MachineUpdate,
             OperationApiEndpoint::MachineDrain,
             OperationApiEndpoint::MachineResume,
+            OperationApiEndpoint::ServiceRestart,
+            OperationApiEndpoint::NamespaceRemove,
             OperationApiEndpoint::CoreReplace,
             OperationApiEndpoint::CoreReplaceReport,
             OperationApiEndpoint::MachineList,
@@ -510,6 +527,24 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "AcceptedOperation".to_owned(),
                 "MachineLifecycleError".to_owned(),
                 "MachineResumeResponse",
+            ),
+            (
+                "service.restart",
+                "plz.v1.rpc.operator.command.service.restart",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "ServiceRestartRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "ServiceRestartError".to_owned(),
+                "ServiceRestartResponse",
+            ),
+            (
+                "namespace.remove",
+                "plz.v1.rpc.operator.command.namespace.remove",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "NamespaceRemoveRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "NamespaceRemoveError".to_owned(),
+                "NamespaceRemoveResponse",
             ),
             (
                 "core.replace",

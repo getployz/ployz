@@ -178,6 +178,39 @@ impl MachineContainerRunner for ObservingContainerRunner {
         self.replace_snapshot(snapshot);
         Ok(())
     }
+
+    async fn restart_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), MachineContainerRunnerError> {
+        let snapshot = self.snapshot();
+
+        let Some(existing) = snapshot.container(container_id).cloned() else {
+            return Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: "container was not found".to_owned(),
+            });
+        };
+        if observation_identity(&existing) != *expected_identity {
+            return Err(MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: "container identity did not match restart target".to_owned(),
+            });
+        }
+
+        let snapshot = snapshot
+            .with_container_replaced(ManagedContainerObservation {
+                state: ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into()),
+                ..existing
+            })
+            .map_err(|error| MachineContainerRunnerError::Restart {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        self.replace_snapshot(snapshot);
+        Ok(())
+    }
 }
 
 impl MachineLogReader for ObservingContainerRunner {
@@ -279,7 +312,10 @@ fn existing_container_from_observation(
 
 fn existing_container_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
-        ContainerRuntimeState::Running { ip } => ExistingManagedContainerState::Running { ip: *ip },
+        ContainerRuntimeState::Running { ip, health } => ExistingManagedContainerState::Running {
+            ip: *ip,
+            health: *health,
+        },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
 }

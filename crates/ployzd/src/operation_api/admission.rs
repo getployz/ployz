@@ -4,11 +4,12 @@ use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
     MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
-    OperationRepository, OperationStatusStoreError, RedeemMachineJoinTokenError,
-    SubmitMachineAddError, SubmitOperationError,
+    NamespaceRemoveOperationSubmission, OperationRepository, OperationStatusStoreError,
+    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError,
 };
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
     InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -67,6 +68,19 @@ pub struct CoreReplaceSubmitCommand {
     pub operation_id: OperationId,
     pub machine_id: ployz_core::ids::MachineId,
     pub successor_nats_url: MachineJoinRuntimeNatsUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRestartSubmitCommand {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub service_id: ServiceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceRemoveSubmitCommand {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
 }
 
 /// Bootstrap material available at submit time.
@@ -276,6 +290,85 @@ impl OperationControllers {
                 successor_nats_url: command.successor_nats_url,
             })
             .await?)
+    }
+
+    pub async fn submit_service_restart(
+        &self,
+        command: ServiceRestartSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedServiceRestartSubmission, SubmitCommandError> {
+        let namespace_id = command.namespace_id.clone();
+        let operation_id = command.operation_id.clone();
+        let claim = self.claim_namespace(&namespace_id, &operation_id).await;
+        if let NamespaceClaim::Busy { owner } = claim {
+            return Err(SubmitCommandError::NamespaceBusy {
+                namespace_id,
+                owner,
+            });
+        }
+
+        let submitted = self
+            .repository
+            .submit_service_restart(ServiceRestartOperationSubmission {
+                operation_id,
+                namespace_id: command.namespace_id,
+                service_id: command.service_id,
+            })
+            .await;
+        match submitted {
+            Ok(accepted) => {
+                if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&accepted.namespace_id, &accepted.operation_id)
+                        .await;
+                }
+                Ok(accepted)
+            }
+            Err(error) => {
+                if matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &command.operation_id)
+                        .await;
+                }
+                Err(SubmitCommandError::Submit(error))
+            }
+        }
+    }
+
+    pub async fn submit_namespace_remove(
+        &self,
+        command: NamespaceRemoveSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedNamespaceRemoveSubmission, SubmitCommandError> {
+        let namespace_id = command.namespace_id.clone();
+        let operation_id = command.operation_id.clone();
+        let claim = self.claim_namespace(&namespace_id, &operation_id).await;
+        if let NamespaceClaim::Busy { owner } = claim {
+            return Err(SubmitCommandError::NamespaceBusy {
+                namespace_id,
+                owner,
+            });
+        }
+
+        let submitted = self
+            .repository
+            .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+                operation_id,
+                namespace_id: command.namespace_id,
+            })
+            .await;
+        match submitted {
+            Ok(accepted) => {
+                if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&accepted.namespace_id, &accepted.operation_id)
+                        .await;
+                }
+                Ok(accepted)
+            }
+            Err(error) => {
+                if matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &command.operation_id)
+                        .await;
+                }
+                Err(SubmitCommandError::Submit(error))
+            }
+        }
     }
 
     pub async fn redeem_machine_join_token(

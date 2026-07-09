@@ -1,7 +1,7 @@
 //! NATS subject construction helpers.
 
 use crate::ids::{MachineId, NamespaceId, OperationId};
-use crate::ops::DeployRunningStage;
+use crate::ops::{DeployRunningStage, NamespaceRemoveRunningStage, ServiceRestartRunningStage};
 
 pub const OPERATION_PROGRESS_SCOPE: &str = "plz.v1.progress.>";
 
@@ -29,6 +29,8 @@ pub const JOIN_MACHINE_REDEEM: &str = "plz.v1.rpc.join.command.machine.redeem";
 pub const JOIN_MACHINE_REPORT: &str = "plz.v1.rpc.join.command.machine.report";
 pub const OPERATOR_SERVICE_LIST: &str = "plz.v1.rpc.operator.query.service.list";
 pub const OPERATOR_SERVICE_INSPECT: &str = "plz.v1.rpc.operator.query.service.inspect";
+pub const OPERATOR_SERVICE_RESTART: &str = "plz.v1.rpc.operator.command.service.restart";
+pub const OPERATOR_NAMESPACE_REMOVE: &str = "plz.v1.rpc.operator.command.namespace.remove";
 pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.snapshot";
 pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
 pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
@@ -49,6 +51,8 @@ pub enum OperationApiEndpoint {
     MachineJoinReport,
     ServiceList,
     ServiceInspect,
+    ServiceRestart,
+    NamespaceRemove,
     RuntimeSnapshot,
     LogsTail,
     OpsList,
@@ -81,6 +85,8 @@ impl OperationApiEndpoint {
             Self::MachineJoinReport => "machine.report",
             Self::ServiceList => "service.list",
             Self::ServiceInspect => "service.inspect",
+            Self::ServiceRestart => "service.restart",
+            Self::NamespaceRemove => "namespace.remove",
             Self::RuntimeSnapshot => "runtime.snapshot",
             Self::LogsTail => "logs.tail",
             Self::OpsList => "ops.list",
@@ -106,6 +112,8 @@ impl OperationApiEndpoint {
             Self::MachineJoinReport => JOIN_MACHINE_REPORT,
             Self::ServiceList => OPERATOR_SERVICE_LIST,
             Self::ServiceInspect => OPERATOR_SERVICE_INSPECT,
+            Self::ServiceRestart => OPERATOR_SERVICE_RESTART,
+            Self::NamespaceRemove => OPERATOR_NAMESPACE_REMOVE,
             Self::RuntimeSnapshot => OPERATOR_RUNTIME_SNAPSHOT,
             Self::LogsTail => OPERATOR_LOGS_TAIL,
             Self::OpsList => OPERATOR_OPS_LIST,
@@ -124,6 +132,8 @@ impl OperationApiEndpoint {
             | Self::MachineUpdate
             | Self::MachineDrain
             | Self::MachineResume
+            | Self::ServiceRestart
+            | Self::NamespaceRemove
             | Self::CoreReplace => OperationApiEndpointExecution::AcceptsOperation,
             Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
@@ -250,6 +260,27 @@ impl DeployRunningStage {
     }
 }
 
+impl ServiceRestartRunningStage {
+    #[must_use]
+    pub const fn as_subject(&self) -> &'static str {
+        match self {
+            Self::RestartingContainers => "restarting_containers",
+            Self::WaitingForHealth => "waiting_for_health",
+        }
+    }
+}
+
+impl NamespaceRemoveRunningStage {
+    #[must_use]
+    pub const fn as_subject(&self) -> &'static str {
+        match self {
+            Self::RemovingRouteBindings => "removing_route_bindings",
+            Self::RemovingServingTargets => "removing_serving_targets",
+            Self::RemovingContainers => "removing_containers",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MachineServiceEndpoint {
     Inspect,
@@ -257,6 +288,7 @@ pub enum MachineServiceEndpoint {
     ContainerEnsureEndpointNetwork,
     ContainerInspect,
     ContainerRun,
+    ContainerRestart,
     ContainerStop,
     ContainerRemove,
     DataplanePrepare,
@@ -280,6 +312,7 @@ impl MachineServiceEndpoint {
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
             Self::ContainerRun => "container.run",
+            Self::ContainerRestart => "container.restart",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
             Self::DataplanePrepare => "dataplane.prepare",
@@ -299,6 +332,7 @@ impl MachineServiceEndpoint {
             | Self::LogsTail => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::ContainerRun
+            | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove
             | Self::DataplanePrepare

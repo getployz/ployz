@@ -400,6 +400,47 @@ fn cli_dispatches_service_list_request() {
 }
 
 #[test]
+fn cli_dispatches_service_restart_request() {
+    let command = parse_command(["service", "restart", "-n", "prod", "svc_api"].map(str::to_owned))
+        .expect("service restart command parses");
+
+    let PloyzctlCommand::ServiceRestart(command) = command else {
+        panic!("expected service restart command");
+    };
+    assert!(!command.detach);
+    let request = command.into_request();
+    assert_eq!(request.namespace_id.as_str(), "prod");
+    assert_eq!(request.service_id.as_str(), "svc_api");
+    assert!(
+        request
+            .operation_id
+            .as_str()
+            .starts_with("op_restart_svc_api_")
+    );
+}
+
+#[test]
+fn cli_dispatches_namespace_rm_request() {
+    let command =
+        parse_command(["namespace", "rm", "prod", "--force", "--detach"].map(str::to_owned))
+            .expect("namespace rm command parses");
+
+    let PloyzctlCommand::NamespaceRemove(command) = command else {
+        panic!("expected namespace remove command");
+    };
+    assert!(command.force);
+    assert!(command.detach);
+    let request = command.into_request();
+    assert_eq!(request.namespace_id.as_str(), "prod");
+    assert!(
+        request
+            .operation_id
+            .as_str()
+            .starts_with("op_namespace_rm_prod_")
+    );
+}
+
+#[test]
 fn cli_dispatches_service_inspect_request() {
     let command =
         parse_command(["service", "inspect", "-n", "default", "svc_api"].map(str::to_owned))
