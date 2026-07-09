@@ -1,0 +1,652 @@
+//! Machine-local DNS for service names projected directly from machine facts.
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
+
+use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
+use tokio::net::UdpSocket;
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+
+use crate::fact_cache::FactCache;
+
+const DNS_HEADER_LEN: usize = 12;
+const DNS_PORT: u16 = 53;
+const DNS_TYPE_A: u16 = 1;
+const DNS_CLASS_IN: u16 = 1;
+const DNS_TTL_SECONDS: u32 = 5;
+const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
+const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
+const BIND_RETRY_CAP: Duration = Duration::from_secs(30);
+
+/// A validated, lower-case `<service>.<namespace>.internal` wire name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InternalServiceName(String);
+
+impl InternalServiceName {
+    /// Builds an internal name from its typed service and namespace ids.
+    #[must_use]
+    pub fn new(service_id: &ServiceId, namespace_id: &NamespaceId) -> Self {
+        Self(
+            format!("{}.{}.internal", service_id.as_str(), namespace_id.as_str())
+                .to_ascii_lowercase(),
+        )
+    }
+
+    /// Parses an exact three-label internal service name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        let mut labels = name.split('.');
+        let service = labels.next()?;
+        let namespace = labels.next()?;
+        let suffix = labels.next()?;
+        if labels.next().is_some() || !suffix.eq_ignore_ascii_case("internal") {
+            return None;
+        }
+        let service_id = ServiceId::try_new(service.to_ascii_lowercase()).ok()?;
+        let namespace_id = NamespaceId::try_new(namespace.to_ascii_lowercase()).ok()?;
+        Some(Self::new(&service_id, &namespace_id))
+    }
+
+    /// Returns the lower-case DNS wire name without a trailing dot.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Fully-qualified internal service names mapped to their running service
+/// containers' endpoint IPv4 addresses.
+#[must_use]
+pub fn internal_dns_records(
+    snapshots: &[MachineFactsSnapshot],
+) -> BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
+    let mut records = BTreeMap::<InternalServiceName, Vec<Ipv4Addr>>::new();
+    for container in snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.containers().containers())
+    {
+        if !container.is_service() {
+            continue;
+        }
+        let ContainerRuntimeState::Running {
+            ip: Some(IpAddr::V4(ip)),
+            ..
+        } = &container.state
+        else {
+            continue;
+        };
+        records
+            .entry(InternalServiceName::new(
+                &container.identity.service_id,
+                &container.identity.namespace_id,
+            ))
+            .or_default()
+            .push(*ip);
+    }
+    for addresses in records.values_mut() {
+        addresses.sort_unstable();
+        addresses.dedup();
+    }
+    records
+}
+
+/// A bounds-checked first DNS question parsed from a UDP datagram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsQuery {
+    pub id: u16,
+    pub name: String,
+    pub qtype: u16,
+    pub qclass: u16,
+    recursion_desired: bool,
+    original_packet: Vec<u8>,
+    question_end: usize,
+}
+
+impl DnsQuery {
+    fn original_question(&self) -> &[u8] {
+        let Some(question) = self.original_packet.get(DNS_HEADER_LEN..self.question_end) else {
+            return &[];
+        };
+        question
+    }
+}
+
+/// Parses the first uncompressed DNS question from a packet.
+#[must_use]
+pub fn parse_query(packet: &[u8]) -> Option<DnsQuery> {
+    if packet.len() < DNS_HEADER_LEN {
+        return None;
+    }
+    let id = read_u16(packet, 0)?;
+    let flags = read_u16(packet, 2)?;
+    if read_u16(packet, 4)? == 0 {
+        return None;
+    }
+
+    let mut offset = DNS_HEADER_LEN;
+    let mut labels = Vec::new();
+    loop {
+        let length = usize::from(*packet.get(offset)?);
+        offset = offset.checked_add(1)?;
+        if length == 0 {
+            break;
+        }
+        if length & 0xc0 != 0 {
+            return None;
+        }
+        let label_end = offset.checked_add(length)?;
+        let label = std::str::from_utf8(packet.get(offset..label_end)?).ok()?;
+        labels.push(label.to_ascii_lowercase());
+        offset = label_end;
+    }
+
+    let qtype = read_u16(packet, offset)?;
+    offset = offset.checked_add(2)?;
+    let qclass = read_u16(packet, offset)?;
+    let question_end = offset.checked_add(2)?;
+    if question_end > packet.len() {
+        return None;
+    }
+
+    Some(DnsQuery {
+        id,
+        name: labels.join("."),
+        qtype,
+        qclass,
+        recursion_desired: flags & 0x0100 != 0,
+        original_packet: packet.to_vec(),
+        question_end,
+    })
+}
+
+fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
+    let bytes = packet.get(offset..offset.checked_add(2)?)?;
+    let [high, low] = bytes else {
+        return None;
+    };
+    Some(u16::from_be_bytes([*high, *low]))
+}
+
+/// DNS response codes emitted by the internal resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsRcode {
+    NoError,
+    NxDomain,
+    ServFail,
+    NotImplemented,
+}
+
+impl DnsRcode {
+    const fn code(self) -> u16 {
+        match self {
+            Self::NoError => 0,
+            Self::ServFail => 2,
+            Self::NxDomain => 3,
+            Self::NotImplemented => 4,
+        }
+    }
+}
+
+/// Builds an authoritative A-only DNS response that echoes the first question.
+#[must_use]
+pub fn build_response(
+    query: &DnsQuery,
+    rcode: DnsRcode,
+    answers: &[Ipv4Addr],
+    original_question: &[u8],
+) -> Vec<u8> {
+    let answer_count = u16::try_from(answers.len()).unwrap_or(u16::MAX);
+    let flags = 0x8000 | 0x0400 | if query.recursion_desired { 0x0100 } else { 0 } | rcode.code();
+    let mut response = Vec::new();
+    response.extend_from_slice(&query.id.to_be_bytes());
+    response.extend_from_slice(&flags.to_be_bytes());
+    response.extend_from_slice(&1_u16.to_be_bytes());
+    response.extend_from_slice(&answer_count.to_be_bytes());
+    response.extend_from_slice(&0_u16.to_be_bytes());
+    response.extend_from_slice(&0_u16.to_be_bytes());
+    response.extend_from_slice(original_question);
+    for address in answers.iter().take(usize::from(answer_count)) {
+        response.extend_from_slice(&[0xc0, 0x0c]);
+        response.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        response.extend_from_slice(&DNS_TTL_SECONDS.to_be_bytes());
+        response.extend_from_slice(&4_u16.to_be_bytes());
+        response.extend_from_slice(&address.octets());
+    }
+    response
+}
+
+/// Spawns the machine-local resolver. It reads only [`FactCache`], which is
+/// fed by machine fact broadcasts and retains each machine's last snapshot;
+/// it never reads core intent or gates records on health or gateway status.
+pub async fn spawn_internal_resolver(
+    facts: FactCache,
+    bind: SocketAddr,
+    mut shutdown: broadcast::Receiver<()>,
+) -> JoinHandle<()> {
+    let upstream = load_upstream_nameserver();
+    tokio::spawn(async move {
+        let mut backoff = BIND_RETRY_INITIAL;
+        let socket = loop {
+            match UdpSocket::bind(bind).await {
+                Ok(socket) => break socket,
+                Err(error) => {
+                    eprintln!(
+                        "ployzd internal DNS warning: phase=bind address={bind} error={error}"
+                    );
+                    tokio::select! {
+                        () = tokio::time::sleep(backoff) => {
+                            backoff = backoff.saturating_mul(2).min(BIND_RETRY_CAP);
+                        }
+                        _ = shutdown.recv() => return,
+                    }
+                }
+            }
+        };
+        let socket = Arc::new(socket);
+        let mut packet = [0_u8; 4096];
+        loop {
+            tokio::select! {
+                received = socket.recv_from(&mut packet) => {
+                    let (length, peer) = match received {
+                        Ok(received) => received,
+                        Err(error) => {
+                            eprintln!("ployzd internal DNS warning: phase=receive error={error}");
+                            continue;
+                        }
+                    };
+                    let Some(request) = packet.get(..length) else {
+                        eprintln!(
+                            "ployzd internal DNS warning: phase=receive invalid_length={length}"
+                        );
+                        continue;
+                    };
+                    let request = request.to_vec();
+                    let request_facts = facts.clone();
+                    let response_socket = Arc::clone(&socket);
+                    tokio::spawn(async move {
+                        let Some(response) = response_for_request(&request_facts, upstream, request).await else {
+                            return;
+                        };
+                        if let Err(error) = response_socket.send_to(&response, peer).await {
+                            eprintln!(
+                                "ployzd internal DNS warning: phase=respond peer={peer} error={error}"
+                            );
+                        }
+                    });
+                }
+                _ = shutdown.recv() => break,
+            }
+        }
+    })
+}
+
+async fn response_for_request(
+    facts: &FactCache,
+    upstream: IpAddr,
+    packet: Vec<u8>,
+) -> Option<Vec<u8>> {
+    let query = parse_query(&packet)?;
+    if query.name.ends_with(".internal") {
+        let records = internal_dns_records(&facts.machine_facts_all());
+        let answers = if query.qtype == DNS_TYPE_A && query.qclass == DNS_CLASS_IN {
+            InternalServiceName::parse(&query.name)
+                .and_then(|name| records.get(&name))
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+        return Some(build_response(
+            &query,
+            DnsRcode::NoError,
+            answers,
+            query.original_question(),
+        ));
+    }
+
+    match forward_to_upstream(upstream, &packet).await {
+        Ok(response) => Some(response),
+        Err(error) => {
+            eprintln!(
+                "ployzd internal DNS warning: phase=forward upstream={upstream} error={error}"
+            );
+            Some(build_response(
+                &query,
+                DnsRcode::ServFail,
+                &[],
+                query.original_question(),
+            ))
+        }
+    }
+}
+
+async fn forward_to_upstream(upstream: IpAddr, packet: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let local = match upstream {
+        IpAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
+        IpAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
+    };
+    let socket = UdpSocket::bind(local).await?;
+    socket.connect(SocketAddr::new(upstream, DNS_PORT)).await?;
+    socket.send(packet).await?;
+    let mut response = vec![0_u8; 4096];
+    let length = tokio::time::timeout(UPSTREAM_TIMEOUT, socket.recv(&mut response))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "DNS upstream timed out")
+        })??;
+    response.truncate(length);
+    Ok(response)
+}
+
+fn load_upstream_nameserver() -> IpAddr {
+    // ponytail: resolv.conf plus a public fallback is the ceiling; per-machine
+    // upstream configuration is the upgrade path.
+    std::fs::read_to_string("/etc/resolv.conf")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                if fields.next()? != "nameserver" {
+                    return None;
+                }
+                fields.next()?.parse::<IpAddr>().ok()
+            })
+        })
+        .filter(|address| !address.is_loopback())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, StepId};
+    use ployz_core::machine_runtime::{
+        ContainerHealth, MachineContainerObservationSnapshot, MachineDiskSpace,
+        ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
+    };
+
+    #[test]
+    fn projection_sorts_and_deduplicates_running_service_ipv4_addresses() {
+        let snapshots = [facts(
+            "machine_a",
+            [
+                observation("ctr_1", ManagedContainerKind::Service, running("10.42.2.8")),
+                observation("ctr_2", ManagedContainerKind::Service, running("10.42.1.9")),
+                observation("ctr_3", ManagedContainerKind::Service, running("10.42.2.8")),
+            ],
+        )];
+
+        assert_eq!(
+            internal_dns_records(&snapshots),
+            BTreeMap::from([(
+                internal_name(),
+                vec![Ipv4Addr::new(10, 42, 1, 9), Ipv4Addr::new(10, 42, 2, 8)]
+            )])
+        );
+    }
+
+    #[test]
+    fn projection_excludes_exited_unaddressed_ipv6_and_non_service_containers() {
+        let snapshots = [facts(
+            "machine_a",
+            [
+                observation(
+                    "ctr_1",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::Exited,
+                ),
+                observation(
+                    "ctr_2",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_unroutable(),
+                ),
+                observation(
+                    "ctr_3",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_at("2001:db8::1".parse().expect("valid IPv6")),
+                ),
+                observation("ctr_4", ManagedContainerKind::Job, running("10.42.1.9")),
+            ],
+        )];
+
+        assert!(internal_dns_records(&snapshots).is_empty());
+    }
+
+    #[test]
+    fn projection_does_not_gate_running_service_on_health() {
+        let snapshots = [facts(
+            "machine_a",
+            [observation(
+                "ctr_1",
+                ManagedContainerKind::Service,
+                ContainerRuntimeState::running_at_with_health(
+                    Some(IpAddr::V4(Ipv4Addr::new(10, 42, 1, 9))),
+                    ContainerHealth::Unhealthy,
+                ),
+            )],
+        )];
+
+        let expected = [Ipv4Addr::new(10, 42, 1, 9)];
+        assert_eq!(
+            internal_dns_records(&snapshots)
+                .get(&internal_name())
+                .map(Vec::as_slice),
+            Some(expected.as_slice())
+        );
+    }
+
+    #[test]
+    fn projection_removes_service_missing_from_fresh_facts() {
+        let present = [facts(
+            "machine_a",
+            [observation(
+                "ctr_1",
+                ManagedContainerKind::Service,
+                running("10.42.1.9"),
+            )],
+        )];
+        assert!(internal_dns_records(&present).contains_key(&internal_name()));
+
+        let absent = [facts("machine_a", [])];
+        assert!(!internal_dns_records(&absent).contains_key(&internal_name()));
+    }
+
+    #[test]
+    fn parser_reads_first_question_and_lowercases_name() {
+        let packet = query_packet("DB.Default.Internal", DNS_TYPE_A);
+        let query = parse_query(&packet).expect("valid query");
+
+        assert_eq!(
+            (query.id, query.name.as_str(), query.qtype, query.qclass),
+            (0x1234, "db.default.internal", DNS_TYPE_A, DNS_CLASS_IN)
+        );
+    }
+
+    #[test]
+    fn parser_rejects_compressed_question_name() {
+        let mut compressed = query_packet("db.default.internal", DNS_TYPE_A);
+        let Some(length) = compressed.get_mut(DNS_HEADER_LEN) else {
+            panic!("test query has a first label");
+        };
+        *length = 0xc0;
+
+        assert!(parse_query(&compressed).is_none());
+    }
+
+    #[test]
+    fn parser_rejects_truncated_question() {
+        let mut truncated = query_packet("db.default.internal", DNS_TYPE_A);
+        truncated.pop();
+
+        assert!(parse_query(&truncated).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_query_for_unknown_internal_name_returns_noerror_without_answers() {
+        let packet = query_packet("missing.default.internal", DNS_TYPE_A);
+        let response = response_for_request(
+            &FactCache::default(),
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            packet,
+        )
+        .await
+        .expect("internal query has a response");
+
+        assert_eq!(response_header(&response), (0x8500, 0));
+    }
+
+    #[tokio::test]
+    async fn aaaa_query_for_known_internal_name_returns_noerror_without_answers() {
+        let cache = FactCache::default();
+        cache.record_machine_facts(facts(
+            "machine_a",
+            [observation(
+                "ctr_1",
+                ManagedContainerKind::Service,
+                running("10.42.2.8"),
+            )],
+        ));
+        let packet = query_packet("db.default.internal", 28);
+        let response = response_for_request(&cache, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), packet)
+            .await
+            .expect("internal query has a response");
+
+        assert_eq!(response_header(&response), (0x8500, 0));
+    }
+
+    #[tokio::test]
+    async fn resolver_answers_known_internal_service_over_udp() {
+        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("reserve UDP port");
+        let bind = reservation.local_addr().expect("reserved address");
+        drop(reservation);
+
+        let cache = FactCache::default();
+        cache.record_machine_facts(facts(
+            "machine_a",
+            [observation(
+                "ctr_1",
+                ManagedContainerKind::Service,
+                running("10.42.2.8"),
+            )],
+        ));
+        let (shutdown, receiver) = broadcast::channel(1);
+        let task = spawn_internal_resolver(cache, bind, receiver).await;
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind test client");
+        let request = query_packet("db.default.internal", DNS_TYPE_A);
+
+        let mut received_response = None;
+        for _ in 0..20 {
+            client
+                .send_to(&request, bind)
+                .await
+                .expect("send DNS query");
+            let mut packet = [0_u8; 512];
+            if let Ok(Ok((length, _))) =
+                tokio::time::timeout(Duration::from_millis(100), client.recv_from(&mut packet))
+                    .await
+            {
+                let Some(response) = packet.get(..length) else {
+                    panic!("UDP response length fits receive buffer");
+                };
+                received_response = Some(response.to_vec());
+                break;
+            }
+        }
+        let Some(response) = received_response else {
+            panic!("resolver did not answer before the test deadline");
+        };
+
+        assert_eq!(response_header(&response), (0x8500, 1));
+        let expected_address = [10, 42, 2, 8];
+        assert_eq!(
+            response.get(response.len().saturating_sub(4)..),
+            Some(expected_address.as_slice())
+        );
+        let _ = shutdown.send(());
+        task.await.expect("resolver task exits");
+    }
+
+    fn query_packet(name: &str, qtype: u16) -> Vec<u8> {
+        let mut packet = Vec::from([
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        for label in name.split('.') {
+            packet.push(u8::try_from(label.len()).expect("test label fits"));
+            packet.extend_from_slice(label.as_bytes());
+        }
+        packet.push(0);
+        packet.extend_from_slice(&qtype.to_be_bytes());
+        packet.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        packet
+    }
+
+    fn response_header(response: &[u8]) -> (u16, u16) {
+        (
+            read_u16(response, 2).expect("response flags"),
+            read_u16(response, 6).expect("answer count"),
+        )
+    }
+
+    fn internal_name() -> InternalServiceName {
+        InternalServiceName::new(
+            &ServiceId::try_new("db").expect("service id"),
+            &NamespaceId::try_new("default").expect("namespace id"),
+        )
+    }
+
+    fn facts(
+        machine: &str,
+        containers: impl IntoIterator<Item = ManagedContainerObservation>,
+    ) -> MachineFactsSnapshot {
+        let machine_id = MachineId::try_new(machine).expect("machine id");
+        MachineFactsSnapshot::try_new(
+            machine_id.clone(),
+            MachineContainerObservationSnapshot::try_new(machine_id, containers)
+                .expect("container snapshot"),
+            None,
+            MachineDiskSpace {
+                available_bytes: 40,
+                total_bytes: 100,
+            },
+            1,
+        )
+        .expect("machine facts")
+    }
+
+    fn observation(
+        container: &str,
+        kind: ManagedContainerKind,
+        state: ContainerRuntimeState,
+    ) -> ManagedContainerObservation {
+        ManagedContainerObservation {
+            machine_id: MachineId::try_new("machine_a").expect("machine id"),
+            container_id: ContainerId::try_new(container).expect("container id"),
+            identity: ManagedContainerIdentity {
+                namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+                service_id: ServiceId::try_new("db").expect("service id"),
+                namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_db")
+                    .expect("entry id"),
+                operation_id: OperationId::try_new("op_1").expect("operation id"),
+                step_id: StepId::try_new("step_1").expect("step id"),
+                kind,
+            },
+            state,
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
+        }
+    }
+
+    fn running(address: &str) -> ContainerRuntimeState {
+        ContainerRuntimeState::running_at(address.parse().expect("valid IPv4"))
+    }
+}

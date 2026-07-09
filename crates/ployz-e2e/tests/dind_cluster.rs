@@ -518,12 +518,121 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         add_and_join_edge(&core, edge).await;
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
+        for machine in [core.cluster.core(), edge] {
+            assert_unit_active(&core, machine, "ployzd-dns").await;
+        }
 
         scenario_cross_machine_deploy(&core, edge).await;
         scenario_daemon_restart_invisibility(&core, edge).await;
         scenario_auth_rejection(&core, edge).await;
         scenario_runtime_fields_deploy(&core).await;
         scenario_named_volume_survives_redeploy(&core).await;
+    })
+    .await;
+
+    finish(core).await;
+}
+
+/// A workload resolves a sibling service by its plain service id when the
+/// target container runs on the other machine.
+#[tokio::test]
+async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 1).await;
+    with_evidence(&core.cluster, async {
+        let [edge] = core.cluster.edges() else {
+            panic!("scenario requires exactly one edge machine");
+        };
+        add_and_join_edge(&core, edge).await;
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(&core, &machine_id("edge_2")).await;
+        for machine in [core.cluster.core(), edge] {
+            assert_unit_active(&core, machine, "ployzd-dns").await;
+        }
+
+        let accepted = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_internal_dns"),
+                target: internal_dns_deploy_target(),
+            })
+            .await
+            .expect("internal DNS deploy submits");
+        let status =
+            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                &status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "internal DNS deploy did not complete: {status:?}"
+        );
+
+        let mut servers = Vec::new();
+        let mut clients = Vec::new();
+        for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+            for container in managed_workload_containers(&core, machine).await {
+                match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
+                    Some("server") => servers.push((machine.clone(), container)),
+                    Some("client") => clients.push((machine.clone(), container)),
+                    Some(_) | None => {}
+                }
+            }
+        }
+        let [(server_machine, server)] = servers.as_slice() else {
+            panic!("expected one server container, got {servers:?}");
+        };
+        let Some((client_machine, client)) = clients
+            .iter()
+            .find(|(machine, _)| machine.name != server_machine.name)
+        else {
+            panic!("expected a client on the machine opposite {server_machine:?}: {clients:?}");
+        };
+        let Some(server_ip) = server.endpoint_ip else {
+            panic!("server container has no endpoint IP: {server:?}");
+        };
+        let Some(client_ip) = client.endpoint_ip else {
+            panic!("client container has no endpoint IP: {client:?}");
+        };
+
+        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+        let last = loop {
+            let outcome = exec_in_container(
+                &docker,
+                &client_machine.container_id,
+                &[
+                    "docker",
+                    "exec",
+                    &client.id,
+                    "sh",
+                    "-c",
+                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
+                ],
+            )
+            .await;
+            if matches!(&outcome, Ok(outcome) if outcome.success()) {
+                break outcome;
+            }
+            if Instant::now() >= deadline {
+                break outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert!(
+            matches!(&last, Ok(outcome) if outcome.success()),
+            "plain service DNS failed from {}:{client_ip} to {}:{server_ip}: {last:?}",
+            client_machine.name,
+            server_machine.name,
+        );
     })
     .await;
 
@@ -774,12 +883,15 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
         ]
     );
     assert_eq!(
-        container.healthcheck["Test"],
-        serde_json::json!(["CMD-SHELL", "test \"$PLOYZ_E2E_RUNTIME\" = present"])
+        container.healthcheck.get("Test"),
+        Some(&serde_json::json!([
+            "CMD-SHELL",
+            "test \"$PLOYZ_E2E_RUNTIME\" = present"
+        ]))
     );
     assert_eq!(
-        container.restart_policy["Name"],
-        serde_json::json!("unless-stopped")
+        container.restart_policy.get("Name"),
+        Some(&serde_json::json!("unless-stopped"))
     );
     assert_eq!(container.cap_add, vec!["NET_ADMIN".to_owned()]);
     assert_eq!(container.cap_drop, vec!["MKNOD".to_owned()]);
@@ -955,6 +1067,30 @@ fn smoke_deploy_target() -> DeployRequest {
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],
         }],
+    }
+}
+
+fn internal_dns_deploy_target() -> DeployRequest {
+    DeployRequest {
+        namespace_id: namespace_id("internal_dns"),
+        services: vec![
+            DeployServiceSpec {
+                service_id: service_id("server"),
+                image: ImageReference::try_new(WORKLOAD_IMAGE)
+                    .expect("valid workload image reference"),
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                routes: Vec::new(),
+            },
+            DeployServiceSpec {
+                service_id: service_id("client"),
+                image: ImageReference::try_new(WORKLOAD_IMAGE)
+                    .expect("valid workload image reference"),
+                replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                routes: Vec::new(),
+            },
+        ],
     }
 }
 

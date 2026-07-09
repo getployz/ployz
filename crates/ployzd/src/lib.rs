@@ -18,6 +18,7 @@ pub mod config;
 pub mod roles {
     pub mod control;
     pub mod dns {
+        pub mod internal;
         pub mod process;
         pub mod projection;
         pub mod source;

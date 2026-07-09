@@ -470,6 +470,15 @@ pub fn default_endpoint_subnet(machine_id: &MachineId) -> String {
     format!("10.42.{octet}.0/24")
 }
 
+/// The endpoint bridge's gateway address for a `/24` endpoint subnet: the
+/// first host, which Docker assigns as the `ployz` bridge gateway and which a
+/// container on that bridge reaches its machine-local resolver at.
+#[must_use]
+pub fn endpoint_bridge_gateway_ipv4(subnet: &str) -> Option<std::net::Ipv4Addr> {
+    let net: Ipv4Net = subnet.parse().ok()?;
+    net.hosts().next()
+}
+
 #[cfg(test)]
 mod allocation_tests {
     use super::{MachineEndpointSubnet, MachineEndpointSupernet};
@@ -703,6 +712,19 @@ mod tests {
             default_endpoint_subnet(&machine_id("machine_255")),
             "10.42.1.0/24"
         );
+    }
+
+    #[test]
+    fn endpoint_bridge_gateway_is_first_subnet_host() {
+        assert_eq!(
+            endpoint_bridge_gateway_ipv4("10.42.7.0/24"),
+            Some(std::net::Ipv4Addr::new(10, 42, 7, 1))
+        );
+    }
+
+    #[test]
+    fn endpoint_bridge_gateway_rejects_invalid_subnet() {
+        assert_eq!(endpoint_bridge_gateway_ipv4("not-a-subnet"), None);
     }
 
     #[test]

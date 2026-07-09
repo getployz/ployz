@@ -21,6 +21,7 @@ use bollard::query_parameters::{
     RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
+use ployz_core::dataplane::endpoint_bridge_gateway_ipv4;
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
 };
@@ -166,7 +167,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             })?;
         let response = docker
-            .create_container(None, create_body(command))
+            .create_container(None, create_body(command, &self.endpoint_network_subnet))
             .await
             .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
@@ -601,7 +602,10 @@ const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
     }
 }
 
-fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
+fn create_body(
+    command: CreateManagedContainer,
+    endpoint_network_subnet: &str,
+) -> ContainerCreateBody {
     let runtime = command.runtime;
     let env = if runtime.environment.is_empty() {
         None
@@ -632,6 +636,13 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
         .nano_cpus
         .map(|value| saturating_i64(value.get()));
     let pids_limit = runtime.resources.pids.map(|value| value.get());
+    // ponytail: invalid endpoint subnet omits the resolver; validated machine
+    // configuration is the upgrade path.
+    let dns = endpoint_bridge_gateway_ipv4(endpoint_network_subnet)
+        .map(|gateway| vec![gateway.to_string()]);
+    let dns_search = Some(vec![
+        format!("{}.internal", command.identity.namespace_id.as_str()).to_ascii_lowercase(),
+    ]);
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
         env,
@@ -649,6 +660,8 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
             memory,
             nano_cpus,
             pids_limit,
+            dns,
+            dns_search,
             ..Default::default()
         }),
         networking_config: Some(NetworkingConfig {
@@ -881,6 +894,8 @@ mod tests {
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
 
+    const TEST_ENDPOINT_SUBNET: &str = "10.42.7.0/24";
+
     #[test]
     fn list_options_filter_to_managed_containers() {
         let options = managed_container_list_options();
@@ -897,11 +912,14 @@ mod tests {
 
     #[test]
     fn create_body_preserves_image_and_labels() {
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime: ContainerRuntimeSpec::image_defaults(),
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         assert_eq!(body.image, Some("ghcr.io/acme/api:rev-2".to_owned()));
         assert_eq!(
@@ -912,11 +930,14 @@ mod tests {
 
     #[test]
     fn create_body_sets_runtime_fields() {
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime: runtime_spec(),
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: runtime_spec(),
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         assert_eq!(
             body.env,
@@ -925,6 +946,22 @@ mod tests {
         assert_eq!(body.cmd, Some(vec!["serve".to_owned(), "api".to_owned()]));
         assert_eq!(body.entrypoint, Some(vec!["/init".to_owned()]));
         assert_eq!(body.stop_timeout, Some(30));
+    }
+
+    #[test]
+    fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
+        let host = body.host_config.expect("host config exists");
+
+        assert_eq!(host.dns, Some(vec!["10.42.7.1".to_owned()]));
+        assert_eq!(host.dns_search, Some(vec!["default.internal".to_owned()]));
     }
 
     #[test]
@@ -949,11 +986,14 @@ mod tests {
             pids: Some(PidsLimit::try_new(64).expect("pids")),
         };
 
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime,
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime,
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         assert_eq!(
             body.healthcheck.map(|health| health.test),
@@ -978,22 +1018,28 @@ mod tests {
     fn create_body_clears_entrypoint_when_runtime_requests_clear() {
         let mut runtime = ContainerRuntimeSpec::image_defaults();
         runtime.entrypoint = Some(ContainerEntrypoint::Clear);
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime,
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime,
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         assert_eq!(body.entrypoint, Some(Vec::new()));
     }
 
     #[test]
     fn create_body_sets_default_stop_timeout() {
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime: ContainerRuntimeSpec::image_defaults(),
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         assert_eq!(body.stop_timeout, Some(10));
     }
@@ -1006,11 +1052,14 @@ mod tests {
             target: ContainerMountPath::try_new("/var/lib/postgresql/data")
                 .expect("valid mount path"),
         }];
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime,
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime,
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         let mounts = body
             .host_config
@@ -1046,11 +1095,14 @@ mod tests {
         // Ports never influence network membership (ADR 0023): even a
         // route-less service container joins the endpoint network so a
         // later route attach can reach it without recreation.
-        let body = create_body(CreateManagedContainer {
-            image: image("ghcr.io/acme/api:rev-2"),
-            runtime: ContainerRuntimeSpec::image_defaults(),
-            identity: managed_identity(),
-        });
+        let body = create_body(
+            CreateManagedContainer {
+                image: image("ghcr.io/acme/api:rev-2"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                identity: managed_identity(),
+            },
+            TEST_ENDPOINT_SUBNET,
+        );
 
         assert_eq!(body.exposed_ports, None);
         assert_eq!(

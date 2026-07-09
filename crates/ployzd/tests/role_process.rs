@@ -180,6 +180,24 @@ fn machine_role_derives_endpoint_subnet_from_machine_id() {
 }
 
 #[test]
+fn dns_role_loads_the_machine_endpoint_subnet() {
+    let config = load_daemon_process_config(DaemonProcessRole::Dns, |name| match name {
+        PLOYZ_MACHINE_ID_ENV => Some("edge_2".to_owned()),
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+        PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
+        PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/machine.seed".to_owned()),
+        PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("10.77.2.0/24".to_owned()),
+        _ => None,
+    })
+    .expect("DNS role config loads");
+
+    let DaemonProcessConfig::Dns(config) = config else {
+        panic!("DNS role should produce DNS config");
+    };
+    assert_eq!(config.endpoint_subnet, "10.77.2.0/24");
+}
+
+#[test]
 fn control_role_loads_optional_machine_bootstrap_url() {
     let seed_file = temp_seed_file("controller.seed");
     let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {

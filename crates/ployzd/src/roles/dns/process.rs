@@ -1,8 +1,9 @@
 //! Process wiring for the DNS role.
 //!
 //! `ployzd dns` is a supervised watcher process: it consumes route binding
-//! state and gateway observations from NATS, keeps a last-known-good answer
-//! table, and exposes typed health. It owns no command surface.
+//! state, gateway observations, and machine facts from NATS, keeps a
+//! last-known-good public answer table and machine fact cache, and exposes
+//! typed health. It owns no command surface.
 
 use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
@@ -11,6 +12,7 @@ use crate::config::DnsProcessConfig;
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::roles::dns::internal::spawn_internal_resolver;
 use crate::roles::dns::projection::{
     DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
 };
@@ -21,6 +23,7 @@ use crate::roles::nats_failover::{
 };
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::NatsClient;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -81,6 +84,9 @@ pub async fn start_dns_process(
     let client = connect_authenticated_pool(&connect, &pool, DNS_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(DnsProcessError::ConnectNats)?;
+    let internal_resolver_bind =
+        ployz_core::dataplane::endpoint_bridge_gateway_ipv4(&config.endpoint_subnet)
+            .map(|gateway| SocketAddr::new(IpAddr::V4(gateway), 53));
     start_dns_process_with_client(
         client,
         DNS_REFRESH_INTERVAL,
@@ -88,6 +94,7 @@ pub async fn start_dns_process(
             mirror,
             seed: connect.url,
         }),
+        internal_resolver_bind,
     )
     .await
 }
@@ -96,6 +103,7 @@ pub async fn start_dns_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
     failover: Option<IntentFailover>,
+    internal_resolver_bind: Option<SocketAddr>,
 ) -> Result<RunningDnsProcess, DnsProcessError> {
     let runtime = Arc::new(Mutex::new(DnsProjector::new()));
     let health = Arc::new(Mutex::new(DnsProcessHealth {
@@ -108,6 +116,9 @@ pub async fn start_dns_process_with_client(
     let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
+    if let Some(bind) = internal_resolver_bind {
+        tasks.push(spawn_internal_resolver(facts_cache.cache(), bind, shutdown.subscribe()).await);
+    }
     if let Some(failover) = failover {
         tasks.push(spawn_intent_failover_mirror(
             client.clone(),

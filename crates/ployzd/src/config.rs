@@ -137,7 +137,9 @@ pub fn load_daemon_process_config(
             let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
             Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(
-                machine_id, connect,
+                machine_id.clone(),
+                connect,
+                load_dataplane_endpoint_subnet(&env, &machine_id),
             )))
         }
     }
@@ -833,11 +835,16 @@ impl GatewayProcessConfig {
 pub struct DnsProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
+    pub endpoint_subnet: String,
 }
 
 impl DnsProcessConfig {
     #[must_use]
-    pub fn new(machine_id: MachineId, nats: RoleNatsConnect) -> Self {
-        Self { machine_id, nats }
+    pub fn new(machine_id: MachineId, nats: RoleNatsConnect, endpoint_subnet: String) -> Self {
+        Self {
+            machine_id,
+            nats,
+            endpoint_subnet,
+        }
     }
 }
