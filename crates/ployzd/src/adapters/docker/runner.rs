@@ -10,8 +10,9 @@ use crate::roles::machine::runner::{
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
-    ContainerCreateBody, ContainerSummary, ContainerSummaryNetworkSettings,
-    ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkInspect, NetworkingConfig,
+    ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
+    ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HostConfig,
+    NetworkInspect, NetworkingConfig,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectNetworkOptions, ListContainersOptionsBuilder,
@@ -20,7 +21,7 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use ployz_core::deploy::ContainerEntrypoint;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine_runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -551,6 +552,10 @@ fn existing_container_from_summary(
     let state = summary
         .state
         .ok_or(DockerManagedContainerSummaryError::MissingState)?;
+    let health_status = summary
+        .health
+        .and_then(|health| health.status)
+        .and_then(docker_health_status);
 
     let identity = labels::parse(&btree_from_hashmap(labels))
         .map_err(DockerManagedContainerSummaryError::InvalidLabels)?;
@@ -559,7 +564,35 @@ fn existing_container_from_summary(
             .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
         state: docker_container_state(state, summary.network_settings)?,
         identity,
+        health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
+        resolved_image_identity: summary.image_id,
+        created_at_unix_seconds: summary.created,
     })
+}
+
+fn docker_health_status(
+    status: ContainerSummaryHealthStatusEnum,
+) -> Option<ManagedContainerHealthStatus> {
+    match status {
+        ContainerSummaryHealthStatusEnum::EMPTY | ContainerSummaryHealthStatusEnum::NONE => None,
+        ContainerSummaryHealthStatusEnum::STARTING => Some(ManagedContainerHealthStatus::Starting),
+        ContainerSummaryHealthStatusEnum::HEALTHY => Some(ManagedContainerHealthStatus::Healthy),
+        ContainerSummaryHealthStatusEnum::UNHEALTHY => {
+            Some(ManagedContainerHealthStatus::Unhealthy)
+        }
+    }
+}
+
+fn status_health(status: &str) -> Option<ManagedContainerHealthStatus> {
+    if status.contains("unhealthy") {
+        Some(ManagedContainerHealthStatus::Unhealthy)
+    } else if status.contains("healthy") {
+        Some(ManagedContainerHealthStatus::Healthy)
+    } else if status.contains("health: starting") {
+        Some(ManagedContainerHealthStatus::Starting)
+    } else {
+        None
+    }
 }
 
 fn container_ip(
@@ -779,7 +812,18 @@ mod tests {
                 container_id: container_id("0123456789abcdef"),
                 identity: managed_identity(),
                 state: ExistingManagedContainerState::Running { ip: None },
+                health_status: None,
+                resolved_image_identity: None,
+                created_at_unix_seconds: None,
             }
+        );
+    }
+
+    #[test]
+    fn status_health_reads_unhealthy_as_unhealthy() {
+        assert_eq!(
+            status_health("Up 2 hours (unhealthy)"),
+            Some(ManagedContainerHealthStatus::Unhealthy),
         );
     }
 

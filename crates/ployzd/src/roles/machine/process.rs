@@ -607,6 +607,9 @@ mod tests {
             container_id: container_id("ctr_123"),
             identity: identity_for("run_1"),
             state: ExistingManagedContainerState::Running { ip: None },
+            health_status: None,
+            resolved_image_identity: None,
+            created_at_unix_seconds: None,
         }]);
         let mut facts_sub = nats
             .client

@@ -6,8 +6,9 @@ use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::state::RouteBindingState;
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
@@ -127,16 +128,8 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             service_id: service_id("svc_worker"),
         }],
         namespace_serving_entries: vec![
-            ServingTargetEntry {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_api"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_api"),
-            },
-            ServingTargetEntry {
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_worker"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_worker"),
-            },
+            serving_target_entry("svc_api", "entry_api"),
+            serving_target_entry("svc_worker", "entry_worker"),
         ],
         eligible_machines: vec![machine_id("machine_a")],
         dataplane_machines: Vec::new(),
@@ -153,11 +146,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     assert_eq!(command.route_binding_removals(), [omitted_target]);
     assert_eq!(
         command.serving_target_removals(),
-        [ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_worker"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_worker"),
-        }]
+        [serving_target_entry("svc_worker", "entry_worker")]
     );
     let [candidate] = command.namespace_cleanup_candidates() else {
         panic!("omitted service container is a cleanup candidate");

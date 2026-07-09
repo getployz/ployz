@@ -10,13 +10,16 @@ use crate::roles::machine::runner::{
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, MachineFactsSnapshot, MachineFactsSnapshotError,
-    ManagedContainerObservation,
+    MachineContainerObservationSnapshotError, MachineDiskSpace, MachineFactsSnapshot,
+    MachineFactsSnapshotError, ManagedContainerObservation,
 };
 use ployz_core::state::MachineEndpointObservation;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const MACHINE_DATA_PATH: &str = "/var/lib/ployz";
 
 #[derive(Clone)]
 pub(crate) struct MachineFactsState<R> {
@@ -131,14 +134,20 @@ where
             container_id: container.container_id,
             identity: container.identity,
             state: observation_state(container.state),
+            health_status: container.health_status,
+            resolved_image_identity: container.resolved_image_identity,
+            created_at_unix_seconds: container.created_at_unix_seconds,
         });
     let containers = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
         .map_err(MachineFactsReadError::BuildContainerSnapshot)?;
+    let disk_space =
+        read_disk_space(Path::new(MACHINE_DATA_PATH)).map_err(MachineFactsReadError::DiskSpace)?;
 
     MachineFactsSnapshot::try_new(
         machine_id.clone(),
         containers,
         endpoints,
+        disk_space,
         observed_at_unix_ms,
     )
     .map_err(MachineFactsReadError::BuildFactsSnapshot)
@@ -150,8 +159,37 @@ pub enum MachineFactsReadError {
     ListContainers(MachineContainerRunnerError),
     #[error("failed to build container snapshot: {0}")]
     BuildContainerSnapshot(MachineContainerObservationSnapshotError),
+    #[error("failed to read disk space: {0}")]
+    DiskSpace(std::io::Error),
     #[error("failed to build machine facts: {0}")]
     BuildFactsSnapshot(MachineFactsSnapshotError),
+}
+
+fn read_disk_space(path: &Path) -> std::io::Result<MachineDiskSpace> {
+    read_existing_path_disk_space(existing_filesystem_path(path))
+}
+
+fn existing_filesystem_path(path: &Path) -> &Path {
+    let mut current = path;
+    while !current.exists() {
+        let Some(parent) = current.parent() else {
+            return Path::new("/");
+        };
+        current = parent;
+    }
+    current
+}
+
+fn read_existing_path_disk_space(path: &Path) -> std::io::Result<MachineDiskSpace> {
+    let stat = rustix::fs::statvfs(path)?;
+    Ok(MachineDiskSpace {
+        available_bytes: bytes_from_blocks(stat.f_bavail, stat.f_frsize),
+        total_bytes: bytes_from_blocks(stat.f_blocks, stat.f_frsize),
+    })
+}
+
+fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
+    u64::try_from(u128::from(blocks).saturating_mul(u128::from(block_size))).unwrap_or(u64::MAX)
 }
 
 pub(crate) fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {

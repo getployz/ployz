@@ -119,6 +119,8 @@ impl DeployServiceExecutionCommand {
             namespace_id: self.request.namespace_id.clone(),
             service_id: self.request.service_id.clone(),
             namespace_revision_entry_id: self.request.namespace_revision_entry_id.clone(),
+            image: self.request.image.clone(),
+            desired_replicas: self.request.replicas,
         }
     }
 

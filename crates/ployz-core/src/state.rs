@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deploy::{ImageReference, ReplicaCount};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizedUser;
@@ -17,6 +18,8 @@ pub struct ServingTargetEntry {
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
+    pub image: ImageReference,
+    pub desired_replicas: ReplicaCount,
 }
 
 /// Core-owned route-binding intent value.

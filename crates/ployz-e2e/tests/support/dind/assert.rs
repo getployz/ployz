@@ -15,7 +15,7 @@ use ployz_core::ops::{
 };
 use ployz_e2e::dind::DindMachine;
 use ployz_nats::connect::{NatsConnectConfig, authenticated_connect_options};
-use ployz_sdk_types::{MachineInspectRequest, MachineSnapshot, OpsStatusRequest};
+use ployz_sdk_types::{MachineInspectRequest, MachineSnapshot, MachineTestimony, OpsStatusRequest};
 use ployzd::adapters::docker::labels::MANAGED_LABEL;
 
 use super::formation::CoreContext;
@@ -493,7 +493,12 @@ pub async fn wait_for_machine_observations(core: &CoreContext, machine: &Machine
         machine,
         Duration::from_secs(120),
         "never published observations",
-        |snapshot| snapshot.endpoints.is_some() && snapshot.gateway.is_some(),
+        |snapshot| match &snapshot.testimony {
+            MachineTestimony::Answered {
+                endpoints, gateway, ..
+            } => endpoints.is_some() && gateway.is_some(),
+            MachineTestimony::NoAnswer => false,
+        },
     )
     .await;
 }

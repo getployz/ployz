@@ -160,20 +160,39 @@ fn machine_inspect_renders_machine_detail() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\ndisk-space 40 available / 100 total\n"
     );
 }
 
 #[test]
 fn machine_inspect_renders_missing_observations_as_unknown() {
     let mut machine = machine_snapshot("machine_1", None);
-    machine.endpoints = None;
+    machine.testimony = ployz_sdk_types::MachineTestimony::Answered {
+        endpoints: None,
+        gateway: None,
+        observed_container_count: 3,
+        disk_space: ployz_test_support::fixtures::test_disk_space(),
+        last_observed_at_unix_seconds: 60,
+    };
 
     let output = MachineInspectOutput::new(machine).render();
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\ndisk-space 40 available / 100 total\n"
+    );
+}
+
+#[test]
+fn machine_inspect_renders_no_answer() {
+    let mut machine = machine_snapshot("machine_1", None);
+    machine.testimony = ployz_sdk_types::MachineTestimony::NoAnswer;
+
+    let output = MachineInspectOutput::new(machine).render();
+
+    assert_eq!(
+        output,
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints no answer\nmesh-endpoints no answer\ngateway no answer\ncontainers no answer\ndisk-space no answer\n"
     );
 }
 
@@ -188,7 +207,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
 fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> MachineSnapshot {
     let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
-        last_observed_at_unix_seconds: None,
         active: ActiveMachineState {
             lifecycle: MachineLifecycle::Active,
             machine_id: machine_id.clone(),
@@ -197,18 +215,22 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
         },
-        endpoints: Some(MachineEndpointObservation {
-            machine_id: machine_id.clone(),
-            control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
-            mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
-        }),
-        gateway: gateway.map(|serving| GatewayStatusObservation {
-            machine_id,
-            listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
-            serving,
-            route_count: 2,
-        }),
-        observed_container_count: 3,
+        testimony: ployz_sdk_types::MachineTestimony::Answered {
+            endpoints: Some(MachineEndpointObservation {
+                machine_id: machine_id.clone(),
+                control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
+                mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
+            }),
+            gateway: gateway.map(|serving| GatewayStatusObservation {
+                machine_id,
+                listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
+                serving,
+                route_count: 2,
+            }),
+            observed_container_count: 3,
+            disk_space: ployz_test_support::fixtures::test_disk_space(),
+            last_observed_at_unix_seconds: 60,
+        },
     }
 }
 

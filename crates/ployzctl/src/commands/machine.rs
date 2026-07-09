@@ -10,8 +10,9 @@ use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{GatewayServingStatus, MachineLifecycle};
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineInspectRequest,
-    MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateRequest,
+    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineEndpointObservation,
+    MachineInspectRequest, MachineListRequest, MachineListResult, MachineSnapshot,
+    MachineTestimony, MachineUpdateRequest,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -852,14 +853,15 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "machine {}\nname {}\nactivated-by {}\ncontrol-endpoints {}\nmesh-endpoints {}\ngateway {}\ncontainers {}\n",
+            "machine {}\nname {}\nactivated-by {}\ncontrol-endpoints {}\nmesh-endpoints {}\ngateway {}\ncontainers {}\ndisk-space {}\n",
             self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
             render_control_endpoints(&self.machine),
             render_mesh_endpoints(&self.machine),
             render_gateway(&self.machine),
-            self.machine.observed_container_count,
+            render_container_count(&self.machine),
+            render_disk_space(&self.machine),
         )
     }
 }
@@ -872,12 +874,15 @@ fn render_machine_summary(machine: &MachineSnapshot) -> String {
         render_control_endpoints(machine),
         render_mesh_endpoints(machine),
         render_gateway(machine),
-        machine.observed_container_count,
+        render_container_count(machine),
     )
 }
 
 fn render_control_endpoints(machine: &MachineSnapshot) -> String {
-    match &machine.endpoints {
+    let Ok(endpoints) = answered_endpoints(machine) else {
+        return "no answer".to_owned();
+    };
+    match endpoints {
         Some(observation) if !observation.control_endpoints.is_empty() => observation
             .control_endpoints
             .iter()
@@ -890,7 +895,10 @@ fn render_control_endpoints(machine: &MachineSnapshot) -> String {
 }
 
 fn render_mesh_endpoints(machine: &MachineSnapshot) -> String {
-    match &machine.endpoints {
+    let Ok(endpoints) = answered_endpoints(machine) else {
+        return "no answer".to_owned();
+    };
+    match endpoints {
         Some(observation) if !observation.mesh_endpoints.is_empty() => observation
             .mesh_endpoints
             .iter()
@@ -902,8 +910,20 @@ fn render_mesh_endpoints(machine: &MachineSnapshot) -> String {
     }
 }
 
+fn answered_endpoints(
+    machine: &MachineSnapshot,
+) -> Result<Option<&MachineEndpointObservation>, &'static str> {
+    match &machine.testimony {
+        MachineTestimony::Answered { endpoints, .. } => Ok(endpoints.as_ref()),
+        MachineTestimony::NoAnswer => Err("no answer"),
+    }
+}
+
 fn render_gateway(machine: &MachineSnapshot) -> String {
-    match &machine.gateway {
+    let MachineTestimony::Answered { gateway, .. } = &machine.testimony else {
+        return "no answer".to_owned();
+    };
+    match gateway {
         Some(observation) => format!(
             "{} {} routes {}",
             render_gateway_serving(observation.serving),
@@ -911,6 +931,26 @@ fn render_gateway(machine: &MachineSnapshot) -> String {
             observation.route_count
         ),
         None => "none".to_owned(),
+    }
+}
+
+fn render_container_count(machine: &MachineSnapshot) -> String {
+    match &machine.testimony {
+        MachineTestimony::Answered {
+            observed_container_count,
+            ..
+        } => observed_container_count.to_string(),
+        MachineTestimony::NoAnswer => "no answer".to_owned(),
+    }
+}
+
+fn render_disk_space(machine: &MachineSnapshot) -> String {
+    match &machine.testimony {
+        MachineTestimony::Answered { disk_space, .. } => format!(
+            "{} available / {} total",
+            disk_space.available_bytes, disk_space.total_bytes
+        ),
+        MachineTestimony::NoAnswer => "no answer".to_owned(),
     }
 }
 

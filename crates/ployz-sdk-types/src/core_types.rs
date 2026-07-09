@@ -33,8 +33,8 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
-    ManagedContainerObservation,
+    ContainerRuntimeState, MachineDiskSpace, ManagedContainerHealthStatus,
+    ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{
     NatsAuthorizedUser, NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed,

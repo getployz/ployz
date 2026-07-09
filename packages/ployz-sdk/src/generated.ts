@@ -132,9 +132,11 @@ export type ContainerRuntimeState = { "state": "running",
  */
 ip?: string | null, } | { "state": "exited" };
 
+export type ManagedContainerHealthStatus = "starting" | "healthy" | "unhealthy";
+
 export type ManagedContainerIdentity = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
 
-export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, state: ContainerRuntimeState, };
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, state: ContainerRuntimeState, health_status?: ManagedContainerHealthStatus | null, resolved_image_identity?: string | null, created_at_unix_seconds?: number | null, };
 
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
@@ -291,7 +293,7 @@ mesh_endpoints: Array<string>, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 
-export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, };
+export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, desired_replicas: ReplicaCount, };
 
 export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
 
@@ -299,13 +301,17 @@ export type GatewayServingStatus = "current" | "last_known_good" | "unavailable"
 
 export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
-export type MachineSnapshot = { active: ActiveMachineState, endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number,
+export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
+
+export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, };
+
+export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, disk_space: MachineDiskSpace,
 /**
  * When this machine last self-reported, as display evidence for the
  * operator. Never an input to behavior: liveness surfaces at the point
  * of use (ADR 0027).
  */
-last_observed_at_unix_seconds?: number | null, };
+last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
 export type InitFirstMachineActivateRequest = { machine_id: MachineId, roles: InstallRolePolicy, };
 
@@ -333,7 +339,15 @@ export type ServiceListRequest = Record<symbol, never>;
 
 export type ServiceListResult = { services: Array<ServiceSnapshot>, };
 
-export type ServiceSnapshot = { active: ServingTargetEntry, };
+export type ServiceSnapshot = { active: ServingTargetEntry, route_bindings: Array<RouteBindingState>, testimony: ServiceTestimony, };
+
+export type ServiceTestimony = { ready_container_count: number, observed_container_count: number, machines: Array<ServiceMachineTestimony>, };
+
+export type ServiceContainerTestimony = { observation: ManagedContainerObservation, membership: ServiceContainerMembership, };
+
+export type ServiceContainerMembership = "serving_target_member" | "retained_evidence";
+
+export type ServiceMachineTestimony = { "status": "answered", machine_id: MachineId, containers: Array<ServiceContainerTestimony>, } | { "status": "no_answer", machine_id: MachineId, };
 
 export type ServiceListError = { "error": "unavailable", message: string, };
 

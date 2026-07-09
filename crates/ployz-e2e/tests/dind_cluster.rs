@@ -41,7 +41,7 @@ use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
-    MachineSnapshot,
+    MachineSnapshot, MachineTestimony,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
@@ -701,11 +701,7 @@ async fn wait_for_settled_snapshot(core: &CoreContext, machine: &MachineId) -> M
         machine,
         Duration::from_secs(60),
         "never settled after the deploy",
-        |snapshot| {
-            snapshot.endpoints.is_some()
-                && snapshot.gateway.is_some()
-                && snapshot.observed_container_count == 1
-        },
+        answered_with_gateway_and_containers(1),
     )
     .await
 }
@@ -723,20 +719,48 @@ async fn wait_for_matching_snapshot(
         Duration::from_secs(120),
         &format!("state never matched the pre-restart truth (expected {before:?})"),
         |snapshot| {
-            let MachineSnapshot {
-                active,
-                endpoints,
-                gateway,
-                observed_container_count,
-                last_observed_at_unix_seconds: _,
-            } = snapshot;
-            *active == before.active
-                && *endpoints == before.endpoints
-                && gateway.is_some()
-                && *observed_container_count == before.observed_container_count
+            let MachineSnapshot { active, testimony } = snapshot;
+            *active == before.active && matching_answered_testimony(testimony, &before.testimony)
         },
     )
     .await;
+}
+
+fn answered_with_gateway_and_containers(count: usize) -> impl Fn(&MachineSnapshot) -> bool {
+    move |snapshot| match &snapshot.testimony {
+        MachineTestimony::Answered {
+            endpoints,
+            gateway,
+            observed_container_count,
+            ..
+        } => endpoints.is_some() && gateway.is_some() && *observed_container_count == count,
+        MachineTestimony::NoAnswer => false,
+    }
+}
+
+fn matching_answered_testimony(current: &MachineTestimony, before: &MachineTestimony) -> bool {
+    match (current, before) {
+        (
+            MachineTestimony::Answered {
+                endpoints,
+                gateway,
+                observed_container_count,
+                ..
+            },
+            MachineTestimony::Answered {
+                endpoints: before_endpoints,
+                observed_container_count: before_container_count,
+                ..
+            },
+        ) => {
+            endpoints == before_endpoints
+                && gateway.is_some()
+                && observed_container_count == before_container_count
+        }
+        (MachineTestimony::NoAnswer, MachineTestimony::Answered { .. })
+        | (MachineTestimony::Answered { .. }, MachineTestimony::NoAnswer)
+        | (MachineTestimony::NoAnswer, MachineTestimony::NoAnswer) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

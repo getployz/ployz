@@ -814,6 +814,7 @@ async fn publish_machine_facts(
                 ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
             )],
         }),
+        test_disk_space(),
         1,
     )
     .expect("machine facts are valid");
@@ -827,6 +828,10 @@ async fn publish_machine_facts(
         .await
         .expect("machine facts publish");
     client.flush().await.expect("flush machine facts");
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 fn public_ip(last_octet: u8) -> std::net::IpAddr {

@@ -2902,6 +2902,7 @@ dependencies = [
  "public-ip-address",
  "rtnetlink",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sysctl",

@@ -570,9 +570,14 @@ fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsS
         MachineContainerObservationSnapshot::try_new(machine_id.clone(), [])
             .expect("empty machine snapshot is valid"),
         None,
+        test_disk_space(),
         1,
     )
     .expect("empty machine facts are valid")
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 async fn start_endpoint_network_subscription(

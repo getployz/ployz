@@ -341,7 +341,7 @@ async fn publish_container_observed_delta<R>(
     };
     let delta = MachineContainerFactDelta::ContainerObserved {
         observed_at_unix_ms: current_unix_ms(),
-        observation,
+        observation: Box::new(observation),
     };
     publish_machine_container_fact(client, machine_id, &delta).await;
 }
@@ -391,5 +391,8 @@ where
             container_id: container.container_id,
             identity: container.identity,
             state: observation_state(container.state),
+            health_status: container.health_status,
+            resolved_image_identity: container.resolved_image_identity,
+            created_at_unix_seconds: container.created_at_unix_seconds,
         })
 }

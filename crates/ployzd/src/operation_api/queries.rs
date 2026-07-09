@@ -19,12 +19,13 @@ use ployz_core::ops::{
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
 use ployz_sdk_types::{
     LogsTailError, LogsTailRequest, LogsTailResult, MachineInspectError, MachineListError,
-    MachineListResult, MachineSnapshot, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
-    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
-    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
-    RuntimeSnapshotResult, ServiceInspectError, ServiceListError, ServiceListResult,
-    ServiceSnapshot,
+    MachineListResult, MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsWatchError, RuntimeDerivedCollectionSource,
+    RuntimeDerivedCollectionStatus, RuntimeProjectionSource, RuntimeProjectionSources,
+    RuntimeServiceInstance, RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot,
+    RuntimeSnapshotError, RuntimeSnapshotResult, ServiceContainerMembership,
+    ServiceContainerTestimony, ServiceInspectError, ServiceListError, ServiceListResult,
+    ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,6 +42,7 @@ pub struct MachineQueryService {
 #[derive(Clone)]
 pub struct ServiceQueryService {
     intent_reader: NatsIntentReader,
+    facts_reader: NatsMachineFactsReader,
 }
 
 #[derive(Clone)]
@@ -83,7 +85,8 @@ impl RuntimeSnapshotQueryService {
             self.facts.clone(),
             self.facts_reader.clone(),
         );
-        let service_query = ServiceQueryService::new(self.intent_reader.clone());
+        let service_query =
+            ServiceQueryService::new(self.intent_reader.clone(), self.facts_reader.clone());
         let machines = machine_query
             .list()
             .await
@@ -253,8 +256,14 @@ impl LogsQueryService {
 
 impl ServiceQueryService {
     #[must_use]
-    pub(crate) const fn new(intent_reader: NatsIntentReader) -> Self {
-        Self { intent_reader }
+    pub(crate) const fn new(
+        intent_reader: NatsIntentReader,
+        facts_reader: NatsMachineFactsReader,
+    ) -> Self {
+        Self {
+            intent_reader,
+            facts_reader,
+        }
     }
 
     pub(crate) async fn list(&self) -> Result<ServiceListResult, ServiceListError> {
@@ -265,10 +274,18 @@ impl ServiceQueryService {
                 .map_err(|error| ServiceListError::Unavailable {
                     message: error.to_string(),
                 })?;
+        let machine_ids = intent
+            .active_machines
+            .iter()
+            .map(|machine| machine.machine_id.clone())
+            .collect::<Vec<_>>();
+        let facts =
+            read_available_machine_facts_by_id(&self.facts_reader, machine_ids.clone()).await;
+        let routes = intent.route_bindings;
         let services = intent
             .serving_target_entries
             .into_iter()
-            .map(service_snapshot)
+            .map(|active| service_snapshot(active, &routes, &machine_ids, &facts))
             .collect();
         Ok(ServiceListResult { services })
     }
@@ -283,6 +300,14 @@ impl ServiceQueryService {
                 message: error.to_string(),
             }
         })?;
+        let machine_ids = intent
+            .active_machines
+            .iter()
+            .map(|machine| machine.machine_id.clone())
+            .collect::<Vec<_>>();
+        let facts =
+            read_available_machine_facts_by_id(&self.facts_reader, machine_ids.clone()).await;
+        let routes = intent.route_bindings;
         let Some(active) = intent
             .serving_target_entries
             .into_iter()
@@ -293,12 +318,79 @@ impl ServiceQueryService {
             });
         };
 
-        Ok(service_snapshot(active))
+        Ok(service_snapshot(active, &routes, &machine_ids, &facts))
     }
 }
 
-fn service_snapshot(active: ServingTargetEntry) -> ServiceSnapshot {
-    ServiceSnapshot { active }
+fn service_snapshot(
+    active: ServingTargetEntry,
+    routes: &[RouteBindingState],
+    machine_ids: &[MachineId],
+    facts: &BTreeMap<MachineId, ployz_core::machine_runtime::MachineFactsSnapshot>,
+) -> ServiceSnapshot {
+    let route_bindings = routes
+        .iter()
+        .filter(|route| {
+            route.namespace_id == active.namespace_id && route.service_id == active.service_id
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut machines = Vec::with_capacity(machine_ids.len());
+    let mut ready_container_count = 0;
+    let mut observed_container_count = 0;
+    for machine_id in machine_ids {
+        let Some(facts) = facts.get(machine_id) else {
+            machines.push(ServiceMachineTestimony::NoAnswer {
+                machine_id: machine_id.clone(),
+            });
+            continue;
+        };
+        let containers = facts
+            .containers()
+            .containers()
+            .iter()
+            .filter(|container| {
+                container.identity.kind == ManagedContainerKind::Service
+                    && container.identity.namespace_id == active.namespace_id
+                    && container.identity.service_id == active.service_id
+            })
+            .map(|container| {
+                let membership = if container.identity.namespace_revision_entry_id
+                    == active.namespace_revision_entry_id
+                {
+                    ServiceContainerMembership::ServingTargetMember
+                } else {
+                    ServiceContainerMembership::RetainedEvidence
+                };
+                ServiceContainerTestimony {
+                    observation: container.clone(),
+                    membership,
+                }
+            })
+            .collect::<Vec<_>>();
+        ready_container_count += containers
+            .iter()
+            .filter(|container| {
+                container.membership == ServiceContainerMembership::ServingTargetMember
+                    && container.observation.state.is_running()
+            })
+            .count();
+        observed_container_count += containers.len();
+        machines.push(ServiceMachineTestimony::Answered {
+            machine_id: machine_id.clone(),
+            containers,
+        });
+    }
+
+    ServiceSnapshot {
+        active,
+        route_bindings,
+        testimony: ServiceTestimony {
+            ready_container_count,
+            observed_container_count,
+            machines,
+        },
+    }
 }
 
 fn derive_runtime_revisions(
@@ -513,18 +605,31 @@ impl MachineQueryService {
                 let container_count = facts.containers().containers().len();
                 (
                     facts.machine_id().clone(),
-                    (container_count, facts.observed_at_unix_ms() / 1_000),
+                    (
+                        container_count,
+                        facts.disk_space(),
+                        facts.observed_at_unix_ms() / 1_000,
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
         let mut snapshots = Vec::with_capacity(machines.len());
         for machine in machines {
             let observation = container_observations.get(&machine.machine_id).copied();
+            let testimony = match observation {
+                Some((observed_container_count, disk_space, last_observed_at_unix_seconds)) => {
+                    MachineTestimony::Answered {
+                        endpoints: endpoints.get(&machine.machine_id).cloned(),
+                        gateway: gateway_statuses.get(&machine.machine_id).cloned(),
+                        observed_container_count,
+                        disk_space,
+                        last_observed_at_unix_seconds,
+                    }
+                }
+                None => MachineTestimony::NoAnswer,
+            };
             snapshots.push(MachineSnapshot {
-                endpoints: endpoints.get(&machine.machine_id).cloned(),
-                gateway: gateway_statuses.get(&machine.machine_id).cloned(),
-                observed_container_count: observation.map(|(count, _)| count).unwrap_or_default(),
-                last_observed_at_unix_seconds: observation.map(|(_, observed_at)| observed_at),
+                testimony,
                 active: machine,
             });
         }
@@ -563,19 +668,19 @@ impl MachineQueryService {
             .machine_facts(&active.machine_id)
             .await
             .ok();
-        let endpoints = facts.as_ref().and_then(|facts| facts.endpoints().cloned());
         let gateway = self.facts.gateway_status(&active.machine_id);
+        let testimony = match facts {
+            Some(facts) => MachineTestimony::Answered {
+                endpoints: facts.endpoints().cloned(),
+                gateway,
+                observed_container_count: facts.containers().containers().len(),
+                disk_space: facts.disk_space(),
+                last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
+            },
+            None => MachineTestimony::NoAnswer,
+        };
 
-        Ok(MachineSnapshot {
-            active,
-            endpoints,
-            gateway,
-            observed_container_count: facts
-                .as_ref()
-                .map(|facts| facts.containers().containers().len())
-                .unwrap_or_default(),
-            last_observed_at_unix_seconds: facts.map(|facts| facts.observed_at_unix_ms() / 1_000),
-        })
+        Ok(MachineSnapshot { active, testimony })
     }
 }
 
@@ -655,14 +760,127 @@ pub async fn ops_watch(
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceSnapshot, derive_runtime_instances, derive_runtime_releases,
-        derive_runtime_revisions,
+        ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony, derive_runtime_instances,
+        derive_runtime_releases, derive_runtime_revisions,
     };
-    use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::machine_runtime::{
+        MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerKind,
+    };
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-    use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+    use ployz_core::state::RouteBindingState;
+    use ployz_sdk_types::ServiceContainerMembership;
     use ployz_test_support::containers;
+    use ployz_test_support::fixtures::serving_target_entry_in;
     use ployz_test_support::ids::{namespace_id, namespace_revision_entry_id, service_id};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn service_snapshot_keeps_silent_machines_as_no_answer() {
+        let active = serving_target_entry_in("team-a", "web", "entry_a");
+        let observed = containers::observation("machine_a", "ctr_web")
+            .with(
+                containers::identity("web")
+                    .namespace("team-a")
+                    .entry("entry_a"),
+            )
+            .running_unroutable()
+            .build();
+        let machine_ids = vec![
+            ployz_test_support::ids::machine_id("machine_a"),
+            ployz_test_support::ids::machine_id("machine_b"),
+        ];
+        let machine_a_facts = machine_facts("machine_a", [observed]);
+        let facts = BTreeMap::from([(machine_a_facts.machine_id().clone(), machine_a_facts)]);
+
+        let snapshot = super::service_snapshot(active, &[], &machine_ids, &facts);
+
+        assert_eq!(snapshot.testimony.ready_container_count, 1);
+        let [answered, no_answer] = snapshot.testimony.machines.as_slice() else {
+            panic!("one row per intent machine");
+        };
+        match answered {
+            ServiceMachineTestimony::Answered {
+                machine_id,
+                containers,
+            } => {
+                assert_eq!(machine_id.as_str(), "machine_a");
+                assert_eq!(containers.len(), 1);
+            }
+            ServiceMachineTestimony::NoAnswer { .. } => panic!("machine_a answered"),
+        }
+        match no_answer {
+            ServiceMachineTestimony::NoAnswer { machine_id } => {
+                assert_eq!(machine_id.as_str(), "machine_b");
+            }
+            ServiceMachineTestimony::Answered { .. } => panic!("machine_b did not answer"),
+        }
+    }
+
+    #[test]
+    fn service_snapshot_keeps_retained_service_containers_from_inactive_entries() {
+        let active = serving_target_entry_in("team-a", "web", "entry_active");
+        let active_container = containers::observation("machine_a", "ctr_active")
+            .with(
+                containers::identity("web")
+                    .namespace("team-a")
+                    .entry("entry_active"),
+            )
+            .running_unroutable()
+            .build();
+        let retained_container = containers::observation("machine_a", "ctr_retained")
+            .with(
+                containers::identity("web")
+                    .namespace("team-a")
+                    .entry("entry_failed"),
+            )
+            .exited()
+            .build();
+        let machine_ids = vec![ployz_test_support::ids::machine_id("machine_a")];
+        let machine_a_facts = machine_facts("machine_a", [active_container, retained_container]);
+        let facts = BTreeMap::from([(machine_a_facts.machine_id().clone(), machine_a_facts)]);
+
+        let snapshot = super::service_snapshot(active, &[], &machine_ids, &facts);
+
+        assert_eq!(snapshot.testimony.ready_container_count, 1);
+        assert_eq!(snapshot.testimony.observed_container_count, 2);
+        let [ServiceMachineTestimony::Answered { containers, .. }] =
+            snapshot.testimony.machines.as_slice()
+        else {
+            panic!("machine_a answered");
+        };
+        assert_eq!(
+            containers
+                .iter()
+                .map(|container| (
+                    container.observation.container_id.as_str(),
+                    container.membership,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "ctr_active",
+                    ServiceContainerMembership::ServingTargetMember
+                ),
+                ("ctr_retained", ServiceContainerMembership::RetainedEvidence),
+            ],
+        );
+    }
+
+    fn machine_facts(
+        machine_id_value: &str,
+        containers: impl IntoIterator<Item = ployz_core::machine_runtime::ManagedContainerObservation>,
+    ) -> MachineFactsSnapshot {
+        let machine_id = ployz_test_support::ids::machine_id(machine_id_value);
+        MachineFactsSnapshot::try_new(
+            machine_id.clone(),
+            MachineContainerObservationSnapshot::try_new(machine_id, containers)
+                .expect("valid container snapshot"),
+            None,
+            ployz_test_support::fixtures::test_disk_space(),
+            1,
+        )
+        .expect("valid machine facts")
+    }
 
     /// Containers whose service has no serving target entry still surface
     /// as instances and revisions under their own identity namespace:
@@ -706,10 +924,12 @@ mod tests {
     #[test]
     fn missing_links_are_namespace_scoped() {
         let serving = ServiceSnapshot {
-            active: ServingTargetEntry {
-                namespace_id: namespace_id("team-a"),
-                service_id: service_id("web"),
-                namespace_revision_entry_id: namespace_revision_entry_id("entry_a"),
+            active: serving_target_entry_in("team-a", "web", "entry_a"),
+            route_bindings: Vec::new(),
+            testimony: ServiceTestimony {
+                ready_container_count: 0,
+                observed_container_count: 0,
+                machines: Vec::new(),
             },
         };
         let dangling_route = RouteBindingState {
@@ -734,10 +954,12 @@ mod tests {
     #[test]
     fn releases_resolve_entries_per_namespace() {
         let serving = |namespace: &str, entry: &str| ServiceSnapshot {
-            active: ServingTargetEntry {
-                namespace_id: namespace_id(namespace),
-                service_id: service_id("web"),
-                namespace_revision_entry_id: namespace_revision_entry_id(entry),
+            active: serving_target_entry_in(namespace, "web", entry),
+            route_bindings: Vec::new(),
+            testimony: ServiceTestimony {
+                ready_container_count: 0,
+                observed_container_count: 0,
+                machines: Vec::new(),
             },
         };
         let route = RouteBindingState {

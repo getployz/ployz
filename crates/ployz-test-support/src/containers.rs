@@ -8,8 +8,8 @@
 use std::net::IpAddr;
 
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerIdentity,
-    ManagedContainerKind, ManagedContainerObservation,
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerHealthStatus,
+    ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
 };
 
 use crate::ids::{
@@ -89,6 +89,9 @@ pub fn observation(machine: &str, container: &str) -> ManagedContainerObservatio
         container_id: container.to_owned(),
         identity: identity("svc_api"),
         state: ContainerRuntimeState::Exited,
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
     }
 }
 
@@ -98,6 +101,9 @@ pub struct ManagedContainerObservationBuilder {
     container_id: String,
     identity: ManagedContainerIdentityBuilder,
     state: ContainerRuntimeState,
+    health_status: Option<ManagedContainerHealthStatus>,
+    resolved_image_identity: Option<String>,
+    created_at_unix_seconds: Option<i64>,
 }
 
 impl ManagedContainerObservationBuilder {
@@ -135,12 +141,33 @@ impl ManagedContainerObservationBuilder {
     }
 
     #[must_use]
+    pub fn health_status(mut self, health_status: ManagedContainerHealthStatus) -> Self {
+        self.health_status = Some(health_status);
+        self
+    }
+
+    #[must_use]
+    pub fn resolved_image_identity(mut self, resolved_image_identity: &str) -> Self {
+        self.resolved_image_identity = Some(resolved_image_identity.to_owned());
+        self
+    }
+
+    #[must_use]
+    pub const fn created_at_unix_seconds(mut self, created_at_unix_seconds: i64) -> Self {
+        self.created_at_unix_seconds = Some(created_at_unix_seconds);
+        self
+    }
+
+    #[must_use]
     pub fn build(self) -> ManagedContainerObservation {
         ManagedContainerObservation {
             machine_id: machine_id(&self.machine_id),
             container_id: container_id(&self.container_id),
             identity: self.identity.build(),
             state: self.state,
+            health_status: self.health_status,
+            resolved_image_identity: self.resolved_image_identity,
+            created_at_unix_seconds: self.created_at_unix_seconds,
         }
     }
 }

@@ -3,13 +3,12 @@ use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
     ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-    PendingMachineJoinRecoverySnapshot, RouteBindingState, ServingTargetEntry,
+    PendingMachineJoinRecoverySnapshot, RouteBindingState,
 };
 use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
-use ployz_test_support::fixtures::machine_join_bundle;
+use ployz_test_support::fixtures::{machine_join_bundle, serving_target_entry};
 use ployz_test_support::ids::{
-    idempotency_key, machine_id, machine_name, namespace_revision_entry_id, operation_id,
-    service_id,
+    idempotency_key, machine_id, machine_name, operation_id, service_id,
 };
 use ployzd::core_store::CoreStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
@@ -215,11 +214,7 @@ async fn intent_reader_gets_namespace_intent_from_file() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let namespace_intent = temp_namespace_intent().await;
     namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: ployz_test_support::ids::namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_api"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_api"))
         .await
         .expect("serving target stores");
     namespace_intent

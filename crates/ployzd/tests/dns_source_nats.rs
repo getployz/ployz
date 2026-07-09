@@ -215,9 +215,14 @@ fn machine_facts(machine_id_value: &str, public_ip: Option<[u8; 4]>) -> MachineF
         MachineContainerObservationSnapshot::try_new(machine_id, Vec::new())
             .expect("empty container facts are valid"),
         public_ip.map(|address| machine_public_ip(machine_id_value, address)),
+        test_disk_space(),
         1,
     )
     .expect("machine facts are valid")
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 fn dns_record<const N: usize>(hostname: &str, answers: [DnsAnswer; N]) -> DnsRecordSet {

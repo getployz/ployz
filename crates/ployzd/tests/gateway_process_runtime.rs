@@ -3,12 +3,12 @@ use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{GatewayServingStatus, RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{GatewayServingStatus, RouteBindingState};
 use ployz_core::subjects::{gateway_status, machine_facts};
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
-    route_port, service_id,
+    container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
@@ -66,11 +66,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     .expect("gateway runtime starts");
 
     nats.namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_1"))
         .await
         .expect("serving target entry stores");
     nats.namespace_intent
@@ -137,11 +133,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
         .expect("subscribe gateway status");
 
     nats.namespace_intent
-        .replace_serving_target_entry(ServingTargetEntry {
-            namespace_id: namespace_id("default"),
-            service_id: service_id("svc_api"),
-            namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
-        })
+        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_1"))
         .await
         .expect("serving target entry stores");
     nats.namespace_intent
@@ -305,8 +297,14 @@ impl TestNats {
     }
 
     async fn publish_machine_facts(&self, snapshot: MachineContainerObservationSnapshot) {
-        let facts = MachineFactsSnapshot::try_new(snapshot.machine_id().clone(), snapshot, None, 1)
-            .expect("machine facts are valid");
+        let facts = MachineFactsSnapshot::try_new(
+            snapshot.machine_id().clone(),
+            snapshot,
+            None,
+            test_disk_space(),
+            1,
+        )
+        .expect("machine facts are valid");
         let payload = serde_json::to_vec(&facts).expect("machine facts encode");
         self.machine_client
             .publish(machine_facts(facts.machine_id()), payload.into())
@@ -317,6 +315,10 @@ impl TestNats {
             .await
             .expect("flush machine facts");
     }
+}
+
+fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+    ployz_test_support::fixtures::test_disk_space()
 }
 
 async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
