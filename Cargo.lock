@@ -2816,6 +2816,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-lease-worker"
+version = "0.1.0"
+dependencies = [
+ "nuid",
+ "ployz-core",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-nats"
 version = "0.1.0"
 dependencies = [

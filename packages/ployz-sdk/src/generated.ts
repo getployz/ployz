@@ -10,6 +10,8 @@ export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
 export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = 1 as const;
 
+export const DEFAULT_MANAGED_LEASE_TTL_SECONDS = 604800 as const;
+
 export type OperationId = Brand<string, "OperationId">;
 
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
@@ -259,6 +261,24 @@ export type CertValidAt = Brand<string, "CertValidAt">;
 export type CertValidityWindow = { not_before: CertValidAt, not_after: CertValidAt, };
 
 export type CertBundleRef = Brand<string, "CertBundleRef">;
+
+export type ManagedLeaseName = Brand<string, "ManagedLeaseName">;
+
+export type LeaseBearerToken = Brand<string, "LeaseBearerToken">;
+
+export type LeaseIssuedAt = Brand<string, "LeaseIssuedAt">;
+
+export type LeaseExpiresAt = Brand<string, "LeaseExpiresAt">;
+
+export type ManagedLeaseRecord = { name: ManagedLeaseName, token: LeaseBearerToken, issued_at: LeaseIssuedAt, expires_at: LeaseExpiresAt, };
+
+export type ManagedCertBundle = { lease: ManagedLeaseName, dns_names: [string, string], certificate_chain_pem: string, private_key_pem: string, issued_at: LeaseIssuedAt, expires_at: LeaseExpiresAt, digest: InstallSha256Digest, };
+
+export type ManagedLeaseAcquireRequest = { cluster_id: string, };
+
+export type ManagedLeaseAcquired = { lease: ManagedLeaseRecord, bundle: ManagedCertBundle, };
+
+export type ManagedLeaseRenewed = { lease: ManagedLeaseRecord, bundle: ManagedCertBundle, };
 
 export type AcmeChallengeToken = Brand<string, "AcmeChallengeToken">;
 
