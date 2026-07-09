@@ -11,6 +11,7 @@ use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
 use crate::client_ids::generate_client_deploy_id;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
+use crate::compose::{ComposeInput, UnsupportedFieldMode};
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
 /// shorthand is plain HTTP (KTD8).
@@ -23,6 +24,7 @@ pub struct DeployCommand {
     pub idempotency_key: OperationIdempotencyKey,
     pub namespace_id: NamespaceId,
     pub services: Vec<DeployServiceSpec>,
+    pub warnings: Vec<String>,
     pub detach: bool,
 }
 
@@ -80,6 +82,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         route_hostname,
         route_port,
         endpoint_port,
+        allow_unsupported,
         detach,
     } = parsed;
 
@@ -98,11 +101,22 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         }
         let source = fs::read_to_string(&file)
             .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
+        let base_dir = file.parent().unwrap_or_else(|| std::path::Path::new("."));
         let namespace_override = namespace
             .map(NamespaceId::try_new)
             .transpose()
             .map_err(|error| invalid_value("--namespace", error))?;
-        let parsed = crate::compose::parse_deploy_file(&source, namespace_override)?;
+        let (parsed, warnings) = crate::compose::parse_deploy_file(ComposeInput {
+            source: &source,
+            base_dir,
+            interpolation_env: crate::compose::interpolation_env(base_dir)?,
+            namespace_override,
+            mode: if allow_unsupported {
+                UnsupportedFieldMode::AllowUnsupported
+            } else {
+                UnsupportedFieldMode::Strict
+            },
+        })?;
         let service_id = parsed
             .services
             .first()
@@ -115,8 +129,12 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             idempotency_key: generated_ids.idempotency_key,
             namespace_id: parsed.namespace_id,
             services: parsed.services,
+            warnings: warnings.into_iter().map(|warning| warning.0).collect(),
             detach,
         });
+    }
+    if allow_unsupported {
+        return Err(cli_error("--allow-unsupported requires -f"));
     }
 
     let image = image.ok_or_else(|| cli_error("--image is required unless -f is used"))?;
@@ -171,6 +189,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes,
         }],
+        warnings: Vec::new(),
         detach,
     })
 }
@@ -201,6 +220,8 @@ pub(crate) struct DeployCli {
     route_port: Option<String>,
     #[arg(long, requires_all = ["route_hostname", "route_port"])]
     endpoint_port: Option<String>,
+    #[arg(long)]
+    allow_unsupported: bool,
     #[arg(long)]
     detach: bool,
 }

@@ -168,6 +168,64 @@ fn cli_deploy_shorthand_route_conflicts_with_explicit_route_flags() {
 }
 
 #[test]
+fn cli_rejects_allow_unsupported_without_compose_file() {
+    let error = parse_command(
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/acme/web:latest",
+            "--allow-unsupported",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("allow unsupported requires compose file");
+
+    assert!(
+        error
+            .to_string()
+            .contains("--allow-unsupported requires -f")
+    );
+}
+
+#[test]
+fn cli_allows_unsupported_compose_when_flag_is_set() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let compose_path = dir.path().join("compose.yaml");
+    std::fs::write(
+        &compose_path,
+        r#"
+        name: default
+        services:
+          web:
+            image: nginx
+            ports: ["8080:80"]
+        "#,
+    )
+    .expect("write compose");
+
+    let command = parse_command([
+        "deploy".to_owned(),
+        "-f".to_owned(),
+        compose_path.display().to_string(),
+        "--allow-unsupported".to_owned(),
+        "--detach".to_owned(),
+    ])
+    .expect("allow unsupported compose parses");
+
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    assert_eq!(command.services.len(), 1);
+    assert!(
+        command
+            .warnings
+            .first()
+            .expect("one compose warning")
+            .contains("services.web.ports")
+    );
+}
+
+#[test]
 fn cli_deploy_route_without_port_fails_clearly() {
     let error = parse_command(
         [
@@ -399,6 +457,7 @@ fn assert_deploy_fixture(command: &DeployCommand) {
             routes: Vec::new(),
         }]
     );
+    assert!(command.warnings.is_empty());
     assert!(!command.detach);
 }
 

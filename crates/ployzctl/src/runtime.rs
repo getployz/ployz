@@ -210,15 +210,20 @@ pub async fn execute_command(
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::Deploy(command) => {
             let detach = command.detach;
+            let warnings = command.warnings.join("\n");
+            if !warnings.is_empty() {
+                eprintln!("{warnings}");
+            }
             let api = operation_api_client(config).await?;
             let accepted = api
                 .deploy_submit(&command.into_request())
                 .await
                 .map_err(api_error)?;
             if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::deploy::DeployOutput::from_accepted(accepted).render(),
-                ));
+                return Ok(PloyzctlExecutionOutput {
+                    stdout: crate::commands::deploy::DeployOutput::from_accepted(accepted).render(),
+                    stderr: String::new(),
+                });
             }
             watch_accepted_operation(&api, accepted.operation_id, config).await
         }

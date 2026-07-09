@@ -279,6 +279,8 @@ pub(crate) fn cli_error(message: impl Into<String>) -> PloyzctlCliError {
 pub enum PloyzctlCliError {
     #[error("{flag} has an invalid value: {message}")]
     InvalidValue { flag: &'static str, message: String },
+    #[error("{rendered}")]
+    ComposeRejected { rendered: String },
     #[error("{message}")]
     Usage { message: String },
     #[error("{0}")]
@@ -292,7 +294,7 @@ impl PloyzctlCliError {
     pub fn is_help_requested(&self) -> bool {
         match self {
             Self::Clap(error) => error.kind() == clap::error::ErrorKind::DisplayHelp,
-            Self::InvalidValue { .. } | Self::Usage { .. } => false,
+            Self::InvalidValue { .. } | Self::ComposeRejected { .. } | Self::Usage { .. } => false,
         }
     }
 }

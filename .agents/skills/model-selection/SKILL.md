@@ -5,9 +5,9 @@ description: Mandatory model routing policy only inside Claude Code when choosin
 
 # Picking Models
 
-Rankings are higher-is-better. Cost reflects what the user actually pays, not list price. Intelligence means how hard a problem can be handed to the model unsupervised. Taste covers UI/UX, code quality, API design, and copy.
+Rankings are higher-is-better, including cost: a HIGH cost score means CHEAP, a LOW cost score means EXPENSIVE. `gpt-5.5` (cost 9) is by far the cheapest; `fable-5` (cost 2) is super expensive — never describe it as cheap, and never spend it where `gpt-5.5` suffices. Cost reflects what the user actually pays, not list price. Intelligence means how hard a problem can be handed to the model unsupervised. Taste covers UI/UX, code quality, API design, and copy.
 
-| model | cost | intelligence | taste |
+| model | cost (9 = cheapest) | intelligence | taste |
 | --- | ---: | ---: | ---: |
 | gpt-5.5 | 9 | 8 | 5 |
 | sonnet-5 | 5 | 5 | 7 |
@@ -19,8 +19,10 @@ Rankings are higher-is-better. Cost reflects what the user actually pays, not li
 - Treat these as defaults, not limits. Override them when output quality demands it. If a cheaper model's output does not meet the bar, rerun or redo the work with a smarter model without asking.
 - Use cost as a tie-breaker only. For anything that ships, resolve conflicts as intelligence > taste > cost.
 - Default ALL implementation to `gpt-5.5` — including bug fixes, correctness fixes, and refactors — whenever the task has a written spec: a plan doc, an issue, or a review finding with file:line references. A reviewed finding IS a clear spec. Do not route implementation to Claude models because the bug is "subtle"; subtlety was the reviewer's job, the fix is execution.
+- Default investigation and research (crate/library evaluation, codebase scouting, docs legwork) to `gpt-5.5` as well. Escalate to a Claude model only when the deliverable is a judgment that ships (an architecture decision, a review verdict) — not for gathering.
 - Require taste >= 7 for user-facing work: UI, copy, and API design.
 - Claude models (`fable-5`, `opus-4.8`) implement only when: (a) `gpt-5.5`'s output failed a correctness review, or (b) the task has no written spec and requires taste >= 7 (UI, copy, API design).
+- When (a) fires, the corrector is `opus-4.8`, not `fable-5`: an opus fix followed by a review pass is as reliable as a fable fix, and fable-5 has its own separate usage limit that draws down much faster than opus. Escalate the corrector to `fable-5` only after an opus fix itself fails review.
 - After any `gpt-5.5` implementation batch, run a Claude review pass (`fable-5` or `opus-4.8`) for correctness before reporting done. Codex writes, Claude verifies.
 - Use `fable-5` or `opus-4.8` for reviews of plans and implementations. Add `gpt-5.5` only as an extra independent perspective.
 - Never use Haiku.
