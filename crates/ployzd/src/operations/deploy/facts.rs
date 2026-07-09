@@ -2,12 +2,14 @@
 
 use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
+use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::UnusableMachine;
 use ployz_core::state::{
-    IntentSnapshot, MachineLifecycle, MachineUsabilityReason, placement_rejection,
+    ActiveMachineState, IntentSnapshot, MachineLifecycle, MachineUsabilityReason,
+    placement_rejection,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -43,7 +45,8 @@ pub async fn load_deploy_execution_facts_from_nats(
             .map_err(|source| DeployFactLoadError::IntentRead {
                 message: source.to_string(),
             })?;
-    let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates);
+    let active_machines = intent.active_machines.clone();
+    let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates.clone());
     let namespace_route_bindings = intent
         .route_bindings
         .into_iter()
@@ -70,7 +73,7 @@ pub async fn load_deploy_execution_facts_from_nats(
             .map(MachineContainerObservationSnapshot::machine_id),
     );
     let (eligible_machines, unusable_machines) = classify_machine_usability(&placement_facts);
-    let dataplane_machines = routed_dataplane_machines(request, answering_machines);
+    let dataplane_members = routed_dataplane_members(request, &active_machines, answering_machines);
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
@@ -79,17 +82,18 @@ pub async fn load_deploy_execution_facts_from_nats(
         namespace_volume_pins,
         eligible_machines,
         unusable_machines,
-        dataplane_machines,
+        dataplane_members,
         observed_machines,
         namespace_cleanup_candidates,
         step_timeout,
     })
 }
 
-fn routed_dataplane_machines(
+fn routed_dataplane_members(
     request: &DeployRequest,
+    active_machines: &[ActiveMachineState],
     fallback_machines: Vec<MachineId>,
-) -> Vec<MachineId> {
+) -> Vec<DataplaneMember> {
     if request
         .services
         .iter()
@@ -98,7 +102,20 @@ fn routed_dataplane_machines(
         return Vec::new();
     }
 
+    if !active_machines.is_empty() {
+        return active_machines
+            .iter()
+            .map(|machine| DataplaneMember {
+                machine_id: machine.machine_id.clone(),
+                endpoint_subnet: machine.endpoint_subnet.clone(),
+            })
+            .collect();
+    }
+
     sorted_unique_machines(fallback_machines.iter())
+        .into_iter()
+        .map(DataplaneMember::default_for_machine)
+        .collect()
 }
 
 fn load_machine_lifecycles(

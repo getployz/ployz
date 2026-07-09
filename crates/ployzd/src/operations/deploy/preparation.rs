@@ -1,5 +1,6 @@
 //! Convert current cluster facts into a deploy execution command.
 
+use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPreparationInput, DeployRequest,
     namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
@@ -19,7 +20,7 @@ pub struct DeployExecutionFacts {
     pub namespace_volume_pins: Vec<VolumePinState>,
     pub eligible_machines: Vec<MachineId>,
     pub unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
-    pub dataplane_machines: Vec<MachineId>,
+    pub dataplane_members: Vec<DataplaneMember>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub step_timeout: Duration,
@@ -96,7 +97,7 @@ pub fn prepare_deploy_execution_command(
         route_binding_removals,
         serving_target_removals,
         namespace_cleanup_candidates,
-        dataplane_machines: facts.dataplane_machines,
+        dataplane_members: facts.dataplane_members,
         unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,
     }

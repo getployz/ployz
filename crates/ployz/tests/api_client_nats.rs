@@ -652,6 +652,8 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             activated_by: operation_id("op_machine"),
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+                .expect("valid endpoint subnet"),
         },
         testimony: ployz_sdk_types::MachineTestimony::Answered {
             endpoints: Some(MachineEndpointObservation {

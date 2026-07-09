@@ -220,16 +220,22 @@ Live` section above. These rules are about truth semantics, not storage:
 
 ## Verification Gates
 
-A change is green when all of these pass on the branch as it will merge:
+A change is green when all of these pass locally on the branch as it will
+merge. These mirror `.github/workflows/pr.yml` — the merge decision is made
+on the local run, never by waiting for GitHub checks, so a gate added to the
+workflow is added here in the same change:
 
 - `cargo fmt --all` leaves no diff.
 - `cargo clippy --workspace --all-targets` reports zero warnings.
 - `cargo test --workspace` passes. Grep the output for `test result: FAILED`
   and `error[`; an exit code that passed through a pipe lies (zsh:
   `${pipestatus[1]}`).
-- When `ployz-sdk-types` or the TS surface changes: regenerate from
-  `packages/ployz-sdk` (`pnpm generate:types && pnpm generate:fixture`) and
-  commit the drift.
+- From `packages/ployz-sdk`: `pnpm check:generated` (regenerates and diffs
+  `generated.ts` + the operation-contract fixture — commit real drift),
+  `pnpm typecheck`, and `pnpm test`. Always — the generated surface moves
+  whenever exported Rust types move, not only when `ployz-sdk-types` is the
+  crate being edited.
+- When `.github/workflows/` changes: `actionlint`.
 - When product behavior changes: the full gated DinD suite
   (`scripts/dind-e2e.sh`), every scenario. One cluster fits the host —
   serialize runs with `until mkdir /tmp/ployz-dind-e2e.lock 2>/dev/null; do

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
+use crate::dataplane::MachineEndpointSubnet;
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{
     FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
@@ -221,6 +222,7 @@ pub fn active_machine_from_completed_add(
     operation_id: OperationId,
     machine_id: MachineId,
     name: MachineName,
+    endpoint_subnet: MachineEndpointSubnet,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
     let MachineAddOperationState::Completed = operation else {
@@ -236,6 +238,7 @@ pub fn active_machine_from_completed_add(
         activated_by: operation_id,
         control_endpoints: Vec::new(),
         mesh_endpoints: Vec::new(),
+        endpoint_subnet,
     })
 }
 

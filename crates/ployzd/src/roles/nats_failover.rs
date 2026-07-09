@@ -288,6 +288,8 @@ mod tests {
             lifecycle: MachineLifecycle::Active,
             control_endpoints: endpoints.iter().map(|ip| ip.parse().expect("ip")).collect(),
             mesh_endpoints: Vec::new(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+                .expect("valid endpoint subnet"),
         }
     }
 

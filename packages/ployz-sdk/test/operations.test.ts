@@ -9,6 +9,7 @@ import {
   containerId,
   deploySubmitRequest,
   eventSequence,
+  imageReference,
   initFirstMachineActivateRequest,
   logsTailRequest,
   logsTailLines,
@@ -30,6 +31,7 @@ import {
   PloyzApiError,
   PloyzClient,
   namespaceRevisionEntryId,
+  replicaCount,
   runtimeSnapshotRequest,
   serviceInspectRequest,
   serviceId,
@@ -207,8 +209,11 @@ test("logs tail returns recent container evidence", async () => {
 
   assert.deepEqual(transport.logsTailRequests, [logsTailRequest(input)]);
   assert.deepEqual(result, {
-    machine_id: machineId("machine_a"),
-    container_id: containerId("ctr_failed"),
+    target: {
+      target: "container",
+      machine_id: machineId("machine_a"),
+      container_id: containerId("ctr_failed"),
+    },
     text: "hello\n",
     truncated: false,
   });
@@ -343,7 +348,13 @@ test("sdk maps raw deploy input to the wire request", () => {
           service_id: "svc_api",
           image: "ghcr.io/acme/api:rev-2",
           replicas: 1,
-          runtime: { command: null, entrypoint: null, environment: {}, stop_grace_period: 10 },
+          runtime: {
+            command: null,
+            entrypoint: null,
+            environment: {},
+            stop_grace_period: 10,
+            volume_mounts: [],
+          },
           routes: [],
         },
       ],
@@ -363,10 +374,17 @@ test("sdk maps raw deploy input to the wire request", () => {
             service_id: "svc_api",
             image: "ghcr.io/acme/api:rev-2",
             replicas: 1,
-            runtime: { command: null, entrypoint: null, environment: {}, stop_grace_period: 10 },
+            runtime: {
+            command: null,
+            entrypoint: null,
+            environment: {},
+            stop_grace_period: 10,
+            volume_mounts: [],
+          },
             routes: [
               {
                 target: {
+                  kind: "hostname",
                   hostname: "api.example.com",
                   port: 443,
                 },
@@ -439,16 +457,21 @@ test("sdk maps current-state query inputs to wire requests", () => {
   assert.deepEqual(opsListRequest(), { active_only: false });
   assert.deepEqual(opsListRequest({ activeOnly: true }), { active_only: true });
   assert.deepEqual(opsListRequest({ activeOnly: false }), { active_only: false });
-  assert.deepEqual(logsTailRequest("ctr_failed"), { container_id: "ctr_failed" });
+  assert.deepEqual(logsTailRequest("ctr_failed"), {
+    target: { target: "container", container_id: "ctr_failed" },
+  });
   assert.deepEqual(logsTailRequest({ containerId: "ctr_failed", tailLines: 25 }), {
-    container_id: "ctr_failed",
+    target: { target: "container", container_id: "ctr_failed" },
     tail_lines: logsTailLines(25),
   });
   assert.deepEqual(
     logsTailRequest({ containerId: "ctr_failed", machineId: "machine_a", tailLines: 25 }),
     {
-      container_id: "ctr_failed",
-      machine_id: "machine_a",
+      target: {
+        target: "container",
+        container_id: "ctr_failed",
+        machine_id: "machine_a",
+      },
       tail_lines: logsTailLines(25),
     },
   );
@@ -543,6 +566,24 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "AcceptedOperation",
       error: "MachineLifecycleError",
       response: "MachineResumeResponse",
+    },
+    {
+      name: "service.restart",
+      subject: "plz.v1.rpc.operator.command.service.restart",
+      execution: "accepts_operation",
+      request: "ServiceRestartRequest",
+      success: "AcceptedOperation",
+      error: "ServiceRestartError",
+      response: "ServiceRestartResponse",
+    },
+    {
+      name: "namespace.remove",
+      subject: "plz.v1.rpc.operator.command.namespace.remove",
+      execution: "accepts_operation",
+      request: "NamespaceRemoveRequest",
+      success: "AcceptedOperation",
+      error: "NamespaceRemoveError",
+      response: "NamespaceRemoveResponse",
     },
     {
       name: "core.replace",
@@ -802,8 +843,14 @@ class RecordingTransport implements PloyzOperationTransport {
         return (this.logsTailResponse ?? {
           status: "ok",
           value: {
-            machine_id: machineId("machine_a"),
-            container_id: logsRequest.container_id,
+            target:
+              logsRequest.target.target === "container"
+                ? {
+                    target: "container" as const,
+                    machine_id: machineId("machine_a"),
+                    container_id: logsRequest.target.container_id,
+                  }
+                : logsRequest.target,
             text: "hello\n",
             truncated: false,
           },
@@ -873,10 +920,9 @@ function defaultFixture(): OperationFixture {
           activated_by: operationId("op_machine"),
           control_endpoints: [],
           mesh_endpoints: [],
+          endpoint_subnet: "10.42.2.0/24",
         },
-        endpoints: null,
-        gateway: null,
-        observed_container_count: 0,
+        testimony: { status: "no_answer" as const },
       },
     ],
     machine_join_redeem_response: {
@@ -899,6 +945,14 @@ function defaultFixture(): OperationFixture {
           namespace_id: namespaceId("default"),
           service_id: serviceId("svc_api"),
           namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
+          image: imageReference("nginx:1.27-alpine"),
+          desired_replicas: replicaCount(1),
+        },
+        route_bindings: [],
+        testimony: {
+          ready_container_count: 0,
+          observed_container_count: 0,
+          machines: [],
         },
       },
     ],
@@ -912,10 +966,9 @@ function defaultFixture(): OperationFixture {
             activated_by: operationId("op_machine"),
             control_endpoints: [],
             mesh_endpoints: [],
+            endpoint_subnet: "10.42.2.0/24",
           },
-          endpoints: null,
-          gateway: null,
-          observed_container_count: 0,
+          testimony: { status: "no_answer" as const },
         },
       ],
       services: [
@@ -924,6 +977,14 @@ function defaultFixture(): OperationFixture {
             namespace_id: namespaceId("default"),
             service_id: serviceId("svc_api"),
             namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
+            image: imageReference("nginx:1.27-alpine"),
+            desired_replicas: replicaCount(1),
+          },
+          route_bindings: [],
+          testimony: {
+            ready_container_count: 0,
+            observed_container_count: 0,
+            machines: [],
           },
         },
       ],

@@ -138,6 +138,8 @@ async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str)
         operation_id("op_add"),
         machine_id(machine),
         ployz_core::machine::MachineName::try_new(machine).expect("valid machine name"),
+        ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            .expect("valid endpoint subnet"),
         ployz_core::ops::MachineAddOperationState::Completed,
     )
     .expect("completed add activates");

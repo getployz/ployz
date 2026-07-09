@@ -159,6 +159,42 @@ async fn machine_add_mints_unique_credentials_per_machine() {
         .expect("control runtime shuts down");
 }
 
+#[tokio::test]
+async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config().with_dataplane_endpoint_supernet(
+        ployz_core::dataplane::MachineEndpointSupernet::try_new("10.199.0.0/16")
+            .expect("valid endpoint supernet"),
+    );
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let join_api = nats.join_api();
+
+    let accepted = machine_add(&api, "op_endpoint", "idem_endpoint", "machine_endpoint").await;
+    redeem_when_ready(&join_api, &accepted.join_token).await;
+    report_join_completed_with_retry(&nats, accepted.join_token).await;
+
+    let listed = api
+        .machine_list(&MachineListRequest {})
+        .await
+        .expect("machine list succeeds");
+    let [machine] = listed.machines.as_slice() else {
+        panic!("expected one active machine");
+    };
+    // The roster records the subnet the machine daemon derives for itself,
+    // so intent matches the machine's dataplane without a delivery channel.
+    assert_eq!(
+        machine.active.endpoint_subnet.as_string(),
+        ployz_core::dataplane::default_endpoint_subnet(&machine.active.machine_id)
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
 /// ADR-0015 fence: two concurrent machine-adds queue their renders through
 /// the single writer; both complete and both public keys are present in
 /// the rendered `authorized-users.conf`.
