@@ -2,9 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
 use tokio::net::UdpSocket;
@@ -24,44 +25,43 @@ const BIND_RETRY_CAP: Duration = Duration::from_secs(30);
 
 /// A validated, lower-case `<service>.<namespace>.internal` wire name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct InternalServiceName(String);
+struct InternalServiceName(String);
 
 impl InternalServiceName {
     /// Builds an internal name from its typed service and namespace ids.
     #[must_use]
-    pub fn new(service_id: &ServiceId, namespace_id: &NamespaceId) -> Self {
+    fn new(service_id: &ServiceId, namespace_id: &NamespaceId) -> Self {
         Self(
-            format!("{}.{}.internal", service_id.as_str(), namespace_id.as_str())
-                .to_ascii_lowercase(),
+            format!(
+                "{}.{}.{}",
+                service_id.as_str(),
+                namespace_id.as_str(),
+                INTERNAL_DNS_SUFFIX
+            )
+            .to_ascii_lowercase(),
         )
     }
 
     /// Parses an exact three-label internal service name.
     #[must_use]
-    pub fn parse(name: &str) -> Option<Self> {
+    fn parse(name: &str) -> Option<Self> {
         let mut labels = name.split('.');
         let service = labels.next()?;
         let namespace = labels.next()?;
         let suffix = labels.next()?;
-        if labels.next().is_some() || !suffix.eq_ignore_ascii_case("internal") {
+        if labels.next().is_some() || !suffix.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) {
             return None;
         }
         let service_id = ServiceId::try_new(service.to_ascii_lowercase()).ok()?;
         let namespace_id = NamespaceId::try_new(namespace.to_ascii_lowercase()).ok()?;
         Some(Self::new(&service_id, &namespace_id))
     }
-
-    /// Returns the lower-case DNS wire name without a trailing dot.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 /// Fully-qualified internal service names mapped to their running service
 /// containers' endpoint IPv4 addresses.
 #[must_use]
-pub fn internal_dns_records(
+fn internal_dns_records(
     snapshots: &[MachineFactsSnapshot],
 ) -> BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
     let mut records = BTreeMap::<InternalServiceName, Vec<Ipv4Addr>>::new();
@@ -95,29 +95,19 @@ pub fn internal_dns_records(
 }
 
 /// A bounds-checked first DNS question parsed from a UDP datagram.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DnsQuery {
-    pub id: u16,
-    pub name: String,
-    pub qtype: u16,
-    pub qclass: u16,
+#[derive(Debug)]
+struct DnsQuery {
+    id: u16,
+    name: String,
+    qtype: u16,
+    qclass: u16,
     recursion_desired: bool,
-    original_packet: Vec<u8>,
-    question_end: usize,
-}
-
-impl DnsQuery {
-    fn original_question(&self) -> &[u8] {
-        let Some(question) = self.original_packet.get(DNS_HEADER_LEN..self.question_end) else {
-            return &[];
-        };
-        question
-    }
+    question: Vec<u8>,
 }
 
 /// Parses the first uncompressed DNS question from a packet.
 #[must_use]
-pub fn parse_query(packet: &[u8]) -> Option<DnsQuery> {
+fn parse_query(packet: &[u8]) -> Option<DnsQuery> {
     if packet.len() < DNS_HEADER_LEN {
         return None;
     }
@@ -147,10 +137,7 @@ pub fn parse_query(packet: &[u8]) -> Option<DnsQuery> {
     let qtype = read_u16(packet, offset)?;
     offset = offset.checked_add(2)?;
     let qclass = read_u16(packet, offset)?;
-    let question_end = offset.checked_add(2)?;
-    if question_end > packet.len() {
-        return None;
-    }
+    offset = offset.checked_add(2)?;
 
     Some(DnsQuery {
         id,
@@ -158,8 +145,7 @@ pub fn parse_query(packet: &[u8]) -> Option<DnsQuery> {
         qtype,
         qclass,
         recursion_desired: flags & 0x0100 != 0,
-        original_packet: packet.to_vec(),
-        question_end,
+        question: packet.get(DNS_HEADER_LEN..offset)?.to_vec(),
     })
 }
 
@@ -173,11 +159,9 @@ fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
 
 /// DNS response codes emitted by the internal resolver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DnsRcode {
+enum DnsRcode {
     NoError,
-    NxDomain,
     ServFail,
-    NotImplemented,
 }
 
 impl DnsRcode {
@@ -185,20 +169,13 @@ impl DnsRcode {
         match self {
             Self::NoError => 0,
             Self::ServFail => 2,
-            Self::NxDomain => 3,
-            Self::NotImplemented => 4,
         }
     }
 }
 
 /// Builds an authoritative A-only DNS response that echoes the first question.
 #[must_use]
-pub fn build_response(
-    query: &DnsQuery,
-    rcode: DnsRcode,
-    answers: &[Ipv4Addr],
-    original_question: &[u8],
-) -> Vec<u8> {
+fn build_response(query: &DnsQuery, rcode: DnsRcode, answers: &[Ipv4Addr]) -> Vec<u8> {
     let answer_count = u16::try_from(answers.len()).unwrap_or(u16::MAX);
     let flags = 0x8000 | 0x0400 | if query.recursion_desired { 0x0100 } else { 0 } | rcode.code();
     let mut response = Vec::new();
@@ -208,7 +185,7 @@ pub fn build_response(
     response.extend_from_slice(&answer_count.to_be_bytes());
     response.extend_from_slice(&0_u16.to_be_bytes());
     response.extend_from_slice(&0_u16.to_be_bytes());
-    response.extend_from_slice(original_question);
+    response.extend_from_slice(&query.question);
     for address in answers.iter().take(usize::from(answer_count)) {
         response.extend_from_slice(&[0xc0, 0x0c]);
         response.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
@@ -220,13 +197,21 @@ pub fn build_response(
     response
 }
 
+/// Bind and serving state for the machine-local internal resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InternalResolverHealth {
+    AwaitingBind { attempts: u64 },
+    Serving { bound: SocketAddr },
+}
+
 /// Spawns the machine-local resolver. It reads only [`FactCache`], which is
 /// fed by machine fact broadcasts and retains each machine's last snapshot;
 /// it never reads core intent or gates records on health or gateway status.
-pub async fn spawn_internal_resolver(
+pub(super) fn spawn_internal_resolver(
     facts: FactCache,
     bind: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
+    health: Arc<Mutex<InternalResolverHealth>>,
 ) -> JoinHandle<()> {
     let upstream = load_upstream_nameserver();
     tokio::spawn(async move {
@@ -235,6 +220,15 @@ pub async fn spawn_internal_resolver(
             match UdpSocket::bind(bind).await {
                 Ok(socket) => break socket,
                 Err(error) => {
+                    {
+                        let mut health = health
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let InternalResolverHealth::AwaitingBind { attempts } = &mut *health else {
+                            unreachable!("resolver can only serve after a successful bind");
+                        };
+                        *attempts = attempts.saturating_add(1);
+                    }
                     eprintln!(
                         "ployzd internal DNS warning: phase=bind address={bind} error={error}"
                     );
@@ -247,6 +241,10 @@ pub async fn spawn_internal_resolver(
                 }
             }
         };
+        *health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            InternalResolverHealth::Serving { bound: bind };
         let socket = Arc::new(socket);
         let mut packet = [0_u8; 4096];
         loop {
@@ -268,6 +266,7 @@ pub async fn spawn_internal_resolver(
                     let request = request.to_vec();
                     let request_facts = facts.clone();
                     let response_socket = Arc::clone(&socket);
+                    // ponytail: unbounded task per datagram; add a semaphore if a container ever floods the resolver.
                     tokio::spawn(async move {
                         let Some(response) = response_for_request(&request_facts, upstream, request).await else {
                             return;
@@ -291,7 +290,12 @@ async fn response_for_request(
     packet: Vec<u8>,
 ) -> Option<Vec<u8>> {
     let query = parse_query(&packet)?;
-    if query.name.ends_with(".internal") {
+    if query
+        .name
+        .strip_suffix(INTERNAL_DNS_SUFFIX)
+        .is_some_and(|prefix| prefix.ends_with('.'))
+    {
+        // ponytail: full projection rebuild per query; cache on fact change if a machine's query rate ever matters.
         let records = internal_dns_records(&facts.machine_facts_all());
         let answers = if query.qtype == DNS_TYPE_A && query.qclass == DNS_CLASS_IN {
             InternalServiceName::parse(&query.name)
@@ -301,12 +305,7 @@ async fn response_for_request(
         } else {
             &[]
         };
-        return Some(build_response(
-            &query,
-            DnsRcode::NoError,
-            answers,
-            query.original_question(),
-        ));
+        return Some(build_response(&query, DnsRcode::NoError, answers));
     }
 
     match forward_to_upstream(upstream, &packet).await {
@@ -315,12 +314,7 @@ async fn response_for_request(
             eprintln!(
                 "ployzd internal DNS warning: phase=forward upstream={upstream} error={error}"
             );
-            Some(build_response(
-                &query,
-                DnsRcode::ServFail,
-                &[],
-                query.original_question(),
-            ))
+            Some(build_response(&query, DnsRcode::ServFail, &[]))
         }
     }
 }
@@ -537,7 +531,10 @@ mod tests {
             )],
         ));
         let (shutdown, receiver) = broadcast::channel(1);
-        let task = spawn_internal_resolver(cache, bind, receiver).await;
+        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
+            attempts: 0,
+        }));
+        let task = spawn_internal_resolver(cache, bind, receiver, Arc::clone(&health));
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("bind test client");
@@ -570,6 +567,10 @@ mod tests {
         assert_eq!(
             response.get(response.len().saturating_sub(4)..),
             Some(expected_address.as_slice())
+        );
+        assert_eq!(
+            *health.lock().expect("resolver health lock is not poisoned"),
+            InternalResolverHealth::Serving { bound: bind }
         );
         let _ = shutdown.send(());
         task.await.expect("resolver task exits");

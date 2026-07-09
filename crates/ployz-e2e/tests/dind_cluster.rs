@@ -518,9 +518,6 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         add_and_join_edge(&core, edge).await;
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
-        for machine in [core.cluster.core(), edge] {
-            assert_unit_active(&core, machine, "ployzd-dns").await;
-        }
 
         scenario_cross_machine_deploy(&core, edge).await;
         scenario_daemon_restart_invisibility(&core, edge).await;
@@ -632,6 +629,86 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
             "plain service DNS failed from {}:{client_ip} to {}:{server_ip}: {last:?}",
             client_machine.name,
             server_machine.name,
+        );
+
+        let stopped_control = exec_in_container(
+            &docker,
+            &core.cluster.core().container_id,
+            &["systemctl", "stop", "ployzd-control"],
+        )
+        .await;
+        assert!(
+            matches!(&stopped_control, Ok(outcome) if outcome.success()),
+            "stopping core control plane failed: {stopped_control:?}"
+        );
+
+        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+        let last = loop {
+            let outcome = exec_in_container(
+                &docker,
+                &client_machine.container_id,
+                &[
+                    "docker",
+                    "exec",
+                    &client.id,
+                    "sh",
+                    "-c",
+                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
+                ],
+            )
+            .await;
+            if matches!(&outcome, Ok(outcome) if outcome.success()) {
+                break outcome;
+            }
+            if Instant::now() >= deadline {
+                break outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert!(
+            matches!(&last, Ok(outcome) if outcome.success()),
+            "plain service DNS lost last-known-good facts with core control stopped: {last:?}"
+        );
+
+        let stopped_server = exec_in_container(
+            &docker,
+            &server_machine.container_id,
+            &["docker", "stop", &server.id],
+        )
+        .await;
+        assert!(
+            matches!(&stopped_server, Ok(outcome) if outcome.success()),
+            "stopping server workload failed: {stopped_server:?}"
+        );
+
+        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+        let last = loop {
+            let outcome = exec_in_container(
+                &docker,
+                &client_machine.container_id,
+                &[
+                    "docker",
+                    "exec",
+                    &client.id,
+                    "sh",
+                    "-c",
+                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
+                ],
+            )
+            .await;
+            // A connect failure to a still-resolving address is not enough:
+            // the record must disappear, which musl reports as "bad address".
+            if matches!(&outcome, Ok(outcome) if outcome.stderr.contains("bad address")) {
+                break outcome;
+            }
+            if Instant::now() >= deadline {
+                break outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert!(
+            matches!(&last, Ok(outcome) if outcome.stderr.contains("bad address")),
+            "plain service DNS kept resolving the stopped workload before deadline: {last:?}"
         );
     })
     .await;

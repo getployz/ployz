@@ -21,7 +21,7 @@ use bollard::query_parameters::{
     RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
-use ployz_core::dataplane::endpoint_bridge_gateway_ipv4;
+use ployz_core::dataplane::{INTERNAL_DNS_SUFFIX, endpoint_bridge_gateway_ipv4};
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
 };
@@ -641,7 +641,12 @@ fn create_body(
     let dns = endpoint_bridge_gateway_ipv4(endpoint_network_subnet)
         .map(|gateway| vec![gateway.to_string()]);
     let dns_search = Some(vec![
-        format!("{}.internal", command.identity.namespace_id.as_str()).to_ascii_lowercase(),
+        format!(
+            "{}.{}",
+            command.identity.namespace_id.as_str(),
+            INTERNAL_DNS_SUFFIX
+        )
+        .to_ascii_lowercase(),
     ]);
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),

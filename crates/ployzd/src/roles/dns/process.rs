@@ -12,6 +12,7 @@ use crate::config::DnsProcessConfig;
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::spawn_internal_resolver;
 use crate::roles::dns::projection::{
     DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
@@ -36,6 +37,7 @@ const DNS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct RunningDnsProcess {
     runtime: Arc<Mutex<DnsProjector>>,
     health: Arc<Mutex<DnsProcessHealth>>,
+    internal_resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
     shutdown: broadcast::Sender<()>,
     facts_cache: RunningFactCache,
     tasks: Vec<JoinHandle<()>>,
@@ -68,6 +70,16 @@ impl RunningDnsProcess {
             .current()
             .cloned()
     }
+
+    #[must_use]
+    pub fn internal_resolver_health(&self) -> Option<InternalResolverHealth> {
+        self.internal_resolver_health.as_ref().map(|health| {
+            health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        })
+    }
 }
 
 pub async fn start_dns_process(
@@ -85,8 +97,7 @@ pub async fn start_dns_process(
         .await
         .map_err(DnsProcessError::ConnectNats)?;
     let internal_resolver_bind =
-        ployz_core::dataplane::endpoint_bridge_gateway_ipv4(&config.endpoint_subnet)
-            .map(|gateway| SocketAddr::new(IpAddr::V4(gateway), 53));
+        SocketAddr::new(IpAddr::V4(config.endpoint_subnet.bridge_gateway_ipv4()), 53);
     start_dns_process_with_client(
         client,
         DNS_REFRESH_INTERVAL,
@@ -94,7 +105,7 @@ pub async fn start_dns_process(
             mirror,
             seed: connect.url,
         }),
-        internal_resolver_bind,
+        Some(internal_resolver_bind),
     )
     .await
 }
@@ -116,9 +127,18 @@ pub async fn start_dns_process_with_client(
     let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
-    if let Some(bind) = internal_resolver_bind {
-        tasks.push(spawn_internal_resolver(facts_cache.cache(), bind, shutdown.subscribe()).await);
-    }
+    let internal_resolver_health = internal_resolver_bind.map(|bind| {
+        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
+            attempts: 0,
+        }));
+        tasks.push(spawn_internal_resolver(
+            facts_cache.cache(),
+            bind,
+            shutdown.subscribe(),
+            Arc::clone(&health),
+        ));
+        health
+    });
     if let Some(failover) = failover {
         tasks.push(spawn_intent_failover_mirror(
             client.clone(),
@@ -149,6 +169,7 @@ pub async fn start_dns_process_with_client(
     Ok(RunningDnsProcess {
         runtime,
         health,
+        internal_resolver_health,
         shutdown,
         facts_cache,
         tasks,

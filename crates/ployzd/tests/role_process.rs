@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_test_support::ids::machine_id;
@@ -194,7 +195,28 @@ fn dns_role_loads_the_machine_endpoint_subnet() {
     let DaemonProcessConfig::Dns(config) = config else {
         panic!("DNS role should produce DNS config");
     };
-    assert_eq!(config.endpoint_subnet, "10.77.2.0/24");
+    assert_eq!(
+        config.endpoint_subnet,
+        MachineEndpointSubnet::try_new("10.77.2.0/24").expect("valid endpoint subnet")
+    );
+}
+
+#[test]
+fn dns_role_rejects_invalid_machine_endpoint_subnet() {
+    let result = load_daemon_process_config(DaemonProcessRole::Dns, |name| match name {
+        PLOYZ_MACHINE_ID_ENV => Some("edge_2".to_owned()),
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+        PLOYZ_NATS_CA_FILE_ENV => Some("/var/lib/ployz/nats/ca.pem".to_owned()),
+        PLOYZ_NATS_NKEY_SEED_FILE_ENV => Some("/var/lib/ployz/nats/machine.seed".to_owned()),
+        PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("not-a-subnet".to_owned()),
+        _ => None,
+    });
+
+    assert!(matches!(
+        result,
+        Err(DaemonProcessConfigError::InvalidDataplaneEndpointSubnet { value, .. })
+            if value == "not-a-subnet"
+    ));
 }
 
 #[test]
