@@ -210,3 +210,29 @@ Live` section above. These rules are about truth semantics, not storage:
   paste the skill's rules into the prompt, add steering, pre-seed suspected
   findings, or explain the design decisions behind the diff. The reviewer's
   value is its cold read.
+- Review lanes for `ship-frontier`: standards and spec are `/code-review`'s
+  two axes; thermo-nuclear is the skill above, dispatched as above; ponytail
+  is the `ponytail-review` skill.
+
+## Verification Gates
+
+A change is green when all of these pass on the branch as it will merge:
+
+- `cargo fmt --all` leaves no diff.
+- `cargo clippy --workspace --all-targets` reports zero warnings.
+- `cargo test --workspace` passes. Grep the output for `test result: FAILED`
+  and `error[`; an exit code that passed through a pipe lies (zsh:
+  `${pipestatus[1]}`).
+- When `ployz-sdk-types` or the TS surface changes: regenerate from
+  `packages/ployz-sdk` (`pnpm generate:types && pnpm generate:fixture`) and
+  commit the drift.
+- When product behavior changes: the full gated DinD suite
+  (`scripts/dind-e2e.sh`), every scenario. One cluster fits the host —
+  serialize runs with `until mkdir /tmp/ployz-dind-e2e.lock 2>/dev/null; do
+  sleep 30; done` and always `rmdir` the lock afterwards, including on
+  failure. A run after a code change rebuilds product binaries (no
+  `PLOYZ_DIND_SKIP_BUILD`). On failure, read the evidence directory the
+  harness prints before retrying.
+- When merging main into a branch, compose semantic conflicts: union the
+  imports, keep both sides' additions, and give each side's exhaustive
+  matches the arms the other side's new enum variants need.
