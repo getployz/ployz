@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
+use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -94,6 +95,10 @@ pub enum ControlPlaneCommitScope {
     },
     Namespace {
         namespace_revision_id: NamespaceRevisionId,
+    },
+    VolumePin {
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
     },
 }
 

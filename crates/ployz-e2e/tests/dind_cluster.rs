@@ -18,8 +18,9 @@
 mod support;
 
 use ployz_core::deploy::{
-    ContainerCommand, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget,
-    DeployServiceSpec, EnvName, EnvValue, ImageReference, ReplicaCount, ServiceEnvironment,
+    ContainerCommand, ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployRoute,
+    DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, ImageReference, ReplicaCount,
+    ServiceEnvironment, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
@@ -520,6 +521,7 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         scenario_daemon_restart_invisibility(&core, edge).await;
         scenario_auth_rejection(&core, edge).await;
         scenario_runtime_fields_deploy(&core).await;
+        scenario_named_volume_survives_redeploy(&core).await;
     })
     .await;
 
@@ -662,6 +664,92 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
     );
 }
 
+/// Deploys a service with a named volume, replaces its container, and
+/// confirms the replacement can read data written by the prior container.
+async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
+    let first = core
+        .api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_dind_volume_first"),
+            target: volume_deploy_target(
+                "printf first > /data/marker; while true; do sleep 600; done",
+            ),
+        })
+        .await
+        .expect("first volume deploy submits");
+    let first_status =
+        wait_for_terminal_deploy_status(core, &first.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            &first_status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "first volume deploy did not complete: {first_status:?}"
+    );
+
+    let second = core
+        .api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_dind_volume_second"),
+            target: volume_deploy_target(
+                "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
+            ),
+        })
+        .await
+        .expect("second volume deploy submits");
+    let second_status =
+        wait_for_terminal_deploy_status(core, &second.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            &second_status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "second volume deploy did not complete: {second_status:?}"
+    );
+
+    let mut volume_containers = Vec::new();
+    for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+        volume_containers.extend(
+            managed_workload_containers(core, machine)
+                .await
+                .into_iter()
+                .filter(|container| {
+                    container.labels.get(SERVICE_ID_LABEL).map(String::as_str) == Some("svc_volume")
+                })
+                .map(|container| (machine.clone(), container)),
+        );
+    }
+    let [(machine, container)] = volume_containers.as_slice() else {
+        panic!("expected one volume container, got {volume_containers:?}");
+    };
+    let restored = core
+        .exec_on(
+            machine,
+            &[
+                "docker",
+                "exec",
+                &container.id,
+                "cat",
+                "/tmp/restored-marker",
+            ],
+        )
+        .await;
+    assert!(
+        restored.success() && restored.stdout.trim() == "first",
+        "redeployed container did not restore volume marker: {restored:?}"
+    );
+}
+
 /// The smoke service: the baked workload image, one replica per machine,
 /// routed on every gateway's listen port.
 fn smoke_deploy_target() -> DeployRequest {
@@ -691,6 +779,19 @@ fn runtime_fields_deploy_target() -> DeployRequest {
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: runtime_fields_spec(),
+            routes: Vec::new(),
+        }],
+    }
+}
+
+fn volume_deploy_target(command: &str) -> DeployRequest {
+    DeployRequest {
+        namespace_id: namespace_id("volume"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_volume"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime: volume_runtime_spec(command),
             routes: Vec::new(),
         }],
     }
@@ -748,6 +849,19 @@ async fn namespace_managed_containers(
         );
     }
     containers
+}
+
+fn volume_runtime_spec(command: &str) -> ContainerRuntimeSpec {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec!["sh".to_owned(), "-c".to_owned(), command.to_owned()])
+            .expect("valid volume command"),
+    );
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    runtime
 }
 
 /// The route host header: hostname plus the gateway's in-machine listen

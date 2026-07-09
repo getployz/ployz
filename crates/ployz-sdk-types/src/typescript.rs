@@ -13,7 +13,7 @@ use crate::{
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudBootstrapSessionSecret, CloudFounderBootstrap,
     CloudFounderBootstrapResult, CloudJoinerBootstrap, CloudJoinerBootstrapResult,
-    ContainerCommand, ContainerEntrypoint, ContainerId, ContainerRuntimeSpec,
+    ContainerCommand, ContainerEntrypoint, ContainerId, ContainerMountPath, ContainerRuntimeSpec,
     ContainerRuntimeState, ControlPlaneCommitScope, CoreReplaceError, CoreReplaceFailure,
     CoreReplaceOperationState, CoreReplaceReportError, CoreReplaceReportOutcome,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
@@ -63,8 +63,9 @@ use crate::{
     RuntimeSnapshotResult, ServiceContainerMembership, ServiceContainerTestimony,
     ServiceEnvironment, ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError,
     ServiceListRequest, ServiceListResult, ServiceMachineTestimony, ServiceSnapshot,
-    ServiceTestimony, ServingTargetEntry, StepId, StopGracePeriod, UnusableMachine,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence, WrappedCaKey, WrappedCoreSeeds,
+    ServiceTestimony, ServiceVolumeMount, ServingTargetEntry, StepId, StopGracePeriod,
+    UnusableMachine, VolumeName, VolumePinState, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::subjects::OperationApiEndpointExecution;
@@ -160,6 +161,10 @@ macro_rules! exported_types {
             ContainerCommand,
             ContainerEntrypoint,
             StopGracePeriod,
+            VolumeName,
+            ContainerMountPath,
+            ServiceVolumeMount,
+            VolumePinState,
             ContainerRuntimeSpec,
             DeployRequest,
             DeployServiceSpec,

@@ -10,7 +10,7 @@ use crate::ids::{
 };
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RoutePort, RouteTarget};
-use crate::state::{RouteBindingState, ServingTargetEntry};
+use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -78,8 +78,8 @@ pub struct DeployServiceSpec {
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v3";
-    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v2";
+        "ployz.namespace_revision_entry.v4";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v3";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -193,6 +193,7 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         entrypoint,
         environment,
         stop_grace_period,
+        volume_mounts,
     } = runtime;
 
     match command {
@@ -225,6 +226,10 @@ fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
         "stop_grace_period",
         stop_grace_period.as_seconds().to_string().as_bytes(),
     );
+    for mount in volume_mounts {
+        hash_frame(hasher, "volume_name", mount.volume_name.as_str().as_bytes());
+        hash_frame(hasher, "volume_target", mount.target.as_str().as_bytes());
+    }
 }
 
 fn hash_frame(hasher: &mut Sha256, tag: &str, bytes: &[u8]) {
@@ -338,6 +343,112 @@ impl From<EnvValue> for String {
 pub enum EnvValueError {
     #[error("environment variable value contains NUL: {value}")]
     ContainsNul { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"VolumeName\">"))]
+#[serde(try_from = "String", into = "String")]
+pub struct VolumeName(String);
+
+impl VolumeName {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, VolumeNameError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(VolumeNameError::Empty);
+        }
+        if !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(VolumeNameError::InvalidCharacter { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for VolumeName {
+    type Error = VolumeNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<VolumeName> for String {
+    fn from(value: VolumeName) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum VolumeNameError {
+    #[error("volume name is empty")]
+    Empty,
+    #[error("volume name contains invalid characters: {value}")]
+    InvalidCharacter { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"ContainerMountPath\">")
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct ContainerMountPath(String);
+
+impl ContainerMountPath {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, ContainerMountPathError> {
+        let value = value.into();
+        if !value.starts_with('/') {
+            return Err(ContainerMountPathError::NotAbsolute { value });
+        }
+        if value.contains('\0') {
+            return Err(ContainerMountPathError::ContainsNul { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ContainerMountPath {
+    type Error = ContainerMountPathError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<ContainerMountPath> for String {
+    fn from(value: ContainerMountPath) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ContainerMountPathError {
+    #[error("container mount path must be absolute: {value}")]
+    NotAbsolute { value: String },
+    #[error("container mount path contains NUL: {value}")]
+    ContainsNul { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ServiceVolumeMount {
+    pub volume_name: VolumeName,
+    pub target: ContainerMountPath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +567,8 @@ pub struct ContainerRuntimeSpec {
     pub entrypoint: Option<ContainerEntrypoint>,
     pub environment: ServiceEnvironment,
     pub stop_grace_period: StopGracePeriod,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_mounts: Vec<ServiceVolumeMount>,
 }
 
 impl ContainerRuntimeSpec {
@@ -466,6 +579,7 @@ impl ContainerRuntimeSpec {
             entrypoint: None,
             environment: ServiceEnvironment::empty(),
             stop_grace_period: StopGracePeriod::default_grace(),
+            volume_mounts: Vec::new(),
         }
     }
 }
@@ -514,6 +628,7 @@ pub struct DeployPlanningInput {
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub volume_pins: Vec<VolumePinState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -562,6 +677,8 @@ pub struct DeployPlan {
     pub namespace_id: NamespaceId,
     pub namespace_revision_id: NamespaceRevisionId,
     pub services: Vec<DeployServicePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_pin_commits: Vec<VolumePinState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleanup_containers: Vec<DeployCleanupContainer>,
 }
@@ -651,6 +768,10 @@ pub enum ReplicaSlotError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanError {
     NoEligibleMachines,
+    ConflictingVolumePins {
+        service_id: ServiceId,
+        machines: Vec<MachineId>,
+    },
 }
 
 #[must_use]
@@ -783,8 +904,16 @@ pub fn plan_namespace_deploy(
 ) -> Result<DeployPlan, DeployPlanError> {
     let mut service_plans = Vec::new();
     let mut cleanup_containers = cleanup_containers;
-    for input in services {
+    let mut volume_pin_commits = Vec::new();
+    let mut working_volume_pins = services
+        .iter()
+        .flat_map(|input| input.volume_pins.iter().cloned())
+        .collect::<Vec<_>>();
+    for mut input in services {
+        input.volume_pins = working_volume_pins.clone();
         let plan = plan_deploy_service(input)?;
+        working_volume_pins.extend(plan.volume_pin_commits.clone());
+        volume_pin_commits.extend(plan.volume_pin_commits);
         service_plans.push(DeployServicePlan {
             service_id: plan.service_id,
             steps: plan.steps,
@@ -796,6 +925,7 @@ pub fn plan_namespace_deploy(
         namespace_id,
         namespace_revision_id,
         services: service_plans,
+        volume_pin_commits,
         cleanup_containers,
     })
 }
@@ -805,14 +935,20 @@ pub struct DeploySingleServicePlan {
     pub service_id: ServiceId,
     pub namespace_revision_id: NamespaceRevisionId,
     pub steps: Vec<DeployPlanStep>,
+    pub volume_pin_commits: Vec<VolumePinState>,
     pub cleanup_containers: Vec<DeployCleanupContainer>,
 }
 
 fn plan_deploy_service(
     input: DeployPlanningInput,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
+    let volume_placement =
+        volume_placement(&input.request, &input.eligible_machines, &input.volume_pins)?;
     let target_replicas = usize::from(input.request.replicas.get());
     let mut existing_replicas = input.existing_replicas;
+    if let Some(machine_id) = &volume_placement.machine_id {
+        existing_replicas.retain(|replica| &replica.machine_id == machine_id);
+    }
     existing_replicas.sort_by(|left, right| {
         left.machine_id
             .cmp(&right.machine_id)
@@ -837,9 +973,13 @@ fn plan_deploy_service(
     }
 
     let existing_replicas = steps.len();
+    let run_machines = volume_placement
+        .machine_id
+        .as_ref()
+        .map(|machine_id| vec![machine_id.clone()])
+        .unwrap_or(input.eligible_machines);
     steps.extend(
-        input
-            .eligible_machines
+        run_machines
             .iter()
             .cycle()
             .take(missing_replicas)
@@ -874,8 +1014,98 @@ fn plan_deploy_service(
         service_id: input.request.service_id,
         namespace_revision_id: input.request.namespace_revision_id,
         steps,
+        volume_pin_commits: volume_placement.commits,
         cleanup_containers,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VolumePlacement {
+    machine_id: Option<MachineId>,
+    commits: Vec<VolumePinState>,
+}
+
+fn volume_placement(
+    request: &DeployServiceRequest,
+    eligible_machines: &[MachineId],
+    volume_pins: &[VolumePinState],
+) -> Result<VolumePlacement, DeployPlanError> {
+    if request.runtime.volume_mounts.is_empty() {
+        return Ok(VolumePlacement {
+            machine_id: None,
+            commits: Vec::new(),
+        });
+    }
+
+    let matching_pins = request
+        .runtime
+        .volume_mounts
+        .iter()
+        .filter_map(|mount| {
+            volume_pins.iter().find(|pin| {
+                pin.namespace_id == request.namespace_id && pin.volume_name == mount.volume_name
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut pinned_machines = matching_pins
+        .iter()
+        .map(|pin| pin.machine_id.clone())
+        .collect::<Vec<_>>();
+    pinned_machines.sort();
+    pinned_machines.dedup();
+    match pinned_machines.as_slice() {
+        [machine_id] => {
+            if !eligible_machines.contains(machine_id) {
+                return Err(DeployPlanError::NoEligibleMachines);
+            }
+            Ok(VolumePlacement {
+                machine_id: Some(machine_id.clone()),
+                commits: missing_volume_pin_commits(request, machine_id, volume_pins),
+            })
+        }
+        [] => {
+            let Some(machine_id) = eligible_machines.first() else {
+                return Err(DeployPlanError::NoEligibleMachines);
+            };
+            Ok(VolumePlacement {
+                machine_id: Some(machine_id.clone()),
+                commits: missing_volume_pin_commits(request, machine_id, volume_pins),
+            })
+        }
+        _ => Err(DeployPlanError::ConflictingVolumePins {
+            service_id: request.service_id.clone(),
+            machines: pinned_machines,
+        }),
+    }
+}
+
+fn missing_volume_pin_commits(
+    request: &DeployServiceRequest,
+    machine_id: &MachineId,
+    volume_pins: &[VolumePinState],
+) -> Vec<VolumePinState> {
+    let mut volume_names = request
+        .runtime
+        .volume_mounts
+        .iter()
+        .map(|mount| mount.volume_name.clone())
+        .collect::<Vec<_>>();
+    volume_names.sort();
+    volume_names.dedup();
+
+    volume_names
+        .into_iter()
+        .filter(|mount| {
+            !volume_pins
+                .iter()
+                .any(|pin| pin.namespace_id == request.namespace_id && pin.volume_name == *mount)
+        })
+        .map(|volume_name| VolumePinState {
+            namespace_id: request.namespace_id.clone(),
+            volume_name,
+            machine_id: machine_id.clone(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

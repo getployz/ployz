@@ -223,6 +223,7 @@ async fn load_intent(
         active_machines,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,
+        volume_pins: namespace_intent.volume_pins,
         authorized_users,
     })
 }

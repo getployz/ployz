@@ -12,7 +12,7 @@ use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
     ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthStatusEnum,
-    HostConfig, NetworkInspect, NetworkingConfig,
+    HostConfig, Mount, MountType, NetworkInspect, NetworkingConfig,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, InspectNetworkOptions,
@@ -625,6 +625,7 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
         labels: Some(hashmap_from_btree(labels::render(&command.identity))),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
+            mounts: docker_volume_mounts(&command.identity, &runtime.volume_mounts),
             ..Default::default()
         }),
         networking_config: Some(NetworkingConfig {
@@ -635,6 +636,46 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
         }),
         ..Default::default()
     }
+}
+
+fn docker_volume_mounts(
+    identity: &ManagedContainerIdentity,
+    mounts: &[ployz_core::deploy::ServiceVolumeMount],
+) -> Option<Vec<Mount>> {
+    if mounts.is_empty() {
+        return None;
+    }
+    Some(
+        mounts
+            .iter()
+            .map(|mount| Mount {
+                target: Some(mount.target.as_str().to_owned()),
+                source: Some(docker_volume_name(identity, &mount.volume_name)),
+                typ: Some(MountType::VOLUME),
+                read_only: None,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
+                image_options: None,
+                tmpfs_options: None,
+            })
+            .collect(),
+    )
+}
+
+fn docker_volume_name(
+    identity: &ManagedContainerIdentity,
+    volume_name: &ployz_core::deploy::VolumeName,
+) -> String {
+    let namespace_id = identity.namespace_id.as_str();
+    let volume_name = volume_name.as_str();
+    format!(
+        "ployz-n{}-{}-v{}-{}",
+        namespace_id.len(),
+        namespace_id,
+        volume_name.len(),
+        volume_name
+    )
 }
 
 fn existing_container_from_summary(
@@ -749,8 +790,9 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, EnvName, EnvValue,
-        ImageReference, ServiceEnvironment, StopGracePeriod,
+        ContainerCommand, ContainerEntrypoint, ContainerMountPath, ContainerRuntimeSpec, EnvName,
+        EnvValue, ImageReference, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+        VolumeName,
     };
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
@@ -823,6 +865,49 @@ mod tests {
         });
 
         assert_eq!(body.stop_timeout, Some(10));
+    }
+
+    #[test]
+    fn create_body_mounts_named_volumes() {
+        let mut runtime = ContainerRuntimeSpec::image_defaults();
+        runtime.volume_mounts = vec![ServiceVolumeMount {
+            volume_name: VolumeName::try_new("postgres_data").expect("valid volume name"),
+            target: ContainerMountPath::try_new("/var/lib/postgresql/data")
+                .expect("valid mount path"),
+        }];
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            runtime,
+            identity: managed_identity(),
+        });
+
+        let mounts = body
+            .host_config
+            .expect("host config")
+            .mounts
+            .expect("named volume mounts");
+        let [mount] = mounts.as_slice() else {
+            panic!("expected one named volume mount");
+        };
+        assert_eq!(mount.typ, Some(MountType::VOLUME));
+        assert_eq!(
+            mount.source,
+            Some("ployz-n7-default-v13-postgres_data".to_owned())
+        );
+        assert_eq!(mount.target, Some("/var/lib/postgresql/data".to_owned()));
+    }
+
+    #[test]
+    fn docker_volume_names_are_framed_to_avoid_collisions() {
+        let mut left = managed_identity();
+        left.namespace_id = namespace_id("a-b");
+        let mut right = managed_identity();
+        right.namespace_id = namespace_id("a");
+
+        assert_ne!(
+            docker_volume_name(&left, &volume_name("c")),
+            docker_volume_name(&right, &volume_name("b-c"))
+        );
     }
 
     #[test]
@@ -1087,6 +1172,10 @@ mod tests {
 
     fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
         ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
+    }
+
+    fn volume_name(value: &str) -> VolumeName {
+        VolumeName::try_new(value).expect("valid volume name")
     }
 
     fn service_id(value: &str) -> ServiceId {
