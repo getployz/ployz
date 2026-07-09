@@ -275,7 +275,12 @@ fn hash_frame(hasher: &mut Sha256, tag: &str, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
-fn canonical_capabilities(capabilities: &[LinuxCapability]) -> Vec<&LinuxCapability> {
+/// The canonical (sorted, deduplicated) order for a capability list. Both
+/// the namespace revision entry hash and the Docker create call go through
+/// this one ordering, so the identity digest can never disagree with what a
+/// container was actually created with.
+#[must_use]
+pub fn canonical_capabilities(capabilities: &[LinuxCapability]) -> Vec<&LinuxCapability> {
     let mut capabilities = capabilities.iter().collect::<Vec<_>>();
     capabilities.sort();
     capabilities.dedup();
@@ -781,6 +786,21 @@ pub struct ContainerHealthcheck {
     pub retries: Option<HealthcheckRetries>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_period: Option<HealthcheckDurationNanos>,
+}
+
+impl ContainerHealthcheck {
+    /// Whether this healthcheck makes Docker run a probe and report a
+    /// health status the deploy can wait on. `Disable` turns probing off,
+    /// and `Inherit` only probes when the image defines its own healthcheck,
+    /// so neither guarantees Docker will ever report health: gating a deploy
+    /// on them would wait until the step timeout instead of succeeding.
+    #[must_use]
+    pub const fn reports_docker_health(&self) -> bool {
+        match self.test {
+            ContainerHealthcheckTest::Exec(_) | ContainerHealthcheckTest::Shell(_) => true,
+            ContainerHealthcheckTest::Inherit | ContainerHealthcheckTest::Disable => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -621,16 +621,16 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
     });
     let healthcheck = runtime.healthcheck.as_ref().map(health_config);
     let restart_policy = restart_policy(runtime.restart_policy);
-    let cap_add = capabilities(runtime.cap_add);
-    let cap_drop = capabilities(runtime.cap_drop);
+    let cap_add = capabilities(&runtime.cap_add);
+    let cap_drop = capabilities(&runtime.cap_drop);
     let memory = runtime
         .resources
         .memory_bytes
-        .map(|value| i64::try_from(value.get()).unwrap_or(i64::MAX));
+        .map(|value| saturating_i64(value.get()));
     let nano_cpus = runtime
         .resources
         .nano_cpus
-        .map(|value| i64::try_from(value.get()).unwrap_or(i64::MAX));
+        .map(|value| saturating_i64(value.get()));
     let pids_limit = runtime.resources.pids.map(|value| value.get());
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
@@ -715,16 +715,23 @@ fn health_config(healthcheck: &ContainerHealthcheck) -> HealthConfig {
         }),
         interval: healthcheck
             .interval
-            .map(|value| i64::try_from(value.as_nanos()).unwrap_or(i64::MAX)),
+            .map(|value| saturating_i64(value.as_nanos())),
         timeout: healthcheck
             .timeout
-            .map(|value| i64::try_from(value.as_nanos()).unwrap_or(i64::MAX)),
+            .map(|value| saturating_i64(value.as_nanos())),
         retries: healthcheck.retries.map(|value| i64::from(value.get())),
         start_period: healthcheck
             .start_period
-            .map(|value| i64::try_from(value.as_nanos()).unwrap_or(i64::MAX)),
+            .map(|value| saturating_i64(value.as_nanos())),
         start_interval: None,
     }
+}
+
+/// Docker's API carries byte and nanosecond quantities as `i64`; product
+/// values are `u64`, so anything past `i64::MAX` (physically impossible
+/// limits) clamps instead of failing the create call.
+fn saturating_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn restart_policy(policy: ContainerRestartPolicy) -> Option<RestartPolicy> {
@@ -741,17 +748,16 @@ fn restart_policy(policy: ContainerRestartPolicy) -> Option<RestartPolicy> {
     })
 }
 
-fn capabilities(capabilities: Vec<ployz_core::deploy::LinuxCapability>) -> Option<Vec<String>> {
+fn capabilities(capabilities: &[ployz_core::deploy::LinuxCapability]) -> Option<Vec<String>> {
     if capabilities.is_empty() {
         return None;
     }
-    let mut capabilities = capabilities
-        .into_iter()
-        .map(String::from)
-        .collect::<Vec<_>>();
-    capabilities.sort();
-    capabilities.dedup();
-    Some(capabilities)
+    Some(
+        ployz_core::deploy::canonical_capabilities(capabilities)
+            .into_iter()
+            .map(|capability| capability.as_str().to_owned())
+            .collect(),
+    )
 }
 
 fn existing_container_from_summary(

@@ -185,6 +185,16 @@ pub enum DeployTerminalEvent {
     Missing,
 }
 
+/// How a deploy run step produced its running container. Freshly created
+/// containers are health-gated before the deploy completes; reused or
+/// restarted existing containers already proved themselves and are never
+/// re-gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunContainerDisposition {
+    Created,
+    Reused,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployContainer {
     pub service_id: ServiceId,

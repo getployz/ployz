@@ -578,7 +578,11 @@ async fn managed_workload_containers_with_scope(
         "docker",
         "inspect",
         "--format",
-        "{{.Id}}\t{{json .Config.Labels}}\t{{with index .NetworkSettings.Networks \"ployz\"}}{{.IPAddress}}{{end}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}\t{{json .Config.Healthcheck}}\t{{json .HostConfig.RestartPolicy}}\t{{json .HostConfig.CapAdd}}\t{{json .HostConfig.CapDrop}}\t{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.Memory}}\t{{json .HostConfig.PidsLimit}}",
+        // `index .Config "Healthcheck"` instead of `.Config.Healthcheck`:
+        // Docker omits the Healthcheck key for containers created without
+        // one, and the CLI templates over the decoded map, so direct field
+        // access fails with "map has no entry" while `index` yields null.
+        "{{.Id}}\t{{json .Config.Labels}}\t{{with index .NetworkSettings.Networks \"ployz\"}}{{.IPAddress}}{{end}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}\t{{json (index .Config \"Healthcheck\")}}\t{{json .HostConfig.RestartPolicy}}\t{{json .HostConfig.CapAdd}}\t{{json .HostConfig.CapDrop}}\t{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.Memory}}\t{{json .HostConfig.PidsLimit}}",
     ];
     command.extend(ids);
     let inspected = core.exec_on(machine, &command).await;

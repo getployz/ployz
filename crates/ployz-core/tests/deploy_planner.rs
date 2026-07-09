@@ -1,11 +1,11 @@
 use ployz_core::deploy::{
-    ContainerCommand, ContainerEntrypoint, ContainerMountPath, ContainerRuntimeSpec,
-    DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
-    DeployPreparationInput, DeployRoute, DeployRouteTarget, DeployServicePlan,
-    DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica, ImageReference, ReplicaCount,
-    ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy,
+    ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
+    ContainerMountPath, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan, DeployPlanError,
+    DeployPlanStep, DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget,
+    DeployServicePlan, DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica,
+    HealthcheckShellCommand, ImageReference, ReplicaCount, ReplicaSlot, ServiceEnvironment,
+    ServiceVolumeMount, StopGracePeriod, VolumeName, namespace_route_binding_removals,
+    namespace_serving_target_removals, plan_namespace_deploy, prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -992,6 +992,32 @@ fn observed_machine(
 ) -> MachineContainerObservationSnapshot {
     MachineContainerObservationSnapshot::try_new(machine_id(machine), containers)
         .expect("valid observation snapshot")
+}
+
+#[test]
+fn only_probing_healthchecks_report_docker_health() {
+    let healthcheck = |test: ContainerHealthcheckTest| ContainerHealthcheck {
+        test,
+        interval: None,
+        timeout: None,
+        retries: None,
+        start_period: None,
+    };
+
+    assert!(
+        healthcheck(ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("true").expect("valid healthcheck command")
+        ))
+        .reports_docker_health()
+    );
+    assert!(
+        healthcheck(ContainerHealthcheckTest::Exec(
+            ContainerCommand::try_new(vec!["true".to_owned()]).expect("valid healthcheck argv")
+        ))
+        .reports_docker_health()
+    );
+    assert!(!healthcheck(ContainerHealthcheckTest::Disable).reports_docker_health());
+    assert!(!healthcheck(ContainerHealthcheckTest::Inherit).reports_docker_health());
 }
 
 fn observed_container(

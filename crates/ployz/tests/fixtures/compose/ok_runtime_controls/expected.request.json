@@ -32,7 +32,7 @@
         ],
         "resources": {
           "nano_cpus": 500000000,
-          "memory_bytes": 64000000,
+          "memory_bytes": 67108864,
           "pids": 64
         }
       }

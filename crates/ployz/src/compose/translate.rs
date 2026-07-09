@@ -751,6 +751,7 @@ fn parse_healthcheck(
     };
     let mut findings = Vec::new();
     let mut test = None;
+    let mut disabled = false;
     let mut interval = None;
     let mut timeout = None;
     let mut retries = None;
@@ -769,7 +770,7 @@ fn parse_healthcheck(
                 Err(finding) => findings.push(finding),
             },
             "disable" => match value.as_bool() {
-                Some(true) => test = Some(ContainerHealthcheckTest::Disable),
+                Some(true) => disabled = true,
                 Some(false) => {}
                 None => findings.push(ComposeFinding::invalid(
                     path.field(key),
@@ -795,11 +796,23 @@ fn parse_healthcheck(
             other => findings.push(ComposeFinding::unknown(path.field(other))),
         }
     }
+    let test = match (disabled, test) {
+        (true, Some(ContainerHealthcheckTest::Disable) | None) => ContainerHealthcheckTest::Disable,
+        (true, Some(_)) => {
+            findings.push(ComposeFinding::invalid(
+                path.field("disable"),
+                "disable: true conflicts with an explicit test",
+            ));
+            ContainerHealthcheckTest::Disable
+        }
+        (false, Some(test)) => test,
+        (false, None) => ContainerHealthcheckTest::Inherit,
+    };
     if !findings.is_empty() {
         return Err(findings);
     }
     Ok(Some(ContainerHealthcheck {
-        test: test.unwrap_or(ContainerHealthcheckTest::Inherit),
+        test,
         interval,
         timeout,
         retries,
@@ -816,7 +829,7 @@ fn parse_healthcheck_test(
             .map(ContainerHealthcheckTest::Shell)
             .map_err(|error| ComposeFinding::invalid(path.clone(), error)),
         Value::Sequence(items) => {
-            let Some(first) = items.first() else {
+            let [first, rest @ ..] = items.as_slice() else {
                 return Ok(ContainerHealthcheckTest::Inherit);
             };
             let Some(kind) = scalar_to_string(first) else {
@@ -827,11 +840,11 @@ fn parse_healthcheck_test(
             };
             match kind.as_str() {
                 "NONE" => Ok(ContainerHealthcheckTest::Disable),
-                "CMD" => ContainerCommand::try_new(exec_argv(items[1..].to_vec(), path)?)
+                "CMD" => ContainerCommand::try_new(exec_argv(rest.to_vec(), path)?)
                     .map(ContainerHealthcheckTest::Exec)
                     .map_err(|error| ComposeFinding::invalid(path.clone(), error)),
                 "CMD-SHELL" => {
-                    let [_, command] = items.as_slice() else {
+                    let [command] = rest else {
                         return Err(ComposeFinding::invalid(
                             path.clone(),
                             "CMD-SHELL healthcheck needs exactly one command",
@@ -1368,16 +1381,14 @@ fn parse_byte_quantity(value: &str) -> Result<u64, String> {
         return Err("memory must be greater than zero".to_owned());
     }
     let unit = value[digits_end..].trim().to_ascii_lowercase();
+    // Docker's RAMInBytes treats every suffix as a 1024 multiple, so `64m`
+    // here means the same 64 MiB it means to `docker run -m 64m`.
     let multiplier = match unit.as_str() {
         "" | "b" => 1.0,
-        "k" | "kb" => 1000.0,
-        "m" | "mb" => 1000.0 * 1000.0,
-        "g" | "gb" => 1000.0 * 1000.0 * 1000.0,
-        "t" | "tb" => 1000.0 * 1000.0 * 1000.0 * 1000.0,
-        "ki" | "kib" => 1024.0,
-        "mi" | "mib" => 1024.0 * 1024.0,
-        "gi" | "gib" => 1024.0 * 1024.0 * 1024.0,
-        "ti" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        "k" | "kb" | "ki" | "kib" => 1024.0,
+        "m" | "mb" | "mi" | "mib" => 1024.0 * 1024.0,
+        "g" | "gb" | "gi" | "gib" => 1024.0 * 1024.0 * 1024.0,
+        "t" | "tb" | "ti" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
         other => return Err(format!("unsupported memory unit {other:?}")),
     };
     let bytes = (amount * multiplier).round();

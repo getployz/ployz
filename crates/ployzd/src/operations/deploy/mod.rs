@@ -41,6 +41,7 @@ use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
     DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
+    RunContainerDisposition,
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, S>(
@@ -87,9 +88,16 @@ impl<'a> DeployRun<'a> {
         }
     }
 
-    fn container_started(&mut self, started: DeployContainer, created: bool) {
-        if created {
-            self.health_check_containers.push(started.clone());
+    fn container_started(
+        &mut self,
+        started: DeployContainer,
+        disposition: RunContainerDisposition,
+    ) {
+        match disposition {
+            RunContainerDisposition::Created => {
+                self.health_check_containers.push(started.clone());
+            }
+            RunContainerDisposition::Reused => {}
         }
         self.started_containers.push(started);
     }
@@ -231,12 +239,12 @@ where
                         ),
                     )
                     .await;
-                    let (started, created) = match run_result {
+                    let (started, disposition) = match run_result {
                         Ok(started) => started,
                         Err(source) => return Err(run.fail_run_container(service, *slot, source)),
                     };
                     containers.push(started.clone());
-                    run.container_started(started.clone(), created);
+                    run.container_started(started.clone(), disposition);
                     record_evidence(
                         command,
                         &mut *ports.recorder,
@@ -474,8 +482,21 @@ fn retained_created_container(
         machine_id: machine_id.clone(),
         container_id: container_id.clone(),
         step_id,
-        requires_docker_healthcheck: service.request.runtime.healthcheck.is_some(),
+        requires_docker_healthcheck: requires_docker_healthcheck(service),
     })
+}
+
+/// Whether deploy health gating must wait for Docker to report a health
+/// status for this service's containers. Only healthchecks that make Docker
+/// run a probe qualify; disabled or image-inherited healthchecks never
+/// guarantee a health report, so waiting on them would hang until timeout.
+fn requires_docker_healthcheck(service: &DeployServiceExecutionCommand) -> bool {
+    service
+        .request
+        .runtime
+        .healthcheck
+        .as_ref()
+        .is_some_and(ployz_core::deploy::ContainerHealthcheck::reports_docker_health)
 }
 
 fn retained_container_identity(
@@ -783,12 +804,12 @@ async fn run_deploy_step<N>(
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
-) -> Result<(DeployContainer, bool), DeployExecutionError>
+) -> Result<(DeployContainer, RunContainerDisposition), DeployExecutionError>
 where
     N: MachineContainerRuntime,
 {
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
-    let requires_docker_healthcheck = service.request.runtime.healthcheck.is_some();
+    let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
         image: service.request.image.clone(),
         runtime: service.request.runtime.clone(),
@@ -806,10 +827,17 @@ where
         .run_container(machine_id, request)
         .await
         .map(|outcome| {
-            let created = matches!(
-                outcome,
-                crate::roles::machine::protocol::MachineRunContainerOutcome::Created { .. }
-            );
+            let disposition = match outcome {
+                crate::roles::machine::protocol::MachineRunContainerOutcome::Created { .. } => {
+                    RunContainerDisposition::Created
+                }
+                crate::roles::machine::protocol::MachineRunContainerOutcome::ReusedRunning {
+                    ..
+                }
+                | crate::roles::machine::protocol::MachineRunContainerOutcome::StartedExisting {
+                    ..
+                } => RunContainerDisposition::Reused,
+            };
             (
                 DeployContainer {
                     service_id: service.request.service_id.clone(),
@@ -822,7 +850,7 @@ where
                     step_id,
                     requires_docker_healthcheck,
                 },
-                created,
+                disposition,
             )
         })
         .map_err(DeployExecutionError::RunContainer)
