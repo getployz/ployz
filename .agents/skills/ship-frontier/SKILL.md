@@ -40,13 +40,14 @@ verification gist and is closed, and the worktree is removed.
    between turns. `git diff main` is ground truth over narration.
 3. **Gates** — run every gate the repo declares. Done when: all gates are
    green on the branch as it will merge.
-4. **Review** — four lanes: standards, spec, thermo-nuclear, ponytail,
-   mapped to skills by the repo. Each lane runs twice — once as a Claude
-   subagent, once as a Codex run — so every lane gets a **second opinion**:
-   eight parallel **cold reads**, each given only the diff range, the
-   lane's skill, and "report back your findings". A seconded finding is
-   real — fix it; judge unseconded findings on merit. A fix reruns the
-   gates. Done when: the PR body carries every finding's disposition.
+4. **Review** — run the repo's declared review policy. Where a repo
+   declares none, the default: four lanes — standards, spec,
+   thermo-nuclear, ponytail — each run twice, once as a Claude subagent
+   and once as a Codex run, so every lane gets a **second opinion**: eight
+   parallel **cold reads**, each given only the diff range, the lane's
+   skill, and "report back your findings". A seconded finding is real —
+   fix it; judge unseconded findings on merit. A fix reruns the gates.
+   Done when: the PR body carries every finding's disposition.
 5. **Land** — push and open a PR titled after the ticket. If origin/main
    moved, merge it in and rerun the gates first; PRs land one at a time and
    the later one re-verifies. Merge, comment the merge commit and

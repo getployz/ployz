@@ -210,9 +210,13 @@ Live` section above. These rules are about truth semantics, not storage:
   paste the skill's rules into the prompt, add steering, pre-seed suspected
   findings, or explain the design decisions behind the diff. The reviewer's
   value is its cold read.
-- Review lanes for `ship-frontier`: standards and spec are `/code-review`'s
-  two axes; thermo-nuclear is the skill above, dispatched as above; ponytail
-  is the `ponytail-review` skill.
+- Implementation work is reviewed across four lanes, always: standards and
+  spec are `/code-review`'s two axes; thermo-nuclear is the skill above,
+  dispatched as above; ponytail is the `ponytail-review` skill. Each lane
+  runs twice — once as a Claude subagent, once as a Codex run — so every
+  lane gets a second opinion. All eight are cold reads: the diff range, the
+  lane's skill, "report back your findings", nothing else. A finding both
+  engines raise is real; judge unseconded findings on merit.
 
 ## Verification Gates
 
