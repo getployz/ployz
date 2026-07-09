@@ -279,8 +279,9 @@ fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
 pub fn load_lease_worker_url(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<LeaseWorkerUrl, DaemonProcessConfigError> {
-    let value = env_value(env, PLOYZ_LEASE_WORKER_URL_ENV)
-        .unwrap_or_else(|| DEFAULT_LEASE_WORKER_URL.to_owned());
+    let Some(value) = env_value(env, PLOYZ_LEASE_WORKER_URL_ENV) else {
+        return Ok(LeaseWorkerUrl::default_worker());
+    };
     LeaseWorkerUrl::try_new(value.clone())
         .map_err(|source| DaemonProcessConfigError::InvalidLeaseWorkerUrl { value, source })
 }

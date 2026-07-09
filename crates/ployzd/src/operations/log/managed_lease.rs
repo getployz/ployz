@@ -3,10 +3,9 @@ use super::{
     OperationRepository, OperationStatusWrite, RecordManagedLeaseTransitionError,
     RecordOperationEventOutcome, SubmitOperationError,
 };
-use ployz_core::cert::ManagedLeaseName;
 use ployz_core::ids::OperationId;
-use ployz_core::ops::ManagedLeaseTransition;
 use ployz_core::ops::{ManagedLeaseOperationState, OperationStatus};
+use ployz_core::ops::{ManagedLeaseSubject, ManagedLeaseTransition};
 
 impl OperationRepository {
     pub async fn accepted_managed_lease_operations(
@@ -43,25 +42,22 @@ impl OperationRepository {
             .submit_operation::<ManagedLeaseOperationSubmission>(
                 submission.operation_id,
                 ManagedLeasePayload {
-                    lease_name: submission.lease_name,
+                    subject: submission.subject,
                 },
             )
             .await?;
         Ok(AcceptedManagedLeaseSubmission {
             operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            lease_name: submitted.payload.lease_name,
-            should_start_execution: submitted.should_start_execution,
         })
     }
 
     pub async fn record_managed_lease_transition(
         &self,
         operation_id: &OperationId,
-        lease_name: &ManagedLeaseName,
+        subject: &ManagedLeaseSubject,
         transition: ManagedLeaseTransition,
     ) -> Result<OperationStatusWrite, RecordManagedLeaseTransitionError> {
-        self.record_operation_event(operation_id, transition.event(operation_id, lease_name))
+        self.record_operation_event(operation_id, transition.event(operation_id, subject))
             .await
             .map(RecordOperationEventOutcome::into_status_write)
     }

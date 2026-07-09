@@ -288,13 +288,15 @@ fn operation_subject(status: &OperationStatus) -> String {
         OperationStatus::NamespaceRemove { namespace_id, .. } => {
             format!("namespace {}", namespace_id.as_str())
         }
-        OperationStatus::ManagedLease { lease_name, .. } => {
-            if lease_name.as_str() == ployz_core::ops::MANAGED_LEASE_ACQUISITION_SUBJECT {
-                "lease acquisition".to_owned()
-            } else {
-                format!("lease {}", lease_name.as_str())
+        OperationStatus::ManagedLease { subject, .. } => match subject {
+            ployz_sdk_types::ManagedLeaseSubject::Acquire => "lease acquisition".to_owned(),
+            ployz_sdk_types::ManagedLeaseSubject::DownloadBundle { lease } => {
+                format!("lease {} bundle download", lease.as_str())
             }
-        }
+            ployz_sdk_types::ManagedLeaseSubject::Renew { lease } => {
+                format!("lease {} renewal", lease.as_str())
+            }
+        },
     }
 }
 

@@ -12,7 +12,14 @@ use super::projection::{
 };
 use super::{EventSequence, FailureMessage, OperationStatus};
 
-pub const MANAGED_LEASE_ACQUISITION_SUBJECT: &str = "acquire";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedLeaseSubject {
+    Acquire,
+    DownloadBundle { lease: ManagedLeaseName },
+    Renew { lease: ManagedLeaseName },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -39,7 +46,22 @@ impl ManagedLeaseOperationState {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseOperationFailure {
+    pub class: ManagedLeaseFailureClass,
     pub message: FailureMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedLeaseFailureClass {
+    WorkerUnauthorized,
+    LeaseNotFound,
+    WorkerHttp,
+    Transport,
+    Decode,
+    Superseded,
+    Storage,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,16 +87,16 @@ impl ManagedLeaseTransition {
     pub fn event(
         &self,
         operation_id: &OperationId,
-        lease_name: &ManagedLeaseName,
+        subject: &ManagedLeaseSubject,
     ) -> OperationEvent {
         match self {
             Self::Completed => OperationEvent::ManagedLeaseCompleted {
                 operation_id: operation_id.clone(),
-                lease_name: lease_name.clone(),
+                subject: subject.clone(),
             },
             Self::Failed { failure } => OperationEvent::ManagedLeaseFailed {
                 operation_id: operation_id.clone(),
-                lease_name: lease_name.clone(),
+                subject: subject.clone(),
                 failure: failure.clone(),
             },
         }
@@ -83,10 +105,10 @@ impl ManagedLeaseTransition {
 
 pub(super) enum ManagedLeaseEvent {
     Submitted {
-        lease_name: ManagedLeaseName,
+        subject: ManagedLeaseSubject,
     },
     Transition {
-        lease_name: ManagedLeaseName,
+        subject: ManagedLeaseSubject,
         transition: ManagedLeaseTransition,
     },
     UnsupportedCancellation,
@@ -94,34 +116,34 @@ pub(super) enum ManagedLeaseEvent {
 
 pub(super) fn project_event(
     id: &OperationId,
-    lease_name: &ManagedLeaseName,
+    subject: &ManagedLeaseSubject,
     state: &ManagedLeaseOperationState,
     event: ManagedLeaseEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
     match event {
         ManagedLeaseEvent::Submitted {
-            lease_name: event_lease_name,
+            subject: event_subject,
         } => {
             verify_subject(
                 id,
-                lease_name,
-                &event_lease_name,
+                subject,
+                &event_subject,
                 OperationSubjectRef::ManagedLease,
             )?;
             Ok(OperationProjection::AlreadySatisfied)
         }
         ManagedLeaseEvent::Transition {
-            lease_name: event_lease_name,
+            subject: event_subject,
             transition,
         } => {
             verify_subject(
                 id,
-                lease_name,
-                &event_lease_name,
+                subject,
+                &event_subject,
                 OperationSubjectRef::ManagedLease,
             )?;
-            project_state(id, lease_name, state, transition.state(), event_sequence)
+            project_state(id, subject, state, transition.state(), event_sequence)
         }
         ManagedLeaseEvent::UnsupportedCancellation => {
             Err(StatusProjectionError::ManagedLeaseCancellationUnsupported {
@@ -133,7 +155,7 @@ pub(super) fn project_event(
 
 fn project_state(
     id: &OperationId,
-    lease_name: &ManagedLeaseName,
+    subject: &ManagedLeaseSubject,
     state: &ManagedLeaseOperationState,
     attempted: ManagedLeaseOperationState,
     event_sequence: EventSequence,
@@ -147,7 +169,7 @@ fn project_state(
         ProjectionOperationState::ManagedLease,
         |state| OperationStatus::ManagedLease {
             id: id.clone(),
-            lease_name: lease_name.clone(),
+            subject: subject.clone(),
             state,
             last_event_sequence: event_sequence,
         },
@@ -178,15 +200,17 @@ mod tests {
         OperationId::try_new("op-managed-lease").expect("valid operation id")
     }
 
-    fn lease_name() -> ManagedLeaseName {
-        ManagedLeaseName::try_new("cluster-one").expect("valid lease name")
+    fn subject() -> ManagedLeaseSubject {
+        ManagedLeaseSubject::Renew {
+            lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
+        }
     }
 
     #[test]
     fn accepted_can_complete() {
         let projection = project_state(
             &operation_id(),
-            &lease_name(),
+            &subject(),
             &ManagedLeaseOperationState::Accepted,
             ManagedLeaseOperationState::Completed,
             EventSequence::try_new(2).expect("positive sequence"),
@@ -203,10 +227,11 @@ mod tests {
     fn accepted_can_fail() {
         let projection = project_state(
             &operation_id(),
-            &lease_name(),
+            &subject(),
             &ManagedLeaseOperationState::Accepted,
             ManagedLeaseOperationState::Failed {
                 failure: ManagedLeaseOperationFailure {
+                    class: ManagedLeaseFailureClass::Transport,
                     message: FailureMessage::try_new("worker unavailable")
                         .expect("non-empty message"),
                 },
@@ -225,10 +250,11 @@ mod tests {
     fn terminal_state_rejects_another_transition() {
         let error = project_state(
             &operation_id(),
-            &lease_name(),
+            &subject(),
             &ManagedLeaseOperationState::Completed,
             ManagedLeaseOperationState::Failed {
                 failure: ManagedLeaseOperationFailure {
+                    class: ManagedLeaseFailureClass::Transport,
                     message: FailureMessage::try_new("too late").expect("non-empty message"),
                 },
             },

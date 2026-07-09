@@ -268,19 +268,19 @@ impl OperationAction for ManagedLeaseOperationSubmission {
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
         OperationEvent::ManagedLeaseSubmitted {
             operation_id,
-            lease_name: payload.lease_name,
+            subject: payload.subject,
         }
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
         let OperationEvent::ManagedLeaseSubmitted {
             operation_id,
-            lease_name,
+            subject,
         } = event
         else {
             return None;
         };
-        Some((operation_id, ManagedLeasePayload { lease_name }))
+        Some((operation_id, ManagedLeasePayload { subject }))
     }
 
     fn accepted_status(
@@ -288,6 +288,6 @@ impl OperationAction for ManagedLeaseOperationSubmission {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::managed_lease_accepted(operation_id, payload.lease_name.clone(), sequence)
+        OperationStatus::managed_lease_accepted(operation_id, payload.subject.clone(), sequence)
     }
 }

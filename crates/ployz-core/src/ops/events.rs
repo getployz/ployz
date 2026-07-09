@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedLeaseName};
+use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
@@ -43,7 +43,7 @@ pub enum OperationSubject {
     MachineUpdate { machine_id: MachineId },
     CoreReplace { machine_id: MachineId },
     ServiceRestart { service_id: ServiceId },
-    ManagedLease { lease_name: ManagedLeaseName },
+    ManagedLease { subject: super::ManagedLeaseSubject },
     NamespaceRemove { namespace_id: NamespaceId },
 }
 
@@ -212,15 +212,15 @@ pub enum OperationEvent {
     },
     ManagedLeaseSubmitted {
         operation_id: OperationId,
-        lease_name: ManagedLeaseName,
+        subject: super::ManagedLeaseSubject,
     },
     ManagedLeaseCompleted {
         operation_id: OperationId,
-        lease_name: ManagedLeaseName,
+        subject: super::ManagedLeaseSubject,
     },
     ManagedLeaseFailed {
         operation_id: OperationId,
-        lease_name: ManagedLeaseName,
+        subject: super::ManagedLeaseSubject,
         failure: super::ManagedLeaseOperationFailure,
     },
     NamespaceRemoveSubmitted {
@@ -544,7 +544,7 @@ pub enum OperationSubjectRef {
     MachineUpdate(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
-    ManagedLease(ManagedLeaseName),
+    ManagedLease(super::ManagedLeaseSubject),
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -912,29 +912,29 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             },
             OperationEvent::ManagedLeaseSubmitted {
                 operation_id,
-                lease_name,
+                subject,
             } => Self::ManagedLease {
                 operation_id,
-                event: ManagedLeaseEvent::Submitted { lease_name },
+                event: ManagedLeaseEvent::Submitted { subject },
             },
             OperationEvent::ManagedLeaseCompleted {
                 operation_id,
-                lease_name,
+                subject,
             } => Self::ManagedLease {
                 operation_id,
                 event: ManagedLeaseEvent::Transition {
-                    lease_name,
+                    subject,
                     transition: ManagedLeaseTransition::Completed,
                 },
             },
             OperationEvent::ManagedLeaseFailed {
                 operation_id,
-                lease_name,
+                subject,
                 failure,
             } => Self::ManagedLease {
                 operation_id,
                 event: ManagedLeaseEvent::Transition {
-                    lease_name,
+                    subject,
                     transition: ManagedLeaseTransition::Failed { failure },
                 },
             },

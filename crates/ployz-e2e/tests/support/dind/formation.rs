@@ -343,6 +343,7 @@ async fn product_init_core(
         // listener from loopback to external so the published port and edge
         // joins can reach it.
         public_ip: Some(core.bridge_ip),
+        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await

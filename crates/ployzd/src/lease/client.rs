@@ -83,22 +83,17 @@ impl LeaseClient {
         name: ManagedLeaseName,
         token: LeaseBearerToken,
     ) -> Result<ManagedCertBundle, LeaseClientError> {
-        let agent = self.agent.clone();
-        let url = self
-            .base_url
-            .endpoint(&format!("/v1/leases/{}/cert-bundle", name.as_str()));
-        tokio::task::spawn_blocking(move || {
-            let mut response = agent
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token.as_str()))
-                .call()
-                .map_err(LeaseClientError::from_ureq)?;
-            decode_response(&mut response)
-        })
+        self.blocking_request(
+            &format!("/v1/leases/{}/cert-bundle", name.as_str()),
+            move |agent, url| {
+                agent
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {}", token.as_str()))
+                    .call()
+                    .map_err(LeaseClientError::from_ureq)
+            },
+        )
         .await
-        .map_err(|error| LeaseClientError::Transport {
-            message: error.to_string(),
-        })?
     }
 
     async fn post_json<T, R>(
@@ -111,18 +106,36 @@ impl LeaseClient {
         T: Serialize + Send + 'static,
         R: DeserializeOwned + Send + 'static,
     {
-        let agent = self.agent.clone();
-        let url = self.base_url.endpoint(path);
-        tokio::task::spawn_blocking(move || {
+        self.blocking_request(path, move |agent, url| {
             let request = agent.post(&url);
             let request = if let Some(token) = token {
                 request.header("Authorization", format!("Bearer {}", token.as_str()))
             } else {
                 request
             };
-            let mut response = request
-                .send_json(body)
-                .map_err(LeaseClientError::from_ureq)?;
+            request.send_json(body).map_err(LeaseClientError::from_ureq)
+        })
+        .await
+    }
+
+    async fn blocking_request<R, Request>(
+        &self,
+        path: &str,
+        request: Request,
+    ) -> Result<R, LeaseClientError>
+    where
+        R: DeserializeOwned + Send + 'static,
+        Request: FnOnce(
+                ureq::Agent,
+                String,
+            ) -> Result<ureq::http::Response<ureq::Body>, LeaseClientError>
+            + Send
+            + 'static,
+    {
+        let agent = self.agent.clone();
+        let url = self.base_url.endpoint(path);
+        tokio::task::spawn_blocking(move || {
+            let mut response = request(agent, url)?;
             decode_response(&mut response)
         })
         .await

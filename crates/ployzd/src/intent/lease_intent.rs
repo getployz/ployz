@@ -1,5 +1,7 @@
 use crate::core_store::{CoreStore, CoreStoreError, query_json, to_json};
-use ployz_core::cert::{ManagedCertBundle, ManagedLeaseIntent, ManagedLeaseRecord, PublicUrlMode};
+use ployz_core::cert::{
+    AutoLeaseState, ManagedCertBundle, ManagedLeaseIntent, ManagedLeaseRecord, PublicUrlMode,
+};
 use rusqlite::{Connection, params};
 
 #[derive(Debug, Clone)]
@@ -15,14 +17,26 @@ impl LeaseIntentStore {
 
     pub async fn set_mode(&self, mode: PublicUrlMode) -> Result<(), LeaseIntentStoreError> {
         self.store
+            .call(move |conn| replace(conn, &ManagedLeaseIntent::empty(mode)))
+            .await
+            .map_err(store_error)
+    }
+
+    pub async fn set_mode_if_unconfigured(
+        &self,
+        mode: PublicUrlMode,
+    ) -> Result<(), LeaseIntentStoreError> {
+        self.store
             .call(move |conn| {
-                let mut intent = load_intent(conn)?;
-                intent.mode = mode;
-                if !matches!(mode, PublicUrlMode::Auto) {
-                    intent.lease = None;
-                    intent.bundle = None;
+                let configured: Option<ManagedLeaseIntent> = query_json(
+                    conn,
+                    "SELECT json FROM managed_lease_intent WHERE id = ?1",
+                    "1",
+                )?;
+                if configured.is_none() {
+                    replace(conn, &ManagedLeaseIntent::empty(mode))?;
                 }
-                replace(conn, &intent)
+                Ok(())
             })
             .await
             .map_err(store_error)
@@ -35,12 +49,16 @@ impl LeaseIntentStore {
     ) -> Result<StoreLeaseOutcome, LeaseIntentStoreError> {
         self.store
             .call(move |conn| {
-                let mut intent = load_intent(conn)?;
-                if !matches!(intent.mode, PublicUrlMode::Auto) {
+                let intent = load_intent(conn)?;
+                if !matches!(intent, ManagedLeaseIntent::Auto { .. }) {
                     return Ok(StoreLeaseOutcome::Superseded);
                 }
-                intent.lease = Some(record);
-                intent.bundle = Some(bundle);
+                let intent = ManagedLeaseIntent::Auto {
+                    state: Box::new(AutoLeaseState::Ready {
+                        lease: record,
+                        bundle,
+                    }),
+                };
                 replace(conn, &intent)?;
                 Ok(StoreLeaseOutcome::Stored)
             })
@@ -54,8 +72,9 @@ impl LeaseIntentStore {
     ) -> Result<(), LeaseIntentStoreError> {
         self.store
             .call(move |conn| {
-                let mut intent = load_intent(conn)?;
-                intent.lease = Some(record);
+                let intent = ManagedLeaseIntent::Auto {
+                    state: Box::new(AutoLeaseState::RecordOnly { lease: record }),
+                };
                 replace(conn, &intent)
             })
             .await

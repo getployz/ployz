@@ -317,7 +317,7 @@ pub(crate) struct FirstMachineActivateCli {
     public_url: String,
 }
 
-fn parse_public_url_mode(value: &str) -> Result<PublicUrlMode, PloyzctlCliError> {
+pub(crate) fn parse_public_url_mode(value: &str) -> Result<PublicUrlMode, PloyzctlCliError> {
     match value {
         "auto" => Ok(PublicUrlMode::Auto),
         "bring-your-own" => Ok(PublicUrlMode::BringYourOwn),

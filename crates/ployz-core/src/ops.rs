@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ManagedLeaseName;
 use crate::ids::{
     CertId, MachineId, NamespaceId, OperationId, ServiceId, SubjectToken, SubjectTokenError,
 };
@@ -52,8 +51,8 @@ pub use machine_update::{
     MachineUpdateTransition,
 };
 pub use managed_lease::{
-    MANAGED_LEASE_ACQUISITION_SUBJECT, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
-    ManagedLeaseTransition,
+    ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
+    ManagedLeaseSubject, ManagedLeaseTransition,
 };
 pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
@@ -149,7 +148,7 @@ pub enum OperationStatus {
     },
     ManagedLease {
         id: OperationId,
-        lease_name: ManagedLeaseName,
+        subject: ManagedLeaseSubject,
         state: ManagedLeaseOperationState,
         last_event_sequence: EventSequence,
     },
@@ -302,12 +301,12 @@ impl OperationStatus {
     #[must_use]
     pub fn managed_lease_accepted(
         id: OperationId,
-        lease_name: ManagedLeaseName,
+        subject: ManagedLeaseSubject,
         event_sequence: EventSequence,
     ) -> Self {
         Self::ManagedLease {
             id,
-            lease_name,
+            subject,
             state: ManagedLeaseOperationState::Accepted,
             last_event_sequence: event_sequence,
         }

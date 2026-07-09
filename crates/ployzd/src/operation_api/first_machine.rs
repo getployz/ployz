@@ -30,7 +30,7 @@ pub async fn init_first_machine_activate(
     let plan = plan_first_machine_activation(&request.machine_id)
         .map_err(|_| InitFirstMachineActivateError::InvalidPlan)?;
     if let Some(active) = first_machine_active_machine(handlers, &request.machine_id).await? {
-        set_public_url_mode(handlers, public_url_mode).await?;
+        set_public_url_mode_if_unconfigured(handlers.lease_intent(), public_url_mode).await?;
         return Ok(InitFirstMachineActivated {
             operation_id: active.activated_by,
             machine_id: active.machine_id,
@@ -55,6 +55,18 @@ pub async fn init_first_machine_activate(
         operation_id: reported.operation_id,
         machine_id: reported.machine_id,
     })
+}
+
+async fn set_public_url_mode_if_unconfigured(
+    lease_intent: &crate::intent::lease_intent::LeaseIntentStore,
+    mode: ployz_core::cert::PublicUrlMode,
+) -> Result<(), InitFirstMachineActivateError> {
+    lease_intent
+        .set_mode_if_unconfigured(mode)
+        .await
+        .map_err(|error| InitFirstMachineActivateError::Unavailable {
+            message: error.to_string(),
+        })
 }
 
 async fn set_public_url_mode(

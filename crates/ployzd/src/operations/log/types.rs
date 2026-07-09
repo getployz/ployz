@@ -1,4 +1,3 @@
-use ployz_core::cert::ManagedLeaseName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
@@ -6,8 +5,8 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
 use ployz_core::ops::{
-    EventSequence, MachineAddOperationStateName, OperationIdempotencyKey, OperationStatus,
-    StatusProjectionError,
+    EventSequence, MachineAddOperationStateName, ManagedLeaseSubject, OperationIdempotencyKey,
+    OperationStatus, StatusProjectionError,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
@@ -154,12 +153,12 @@ pub struct NamespaceRemoveOperationSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedLeaseOperationSubmission {
     pub operation_id: OperationId,
-    pub lease_name: ManagedLeaseName,
+    pub subject: ManagedLeaseSubject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ManagedLeasePayload {
-    pub(super) lease_name: ManagedLeaseName,
+    pub(super) subject: ManagedLeaseSubject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,9 +228,6 @@ pub struct AcceptedNamespaceRemoveSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedManagedLeaseSubmission {
     pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub lease_name: ManagedLeaseName,
-    pub should_start_execution: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

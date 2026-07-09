@@ -1,19 +1,23 @@
+use std::future::Future;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use ployz_core::cert::{AutoLeaseState, ManagedCertBundle, ManagedLeaseIntent, ManagedLeaseRecord};
+use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ops::{
+    FailureMessage, ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseSubject,
+    ManagedLeaseTransition, OperationStatus,
+};
+
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError, StoreLeaseOutcome};
-use crate::lease::LeaseClient;
+use crate::lease::{LeaseClient, LeaseClientError};
 use crate::operations::log::{
     ManagedLeaseOperationSubmission, OperationRepository, RecordManagedLeaseTransitionError,
 };
 use crate::tasks::TaskRegistry;
-use ployz_core::cert::{ManagedLeaseName, PublicUrlMode};
-use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::ops::{
-    FailureMessage, MANAGED_LEASE_ACQUISITION_SUBJECT, ManagedLeaseOperationFailure,
-    ManagedLeaseTransition, OperationStatus,
-};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const MANAGED_LEASE_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const MANAGED_LEASE_FAILURE_BACKOFF_CAP: Duration = Duration::from_secs(60 * 60);
 
 pub fn start_managed_lease_task(
     registry: &TaskRegistry,
@@ -34,9 +38,11 @@ async fn run_loop(
     if let Err(error) = recover_accepted_operations(&repository).await {
         eprintln!("ployzd managed lease recovery warning: {error}");
     }
+    let mut consecutive_failures = 0;
     loop {
         let delay = match run_once(&lease_intent, &repository, &client, &core_machine_id).await {
             Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration) => {
+                consecutive_failures = 0;
                 MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
             }
             Ok(
@@ -44,24 +50,35 @@ async fn run_loop(
                 | ManagedLeaseTaskOutcome::Acquired { .. }
                 | ManagedLeaseTaskOutcome::BundleDownloaded { .. }
                 | ManagedLeaseTaskOutcome::Renewed { .. },
-            ) => MANAGED_LEASE_TICK_INTERVAL,
+            ) => {
+                consecutive_failures = 0;
+                MANAGED_LEASE_TICK_INTERVAL
+            }
             Ok(ManagedLeaseTaskOutcome::Failed { operation_id }) => {
                 eprintln!(
                     "ployzd managed lease warning: operation {} failed",
                     operation_id.as_str()
                 );
-                MANAGED_LEASE_TICK_INTERVAL
+                consecutive_failures += 1;
+                failure_delay(consecutive_failures)
             }
             Err(error) => {
                 eprintln!("ployzd managed lease warning: {error}");
                 if let Err(recovery_error) = recover_accepted_operations(&repository).await {
                     eprintln!("ployzd managed lease recovery warning: {recovery_error}");
                 }
-                MANAGED_LEASE_TICK_INTERVAL
+                consecutive_failures += 1;
+                failure_delay(consecutive_failures)
             }
         };
         tokio::time::sleep(delay).await;
     }
+}
+
+fn failure_delay(consecutive_failures: u32) -> Duration {
+    MANAGED_LEASE_TICK_INTERVAL
+        .saturating_mul(2_u32.saturating_pow(consecutive_failures))
+        .min(MANAGED_LEASE_FAILURE_BACKOFF_CAP)
 }
 
 pub async fn run_once(
@@ -73,135 +90,149 @@ pub async fn run_once(
     let Some(intent) = lease_intent.load_if_configured().await? else {
         return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
     };
-    if !matches!(intent.mode, PublicUrlMode::Auto) {
-        return Ok(ManagedLeaseTaskOutcome::NoAction);
-    }
-
-    if intent.needs_acquisition() {
-        let lease_name = ManagedLeaseName::try_new(MANAGED_LEASE_ACQUISITION_SUBJECT)
-            .map_err(|error| ManagedLeaseTaskError::OperationId(error.to_string()))?;
-        let operation = submit_operation(repository, lease_name.clone()).await?;
-        // There is no separate cluster-id record; the founder core machine id is
-        // the stable bootstrap identity available before the first lease exists.
-        match client.acquire(core_machine_id.as_str().to_owned()).await {
-            Ok(acquired) => {
-                if !store_worker_result(
-                    lease_intent,
-                    repository,
-                    &operation,
-                    &lease_name,
-                    acquired.lease,
-                    acquired.bundle,
-                )
-                .await?
-                {
-                    return Ok(ManagedLeaseTaskOutcome::Failed {
-                        operation_id: operation,
-                    });
-                }
-                record_completed(repository, &operation, &lease_name).await?;
-                return Ok(ManagedLeaseTaskOutcome::Acquired {
-                    operation_id: operation,
-                });
-            }
-            Err(error) => {
-                record_failed(repository, &operation, &lease_name, &error).await?;
-                return Ok(ManagedLeaseTaskOutcome::Failed {
-                    operation_id: operation,
-                });
-            }
-        }
-    }
-
-    if intent.bundle.is_none() {
-        let Some(lease) = intent.lease.clone() else {
-            return Ok(ManagedLeaseTaskOutcome::NoAction);
-        };
-        let lease_name = lease.name.clone();
-        let operation = submit_operation(repository, lease_name.clone()).await?;
-        match client
-            .download_bundle(lease.name.clone(), lease.token.clone())
-            .await
+    let needs_renewal = match &intent {
+        ManagedLeaseIntent::Auto { state }
+            if matches!(state.as_ref(), AutoLeaseState::Ready { .. }) =>
         {
-            Ok(bundle) => {
-                if !store_worker_result(
-                    lease_intent,
-                    repository,
-                    &operation,
-                    &lease_name,
-                    lease,
-                    bundle,
-                )
-                .await?
-                {
-                    return Ok(ManagedLeaseTaskOutcome::Failed {
-                        operation_id: operation,
-                    });
-                }
-                record_completed(repository, &operation, &lease_name).await?;
-                return Ok(ManagedLeaseTaskOutcome::BundleDownloaded {
-                    operation_id: operation,
-                });
+            intent.needs_renewal(now_seconds()?)
+        }
+        ManagedLeaseIntent::Auto { .. }
+        | ManagedLeaseIntent::BringYourOwn
+        | ManagedLeaseIntent::None => false,
+    };
+
+    let ManagedLeaseIntent::Auto { state } = intent else {
+        return Ok(ManagedLeaseTaskOutcome::NoAction);
+    };
+
+    match *state {
+        AutoLeaseState::Unacquired => {
+            run_step(
+                lease_intent,
+                repository,
+                ManagedLeaseSubject::Acquire,
+                || async {
+                    client
+                        .acquire(core_machine_id.as_str().to_owned())
+                        .await
+                        .map(|acquired| (acquired.lease, acquired.bundle))
+                },
+                |operation_id| ManagedLeaseTaskOutcome::Acquired { operation_id },
+            )
+            .await
+        }
+        AutoLeaseState::RecordOnly { lease } => {
+            let subject = ManagedLeaseSubject::DownloadBundle {
+                lease: lease.name.clone(),
+            };
+            run_step(
+                lease_intent,
+                repository,
+                subject,
+                || async {
+                    let bundle = client
+                        .download_bundle(lease.name.clone(), lease.token.clone())
+                        .await?;
+                    Ok((lease, bundle))
+                },
+                |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
+            )
+            .await
+        }
+        AutoLeaseState::Ready { lease, bundle: _ } => {
+            if !needs_renewal {
+                return Ok(ManagedLeaseTaskOutcome::NoAction);
             }
-            Err(error) => {
-                record_failed(repository, &operation, &lease_name, &error).await?;
-                return Ok(ManagedLeaseTaskOutcome::Failed {
-                    operation_id: operation,
-                });
-            }
+            let subject = ManagedLeaseSubject::Renew {
+                lease: lease.name.clone(),
+            };
+            run_step(
+                lease_intent,
+                repository,
+                subject,
+                || async {
+                    client
+                        .renew(lease.name, lease.token)
+                        .await
+                        .map(|renewed| (renewed.lease, renewed.bundle))
+                },
+                |operation_id| ManagedLeaseTaskOutcome::Renewed { operation_id },
+            )
+            .await
         }
     }
+}
 
-    if intent.needs_renewal(now_seconds()?) {
-        let Some(lease) = intent.lease else {
-            return Ok(ManagedLeaseTaskOutcome::NoAction);
-        };
-        let lease_name = lease.name.clone();
-        let operation = submit_operation(repository, lease_name.clone()).await?;
-        match client.renew(lease.name, lease.token).await {
-            Ok(renewed) => {
-                if !store_worker_result(
-                    lease_intent,
-                    repository,
-                    &operation,
-                    &lease_name,
-                    renewed.lease,
-                    renewed.bundle,
-                )
-                .await?
-                {
-                    return Ok(ManagedLeaseTaskOutcome::Failed {
-                        operation_id: operation,
-                    });
-                }
-                record_completed(repository, &operation, &lease_name).await?;
-                return Ok(ManagedLeaseTaskOutcome::Renewed {
-                    operation_id: operation,
-                });
-            }
-            Err(error) => {
-                record_failed(repository, &operation, &lease_name, &error).await?;
-                return Ok(ManagedLeaseTaskOutcome::Failed {
-                    operation_id: operation,
-                });
-            }
+async fn run_step<Worker, WorkerFuture, Success>(
+    lease_intent: &LeaseIntentStore,
+    repository: &OperationRepository,
+    subject: ManagedLeaseSubject,
+    worker: Worker,
+    success: Success,
+) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError>
+where
+    Worker: FnOnce() -> WorkerFuture,
+    WorkerFuture:
+        Future<Output = Result<(ManagedLeaseRecord, ManagedCertBundle), LeaseClientError>>,
+    Success: FnOnce(OperationId) -> ManagedLeaseTaskOutcome,
+{
+    let operation_id = submit_operation(repository, subject.clone()).await?;
+    let (record, bundle) = match worker().await {
+        Ok(result) => result,
+        Err(error) => {
+            record_failed(
+                repository,
+                &operation_id,
+                &subject,
+                lease_client_failure_class(&error),
+                &error,
+            )
+            .await?;
+            return Ok(ManagedLeaseTaskOutcome::Failed { operation_id });
+        }
+    };
+    match lease_intent.store_lease(record, bundle).await {
+        Ok(StoreLeaseOutcome::Stored) => {
+            record_completed(repository, &operation_id, &subject).await?;
+            Ok(success(operation_id))
+        }
+        Ok(StoreLeaseOutcome::Superseded) => {
+            record_failed(
+                repository,
+                &operation_id,
+                &subject,
+                ManagedLeaseFailureClass::Superseded,
+                &"managed lease result was superseded by a public URL mode change",
+            )
+            .await?;
+            Ok(ManagedLeaseTaskOutcome::Failed { operation_id })
+        }
+        Err(error) => {
+            record_failed(
+                repository,
+                &operation_id,
+                &subject,
+                ManagedLeaseFailureClass::Storage,
+                &error,
+            )
+            .await?;
+            Ok(ManagedLeaseTaskOutcome::Failed { operation_id })
         }
     }
-
-    Ok(ManagedLeaseTaskOutcome::NoAction)
 }
 
 pub async fn recover_accepted_operations(
     repository: &OperationRepository,
 ) -> Result<(), ManagedLeaseTaskError> {
     for status in repository.accepted_managed_lease_operations().await? {
-        let OperationStatus::ManagedLease { id, lease_name, .. } = status else {
+        let OperationStatus::ManagedLease { id, subject, .. } = status else {
             continue;
         };
         record_failed(
             repository,
             &id,
-            &lease_name,
+            &subject,
+            ManagedLeaseFailureClass::Interrupted,
             &"managed lease task resumed without terminal evidence",
         )
         .await?;
@@ -211,58 +242,27 @@ pub async fn recover_accepted_operations(
 
 async fn submit_operation(
     repository: &OperationRepository,
-    lease_name: ManagedLeaseName,
+    subject: ManagedLeaseSubject,
 ) -> Result<OperationId, ManagedLeaseTaskError> {
     let operation_id = OperationId::try_new(format!("op_managed_lease_{}", nuid::next()))
         .map_err(|error| ManagedLeaseTaskError::OperationId(error.to_string()))?;
     let accepted = repository
         .submit_managed_lease(ManagedLeaseOperationSubmission {
             operation_id,
-            lease_name,
+            subject,
         })
         .await
         .map_err(|error| ManagedLeaseTaskError::Submit(format!("{error:?}")))?;
     Ok(accepted.operation_id)
 }
 
-async fn store_worker_result(
-    lease_intent: &LeaseIntentStore,
-    repository: &OperationRepository,
-    operation_id: &OperationId,
-    lease_name: &ManagedLeaseName,
-    record: ployz_core::cert::ManagedLeaseRecord,
-    bundle: ployz_core::cert::ManagedCertBundle,
-) -> Result<bool, ManagedLeaseTaskError> {
-    match lease_intent.store_lease(record, bundle).await {
-        Ok(StoreLeaseOutcome::Stored) => Ok(true),
-        Ok(StoreLeaseOutcome::Superseded) => {
-            record_failed(
-                repository,
-                operation_id,
-                lease_name,
-                &"managed lease result was superseded by a public URL mode change",
-            )
-            .await?;
-            Ok(false)
-        }
-        Err(error) => {
-            record_failed(repository, operation_id, lease_name, &error).await?;
-            Ok(false)
-        }
-    }
-}
-
 async fn record_completed(
     repository: &OperationRepository,
     operation_id: &OperationId,
-    lease_name: &ManagedLeaseName,
+    subject: &ManagedLeaseSubject,
 ) -> Result<(), ManagedLeaseTaskError> {
     repository
-        .record_managed_lease_transition(
-            operation_id,
-            lease_name,
-            ManagedLeaseTransition::Completed,
-        )
+        .record_managed_lease_transition(operation_id, subject, ManagedLeaseTransition::Completed)
         .await?;
     Ok(())
 }
@@ -270,7 +270,8 @@ async fn record_completed(
 async fn record_failed(
     repository: &OperationRepository,
     operation_id: &OperationId,
-    lease_name: &ManagedLeaseName,
+    subject: &ManagedLeaseSubject,
+    class: ManagedLeaseFailureClass,
     error: &impl std::fmt::Display,
 ) -> Result<(), ManagedLeaseTaskError> {
     let message = match FailureMessage::try_new(error.to_string()) {
@@ -281,13 +282,23 @@ async fn record_failed(
     repository
         .record_managed_lease_transition(
             operation_id,
-            lease_name,
+            subject,
             ManagedLeaseTransition::Failed {
-                failure: ManagedLeaseOperationFailure { message },
+                failure: ManagedLeaseOperationFailure { class, message },
             },
         )
         .await?;
     Ok(())
+}
+
+const fn lease_client_failure_class(error: &LeaseClientError) -> ManagedLeaseFailureClass {
+    match error {
+        LeaseClientError::Unauthorized => ManagedLeaseFailureClass::WorkerUnauthorized,
+        LeaseClientError::LeaseNotFound => ManagedLeaseFailureClass::LeaseNotFound,
+        LeaseClientError::Http { .. } => ManagedLeaseFailureClass::WorkerHttp,
+        LeaseClientError::Transport { .. } => ManagedLeaseFailureClass::Transport,
+        LeaseClientError::Decode { .. } => ManagedLeaseFailureClass::Decode,
+    }
 }
 
 fn now_seconds() -> Result<u64, ManagedLeaseTaskError> {
@@ -321,4 +332,15 @@ pub enum ManagedLeaseTaskError {
     Recovery(#[from] crate::operations::log::OperationStatusStoreError),
     #[error("system clock is before Unix epoch")]
     ClockBeforeUnixEpoch,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_backoff_doubles_and_caps() {
+        assert_eq!(failure_delay(1), Duration::from_secs(120));
+        assert_eq!(failure_delay(10), MANAGED_LEASE_FAILURE_BACKOFF_CAP);
+    }
 }

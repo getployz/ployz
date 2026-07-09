@@ -141,9 +141,7 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         OperationSubjectRef::CoreReplace(machine_id) => {
             format!("core-replace {}", machine_id.as_str())
         }
-        OperationSubjectRef::ManagedLease(lease_name) => {
-            format!("managed-lease {}", lease_name.as_str())
-        }
+        OperationSubjectRef::ManagedLease(subject) => format!("managed-lease {subject:?}"),
     }
 }
 
@@ -354,15 +352,12 @@ pub fn project_operation_event(
         }
         ClassifiedOperationEvent::ManagedLease { event, .. } => {
             let OperationStatus::ManagedLease {
-                id,
-                lease_name,
-                state,
-                ..
+                id, subject, state, ..
             } = current
             else {
                 return Err(kind_mismatch(current, OperationKind::ManagedLease));
             };
-            managed_lease::project_event(id, lease_name, state, event, event_sequence)
+            managed_lease::project_event(id, subject, state, event, event_sequence)
         }
         ClassifiedOperationEvent::NamespaceRemove { event, .. } => {
             let OperationStatus::NamespaceRemove {

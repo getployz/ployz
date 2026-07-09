@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::cert::ManagedLeaseName;
-use ployz_core::cert::PublicUrlMode;
+use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent, ManagedLeaseName, PublicUrlMode};
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{ManagedLeaseOperationState, OperationStatus};
+use ployz_core::ops::{
+    ManagedLeaseFailureClass, ManagedLeaseOperationState, ManagedLeaseSubject, OperationStatus,
+};
 use ployz_lease_worker::{Clock, ClockError, StubLeaseWorker, serve};
 use ployz_test_support::ids::machine_id;
 use ployzd::core_store::CoreStore;
@@ -37,11 +38,11 @@ async fn auto_acquires_wildcard_bundle_and_completes_operation() {
         panic!("expected acquired outcome");
     };
     let stored = intent.load().await.expect("stored lease intent");
-    let Some(lease) = stored.lease else {
-        panic!("lease stored");
+    let ManagedLeaseIntent::Auto { state } = stored else {
+        panic!("ready lease stored");
     };
-    let Some(bundle) = stored.bundle else {
-        panic!("bundle stored");
+    let AutoLeaseState::Ready { lease, bundle } = *state else {
+        panic!("ready lease stored");
     };
     let status = repository
         .get(&operation_id)
@@ -58,10 +59,10 @@ async fn auto_acquires_wildcard_bundle_and_completes_operation() {
     assert!(matches!(
         status,
         OperationStatus::ManagedLease {
-            lease_name,
+            subject: ManagedLeaseSubject::Acquire,
             state: ManagedLeaseOperationState::Completed,
             ..
-        } if lease_name.as_str() == ployz_core::ops::MANAGED_LEASE_ACQUISITION_SUBJECT
+        }
     ));
     server.abort();
 }
@@ -133,7 +134,10 @@ async fn mirrored_lease_downloads_missing_local_bundle() {
         outcome,
         ManagedLeaseTaskOutcome::BundleDownloaded { .. }
     ));
-    assert!(intent.load().await.expect("lease intent").bundle.is_some());
+    let ManagedLeaseIntent::Auto { state } = intent.load().await.expect("lease intent") else {
+        panic!("auto lease intent");
+    };
+    assert!(matches!(*state, AutoLeaseState::Ready { .. }));
     server.abort();
 }
 
@@ -179,7 +183,9 @@ async fn accepted_operation_from_interrupted_tick_is_recovered_terminal() {
     repository
         .submit_managed_lease(ManagedLeaseOperationSubmission {
             operation_id: operation_id.clone(),
-            lease_name: ManagedLeaseName::try_new("cluster-one").expect("lease name"),
+            subject: ManagedLeaseSubject::Renew {
+                lease: ManagedLeaseName::try_new("cluster-one").expect("lease name"),
+            },
         })
         .await
         .expect("accepted operation");
@@ -196,7 +202,12 @@ async fn accepted_operation_from_interrupted_tick_is_recovered_terminal() {
     assert!(matches!(
         status,
         OperationStatus::ManagedLease {
-            state: ManagedLeaseOperationState::Failed { .. },
+            state: ManagedLeaseOperationState::Failed {
+                failure: ployz_core::ops::ManagedLeaseOperationFailure {
+                    class: ManagedLeaseFailureClass::Interrupted,
+                    ..
+                }
+            },
             ..
         }
     ));
