@@ -69,6 +69,19 @@ pub struct MachineLogTail {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineLogQuery {
+    pub tail_lines: Option<u16>,
+    pub since_unix_seconds: Option<u64>,
+    pub timestamps: MachineLogTimestamps,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineLogTimestamps {
+    Include,
+    Omit,
+}
+
 pub trait MachineContainerRunner {
     fn existing_managed_containers(
         &self,
@@ -105,7 +118,7 @@ pub trait MachineLogReader {
     fn tail_container_logs(
         &self,
         container_id: &ContainerId,
-        tail_lines: Option<u16>,
+        query: MachineLogQuery,
     ) -> impl Future<Output = Result<MachineLogTail, MachineLogReaderError>> + Send;
 }
 

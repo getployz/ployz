@@ -3,7 +3,7 @@
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::PloyzctlCommand;
@@ -342,12 +342,16 @@ pub async fn execute_command(
             .await
         }
         PloyzctlCommand::LogsTail(command) => {
-            render_api_call(
-                config,
-                async |api| api.logs_tail(&command.into_request()).await,
-                |result| crate::commands::logs::LogsTailOutput::new(result).render(),
-            )
-            .await
+            if command.follow {
+                follow_logs(command, config).await
+            } else {
+                render_api_call(
+                    config,
+                    async |api| api.logs_tail(&command.into_request()).await,
+                    |result| crate::commands::logs::LogsTailOutput::new(result).render(),
+                )
+                .await
+            }
         }
         PloyzctlCommand::OpsStatus(command) => {
             render_api_call(
@@ -381,6 +385,26 @@ pub async fn execute_command(
                 crate::commands::ops::WatchOutput { events, output }.render(),
             ))
         }
+    }
+}
+
+async fn follow_logs(
+    command: crate::commands::logs::LogsTailCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let api = operation_api_client(config).await?;
+    let started_at = Instant::now();
+    let mut output = String::new();
+    let mut request = command.clone().into_request();
+    loop {
+        let next_since = current_unix_seconds();
+        let result = api.logs_tail(&request).await.map_err(api_error)?;
+        output.push_str(&crate::commands::logs::LogsTailOutput::new(result).render());
+        if started_at.elapsed() >= config.ops_watch_timeout() {
+            return Ok(PloyzctlExecutionOutput::stdout(output));
+        }
+        request = command.request_after(next_since);
+        async_sleep(config.ops_watch_poll_interval()).await;
     }
 }
 
@@ -495,6 +519,13 @@ pub(crate) async fn watch_operation_until_terminal(
 fn next_event_sequence(sequence: EventSequence) -> Option<EventSequence> {
     let next = sequence.get().checked_add(1)?;
     EventSequence::try_new(next).ok()
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

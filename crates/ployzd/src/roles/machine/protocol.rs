@@ -249,6 +249,10 @@ pub struct MachineLogsTailRpcRequest {
     pub container_id: ContainerId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_lines: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_unix_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "omit_false")]
+    pub timestamps: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,6 +290,10 @@ pub enum MachineLogsTailDomainError {
         container_id: ContainerId,
         message: FailureMessage,
     },
+}
+
+fn omit_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -10,20 +10,46 @@ pub type LogsTailResponse = OperationApiResponse<LogsTailResult, LogsTailError>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct LogsTailRequest {
-    pub container_id: ContainerId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub machine_id: Option<MachineId>,
+    pub target: LogsTailTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_lines: Option<LogsTailLines>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_unix_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "target", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LogsTailTarget {
+    Service {
+        namespace_id: NamespaceId,
+        service_id: ServiceId,
+    },
+    Container {
+        container_id: ContainerId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine_id: Option<MachineId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct LogsTailResult {
-    pub machine_id: MachineId,
-    pub container_id: ContainerId,
+    pub target: LogsTailResultTarget,
     pub text: String,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "target", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LogsTailResultTarget {
+    Service {
+        namespace_id: NamespaceId,
+        service_id: ServiceId,
+    },
+    Container {
+        machine_id: MachineId,
+        container_id: ContainerId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -69,6 +95,8 @@ impl<'de> Deserialize<'de> for LogsTailLines {
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 #[derive(thiserror::Error)]
 pub enum LogsTailError {
+    #[error("no such service {}", .service_id.as_str())]
+    NoSuchService { service_id: ServiceId },
     #[error("no such container {}", .container_id.as_str())]
     NoSuchContainer { container_id: ContainerId },
     #[error("container {} exists on {} machines", .container_id.as_str(), .machine_ids.len())]

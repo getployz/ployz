@@ -4,7 +4,8 @@ use crate::roles::machine::protocol::{
     MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
 };
 use crate::roles::machine::runner::{
-    MachineContainerRunner, MachineLogReader, MachineLogReaderError, MachineLogTail,
+    MachineContainerRunner, MachineLogQuery, MachineLogReader, MachineLogReaderError,
+    MachineLogTail, MachineLogTimestamps,
 };
 use ployz_core::ids::MachineId;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
@@ -41,7 +42,18 @@ where
     }
 
     match log_reader
-        .tail_container_logs(&request.container_id, request.tail_lines)
+        .tail_container_logs(
+            &request.container_id,
+            MachineLogQuery {
+                tail_lines: request.tail_lines,
+                since_unix_seconds: request.since_unix_seconds,
+                timestamps: if request.timestamps {
+                    MachineLogTimestamps::Include
+                } else {
+                    MachineLogTimestamps::Omit
+                },
+            },
+        )
         .await
     {
         Ok(MachineLogTail { text, truncated }) => {

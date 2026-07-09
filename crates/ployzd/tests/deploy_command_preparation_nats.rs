@@ -472,7 +472,7 @@ impl MachineLogReader for UnusedLogs {
     async fn tail_container_logs(
         &self,
         container_id: &ployz_core::ids::ContainerId,
-        _tail_lines: Option<u16>,
+        _query: ployzd::roles::machine::runner::MachineLogQuery,
     ) -> Result<MachineLogTail, MachineLogReaderError> {
         Err(MachineLogReaderError::NotFound {
             container_id: container_id.clone(),
