@@ -18,6 +18,8 @@ pub mod config;
 pub mod roles {
     pub mod control;
     pub mod dns {
+        mod internal;
+        pub use internal::InternalResolverHealth;
         pub mod process;
         pub mod projection;
         pub mod source;
