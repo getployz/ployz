@@ -4,7 +4,7 @@ use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 
 use crate::deploy::DeployPlan;
@@ -27,12 +27,30 @@ impl DataplanePrepareRequest {
         plan: &DeployPlan,
         dataplane_members: &[DataplaneMember],
     ) -> Self {
+        Self::for_deploy_plan_with_additional(
+            operation_id,
+            plan,
+            dataplane_members,
+            std::iter::empty(),
+        )
+    }
+
+    #[must_use]
+    pub fn for_deploy_plan_with_additional(
+        operation_id: OperationId,
+        plan: &DeployPlan,
+        dataplane_members: &[DataplaneMember],
+        additional_machines: impl IntoIterator<Item = MachineId>,
+    ) -> Self {
         let machines = sorted_unique_machines(
-            plan.target_machines().into_iter().chain(
-                dataplane_members
-                    .iter()
-                    .map(|member| member.machine_id.clone()),
-            ),
+            plan.target_machines()
+                .into_iter()
+                .chain(
+                    dataplane_members
+                        .iter()
+                        .map(|member| member.machine_id.clone()),
+                )
+                .chain(additional_machines),
         );
         let membership = machines
             .into_iter()
@@ -209,6 +227,16 @@ impl MachineEndpointSubnet {
     #[must_use]
     pub fn as_string(&self) -> String {
         self.0.to_string()
+    }
+
+    #[must_use]
+    pub fn host_address(&self) -> Ipv4Addr {
+        let IpNet::V4(subnet) = self.0 else {
+            unreachable!("machine endpoint subnet construction accepts only IPv4")
+        };
+        let mut octets = subnet.network().octets();
+        octets[3] = 254;
+        Ipv4Addr::from(octets)
     }
 }
 

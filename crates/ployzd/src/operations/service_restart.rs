@@ -427,6 +427,16 @@ fn restart_failure_from_runtime_error(
     fallback_container_id: &ContainerId,
 ) -> ServiceRestartFailure {
     match error {
+        MachineContainerRuntimeError::ImagePullFailed {
+            machine_id,
+            message,
+            ..
+        } => ServiceRestartFailure::ContainerRestartFailed {
+            machine_id,
+            container_id: fallback_container_id.clone(),
+            message,
+            inspect_hint: inspect_hint(fallback_container_id),
+        },
         MachineContainerRuntimeError::Unavailable { machine_id, reason } => {
             ServiceRestartFailure::MachineUnavailable {
                 machine_id,

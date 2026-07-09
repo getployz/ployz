@@ -77,10 +77,13 @@ where
     };
     match decide_container_run(&request.container, existing) {
         MachineContainerRunDecision::Create { identity } => {
+            let service_id = identity.service_id.clone();
+            let namespace_revision_entry_id = identity.namespace_revision_entry_id.clone();
             match state
                 .runner
                 .create_managed_container(CreateManagedContainer {
                     image: request.image,
+                    pull: request.pull,
                     runtime: request.runtime,
                     identity,
                 })
@@ -110,6 +113,16 @@ where
                         },
                     ),
                 },
+                Err(MachineContainerRunnerError::ImagePull { message }) => {
+                    machine_domain_error(MachineContainerRunRpcResponse::DomainError {
+                        machine_id,
+                        error: MachineContainerRunDomainError::ImagePullFailed {
+                            service_id,
+                            namespace_revision_entry_id,
+                            message: failure_message(message),
+                        },
+                    })
+                }
                 Err(error) => runner_error(error),
             }
         }

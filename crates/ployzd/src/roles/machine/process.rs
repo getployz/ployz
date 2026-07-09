@@ -1,5 +1,6 @@
 //! Process wiring for the machine role.
 
+use crate::adapters::containerd_content::{ContainerdContentError, ContainerdContentStore};
 use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
@@ -12,20 +13,26 @@ use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, s
 use crate::roles::machine::facts::{
     MachineEndpointCache, current_unix_ms, read_machine_facts_snapshot, refresh_machine_endpoints,
 };
+use crate::roles::machine::images::{AvailableImageService, ImageServiceState};
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
+use crate::roles::machine::registry_v2::RunningRegistryV2;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineFactsReadError, MachineServiceError, start_machine_role_service_with_endpoint_cache,
+    MachineFactsReadError, MachineServiceError,
+    start_machine_role_service_with_endpoint_cache_and_image,
 };
 use crate::roles::nats_failover::{
     IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
 };
 use futures_util::StreamExt;
+use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::MachineId;
+use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
 use ployz_core::state::PendingMachineJoinRecoverySnapshot;
 use ployz_core::subjects::{PENDING_MACHINE_JOINS_CHANGED, machine_facts};
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
@@ -43,10 +50,14 @@ pub struct RunningMachineProcess {
     intent_mirror_shutdown: broadcast::Sender<()>,
     intent_mirror: JoinHandle<()>,
     pending_join_mirror: RunningTask,
+    image_registry: Option<RunningRegistryV2>,
 }
 
 impl RunningMachineProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
+        if let Some(image_registry) = self.image_registry {
+            image_registry.shutdown().await;
+        }
         self.pending_join_mirror.shutdown().await;
         let _ = self.intent_mirror_shutdown.send(());
         let _ = self.intent_mirror.await;
@@ -91,6 +102,22 @@ pub async fn start_machine_process(
         config.ployz_native_mesh.wg_ifname.clone(),
         mtu_policy,
     );
+    let endpoint_subnet = MachineEndpointSubnet::try_new(&config.ployz_native_mesh.endpoint_subnet)
+        .map_err(|error| MachineProcessError::InvalidImageRegistryAddress {
+            message: error.to_string(),
+        })?;
+    let image_content = ContainerdContentStore::connect_docker_default()
+        .await
+        .map_err(MachineProcessError::ConnectImageContent)?;
+    let image_registry = RunningRegistryV2::spawn_retrying(
+        SocketAddr::from((endpoint_subnet.host_address(), IMAGE_MESH_REGISTRY_PORT)),
+        image_content.clone(),
+    );
+    let image_state = ImageServiceState::Available(Box::new(AvailableImageService::new(
+        image_content,
+        runner.clone(),
+        endpoint_subnet.host_address(),
+    )));
     let preparer = PloyzNativeMeshPreparer::new(
         PloyzNativeMeshHostConfig::with_default_key_material(
             config.machine_id.clone(),
@@ -102,7 +129,7 @@ pub async fn start_machine_process(
         .with_mtu_policy(mtu_policy),
     );
 
-    start_machine_process_with_ports(
+    let mut process = start_machine_process_with_ports_and_image(
         client,
         config.machine_id.clone(),
         runner.clone(),
@@ -113,8 +140,11 @@ pub async fn start_machine_process(
         seed,
         MACHINE_OBSERVATION_INTERVAL,
         config.ployz_native_mesh.wg_ifname.clone(),
+        image_state,
     )
-    .await
+    .await?;
+    process.image_registry = Some(image_registry);
+    Ok(process)
 }
 
 // ponytail: a test-injection wiring seam — three generic ports plus runtime
@@ -141,14 +171,54 @@ where
         + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
+    start_machine_process_with_ports_and_image(
+        client,
+        machine_id,
+        runner,
+        preparer,
+        log_reader,
+        intent_mirror,
+        pending_join_mirror,
+        seed,
+        observation_interval,
+        wg_ifname,
+        ImageServiceState::Unavailable,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_machine_process_with_ports_and_image<R, P, L>(
+    client: NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+    intent_mirror: MachineIntentMirror,
+    pending_join_mirror: MachinePendingJoinMirror,
+    seed: NatsClientUrl,
+    observation_interval: Duration,
+    wg_ifname: String,
+    image_state: ImageServiceState,
+) -> Result<RunningMachineProcess, MachineProcessError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone
+        + crate::roles::machine::service::MachinePloyzNativeMeshPreparer
+        + Send
+        + Sync
+        + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
     let endpoint_cache = MachineEndpointCache::new(wg_ifname);
-    let machine_service = start_machine_role_service_with_endpoint_cache(
+    let machine_service = start_machine_role_service_with_endpoint_cache_and_image(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
         preparer,
         log_reader,
         endpoint_cache.clone(),
+        image_state,
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
@@ -176,6 +246,7 @@ where
         intent_mirror_shutdown,
         intent_mirror,
         pending_join_mirror,
+        image_registry: None,
     })
 }
 
@@ -388,6 +459,10 @@ pub enum MachineProcessError {
     ObservationTimedOut { timeout: Duration },
     #[error("invalid dataplane WireGuard MTU: {message}")]
     InvalidDataplaneMtu { message: String },
+    #[error("invalid image registry address: {message}")]
+    InvalidImageRegistryAddress { message: String },
+    #[error("failed to connect to Docker containerd content store: {0}")]
+    ConnectImageContent(ContainerdContentError),
     #[error("failed to start machine service: {0:?}")]
     StartMachineService(MachineServiceError),
     #[error("failed to wait for shutdown: {0}")]

@@ -455,11 +455,19 @@ pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
     write_installer_wrapper(&core.docker, edge).await;
     let harness = HostCliHarness::new(edge);
     let config = harness.runtime_config(&core.cluster, Some(&core.material));
+    let edge_number = core
+        .cluster
+        .edges()
+        .iter()
+        .position(|candidate| candidate.container_id == edge.container_id)
+        .map(|index| index + 2)
+        .expect("edge belongs to the formed cluster");
     let command = MachineAddRemoteCommand {
         target: SshTarget::parse(&format!("root@{}", edge.bridge_ip))
             .expect("edge bridge ip parses as ssh target"),
         identity_override: Some(
-            MachineIdentity::from_name_override("edge_2").expect("edge name is a valid identity"),
+            MachineIdentity::from_name_override(&format!("edge_{edge_number}"))
+                .expect("edge name is a valid identity"),
         ),
         roles: InstallRolePolicy::install_all(),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),

@@ -77,6 +77,7 @@ pub(crate) fn run_join_with_consumer(
         HostRunnerLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
+            docker_daemon_config: "/etc/docker/daemon.json".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );

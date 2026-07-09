@@ -412,6 +412,81 @@ fn local_effects_start_docker_service_when_daemon_is_stopped() {
 }
 
 #[test]
+fn local_effects_merge_required_docker_daemon_settings() {
+    let root = temp_dir("ployz-host-runner-local-docker-config");
+    let systemd_dir = root.join("systemd");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(daemon_config.parent().expect("config has parent"))
+        .expect("docker config dir can be created");
+    fs::write(
+        &daemon_config,
+        br#"{"log-level":"warn","features":{"cdi":true},"insecure-registries":["192.0.2.0/24"]}"#,
+    )
+    .expect("docker config can be written");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, HostRunnerPlanTerminal::Completed);
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon_config).expect("docker config can be read"))
+            .expect("docker config is JSON");
+    assert_eq!(config.get("log-level"), Some(&serde_json::json!("warn")));
+    let features = config
+        .get("features")
+        .and_then(serde_json::Value::as_object)
+        .expect("Docker features are an object");
+    assert_eq!(features.get("cdi"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        features.get("containerd-snapshotter"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        config.get("insecure-registries"),
+        Some(&serde_json::json!(["192.0.2.0/24", "10.198.0.0/16"]))
+    );
+}
+
+#[test]
+fn local_effects_reject_running_docker_classic_store() {
+    let root = temp_dir("ployz-host-runner-local-docker-classic-store");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            containerd_snapshotter: false,
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            reason: HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported,
+            message,
+            ..
+        })) if message.as_str().contains("classic image store")
+    ));
+}
+
+#[test]
 fn local_effects_install_docker_when_runtime_is_missing() {
     let root = temp_dir("ployz-host-runner-local-docker-missing");
     let systemd_dir = root.join("systemd");
@@ -1030,6 +1105,7 @@ struct RecordingRunner {
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
     force_docker_info_failure: bool,
+    containerd_snapshotter: bool,
     systemctl_calls: Vec<Vec<String>>,
     fail_systemctl: Option<Vec<String>>,
     downloads: Vec<RecordedDownload>,
@@ -1049,6 +1125,7 @@ impl RecordingRunner {
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
             force_docker_info_failure: false,
+            containerd_snapshotter: true,
             systemctl_calls: Vec::new(),
             fail_systemctl: None,
             downloads: Vec::new(),
@@ -1107,6 +1184,11 @@ impl HostRunnerCommandRunner for RecordingRunner {
             return Ok(());
         }
         Err(failure_message("simulated docker info failure"))
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        self.docker_info()?;
+        Ok(self.containerd_snapshotter)
     }
 
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
@@ -1168,6 +1250,7 @@ fn local_config(root: &Path, systemd_dir: &Path) -> HostRunnerLocalConfig {
     HostRunnerLocalConfig {
         systemd_dir: systemd_dir.to_path_buf(),
         state_dir: root.join("state"),
+        docker_daemon_config: root.join("etc/docker/daemon.json"),
     }
 }
 

@@ -122,6 +122,7 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
         HostRunnerLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
+            docker_daemon_config: "/etc/docker/daemon.json".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );

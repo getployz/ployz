@@ -21,6 +21,7 @@ pub trait HostRunnerCommandRunner {
     fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage>;
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage>;
     fn docker_info(&mut self) -> Result<(), FailureMessage>;
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage>;
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage>;
     fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage>;
     fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage>;
@@ -108,6 +109,21 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             "docker info failed: {}",
             output.failure_summary()
         )))
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        let output = run_command(
+            "docker",
+            &["info", "--format", "{{json .DriverStatus}}"],
+            self.timeout,
+        )?;
+        if !output.status.success() {
+            return Err(failure_message(format!(
+                "docker info failed: {}",
+                output.failure_summary()
+            )));
+        }
+        Ok(output.stdout.contains("io.containerd.snapshotter.v1"))
     }
 
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {

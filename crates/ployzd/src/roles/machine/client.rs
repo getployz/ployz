@@ -20,6 +20,7 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::image::{ImageInspectOk, ImageInspectRequest, ImageRpcDomainError};
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
@@ -67,6 +68,24 @@ pub struct NatsMachineLogsTailer {
 pub struct NatsMachineSubstrateUpdater {
     client: async_nats::Client,
     request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineImageInspector {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineImageInspectError {
+    Domain {
+        machine_id: MachineId,
+        error: ImageRpcDomainError,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +230,47 @@ impl NatsMachineLogsTailer {
     }
 }
 
+impl NatsMachineImageInspector {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn inspect(
+        &self,
+        machine_id: &MachineId,
+        request: &ImageInspectRequest,
+    ) -> Result<ImageInspectOk, MachineImageInspectError> {
+        call_machine::<ImageInspectOk, ImageRpcDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ImageInspect,
+            request,
+        )
+        .await
+        .map_err(|error| match error {
+            MachineCallError::Domain(error) => MachineImageInspectError::Domain {
+                machine_id: machine_id.clone(),
+                error,
+            },
+            MachineCallError::Unavailable(reason) => MachineImageInspectError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+        })
+    }
+}
+
 impl NatsMachineFactsReader {
     #[must_use]
     pub fn new(client: async_nats::Client) -> Self {
@@ -253,6 +313,7 @@ pub(crate) struct MachinePlacementFacts {
     pub machine_id: MachineId,
     pub lifecycle: MachineLifecycle,
     pub containers: Option<MachineContainerObservationSnapshot>,
+    pub platform: Option<ployz_core::image::OciPlatform>,
 }
 
 pub(crate) async fn read_machine_placement_facts(
@@ -261,11 +322,12 @@ pub(crate) async fn read_machine_placement_facts(
 ) -> Vec<MachinePlacementFacts> {
     let mut reads = stream::iter(machine_lifecycles)
         .map(|(machine_id, lifecycle)| async move {
-            let facts = facts_reader.machine_facts(&machine_id).await;
+            let facts = facts_reader.machine_facts(&machine_id).await.ok();
             MachinePlacementFacts {
                 machine_id,
                 lifecycle,
-                containers: facts.ok().map(|facts| facts.containers().clone()),
+                containers: facts.as_ref().map(|facts| facts.containers().clone()),
+                platform: facts.map(|facts| facts.platform().clone()),
             }
         })
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
@@ -452,6 +514,19 @@ impl NatsMachineContainerRuntime {
 }
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
+    async fn inspect_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ImageInspectRequest,
+    ) -> Result<ImageInspectOk, MachineImageInspectError> {
+        NatsMachineImageInspector {
+            client: self.client.clone(),
+            request_timeout: self.request_timeout,
+        }
+        .inspect(machine_id, &request)
+        .await
+    }
+
     async fn ensure_endpoint_network(
         &mut self,
         machine_id: &MachineId,
@@ -606,6 +681,16 @@ impl MachineSubstrateUpdateDomainError {
 impl MachineContainerRunDomainError {
     fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
         match self {
+            Self::ImagePullFailed {
+                service_id,
+                namespace_revision_entry_id,
+                message,
+            } => MachineContainerRuntimeError::ImagePullFailed {
+                machine_id,
+                service_id,
+                namespace_revision_entry_id,
+                message,
+            },
             Self::OperationStepAmbiguous {
                 operation_id,
                 step_id,

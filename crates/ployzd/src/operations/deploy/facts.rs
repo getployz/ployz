@@ -73,6 +73,15 @@ pub async fn load_deploy_execution_facts_from_nats(
             .map(MachineContainerObservationSnapshot::machine_id),
     );
     let (eligible_machines, unusable_machines) = classify_machine_usability(&placement_facts);
+    let machine_platforms = placement_facts
+        .iter()
+        .filter_map(|facts| {
+            facts
+                .platform
+                .clone()
+                .map(|platform| (facts.machine_id.clone(), platform))
+        })
+        .collect();
     let dataplane_members = routed_dataplane_members(request, &active_machines, answering_machines);
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
@@ -84,6 +93,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         unusable_machines,
         dataplane_members,
         observed_machines,
+        machine_platforms,
         namespace_cleanup_candidates,
         step_timeout,
     })

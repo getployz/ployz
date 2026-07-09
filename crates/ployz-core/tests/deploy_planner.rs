@@ -3,11 +3,13 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan, DeployPlanError,
     DeployPlanStep, DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget,
     DeployServicePlan, DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ReplicaCount, ReplicaSlot, ServiceEnvironment,
-    ServiceVolumeMount, StopGracePeriod, VolumeName, namespace_route_binding_removals,
-    namespace_serving_target_removals, plan_namespace_deploy, prepare_deploy,
+    HealthcheckShellCommand, ImageReference, ImageSource, ReplicaCount, ReplicaSlot,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
+    prepare_deploy,
 };
 use ployz_core::ids::MachineId;
+use ployz_core::image::OciDigest;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
@@ -42,7 +44,7 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "dca004cd57cabdbb6ac11dd22d09906a1560b320dd25527661d23c3fae3fddd7"
+        "842bb18a0deeb0f0234604b55471cfa8b9e6b97595010431ff384d8083499d5d"
     );
 }
 
@@ -59,7 +61,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_web", "ghcr.io/acme/api:rev-1", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "22061035b691e9cc0be377153afe63c05571ac97032899de86af02178587d39a"
+        "80cf54ae41d8eaa221c1658814fa2ab5bad6467c53a7699100056c4b8994f663"
     );
     assert_ne!(
         base.namespace_revision_entry_id(&namespace_id("default")),
@@ -70,7 +72,7 @@ fn namespace_revision_entry_identity_changes_for_service_or_image_change() {
         service_spec("svc_api", "ghcr.io/acme/api:rev-2", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "33d4dd7e6418f8dbf006fcd6b1efcbe646963151848d868ceb274f3b8b4db2af"
+        "e7040f776963d1706faf2c1b66f89d83a5a1301319c4bcd24cb4ada62ed0e838"
     );
 }
 
@@ -80,7 +82,7 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
         service_spec("svc_api", "nginx:latest", 1, None)
             .namespace_revision_entry_id(&namespace_id("default"))
             .as_str(),
-        "7190668c8735e24e96da66f94df804922fc6e654710c6800820cd1d21497c355"
+        "bba13e696f408a61a5e96ca13e0d73643664aabfc4bd1685ff223c077f7023d1"
     );
     assert_eq!(
         service_spec("svc_api", "nginx:latest", 1, None)
@@ -96,6 +98,41 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
         )
         .namespace_revision_entry_id(&namespace_id("default"))
     );
+}
+
+#[test]
+fn pushed_image_identity_uses_config_digest_not_transfer_digest_or_seed() {
+    let mut left = service_spec("svc_api", "api:latest", 1, None);
+    left.image_source = ImageSource::PushedToSeed {
+        seed: machine_id("machine_a"),
+        manifest_digest: oci_digest('a'),
+        image_id: oci_digest('c'),
+    };
+    let mut same_content = left.clone();
+    same_content.image_source = ImageSource::PushedToSeed {
+        seed: machine_id("machine_b"),
+        manifest_digest: oci_digest('b'),
+        image_id: oci_digest('c'),
+    };
+    let mut changed_content = same_content.clone();
+    changed_content.image_source = ImageSource::PushedToSeed {
+        seed: machine_id("machine_b"),
+        manifest_digest: oci_digest('d'),
+        image_id: oci_digest('e'),
+    };
+
+    assert_eq!(
+        left.namespace_revision_entry_id(&namespace_id("default")),
+        same_content.namespace_revision_entry_id(&namespace_id("default"))
+    );
+    assert_ne!(
+        left.namespace_revision_entry_id(&namespace_id("default")),
+        changed_content.namespace_revision_entry_id(&namespace_id("default"))
+    );
+}
+
+fn oci_digest(hex: char) -> OciDigest {
+    OciDigest::try_new(format!("sha256:{}", hex.to_string().repeat(64))).expect("valid OCI digest")
 }
 
 #[test]
@@ -705,7 +742,7 @@ fn namespace_revision_entry_id_pins_the_versioned_encoding() {
 
     assert_eq!(
         entry_id.as_str(),
-        "dca004cd57cabdbb6ac11dd22d09906a1560b320dd25527661d23c3fae3fddd7"
+        "842bb18a0deeb0f0234604b55471cfa8b9e6b97595010431ff384d8083499d5d"
     );
 }
 
@@ -761,6 +798,7 @@ fn service_spec(
     ployz_core::deploy::DeployServiceSpec {
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
+        image_source: ployz_core::deploy::ImageSource::Registry,
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
         routes: route
@@ -783,6 +821,7 @@ fn service_spec_with_runtime(
     ployz_core::deploy::DeployServiceSpec {
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
+        image_source: ployz_core::deploy::ImageSource::Registry,
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         runtime,
         routes: Vec::new(),
@@ -863,6 +902,7 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
         namespace_revision_id: namespace_revision_id("rev_1"),
         namespace_revision_entry_id: namespace_revision_entry_id("entry_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
+        image_source: ployz_core::deploy::ImageSource::Registry,
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
         routes: Vec::new(),

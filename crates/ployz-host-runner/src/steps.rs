@@ -1182,6 +1182,7 @@ pub enum HostRunnerStepFailureReason {
     DataplaneHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
+    ContainerRuntimeClassicStoreUnsupported,
 }
 
 impl HostRunnerStepFailureReason {

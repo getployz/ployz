@@ -641,6 +641,7 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),

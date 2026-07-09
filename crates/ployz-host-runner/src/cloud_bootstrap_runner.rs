@@ -518,6 +518,7 @@ fn run_cloud_joiner_bootstrap(
         HostRunnerLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
+            docker_daemon_config: "/etc/docker/daemon.json".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );

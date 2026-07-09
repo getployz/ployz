@@ -5,6 +5,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
     OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
     PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope, machine_container_facts,
     machine_facts, machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
@@ -88,6 +89,8 @@ fn operator_credential_renders_operator_rpc_scope_without_machine_or_join_scope(
         &[
             OPERATOR_RPC_QUERY_SCOPE.to_owned(),
             OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+            OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
+            OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
         ]
     );
     assert_eq!(
@@ -121,6 +124,8 @@ fn runtime_snapshot_endpoint_is_inside_the_operator_query_scope() {
         &[
             OPERATOR_RPC_QUERY_SCOPE.to_owned(),
             OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+            OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
+            OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
         ]
     );
 }

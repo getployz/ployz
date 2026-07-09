@@ -5,6 +5,7 @@ use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::ContainerHealth;
 use std::net::IpAddr;
 
+use crate::roles::machine::protocol::MachineImagePull;
 use ployz_core::machine_runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub enum ExistingManagedContainerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateManagedContainer {
     pub image: ImageReference,
+    pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
     pub identity: ManagedContainerIdentity,
 }
@@ -45,6 +47,9 @@ pub enum MachineContainerRunnerError {
         message: String,
     },
     Create {
+        message: String,
+    },
+    ImagePull {
         message: String,
     },
     Start {

@@ -18,7 +18,7 @@ pub use ployz_core::deploy::{
     ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
     DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
     LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ReplicaCount, ReplicaCountError,
     ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
     VolumeNameError,
@@ -27,6 +27,7 @@ pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId, StepId, SubjectTokenError,
 };
+pub use ployz_core::image::{OciDigest, OciPlatform};
 pub use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallContractError,

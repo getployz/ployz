@@ -75,6 +75,7 @@ pub(super) enum RecordedOperation {
     DataplanePrepared {
         machine_count: usize,
     },
+    ImageAvailabilityVerified,
     HealthCheckStarted,
     ContainerStarted {
         machine_id: MachineId,
@@ -126,6 +127,10 @@ impl DeployOperationRecorder for RecordingOperations {
                 self.records.push(RecordedOperation::DataplanePrepared {
                     machine_count: report.machines.len(),
                 });
+            }
+            DeployEvidence::ImageAvailabilityVerified { .. } => {
+                self.records
+                    .push(RecordedOperation::ImageAvailabilityVerified);
             }
             DeployEvidence::ContainerStarted {
                 machine_id,
@@ -543,6 +548,25 @@ impl RecordingRuntime {
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
+    async fn inspect_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ployz_core::image::ImageInspectRequest,
+    ) -> Result<
+        ployz_core::image::ImageInspectOk,
+        ployzd::roles::machine::client::MachineImageInspectError,
+    > {
+        Ok(ployz_core::image::ImageInspectOk {
+            machine_id: machine_id.clone(),
+            manifest_digest: request.manifest_digest,
+            image_id: request.image_id,
+            platform: ployz_core::image::OciPlatform {
+                os: "linux".to_owned(),
+                architecture: "amd64".to_owned(),
+            },
+        })
+    }
+
     async fn ensure_endpoint_network(
         &mut self,
         machine_id: &MachineId,
@@ -675,7 +699,10 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
 
 pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionCommand {
     let mut request = target_deploy_request(replicas);
-    request.services[0].runtime.healthcheck = Some(ContainerHealthcheck {
+    let [service] = request.services.as_mut_slice() else {
+        panic!("deploy fixture has one service");
+    };
+    service.runtime.healthcheck = Some(ContainerHealthcheck {
         test: ContainerHealthcheckTest::Shell(
             HealthcheckShellCommand::try_new("true").expect("valid healthcheck"),
         ),
@@ -688,6 +715,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -709,6 +737,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             services: vec![DeployServiceSpec {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 routes: vec![DeployRoute {
@@ -722,6 +751,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             }],
         },
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -752,6 +782,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionComm
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -813,6 +844,7 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
@@ -829,6 +861,7 @@ fn prepared_deploy_command(
         operation_id("op_123"),
         target_deploy_request(replicas),
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -864,6 +897,7 @@ pub(super) fn empty_deploy_command_with_running_container(
             services: Vec::new(),
         },
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {
                 namespace_id: namespace_id("default"),
@@ -939,6 +973,7 @@ pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
         &namespace_id("default"),
         &service_id("svc_api"),
         &image("registry.example/api:rev_2"),
+        &ployz_core::deploy::ImageSource::Registry,
         &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
     )
 }

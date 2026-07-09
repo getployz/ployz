@@ -453,6 +453,7 @@ const fn deploy_completion_outcome(
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::PreparingDataplane => "running:preparing-dataplane",
+        DeployRunningStage::EnsuringImages => "running:ensuring-images",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::RouteCutover => "running:route-cutover",
@@ -516,6 +517,7 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployContainerStarted { .. }
             | OperationEvent::DeployHealthCheckStarted { .. }
             | OperationEvent::DeployDataplanePrepared { .. }
+            | OperationEvent::DeployImageAvailabilityVerified { .. }
             | OperationEvent::DeployCleanupFinished { .. }
             | OperationEvent::DeployCompleted { .. }
             | OperationEvent::DeployFailed { .. }
@@ -574,6 +576,7 @@ fn render_replayed_event_text(
         | OperationEvent::DeployContainerStarted { .. }
         | OperationEvent::DeployHealthCheckStarted { .. }
         | OperationEvent::DeployDataplanePrepared { .. }
+        | OperationEvent::DeployImageAvailabilityVerified { .. }
         | OperationEvent::DeployCleanupFinished { .. }
         | OperationEvent::DeployCompleted { .. }
         | OperationEvent::CertRenewalSubmitted { .. }
@@ -626,6 +629,9 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployContainerStarted { .. } => "deploy.container_started",
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
         OperationEvent::DeployDataplanePrepared { .. } => "deploy.dataplane_prepared",
+        OperationEvent::DeployImageAvailabilityVerified { .. } => {
+            "deploy.image_availability_verified"
+        }
         OperationEvent::DeployCleanupFinished { .. } => "deploy.cleanup_finished",
         OperationEvent::DeployCompleted { .. } => "deploy.completed",
         OperationEvent::DeployFailed { .. } => "deploy.failed",
@@ -712,7 +718,11 @@ fn deploy_failure_service(
 fn deploy_failure_service_id(failure: &DeployOperationFailure) -> Option<&ServiceId> {
     match failure {
         DeployOperationFailure::PlanningFailed { service_id, .. }
-        | DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
+        | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
+        | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
+        | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
+        | DeployOperationFailure::SeedUnavailable { service_id, .. }
+        | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => Some(service_id),
         DeployOperationFailure::ControlPlaneCommitFailed { scope, .. } => match scope {
             ControlPlaneCommitScope::ServiceEntry { service_id, .. } => Some(service_id),
             ControlPlaneCommitScope::Namespace { .. }
@@ -741,9 +751,17 @@ fn deploy_failure_machines(failure: &DeployOperationFailure) -> String {
         }
         DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
         | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
-        | DeployOperationFailure::ContainerStartFailed { machine_id, .. } => {
+        | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
+        | DeployOperationFailure::UnsupportedTargetPlatform { machine_id, .. } => {
             if !machines.contains(&machine_id) {
                 machines.push(machine_id);
+            }
+        }
+        DeployOperationFailure::ImageMissingOnSeed { seed, .. }
+        | DeployOperationFailure::ImageDigestMismatch { seed, .. }
+        | DeployOperationFailure::SeedUnavailable { seed, .. } => {
+            if !machines.contains(&seed) {
+                machines.push(seed);
             }
         }
         DeployOperationFailure::DataplanePrepareTimedOut {

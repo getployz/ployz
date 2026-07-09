@@ -6,9 +6,11 @@ use ployz_core::deploy::{
     namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
 };
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::image::OciPlatform;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
@@ -22,6 +24,7 @@ pub struct DeployExecutionFacts {
     pub unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub dataplane_members: Vec<DataplaneMember>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
+    pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub step_timeout: Duration,
 }
@@ -97,6 +100,7 @@ pub fn prepare_deploy_execution_command(
         route_binding_removals,
         serving_target_removals,
         namespace_cleanup_candidates,
+        machine_platforms: facts.machine_platforms,
         dataplane_members: facts.dataplane_members,
         unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,

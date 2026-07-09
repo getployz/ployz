@@ -22,6 +22,7 @@ use std::time::Duration;
 async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
@@ -65,6 +66,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
@@ -125,6 +127,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     )
     .expect("valid machine observation snapshot");
     let facts = DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: vec![RouteBindingState {
             namespace_id: namespace_id("default"),
@@ -163,6 +166,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
 #[tokio::test]
 async fn empty_manifest_prepares_no_services() {
     let facts = DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
@@ -199,6 +203,7 @@ fn deploy_request() -> DeployRequest {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")
                 .expect("valid image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
