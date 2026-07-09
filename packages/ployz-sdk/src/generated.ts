@@ -124,6 +124,8 @@ export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, 
 
 export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort, };
 
+export type DeployRouteTarget = { "kind": "auto_hostname", port: RoutePort, } | { "kind": "hostname", hostname: RouteHostname, port: RoutePort, };
+
 export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServicePlan>, volume_pin_commits?: Array<VolumePinState>, cleanup_containers?: Array<DeployCleanupContainer>, };
 
 export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
@@ -141,6 +143,8 @@ export type ContainerRuntimeState = { "state": "running",
  * observation carries only the IP gateways dial.
  */
 ip?: string | null, health: ContainerHealth, } | { "state": "exited" };
+
+export type ContainerHealth = "none" | "starting" | "healthy" | "unhealthy";
 
 export type ManagedContainerHealthStatus = "starting" | "healthy" | "unhealthy";
 
@@ -189,6 +193,18 @@ export type DeployOperationState = { "state": "accepted" } | { "state": "plannin
 export type DeployRunningStage = "preparing_dataplane" | "starting_containers" | "waiting_for_health" | "route_cutover" | "serving_target_commit" | "removing_superseded_containers";
 
 export type DeployCompletionOutcome = "completed" | "completed_with_warnings" | "partially_completed" | "partially_completed_with_warnings";
+
+export type ServiceRestartOperationState = { "state": "accepted" } | { "state": "running", stage: ServiceRestartRunningStage, } | { "state": "completed" } | { "state": "failed", failure: ServiceRestartFailure, } | { "state": "cancelled", reason: CancellationReason, };
+
+export type ServiceRestartRunningStage = "restarting_containers" | "waiting_for_health";
+
+export type ServiceRestartFailure = { "kind": "no_such_service", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "no_running_containers", namespace_id: NamespaceId, service_id: ServiceId, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, service_id: ServiceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_restart_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "health_gate_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
+
+export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, };
+
+export type NamespaceRemoveRunningStage = "removing_route_bindings" | "removing_serving_targets" | "removing_containers";
+
+export type NamespaceRemoveFailure = { "kind": "intent_read_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_remove_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
 
 export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -386,6 +402,14 @@ export type ServiceListError = { "error": "unavailable", message: string, };
 export type ServiceInspectRequest = { namespace_id: NamespaceId, service_id: ServiceId, };
 
 export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", message: string, };
+
+export type ServiceRestartRequest = { operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, };
+
+export type ServiceRestartError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
+
+export type NamespaceRemoveError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type RuntimeSnapshotRequest = Record<symbol, never>;
 

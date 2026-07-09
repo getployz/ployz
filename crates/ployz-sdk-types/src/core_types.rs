@@ -15,7 +15,8 @@ pub use ployz_core::dataplane::{
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerMountPath,
     ContainerMountPathError, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
-    DeployPlanStep, DeployRequest, DeployRoute, DeployServicePlan, DeployServiceSpec, EnvName,
+    DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
+    DeployServiceSpec, EnvName,
     EnvNameError, EnvValue, EnvValueError, ImageReference, ImageReferenceError, ReplicaCount,
     ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
     VolumeName, VolumeNameError,

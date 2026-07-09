@@ -346,6 +346,7 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
           runtime: imageDefaultRuntime(),
           routes: (input.routes ?? []).map((route) => ({
             target: {
+              kind: "hostname" as const,
               hostname: routeHostname(route.hostname),
               port: routePort(route.port),
             },
@@ -425,13 +426,16 @@ export function runtimeSnapshotRequest(): RuntimeSnapshotRequest {
 export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailRequest {
   if (typeof input === "string") {
     return {
-      container_id: containerId(input),
+      target: { target: "container" as const, container_id: containerId(input) },
     };
   }
 
   return {
-    container_id: containerId(input.containerId),
-    ...(input.machineId ? { machine_id: machineId(input.machineId) } : {}),
+    target: {
+      target: "container" as const,
+      container_id: containerId(input.containerId),
+      ...(input.machineId ? { machine_id: machineId(input.machineId) } : {}),
+    },
     ...(input.tailLines === undefined ? {} : { tail_lines: logsTailLines(input.tailLines) }),
   };
 }
