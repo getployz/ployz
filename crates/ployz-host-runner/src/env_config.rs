@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use crate::cloud_client::get_text_url;
 use crate::release_manifest::{
     ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
+    read_release_manifest_text,
 };
 use crate::steps::FirstMachineInstallTarget;
 use ployz_core::ids::MachineId;
@@ -19,8 +19,7 @@ use crate::runtime::{
 };
 
 pub(crate) fn load_versioned_release_manifest(url: &str) -> Result<ReleaseManifest, String> {
-    let contents = get_text_url(url)
-        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    let contents = read_release_manifest_text(url)?;
     ReleaseManifest::parse(&contents)
 }
 
@@ -57,8 +56,7 @@ pub(crate) fn default_machine_join_template_file() -> Result<AbsoluteInstallPath
 
 fn load_local_release_manifest() -> Result<ReleaseManifest, String> {
     let url = local_release_manifest_url(Path::new("/etc/ployz/release.env"));
-    let contents = get_text_url(&url)
-        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    let contents = read_release_manifest_text(&url)?;
     ReleaseManifest::parse(&contents)
 }
 

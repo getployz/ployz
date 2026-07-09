@@ -790,9 +790,17 @@ pub enum PloyzctlExecutionError {
 }
 
 impl PloyzctlExecutionError {
-    /// Only a first-machine activation reply dropped by the mint's
-    /// authorization reload is retryable; every other failure is final.
+    /// Activation races the substrate the bootstrap just started: the NATS
+    /// listener may not accept connections yet, and the mint's authorization
+    /// reload can drop the first replies. Both classes retry within the
+    /// bounded activation budget; every other failure is final.
     fn is_first_machine_activation_retryable(&self) -> bool {
+        if let Self::NatsConnect(
+            NatsConnectError::Connect { .. } | NatsConnectError::Timeout { .. },
+        ) = self
+        {
+            return true;
+        }
         let Self::FirstMachineActivateApi { source } = self else {
             return false;
         };

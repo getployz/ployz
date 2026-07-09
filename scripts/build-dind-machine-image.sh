@@ -66,7 +66,12 @@ cargo build --release --target-dir /target "$@"' \
 # The eBPF bytecode build needs nightly + rust-src + bpf-linker; baking them
 # into a derived builder image keeps repeat builds fast.
 build_ebpf_builder_image() {
-  if docker image inspect "${EBPF_BUILDER_IMAGE}" >/dev/null 2>&1; then
+  # An existing tag only counts when its architecture matches the target
+  # platform: a stale image for another arch fails at run time.
+  local want_platform existing_arch
+  want_platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
+  existing_arch="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${EBPF_BUILDER_IMAGE}" 2>/dev/null || true)"
+  if [ "${existing_arch}" = "${want_platform}" ]; then
     return 0
   fi
 

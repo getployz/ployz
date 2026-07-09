@@ -52,7 +52,7 @@ use ployzd::adapters::docker::labels::{
     SERVICE_ID_LABEL,
 };
 use std::collections::{BTreeMap, HashMap};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use support::dind::assert::{
     all_managed_workload_containers, assert_deploy_event_sequence,
     assert_machine_add_event_sequence, assert_unit_active, connect_with_event_capture,
@@ -456,8 +456,9 @@ async fn scenario_machine_add_via_join_bundle() {
             "edge gateway must authenticate with the Machine creds: {gateway_env}"
         );
 
-        // The join token is single-use: re-redeeming it is refused and the
-        // failure is typed, not a fresh secret.
+        // The join token is single-use: a completed machine-add scrubs its
+        // token material, so re-redeeming is refused as an unknown token —
+        // a typed refusal, not a fresh secret.
         let join_client = connect_core_client(&core, NatsPrincipal::Join, &core.material.join_seed)
             .await
             .expect("join principal connects");
@@ -468,11 +469,11 @@ async fn scenario_machine_add_via_join_bundle() {
             .await;
         match redeem_again {
             Err(OperationApiClientError::Domain {
-                error: MachineJoinRedeemError::OperationNotPending { operation_id, .. },
+                error: MachineJoinRedeemError::UnknownJoinToken,
                 ..
-            }) => assert_eq!(operation_id, add_operation),
+            }) => {}
             other => {
-                panic!("token re-redeem must be refused as not-pending: {other:?}");
+                panic!("token re-redeem must be refused as an unknown token: {other:?}");
             }
         }
     })
@@ -562,7 +563,16 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     assert_deploy_event_sequence(&events, &deploy_operation);
 
     // Docker is execution reality: each machine runs exactly one managed
-    // workload container carrying the product's exact label values.
+    // workload container carrying the product's exact label values. The
+    // revision entry is the content-derived id of the deployed service spec.
+    let smoke_target = smoke_deploy_target();
+    let [smoke_service] = smoke_target.services.as_slice() else {
+        panic!("smoke deploy target carries one service");
+    };
+    let revision_entry = smoke_service
+        .namespace_revision_entry_id(&smoke_target.namespace_id)
+        .as_str()
+        .to_owned();
     for machine in [cluster.core(), edge] {
         let containers = managed_workload_containers(core, machine).await;
         let [container] = containers.as_slice() else {
@@ -573,7 +583,7 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
         };
         for (key, value) in [
             (SERVICE_ID_LABEL, "svc_smoke".to_owned()),
-            (NAMESPACE_REVISION_ENTRY_LABEL, "rev_local".to_owned()),
+            (NAMESPACE_REVISION_ENTRY_LABEL, revision_entry.clone()),
             (OPERATION_ID_LABEL, deploy_operation.as_str().to_owned()),
             (CONTAINER_TYPE_LABEL, "service".to_owned()),
         ] {
@@ -588,7 +598,7 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
 
     // The route serves through BOTH gateways via the published ports.
     for machine in [cluster.core(), edge] {
-        assert_gateway_serves(machine).await;
+        wait_for_gateway_serving(machine).await;
     }
 }
 
@@ -757,6 +767,24 @@ async fn assert_gateway_serves(machine: &DindMachine) {
         ),
         Err(error) => panic!("gateway on {} did not answer: {error}", machine.name),
     }
+}
+
+/// Waits for the smoke route's first answer through one machine's published
+/// gateway port: the gateway converges on route intent from NATS after the
+/// deploy completes, so first-serve is eventually consistent. Once serving,
+/// assertions use the single-shot [`assert_gateway_serves`].
+async fn wait_for_gateway_serving(machine: &DindMachine) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = String::from("<no attempt>");
+    while Instant::now() < deadline {
+        match gateway_http_get(machine.published.gateway, &route_host_header()).await {
+            Ok(response) if response.contains("Welcome to nginx") => return,
+            Ok(response) => last = format!("answered without the workload body: {response}"),
+            Err(error) => last = format!("did not answer: {error}"),
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("gateway on {} never served the route: {last}", machine.name);
 }
 
 // ---------------------------------------------------------------------------

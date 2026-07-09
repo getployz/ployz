@@ -191,11 +191,12 @@ impl HostCliHarness {
     fn new(machine: &DindMachine) -> Self {
         let dir = tempfile::TempDir::new().expect("create host cli harness dir");
         let ssh_program = dir.path().join("fake-ssh");
-        // The product runs `ssh -o BatchMode=yes -o ConnectTimeout=10
-        // <dest> <command>`; the stand-in routes the command into the
-        // machine container.
+        // The product runs `ssh <options...> <dest> <command>` with the
+        // remote command as the final argument; the stand-in routes that
+        // command into the machine container regardless of how many
+        // options precede it.
         let script = format!(
-            "#!/bin/sh\nexec docker exec -i {} sh -c \"$6\"\n",
+            "#!/bin/sh\nfor arg in \"$@\"; do command=\"$arg\"; done\nexec docker exec -i {} sh -c \"$command\"\n",
             machine.container_id
         );
         std::fs::write(&ssh_program, script).expect("write stand-in ssh");
@@ -242,8 +243,11 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
          PLOYZ_EBPF_TC_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc\n\
          PLOYZ_EBPF_TC_SHA256={}\n\
          PLOYZ_EBPF_CTL_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl\n\
-         PLOYZ_EBPF_CTL_SHA256={}\n",
-        shas.ployzd, shas.ebpf_bytecode, shas.ebpf_ctl,
+         PLOYZ_EBPF_CTL_SHA256={}\n\
+         PLOYZ_NATS_SERVER_VERSION={}\n\
+         PLOYZ_NATS_SERVER_URL={NATS_SERVER_ARCHIVE_PATH}\n\
+         PLOYZ_NATS_SERVER_SHA256={}\n",
+        shas.ployzd, shas.ebpf_bytecode, shas.ebpf_ctl, shas.nats_server_version, shas.nats_server,
     );
     write_file_in_container(
         docker,
@@ -290,7 +294,11 @@ async fn product_init_core(
         cluster_name: MachineJoinClusterName::try_new("dind-e2e").expect("valid cluster name"),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
         detach: false,
-        public_ip: None,
+        // Containers cannot self-discover a public address; the bridge IP is
+        // this machine's reachable address, and pinning it flips the NATS
+        // listener from loopback to external so the published port and edge
+        // joins can reach it.
+        public_ip: Some(core.bridge_ip),
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await
@@ -312,6 +320,10 @@ pub struct ArtifactShas {
     pub ployzd: String,
     pub ebpf_bytecode: String,
     pub ebpf_ctl: String,
+    pub nats_server: String,
+    /// The nats-server release version baked into the machine image next to
+    /// its archive, so the manifest never drifts from the image contents.
+    pub nats_server_version: String,
 }
 
 impl ArtifactShas {
@@ -330,8 +342,26 @@ impl ArtifactShas {
                 &format!("{ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl"),
             )
             .await,
+            nats_server: sha256_of(docker, core, NATS_SERVER_ARCHIVE_PATH).await,
+            nats_server_version: read_file_in_machine(docker, core, NATS_SERVER_VERSION_PATH)
+                .await
+                .trim()
+                .to_owned(),
         }
     }
+}
+
+/// Where the machine image bakes the nats-server release archive and its
+/// version, for the manifest's local nats-server artifact source.
+const NATS_SERVER_ARCHIVE_PATH: &str = "/opt/ployz/nats-server.tar.gz";
+const NATS_SERVER_VERSION_PATH: &str = "/opt/ployz/nats-server.version";
+
+async fn read_file_in_machine(docker: &Docker, machine: &DindMachine, path: &str) -> String {
+    let outcome = exec_in_container(docker, &machine.container_id, &["cat", path])
+        .await
+        .expect("exec cat");
+    assert!(outcome.success(), "cat {path} failed: {outcome:?}");
+    outcome.stdout
 }
 
 pub async fn sha256_of(docker: &Docker, machine: &DindMachine, path: &str) -> String {

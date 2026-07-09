@@ -9,7 +9,7 @@ use crate::cloud_bootstrap::{
     inspect_cloud_bootstrap_local_state, load_existing_cloud_attempt, load_or_create_cloud_attempt,
     persist_cloud_terminal_callback, reset_cloud_attempt, write_cloud_joiner_trusted_ca,
 };
-use crate::cloud_client::{CloudClient, get_text_url};
+use crate::cloud_client::CloudClient;
 use crate::command::SystemHostRunnerCommandRunner;
 use crate::executor::{HostRunnerPlanFailure, HostRunnerPlanTerminal};
 use crate::join_executor::execute_host_runner_join_with_redeemed;
@@ -458,8 +458,7 @@ fn public_ip_from_runtime_nats_url(
 
 fn load_release_manifest() -> Result<ReleaseManifest, String> {
     let url = release_manifest_url();
-    let contents = get_text_url(&url)
-        .map_err(|error| format!("failed to download release manifest {url}: {error}"))?;
+    let contents = crate::release_manifest::read_release_manifest_text(&url)?;
     ReleaseManifest::parse(&contents)
 }
 

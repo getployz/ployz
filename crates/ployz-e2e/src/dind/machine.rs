@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 
 /// NATS client port inside every machine container.
 pub const MACHINE_NATS_PORT: u16 = 4222;
-/// Gateway route port inside every machine container.
-pub const MACHINE_GATEWAY_PORT: u16 = 8080;
+/// Gateway route port inside every machine container: the Host Runner
+/// renders the gateway role env with its default listen address, port 80.
+pub const MACHINE_GATEWAY_PORT: u16 = 80;
 
 /// Total budget for systemd + inner dockerd readiness.
 const READINESS_BUDGET: Duration = Duration::from_secs(90);

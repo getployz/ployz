@@ -224,10 +224,24 @@ fn manifest_value(contents: &str, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("release manifest is missing {key}"))
 }
 
+/// Reads the manifest text behind a release manifest URL. Published release
+/// manifests live behind https and go through the https-only cloud client;
+/// a `file://` URL names manifest material already present on the machine
+/// (local installs, e2e formations) and is read directly from disk.
+pub(crate) fn read_release_manifest_text(url: &str) -> Result<String, String> {
+    if let Some(path) = url.strip_prefix("file://") {
+        return std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read release manifest {url}: {error}"));
+    }
+    crate::cloud_client::get_text_url(url)
+        .map_err(|error| format!("failed to download release manifest {url}: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactPloyzVersion, ReleaseManifest, persisted_release_manifest_url, release_manifest_url,
+        ExactPloyzVersion, ReleaseManifest, persisted_release_manifest_url,
+        read_release_manifest_text, release_manifest_url,
     };
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -334,5 +348,40 @@ mod tests {
             "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.7/ployz-release-linux-amd64.env"
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_url_manifest_is_read_from_disk() {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-release-{}.env",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, "PLOYZ_VERSION=local\n").expect("manifest can be written");
+
+        let url = format!("file://{}", path.display());
+        assert_eq!(
+            read_release_manifest_text(&url).expect("file manifest loads"),
+            "PLOYZ_VERSION=local\n"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn missing_file_url_manifest_reports_read_failure() {
+        let error = read_release_manifest_text("file:///nonexistent/ployz-release.env")
+            .expect_err("missing manifest file fails");
+
+        assert!(error.starts_with("failed to read release manifest file://"));
+    }
+
+    #[test]
+    fn non_https_remote_manifest_url_is_rejected() {
+        let error = read_release_manifest_text("http://releases.invalid/ployz-release.env")
+            .expect_err("plain http manifest URL fails");
+
+        assert!(error.starts_with("failed to download release manifest http://"));
     }
 }
