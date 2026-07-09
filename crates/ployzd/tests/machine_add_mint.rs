@@ -160,7 +160,7 @@ async fn machine_add_mints_unique_credentials_per_machine() {
 }
 
 #[tokio::test]
-async fn completed_machine_join_records_allocated_endpoint_subnet() {
+async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let config = nats.control_config().with_dataplane_endpoint_supernet(
@@ -182,7 +182,12 @@ async fn completed_machine_join_records_allocated_endpoint_subnet() {
     let [machine] = listed.machines.as_slice() else {
         panic!("expected one active machine");
     };
-    assert_eq!(machine.active.endpoint_subnet.as_string(), "10.199.0.0/24");
+    // The roster records the subnet the machine daemon derives for itself,
+    // so intent matches the machine's dataplane without a delivery channel.
+    assert_eq!(
+        machine.active.endpoint_subnet.as_string(),
+        ployz_core::dataplane::default_endpoint_subnet(&machine.active.machine_id)
+    );
 
     runtime
         .shutdown()
