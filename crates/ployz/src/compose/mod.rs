@@ -232,7 +232,6 @@ mod tests {
             services:
               web:
                 image: nginx
-                healthcheck: {}
                 mystery: true
               worker:
                 command: []
@@ -245,7 +244,6 @@ mod tests {
         .expect_err("strict compose rejects");
 
         let rendered = error.to_string();
-        assert!(rendered.contains("services.web.healthcheck"));
         assert!(rendered.contains("services.web.mystery"));
         assert!(rendered.contains("services.worker.image"));
         assert!(rendered.contains("services.worker.command"));
@@ -259,7 +257,7 @@ mod tests {
             services:
               web:
                 image: nginx
-                healthcheck: {}
+                mystery: true
             "#,
             base_dir: Path::new("."),
             interpolation_env: BTreeMap::new(),

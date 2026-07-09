@@ -200,7 +200,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
         services:
           web:
             image: nginx
-            healthcheck: {}
+            mystery: true
         "#,
     )
     .expect("write compose");
@@ -223,7 +223,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
             .warnings
             .first()
             .expect("one compose warning")
-            .contains("services.web.healthcheck")
+            .contains("services.web.mystery")
     );
 }
 

@@ -78,7 +78,7 @@ pub struct DeployServiceSpec {
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v4";
+        "ployz.namespace_revision_entry.v5";
     const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v3";
 
     #[must_use]
