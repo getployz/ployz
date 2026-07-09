@@ -1,0 +1,6 @@
+name: fixture_ports_rejected
+services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"

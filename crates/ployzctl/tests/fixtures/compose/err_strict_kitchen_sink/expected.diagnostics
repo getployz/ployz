@@ -2,7 +2,7 @@ services.web.deploy.mode  unsupported (planned)  global deploy mode is not deplo
 services.web.deploy.update_config  unsupported (planned)  update order is not deployed yet; remove it or pass --allow-unsupported
 services.web.healthcheck  unsupported (planned)  healthchecks are parsed but not deployed yet; remove it or pass --allow-unsupported
 services.web.mystery_option  unknown field  remove it or pass --allow-unsupported
-services.web.ports  unsupported (planned)  use x-route for ingress in this slice; remove it or pass --allow-unsupported
+services.web.ports  invalid value  standard Compose ports publish host ports; use x-ports for Ployz Route Bindings
 services.web.profiles  unsupported (planned)  profile resolution is deferred; remove it or pass --allow-unsupported
 services.web.volumes  unsupported (planned)  volumes are not deployed yet; remove it or pass --allow-unsupported
 services.web.x-pre_deploy  unsupported (planned)  pre-start hooks are not deployed yet; remove it or pass --allow-unsupported

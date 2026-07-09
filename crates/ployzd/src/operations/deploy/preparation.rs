@@ -34,7 +34,7 @@ pub fn prepare_deploy_execution_command(
         .services
         .iter()
         .flat_map(|service| service.routes.iter())
-        .map(|route| route.target.clone())
+        .filter_map(|route| route.target.concrete_target())
         .collect::<Vec<_>>();
     let declared_services = request
         .services

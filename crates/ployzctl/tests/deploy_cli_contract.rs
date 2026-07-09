@@ -1,8 +1,10 @@
 use std::process::{Command, Output};
 
-use ployz_core::deploy::{DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
+};
 use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::{RouteHostname, RoutePort};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
 use ployzctl::commands::deploy::{DeployCommand, DeployOutput};
@@ -28,7 +30,7 @@ fn cli_dispatches_deploy_request_with_route() {
     assert_eq!(
         first_service(&command).routes,
         vec![DeployRoute {
-            target: RouteTarget {
+            target: DeployRouteTarget::Hostname {
                 hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
                 port: RoutePort::try_new(443).expect("valid route port"),
             },
@@ -104,7 +106,7 @@ fn cli_deploy_shorthand_derives_full_request() {
     assert_eq!(
         first_service(&command).routes,
         vec![DeployRoute {
-            target: RouteTarget {
+            target: DeployRouteTarget::Hostname {
                 hostname: RouteHostname::try_new("app.example.com").expect("valid route hostname"),
                 port: RoutePort::try_new(80).expect("valid route port"),
             },
@@ -198,7 +200,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
         services:
           web:
             image: nginx
-            ports: ["8080:80"]
+            healthcheck: {}
         "#,
     )
     .expect("write compose");
@@ -221,7 +223,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
             .warnings
             .first()
             .expect("one compose warning")
-            .contains("services.web.ports")
+            .contains("services.web.healthcheck")
     );
 }
 

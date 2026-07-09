@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ployz_core::deploy::{
-    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployRoute, DeployServiceSpec,
-    EnvName, EnvValue, ImageReference, ReplicaCount, ServiceEnvironment, StopGracePeriod,
+    ContainerCommand, ContainerEntrypoint, ContainerRuntimeSpec, DeployRoute, DeployRouteTarget,
+    DeployServiceSpec, EnvName, EnvValue, ImageReference, ReplicaCount, ServiceEnvironment,
+    StopGracePeriod,
 };
 use ployz_core::ids::ServiceId;
+use ployz_core::ops::{RouteHostname, RoutePort};
 use serde_yaml::Value;
 
 use super::diagnostics::{ComposeFinding, ComposePath, KnownUnsupported, classify_service_key};
@@ -43,6 +45,7 @@ pub(crate) fn classify_service(
         deploy,
         stop_grace_period,
         x_route,
+        x_ports,
         build,
         cap_add,
         cap_drop,
@@ -195,13 +198,7 @@ pub(crate) fn classify_service(
         platform,
         KnownUnsupported::Platform,
     );
-    push_if_some(
-        &mut findings,
-        &service_path,
-        "ports",
-        ports,
-        KnownUnsupported::Ports,
-    );
+    reject_standard_ports(&mut findings, &service_path, ports);
     push_if_some(
         &mut findings,
         &service_path,
@@ -313,7 +310,7 @@ pub(crate) fn classify_service(
         &mut findings,
     );
     let stop_grace_period = parse_stop_grace_period(stop_grace_period, &service_path);
-    let routes = parse_routes(x_route, &service_path);
+    let routes = parse_routes(x_route, x_ports, &service_path);
 
     let mut service_valid = true;
     let service_id = match service_id {
@@ -403,6 +400,61 @@ fn push_if_some(
             service_path.field(field),
             feature,
         ));
+    }
+}
+
+fn reject_standard_ports(
+    findings: &mut Vec<ComposeFinding>,
+    service_path: &ComposePath,
+    ports: Option<Value>,
+) {
+    let Some(ports) = ports else {
+        return;
+    };
+    let ports_path = service_path.field("ports");
+    let mut found_host_mode = false;
+    reject_host_mode_ports(findings, &ports_path, &ports, &mut found_host_mode);
+    if !found_host_mode {
+        findings.push(ComposeFinding::invalid(
+            ports_path,
+            "standard Compose ports publish host ports; use x-ports for Ployz Route Bindings",
+        ));
+    }
+}
+
+fn reject_host_mode_ports(
+    findings: &mut Vec<ComposeFinding>,
+    path: &ComposePath,
+    value: &Value,
+    found_host_mode: &mut bool,
+) {
+    match value {
+        Value::Sequence(values) => {
+            for (index, value) in values.iter().enumerate() {
+                reject_host_mode_ports(findings, &path.index(index), value, found_host_mode);
+            }
+        }
+        Value::Mapping(mapping) => {
+            if mapping.contains_key(Value::String("published".to_owned())) {
+                *found_host_mode = true;
+                findings.push(ComposeFinding::invalid(
+                    path.field("published"),
+                    "long-syntax published ports are host publishing; use x-ports without published",
+                ));
+            }
+            if mapping
+                .get(Value::String("mode".to_owned()))
+                .and_then(scalar_to_string)
+                .is_some_and(|mode| mode == "host")
+            {
+                *found_host_mode = true;
+                findings.push(ComposeFinding::invalid(
+                    path.field("mode"),
+                    "mode: host publishes host ports; use x-ports for Ployz Route Bindings",
+                ));
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {}
     }
 }
 
@@ -860,28 +912,173 @@ fn parse_compose_duration(value: &str) -> Result<u64, String> {
 }
 
 fn parse_routes(
-    routes: Option<ComposeRoutes>,
+    x_route: Option<ComposeRoutes>,
+    x_ports: Option<Value>,
     service_path: &ComposePath,
 ) -> Result<Vec<DeployRoute>, Vec<ComposeFinding>> {
-    let Some(routes) = routes else {
-        return Ok(Vec::new());
-    };
     let mut findings = Vec::new();
     let mut parsed = Vec::new();
-    for (index, shorthand) in routes.into_shorthands().into_iter().enumerate() {
-        match parse_route_shorthand(&shorthand) {
-            Ok(route) => parsed.push(route),
-            Err(error) => findings.push(ComposeFinding::invalid(
-                service_path.field("x-route").index(index),
-                error,
-            )),
+    if let Some(routes) = x_route {
+        for (index, shorthand) in routes.into_shorthands().into_iter().enumerate() {
+            match parse_route_shorthand(&shorthand) {
+                Ok(route) => parsed.push(route),
+                Err(error) => findings.push(ComposeFinding::invalid(
+                    service_path.field("x-route").index(index),
+                    error,
+                )),
+            }
         }
+    }
+    if let Some(x_ports) = x_ports {
+        parse_x_ports(x_ports, service_path, &mut parsed, &mut findings);
     }
     if findings.is_empty() {
         Ok(parsed)
     } else {
         Err(findings)
     }
+}
+
+fn parse_x_ports(
+    value: Value,
+    service_path: &ComposePath,
+    parsed: &mut Vec<DeployRoute>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let path = service_path.field("x-ports");
+    let entries = match value {
+        Value::Sequence(entries) => entries,
+        value => vec![value],
+    };
+    for (index, entry) in entries.into_iter().enumerate() {
+        let path = path.index(index);
+        match parse_x_port_entry(entry, &path) {
+            Ok(route) => parsed.push(route),
+            Err(finding) => findings.push(finding),
+        }
+    }
+}
+
+fn parse_x_port_entry(value: Value, path: &ComposePath) -> Result<DeployRoute, ComposeFinding> {
+    match value {
+        Value::Number(number) => {
+            let endpoint_port = number.as_u64().ok_or_else(|| {
+                ComposeFinding::invalid(path.clone(), "x-ports port must be a positive integer")
+            })?;
+            let endpoint_port = u16::try_from(endpoint_port)
+                .map_err(|_| ComposeFinding::invalid(path.clone(), "x-ports port exceeds u16"))?;
+            Ok(auto_hostname_route(
+                endpoint_port,
+                RouteProtocol::Https,
+                path,
+            )?)
+        }
+        Value::String(value) => parse_x_port_shorthand(&value, path),
+        Value::Mapping(mapping) => {
+            if mapping.contains_key(Value::String("published".to_owned())) {
+                return Err(ComposeFinding::invalid(
+                    path.field("published"),
+                    "long-syntax published ports are host publishing; use x-ports shorthand without published",
+                ));
+            }
+            if mapping
+                .get(Value::String("mode".to_owned()))
+                .and_then(scalar_to_string)
+                .is_some_and(|mode| mode == "host")
+            {
+                return Err(ComposeFinding::invalid(
+                    path.field("mode"),
+                    "mode: host publishes host ports; use x-ports shorthand",
+                ));
+            }
+            Err(ComposeFinding::invalid(
+                path.clone(),
+                "x-ports entries must be 8080, 8080/http, or app.example.com:8080",
+            ))
+        }
+        Value::Null | Value::Bool(_) | Value::Sequence(_) | Value::Tagged(_) => {
+            Err(ComposeFinding::invalid(
+                path.clone(),
+                "x-ports entries must be 8080, 8080/http, or app.example.com:8080",
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteProtocol {
+    Http,
+    Https,
+}
+
+fn parse_x_port_shorthand(value: &str, path: &ComposePath) -> Result<DeployRoute, ComposeFinding> {
+    let (route, protocol) = match value.rsplit_once('/') {
+        Some((route, "http")) => (route, RouteProtocol::Http),
+        Some((route, "https")) => (route, RouteProtocol::Https),
+        Some((_route, other)) => {
+            return Err(ComposeFinding::invalid(
+                path.clone(),
+                format!("unsupported x-ports protocol {other:?}; use /http or /https"),
+            ));
+        }
+        None => (value, RouteProtocol::Https),
+    };
+    if let Some((hostname, endpoint_port)) = route.rsplit_once(':') {
+        return custom_hostname_route(hostname, endpoint_port, protocol, path);
+    }
+    let endpoint_port = route.parse::<u16>().map_err(|error| {
+        ComposeFinding::invalid(
+            path.clone(),
+            format!("x-ports endpoint port must be an integer: {error}"),
+        )
+    })?;
+    auto_hostname_route(endpoint_port, protocol, path)
+}
+
+fn auto_hostname_route(
+    endpoint_port: u16,
+    protocol: RouteProtocol,
+    path: &ComposePath,
+) -> Result<DeployRoute, ComposeFinding> {
+    Ok(DeployRoute {
+        target: DeployRouteTarget::AutoHostname {
+            port: protocol_port(protocol),
+        },
+        endpoint_port: RoutePort::try_new(endpoint_port)
+            .map_err(|error| ComposeFinding::invalid(path.clone(), error))?,
+    })
+}
+
+fn custom_hostname_route(
+    hostname: &str,
+    endpoint_port: &str,
+    protocol: RouteProtocol,
+    path: &ComposePath,
+) -> Result<DeployRoute, ComposeFinding> {
+    let hostname = RouteHostname::try_new(hostname)
+        .map_err(|error| ComposeFinding::invalid(path.clone(), error))?;
+    let endpoint_port = endpoint_port.parse::<u16>().map_err(|error| {
+        ComposeFinding::invalid(
+            path.clone(),
+            format!("x-ports endpoint port must be an integer: {error}"),
+        )
+    })?;
+    Ok(DeployRoute {
+        target: DeployRouteTarget::Hostname {
+            hostname,
+            port: protocol_port(protocol),
+        },
+        endpoint_port: RoutePort::try_new(endpoint_port)
+            .map_err(|error| ComposeFinding::invalid(path.clone(), error))?,
+    })
+}
+
+fn protocol_port(protocol: RouteProtocol) -> RoutePort {
+    let port = match protocol {
+        RouteProtocol::Http => 80,
+        RouteProtocol::Https => 443,
+    };
+    RoutePort::try_new(port).expect("route protocol port is valid")
 }
 
 #[cfg(test)]

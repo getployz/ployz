@@ -18,14 +18,14 @@
 mod support;
 
 use ployz_core::deploy::{
-    ContainerCommand, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployServiceSpec, EnvName,
-    EnvValue, ImageReference, ReplicaCount, ServiceEnvironment,
+    ContainerCommand, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget,
+    DeployServiceSpec, EnvName, EnvValue, ImageReference, ReplicaCount, ServiceEnvironment,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus, RouteTarget,
+    DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus,
 };
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
@@ -541,10 +541,10 @@ fn smoke_deploy_target() -> DeployRequest {
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             routes: vec![DeployRoute {
-                target: RouteTarget::new(
-                    route_hostname(ROUTE_HOSTNAME),
-                    route_port(dind::MACHINE_GATEWAY_PORT),
-                ),
+                target: DeployRouteTarget::Hostname {
+                    hostname: route_hostname(ROUTE_HOSTNAME),
+                    port: route_port(dind::MACHINE_GATEWAY_PORT),
+                },
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],
         }],

@@ -1,10 +1,10 @@
 {
-  "namespace_id": "fixture_kitchen_sink",
+  "namespace_id": "fixture_x_ports_default_https",
   "services": [
     {
       "service_id": "web",
-      "image": "nginx:latest",
-      "replicas": 2,
+      "image": "nginx",
+      "replicas": 1,
       "runtime": {
         "command": null,
         "entrypoint": null,
@@ -18,6 +18,13 @@
             "port": 443
           },
           "endpoint_port": 8080
+        },
+        {
+          "target": {
+            "kind": "auto_hostname",
+            "port": 443
+          },
+          "endpoint_port": 8081
         }
       ]
     }

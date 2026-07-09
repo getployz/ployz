@@ -3,7 +3,7 @@
 //! workspace test suites.
 
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
@@ -11,7 +11,6 @@ use ployz_core::install::{
     MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::RouteTarget;
 
 use crate::ids::{namespace_id, route_hostname, route_port, service_id};
 
@@ -98,7 +97,10 @@ pub fn deploy_target_with_route(
         panic!("deploy target fixture has one service");
     };
     service_spec.routes.push(DeployRoute {
-        target: RouteTarget::new(route_hostname(hostname), route_port(gateway_port)),
+        target: DeployRouteTarget::Hostname {
+            hostname: route_hostname(hostname),
+            port: route_port(gateway_port),
+        },
         endpoint_port: route_port(endpoint_port),
     });
     request

@@ -5,8 +5,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, DeployServiceSpec, ImageReference,
-    ReplicaCount,
+    DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -631,7 +631,11 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
                 replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 routes: vec![DeployRoute {
-                    target: route_target("api.example.com", 443),
+                    target: DeployRouteTarget::Hostname {
+                        hostname: RouteHostname::try_new("api.example.com")
+                            .expect("valid route hostname"),
+                        port: route_port(443),
+                    },
                     endpoint_port: route_port(8080),
                 }],
             }],

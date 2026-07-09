@@ -7,8 +7,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployPlanningInput, DeployRequest, DeployRoute, DeployServiceRequest, DeployServiceSpec,
-    ImageReference, ReplicaCount, plan_namespace_deploy,
+    DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceRequest,
+    DeployServiceSpec, ImageReference, ReplicaCount, plan_namespace_deploy,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
@@ -16,7 +16,6 @@ use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFa
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, EventSequence,
     OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
-    RouteTarget,
 };
 use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
@@ -757,7 +756,10 @@ fn deploy_target_with_route(
         panic!("deploy target has one service");
     };
     service.routes = vec![DeployRoute {
-        target: RouteTarget::new(route_hostname(hostname), self::route_port(route_port)),
+        target: DeployRouteTarget::Hostname {
+            hostname: route_hostname(hostname),
+            port: self::route_port(route_port),
+        },
         endpoint_port: self::route_port(endpoint_port),
     }];
     target

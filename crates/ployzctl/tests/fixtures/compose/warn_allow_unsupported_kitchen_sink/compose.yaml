@@ -11,8 +11,8 @@ services:
       test: ["CMD", "true"]
     volumes:
       - data:/data
-    ports:
-      - "8080:80"
+    x-ports:
+      - 8080
     x-pre_deploy:
       - ./migrate.sh
     profiles:
