@@ -10,9 +10,10 @@ use ployz_core::dataplane::{
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::ops::{
-    DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    ReplayedOperationEvent,
+    DeployOperationFailure, DeployOperationState, DeployRunningStage, HealthCheckFailure,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperatorHint, ReplayedOperationEvent,
+    RetainedArtifact,
 };
 use ployz_core::state::{MachineLifecycle, ServingTargetEntry};
 use ployz_sdk_types::{LogsTailLines, ServiceSnapshot};
@@ -879,6 +880,35 @@ fn ops_watch_renders_persisted_operation_events() {
 }
 
 #[test]
+fn ops_watch_renders_failed_deploy_details() {
+    let output = WatchOutput {
+        events: vec![
+            replayed(
+                1,
+                ployz_core::ops::OperationEvent::DeploySubmitted {
+                    operation_id: operation_id("op_123"),
+                    target: deploy_request(),
+                },
+            ),
+            replayed(
+                4,
+                ployz_core::ops::OperationEvent::DeployFailed {
+                    operation_id: operation_id("op_123"),
+                    failure: health_check_failure(),
+                },
+            ),
+        ],
+        output: OpsWatchOutput::Text,
+    }
+    .render();
+
+    assert_eq!(
+        output,
+        "1 deploy.submitted\n4 deploy.failed class health-gate-failed service svc_api machine machine_7 evidence ctr_123 logs ployzctl logs ctr_123\n"
+    );
+}
+
+#[test]
 fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
     let event = replayed(
         3,
@@ -979,6 +1009,25 @@ fn ops_status_renders_operation_state() {
 }
 
 #[test]
+fn ops_status_renders_failed_deploy_details() {
+    let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::Deploy {
+        id: operation_id("op_deploy"),
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+        state: DeployOperationState::Failed {
+            failure: health_check_failure(),
+        },
+        last_event_sequence: event_sequence(8),
+    }))
+    .render();
+
+    assert_eq!(
+        output,
+        "operation op_deploy\nkind deploy\nservice svc_api\nstate failed\nfailure class health-gate-failed service svc_api machine machine_7 evidence ctr_123 logs ployzctl logs ctr_123\nlast-event 8\n"
+    );
+}
+
+#[test]
 fn ops_status_renders_unclaimed_machine_add() {
     let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::MachineAdd {
         id: operation_id("op_machine"),
@@ -1047,6 +1096,23 @@ fn service_snapshot(service_id: &str, namespace_revision_entry_id: &str) -> Serv
             )
             .expect("valid revision id"),
         },
+    }
+}
+
+fn health_check_failure() -> DeployOperationFailure {
+    DeployOperationFailure::HealthCheckFailed {
+        health_check: HealthCheckFailure::ProbeFailed {
+            machine_id: machine_id("machine_7"),
+            container_id: ContainerId::try_new("ctr_123").expect("valid container id"),
+            message: ployz_core::ops::FailureMessage::try_new("probe failed")
+                .expect("valid failure message"),
+            log_hint: OperatorHint::try_new("ployzctl logs ctr_123").expect("valid operator hint"),
+        },
+        retained_artifacts: vec![RetainedArtifact::StartedContainer {
+            machine_id: machine_id("machine_7"),
+            container_id: ContainerId::try_new("ctr_123").expect("valid container id"),
+            log_hint: OperatorHint::try_new("ployzctl logs ctr_123").expect("valid operator hint"),
+        }],
     }
 }
 
