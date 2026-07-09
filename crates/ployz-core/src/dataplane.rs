@@ -761,6 +761,7 @@ mod tests {
                 }],
             }],
             cleanup_containers: Vec::new(),
+            volume_pin_commits: Vec::new(),
         };
 
         let request = DataplanePrepareRequest::for_deploy_plan(
