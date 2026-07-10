@@ -29,6 +29,9 @@ use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// A container without a Docker healthcheck must stay running this long
+/// before deploy completion commits it: a fast-exiting process can be
+/// sampled alive once, and one running observation is not survival.
 const DEPLOY_RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_millis(1_500);
 
 pub async fn run_deploy_operation<D, N, H>(
