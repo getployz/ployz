@@ -18,6 +18,7 @@ use super::model::{
     ComposeCommand, ComposeDeploy, ComposeEnvFile, ComposeEnvFileEntry, ComposeEnvironment,
     ComposeRoutes, ComposeService,
 };
+use super::volumes::parse_volume_mounts;
 use crate::commands::deploy::parse_route_shorthand;
 
 const DEFAULT_REPLICA_COUNT: u16 = 1;
@@ -225,13 +226,6 @@ pub(crate) fn classify_service(
     push_if_some(
         &mut findings,
         &service_path,
-        "volumes",
-        volumes,
-        KnownUnsupported::Volumes,
-    );
-    push_if_some(
-        &mut findings,
-        &service_path,
         "working_dir",
         working_dir,
         KnownUnsupported::WorkingDir,
@@ -275,6 +269,7 @@ pub(crate) fn classify_service(
     let restart_policy = parse_restart_policy(restart, restart_policy, &service_path);
     let cap_add = parse_capabilities(cap_add, &service_path.field("cap_add"));
     let cap_drop = parse_capabilities(cap_drop, &service_path.field("cap_drop"));
+    let volume_mounts = parse_volume_mounts(volumes, &service_path);
     let routes = parse_routes(x_route, x_ports, &service_path);
     let depends_on = parse_depends_on(depends_on, &service_path.field("depends_on"));
     let pre_start = parse_pre_start(pre_start, &service_path.field("pre_start"));
@@ -359,6 +354,14 @@ pub(crate) fn classify_service(
             Vec::new()
         }
     };
+    let volume_mounts = match volume_mounts {
+        Ok(volume_mounts) => volume_mounts,
+        Err(mut volume_findings) => {
+            findings.append(&mut volume_findings);
+            service_valid = false;
+            Vec::new()
+        }
+    };
     let routes = match routes {
         Ok(routes) => routes,
         Err(mut route_findings) => {
@@ -394,7 +397,7 @@ pub(crate) fn classify_service(
                 entrypoint,
                 environment,
                 stop_grace_period,
-                volume_mounts: Vec::new(),
+                volume_mounts,
                 healthcheck,
                 restart_policy,
                 cap_add,

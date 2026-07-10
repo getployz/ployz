@@ -3,6 +3,7 @@ mod env_files;
 mod interpolate;
 mod model;
 mod translate;
+mod volumes;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -17,6 +18,7 @@ use self::diagnostics::{ComposeDiagnostics, ComposeFinding, ComposePath, KnownUn
 use self::interpolate::{InterpolationFindingKind, apply_merge, interpolate_value};
 use self::model::{ComposeDocument, ComposeService};
 use self::translate::{ServiceTranslateInput, classify_service};
+use self::volumes::validate_top_level_volumes;
 use crate::commands::{PloyzctlCliError, cli_error};
 
 pub struct ComposeInput<'a> {
@@ -59,8 +61,8 @@ pub fn parse_deploy_file(
             "version is obsolete compose metadata; ignored",
         ));
     }
+    validate_top_level_volumes(volumes, &mut findings);
     let top_level_unsupported = [
-        ("volumes", volumes, KnownUnsupported::TopLevelVolumes),
         ("networks", networks, KnownUnsupported::TopLevelNetworks),
         ("secrets", secrets, KnownUnsupported::Secrets),
         ("configs", configs, KnownUnsupported::Configs),
@@ -524,7 +526,6 @@ mod tests {
 
         let rendered = error.to_string();
         for line in [
-            "volumes  unsupported",
             "networks  unsupported",
             "secrets  unsupported",
             "configs  unsupported",

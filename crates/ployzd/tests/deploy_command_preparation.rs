@@ -45,6 +45,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
+        has_managed_lease: false,
         step_timeout: Duration::from_secs(5),
     };
 
@@ -83,6 +84,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
+        has_managed_lease: false,
         step_timeout: Duration::from_secs(5),
     };
 
@@ -144,6 +146,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             &namespace_id("default"),
             &[omitted_container],
         ),
+        has_managed_lease: false,
         step_timeout: Duration::from_secs(5),
     };
 
@@ -171,6 +174,7 @@ async fn empty_manifest_prepares_no_services() {
         dataplane_members: Vec::new(),
         observed_machines: Vec::new(),
         namespace_cleanup_candidates: Vec::new(),
+        has_managed_lease: false,
         step_timeout: Duration::from_secs(5),
     };
     let command = prepare_deploy_execution_command(

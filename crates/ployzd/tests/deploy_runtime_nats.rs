@@ -4,7 +4,9 @@ mod fixtures;
 
 use fixtures::*;
 use futures_util::StreamExt;
-use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
+use ployz_core::deploy::{
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
+};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
@@ -235,6 +237,74 @@ async fn health_failure_records_failed_operation_without_committing_active_state
                 },
             ..
         }) if retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
+    ));
+}
+
+#[tokio::test]
+async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
+    let nats = test_nats().await;
+    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let mut request = deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.routes.push(DeployRoute {
+        target: DeployRouteTarget::AutoHostname {
+            port: route_port(443),
+        },
+        endpoint_port: route_port(8080),
+    });
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(request))
+        .await
+        .expect("deploy operation accepted");
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
+    let mut health = RecordingHealth::healthy();
+
+    let error = run_deploy_operation(
+        accepted,
+        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            controllers: controllers.clone(),
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("lease-less auto DNS deploy fails");
+    let status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
+
+    assert!(matches!(
+        error,
+        DeployOperationRunError::AutoDnsWithoutLease {
+            failure_record_error: None
+        }
+    ));
+    assert!(runtime.requests.is_empty());
+    assert!(matches!(
+        status,
+        Some(OperationStatus::Deploy {
+            state: DeployOperationState::Failed {
+                failure: DeployOperationFailure::AutoDnsWithoutLease { message, .. },
+            },
+            ..
+        }) if message.as_str().contains("re-run init with --public-url auto")
     ));
 }
 

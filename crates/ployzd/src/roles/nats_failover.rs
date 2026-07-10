@@ -306,6 +306,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
+            managed_lease: None,
         }
     }
 

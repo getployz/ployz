@@ -1,4 +1,5 @@
 use clap::Args;
+use ployz_core::cert::PublicUrlMode;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{FirstMachineInstallSpec, NatsMachineMaterialPaths};
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy, plan_first_machine_process_set};
@@ -101,12 +102,23 @@ pub enum FirstMachineInitMode {
 pub struct FirstMachineActivateCommand {
     pub machine_id: MachineId,
     pub roles: InstallRolePolicy,
+    pub public_url_mode: PublicUrlMode,
 }
 
 impl FirstMachineActivateCommand {
     #[must_use]
     pub const fn new(machine_id: MachineId, roles: InstallRolePolicy) -> Self {
-        Self { machine_id, roles }
+        Self {
+            machine_id,
+            roles,
+            public_url_mode: PublicUrlMode::Auto,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_public_url_mode(mut self, public_url_mode: PublicUrlMode) -> Self {
+        self.public_url_mode = public_url_mode;
+        self
     }
 
     #[must_use]
@@ -114,6 +126,7 @@ impl FirstMachineActivateCommand {
         InitFirstMachineActivateRequest {
             machine_id: self.machine_id,
             roles: self.roles,
+            public_url_mode: self.public_url_mode,
         }
     }
 }
@@ -288,10 +301,10 @@ pub(crate) fn first_machine_activate_command(
 ) -> Result<FirstMachineActivateCommand, PloyzctlCliError> {
     let machine_id =
         MachineId::try_new(parsed.machine).map_err(|error| invalid_value("--machine", error))?;
-    Ok(FirstMachineActivateCommand::new(
-        machine_id,
-        parsed.roles.into_policy(),
-    ))
+    Ok(
+        FirstMachineActivateCommand::new(machine_id, parsed.roles.into_policy())
+            .with_public_url_mode(parse_public_url_mode(&parsed.public_url)?),
+    )
 }
 
 #[derive(Debug, Args)]
@@ -300,6 +313,20 @@ pub(crate) struct FirstMachineActivateCli {
     machine: String,
     #[command(flatten)]
     roles: RolePolicyCli,
+    #[arg(long = "public-url", default_value = "auto")]
+    public_url: String,
+}
+
+pub(crate) fn parse_public_url_mode(value: &str) -> Result<PublicUrlMode, PloyzctlCliError> {
+    match value {
+        "auto" => Ok(PublicUrlMode::Auto),
+        "bring-your-own" => Ok(PublicUrlMode::BringYourOwn),
+        "none" => Ok(PublicUrlMode::None),
+        _ => Err(PloyzctlCliError::InvalidValue {
+            flag: "--public-url",
+            message: format!("expected auto, bring-your-own, or none; received {value:?}"),
+        }),
+    }
 }
 
 fn reject_host_runner_mode_role_flags(roles: RolePolicyCli) -> Result<(), PloyzctlCliError> {

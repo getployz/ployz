@@ -56,7 +56,7 @@ pub(crate) struct ComposeService {
     pub security_opt: Option<Value>,
     pub ulimits: Option<Value>,
     pub user: Option<Value>,
-    pub volumes: Option<Value>,
+    pub volumes: Option<Vec<ComposeVolume>>,
     pub working_dir: Option<Value>,
     #[serde(flatten)]
     pub unrecognized: BTreeMap<String, Value>,
@@ -105,6 +105,42 @@ pub(crate) enum ComposeEnvFileEntry {
         #[serde(flatten)]
         unrecognized: BTreeMap<String, Value>,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ComposeVolume {
+    Short(String),
+    Long(Box<ComposeLongVolume>),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ComposeLongVolume {
+    #[serde(rename = "type")]
+    pub mount_type: Option<ComposeVolumeType>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    pub read_only: Option<bool>,
+    pub volume: Option<Value>,
+    pub bind: Option<Value>,
+    pub tmpfs: Option<Value>,
+    #[serde(flatten)]
+    pub unrecognized: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ComposeVolumeType {
+    Known(ComposeKnownVolumeType),
+    Other(String),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ComposeKnownVolumeType {
+    Volume,
+    Bind,
+    Tmpfs,
 }
 
 #[derive(Debug, Deserialize)]

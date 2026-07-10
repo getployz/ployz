@@ -159,10 +159,8 @@ pub(crate) enum KnownUnsupported {
     Secrets,
     SecurityOpt,
     TopLevelNetworks,
-    TopLevelVolumes,
     Ulimits,
     User,
-    Volumes,
     WorkingDir,
 }
 
@@ -181,9 +179,7 @@ impl KnownUnsupported {
             | Self::Ports
             | Self::Profiles
             | Self::Secrets
-            | Self::TopLevelNetworks
-            | Self::TopLevelVolumes
-            | Self::Volumes => "planned",
+            | Self::TopLevelNetworks => "planned",
             Self::CgroupParent
             | Self::Devices
             | Self::Dns
@@ -229,10 +225,8 @@ impl KnownUnsupported {
             Self::PullPolicy => "pull policy is not deployed yet",
             Self::Secrets => "secrets are planned separately",
             Self::TopLevelNetworks => "top-level networks are not deployed yet",
-            Self::TopLevelVolumes => "top-level named volumes are not deployed yet",
             Self::Ulimits => "ulimits are not deployed yet",
             Self::User => "container user is not deployed yet",
-            Self::Volumes => "volumes are not deployed yet",
             Self::WorkingDir => "working directory is not deployed yet",
         }
     }
@@ -316,7 +310,6 @@ pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
         "security_opt" => Some(KnownUnsupported::SecurityOpt),
         "ulimits" => Some(KnownUnsupported::Ulimits),
         "user" => Some(KnownUnsupported::User),
-        "volumes" => Some(KnownUnsupported::Volumes),
         "working_dir" => Some(KnownUnsupported::WorkingDir),
         _ => None,
     }
