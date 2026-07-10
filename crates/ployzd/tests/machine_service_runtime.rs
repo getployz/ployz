@@ -32,10 +32,10 @@ use ployzd::roles::machine::protocol::{
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
-    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
-    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
+    MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
+    MachineSubstrateReportRpcRequest, MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -1123,6 +1123,82 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
 }
 
 #[tokio::test]
+async fn machine_wireguard_service_prepares_without_full_dataplane_response() {
+    let nats = test_nats().await;
+    let state = RecordingWireGuardEbpfState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        idle_runner(),
+        RecordingWireGuardEbpf::new(state.clone()),
+        idle_logs(),
+    )
+    .await
+    .expect("machine wireguard service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let response = request_json::<_, MachineDataplanePrepareRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::DataplanePrepare,
+        ),
+        &MachineDataplanePrepareRpcRequest::ployz_native_mesh(
+            operation_id("op_123"),
+            vec![machine_id("machine_a")],
+            MachinePloyzNativeMeshPrepareRpcRequest::PrepareWireGuard {
+                endpoint_routes: endpoint_routes(&["machine_a"]),
+                peers: Vec::new(),
+            },
+        ),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine service responds");
+
+    assert!(matches!(
+        response,
+        MachineDataplanePrepareRpcResponse::Ok(
+            MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady { machine_id, .. }
+        ) if machine_id == self::machine_id("machine_a")
+    ));
+    assert_eq!(state.prepare_count(), 1);
+}
+
+#[tokio::test]
+async fn machine_dataplane_service_reports_on_demand_link_mtu() {
+    let nats = test_nats().await;
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        idle_runner(),
+        RecordingWireGuardEbpf::new(RecordingWireGuardEbpfState::default()),
+        idle_logs(),
+    )
+    .await
+    .expect("machine dataplane service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let testimony = NatsMachineDataplanePreparer::new(nats.client)
+        .probe_link_mtu(
+            &machine_id("machine_a"),
+            machine_id("machine_b"),
+            "10.198.2.254".parse().expect("peer gateway"),
+        )
+        .await
+        .expect("link MTU probe succeeds");
+
+    assert_eq!(testimony.machine_id, machine_id("machine_a"));
+    assert_eq!(testimony.peer_machine_id, machine_id("machine_b"));
+    assert_eq!(testimony.path_mtu, 1380);
+}
+
+#[tokio::test]
 async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machine() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
@@ -1606,6 +1682,30 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
             Some(error) => Err(error.clone()),
             None => Ok(ready_components()),
         }
+    }
+
+    async fn prepare_wireguard(
+        &self,
+        endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+        peers: &[ployz_core::dataplane::WireGuardPeer],
+    ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
+        self.prepare_ployz_native_mesh(endpoint_routes, peers)
+            .await
+            .map(|ready| ready.wireguard)
+    }
+
+    async fn probe_overlay(
+        &self,
+        _peers: &[ployz_core::dataplane::WireGuardPublicKey],
+    ) -> Result<Vec<ployz_core::dataplane::WireGuardPublicKey>, WireGuardEbpfPrepareError> {
+        Ok(Vec::new())
+    }
+
+    async fn probe_link_mtu(
+        &self,
+        _peer_gateway: std::net::Ipv4Addr,
+    ) -> Result<u32, WireGuardEbpfPrepareError> {
+        Ok(1380)
     }
 }
 

@@ -1,6 +1,7 @@
 //! Operator-facing operation service handlers.
 
 pub mod admission;
+mod connectivity_proof;
 mod core_replace;
 mod error_map;
 mod first_machine;

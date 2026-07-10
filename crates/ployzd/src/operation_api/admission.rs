@@ -159,6 +159,7 @@ pub struct OperationControllers {
     /// and the resubmit converges from observed reality rather than resuming a
     /// half-held lock. Do not reintroduce a durable lock here.
     namespace_locks: Arc<Mutex<BTreeMap<NamespaceId, OperationId>>>,
+    mesh_lock: Arc<Mutex<()>>,
     machine_bootstrap: MachineAddBootstrapConfig,
     pending_join_recovery: Arc<Mutex<Vec<PendingMachineJoinRecovery>>>,
 }
@@ -172,6 +173,7 @@ impl OperationControllers {
         Self {
             repository,
             namespace_locks: Arc::default(),
+            mesh_lock: Arc::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::default(),
         }
@@ -186,9 +188,15 @@ impl OperationControllers {
         Self {
             repository,
             namespace_locks: Arc::default(),
+            mesh_lock: Arc::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::new(Mutex::new(pending_join_recovery)),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn mesh_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.mesh_lock)
     }
 
     pub async fn submit_deploy(

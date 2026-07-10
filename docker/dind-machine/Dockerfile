@@ -21,6 +21,7 @@ RUN apt-get update \
     docker.io \
     iproute2 \
     iptables \
+    iputils-ping \
     procps \
     systemd \
     systemd-sysv \
