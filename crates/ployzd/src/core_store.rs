@@ -126,7 +126,11 @@ const MIGRATIONS: &[&str] = &[
         namespace_id                  TEXT PRIMARY KEY,
         last_issued                   TEXT NOT NULL,
         last_committed                TEXT,
-        committed_owner_operation_id  TEXT
+        committed_owner_operation_id  TEXT,
+        CHECK (
+            (last_committed IS NULL AND committed_owner_operation_id IS NULL)
+            OR (last_committed IS NOT NULL AND committed_owner_operation_id IS NOT NULL)
+        )
     );
     ",
 ];
@@ -417,5 +421,24 @@ mod tests {
             reopened.control_plane_epoch().await.expect("read epoch"),
             ControlPlaneEpoch::initial()
         );
+    }
+
+    #[tokio::test]
+    async fn deploy_reservation_commit_requires_an_operation_owner() {
+        let store = CoreStore::open_in_memory().await.expect("open store");
+
+        let error = store
+            .call(|conn| {
+                conn.execute(
+                    "INSERT INTO deploy_reservations
+                     (namespace_id, last_issued, last_committed)
+                     VALUES ('default', '1', '1')",
+                    [],
+                )
+            })
+            .await
+            .expect_err("committed reservation without owner is rejected");
+
+        assert!(matches!(error, CoreStoreError::Sqlite(_)));
     }
 }

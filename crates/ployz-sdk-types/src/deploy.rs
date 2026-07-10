@@ -63,7 +63,7 @@ pub enum DeploySubmitError {
         expired_at: DeployReservationExpiresAt,
     },
     #[error(
-        "deploy reservation {} is stale; namespace {} committed newer reservation {}",
+        "deploy reservation {} is stale; namespace {} committed newer reservation {}; rerun deploy to supersede deliberately",
         .reservation_id.get(),
         .namespace_id.as_str(),
         .last_committed_reservation_id.get()

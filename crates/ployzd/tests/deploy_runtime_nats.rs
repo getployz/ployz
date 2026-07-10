@@ -25,7 +25,7 @@ use ployzd::operations::deploy::DeployMachineCandidates;
 use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
-use ployzd::operations::log::OperationRepository;
+use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
@@ -494,6 +494,44 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             .expect("status reads")
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
+    let nats = test_nats().await;
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let older = reserve_deploy(&controllers).await;
+    let newer = reserve_deploy(&controllers).await;
+    controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_newer"),
+            idempotency_key: idempotency_key("idem_newer"),
+            reservation_id: newer,
+            target: deploy_request(1),
+        })
+        .await
+        .expect("newer deploy operation accepted");
+
+    let error = controllers
+        .submit_deploy(DeploySubmitCommand {
+            operation_id: operation_id("op_older"),
+            idempotency_key: idempotency_key("idem_older"),
+            reservation_id: older,
+            target: deploy_request(1),
+        })
+        .await
+        .expect_err("older reservation is stale after newer admission");
+
+    assert!(matches!(
+        error,
+        SubmitCommandError::Submit(SubmitOperationError::StaleDeployReservation {
+            namespace_id: stale_namespace_id,
+            reservation_id,
+            last_committed_reservation_id,
+        }) if stale_namespace_id == namespace_id("default")
+            && reservation_id == older
+            && last_committed_reservation_id == newer
+    ));
 }
 
 #[tokio::test]

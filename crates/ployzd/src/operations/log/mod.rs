@@ -10,8 +10,7 @@
 use crate::core_store::{
     CoreStore, CoreStoreError, from_json, query_json, query_json_list, to_json,
 };
-use ployz_core::deploy::DeployReservationId;
-use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
@@ -60,46 +59,6 @@ impl OperationRepository {
             .call(move |conn| submit_operation_txn::<K>(conn, closure_id, closure_payload))
             .await
             .map_err(store_status)?;
-        self.finish_submit(operation_id, payload, outcome).await
-    }
-
-    async fn submit_deploy_operation(
-        &self,
-        operation_id: OperationId,
-        payload: DeployOperationPayload,
-    ) -> Result<SubmittedOperation<DeployOperationPayload>, SubmitOperationError> {
-        let closure_payload = payload.clone();
-        let closure_id = operation_id.clone();
-        let outcome = self
-            .store
-            .call(move |conn| submit_deploy_operation_txn(conn, closure_id, closure_payload))
-            .await
-            .map_err(store_status)?;
-        let outcome = match outcome {
-            DeploySubmitTxn::Submission(outcome) => *outcome,
-            DeploySubmitTxn::Stale {
-                namespace_id,
-                reservation_id,
-                last_committed_reservation_id,
-            } => {
-                return Err(SubmitOperationError::StaleDeployReservation {
-                    namespace_id,
-                    reservation_id,
-                    last_committed_reservation_id,
-                });
-            }
-            DeploySubmitTxn::AlreadyCommitted {
-                namespace_id,
-                reservation_id,
-                owner_operation_id,
-            } => {
-                return Err(SubmitOperationError::DeployReservationAlreadyCommitted {
-                    namespace_id,
-                    reservation_id,
-                    owner_operation_id,
-                });
-            }
-        };
         self.finish_submit(operation_id, payload, outcome).await
     }
 
@@ -251,20 +210,6 @@ enum SubmitTxn<P> {
     },
 }
 
-enum DeploySubmitTxn {
-    Submission(Box<SubmitTxn<DeployOperationPayload>>),
-    Stale {
-        namespace_id: NamespaceId,
-        reservation_id: DeployReservationId,
-        last_committed_reservation_id: DeployReservationId,
-    },
-    AlreadyCommitted {
-        namespace_id: NamespaceId,
-        reservation_id: DeployReservationId,
-        owner_operation_id: OperationId,
-    },
-}
-
 fn submit_operation_txn<K: OperationAction>(
     conn: &mut Connection,
     operation_id: OperationId,
@@ -277,25 +222,6 @@ fn submit_operation_txn<K: OperationAction>(
     let created = create_submit::<K>(&transaction, operation_id, payload)?;
     transaction.commit()?;
     Ok(created)
-}
-
-fn submit_deploy_operation_txn(
-    conn: &mut Connection,
-    operation_id: OperationId,
-    payload: DeployOperationPayload,
-) -> Result<DeploySubmitTxn, rusqlite::Error> {
-    let transaction = conn.transaction()?;
-    if let Some(existing) =
-        existing_submit::<DeployOperationSubmission>(&transaction, &operation_id)?
-    {
-        return Ok(DeploySubmitTxn::Submission(Box::new(existing)));
-    }
-    if let Some(rejection) = commit_deploy_reservation(&transaction, &operation_id, &payload)? {
-        return Ok(rejection);
-    }
-    let created = create_submit::<DeployOperationSubmission>(&transaction, operation_id, payload)?;
-    transaction.commit()?;
-    Ok(DeploySubmitTxn::Submission(Box::new(created)))
 }
 
 fn existing_submit<K: OperationAction>(
@@ -347,56 +273,6 @@ fn create_submit<K: OperationAction>(
         event,
         status,
     })
-}
-
-fn commit_deploy_reservation(
-    conn: &Connection,
-    operation_id: &OperationId,
-    payload: &DeployOperationPayload,
-) -> Result<Option<DeploySubmitTxn>, rusqlite::Error> {
-    let namespace_id = &payload.target.namespace_id;
-    let reservation_id = payload
-        .reservation_id
-        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-    let (committed, owner): (Option<String>, Option<String>) = conn.query_row(
-        "SELECT last_committed, committed_owner_operation_id
-         FROM deploy_reservations WHERE namespace_id = ?1",
-        [namespace_id.as_str()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if let Some(committed) = committed {
-        let committed = deploy_reservation_id_from_text(committed)?;
-        if reservation_id < committed {
-            return Ok(Some(DeploySubmitTxn::Stale {
-                namespace_id: namespace_id.clone(),
-                reservation_id,
-                last_committed_reservation_id: committed,
-            }));
-        }
-        if reservation_id == committed {
-            let owner = owner.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            let owner_operation_id =
-                OperationId::try_new(owner).map_err(subject_token_conversion)?;
-            if owner_operation_id != *operation_id {
-                return Ok(Some(DeploySubmitTxn::AlreadyCommitted {
-                    namespace_id: namespace_id.clone(),
-                    reservation_id,
-                    owner_operation_id,
-                }));
-            }
-        }
-    }
-    conn.execute(
-        "UPDATE deploy_reservations
-         SET last_committed = ?2, committed_owner_operation_id = ?3
-         WHERE namespace_id = ?1",
-        params![
-            namespace_id.as_str(),
-            reservation_id.get().to_string(),
-            operation_id.as_str()
-        ],
-    )?;
-    Ok(None)
 }
 
 enum ReplayTxn {
@@ -628,24 +504,9 @@ fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::
     )
 }
 
-fn deploy_reservation_id_from_text(value: String) -> Result<DeployReservationId, rusqlite::Error> {
-    let number = value.parse::<u64>().map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            value.len(),
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
-    })?;
-    DeployReservationId::try_new(number).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            value.len(),
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
-    })
-}
-
-fn subject_token_conversion(error: ployz_core::ids::SubjectTokenError) -> rusqlite::Error {
+pub(super) fn subject_token_conversion(
+    error: ployz_core::ids::SubjectTokenError,
+) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Text,

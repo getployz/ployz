@@ -179,12 +179,6 @@ pub async fn service_restart(
             super::error_map::SubmitFailure::InvalidDeployTarget => {
                 unreachable!("service restart submit is not deploy target")
             }
-            super::error_map::SubmitFailure::ReservationNotFound { .. }
-            | super::error_map::SubmitFailure::ReservationExpired { .. }
-            | super::error_map::SubmitFailure::StaleReservation { .. }
-            | super::error_map::SubmitFailure::ReservationAlreadyCommitted { .. } => {
-                unreachable!("service restart submit has no deploy reservation")
-            }
             super::error_map::SubmitFailure::ResourceBusy {
                 namespace_id,
                 owner,
@@ -232,12 +226,6 @@ pub async fn namespace_remove(
         .map_err(|error| match super::error_map::submit_failure(error) {
             super::error_map::SubmitFailure::InvalidDeployTarget => {
                 unreachable!("namespace remove submit is not deploy target")
-            }
-            super::error_map::SubmitFailure::ReservationNotFound { .. }
-            | super::error_map::SubmitFailure::ReservationExpired { .. }
-            | super::error_map::SubmitFailure::StaleReservation { .. }
-            | super::error_map::SubmitFailure::ReservationAlreadyCommitted { .. } => {
-                unreachable!("namespace remove submit has no deploy reservation")
             }
             super::error_map::SubmitFailure::ResourceBusy {
                 namespace_id,
@@ -287,12 +275,6 @@ pub async fn volume_remove(
         .map_err(|error| match super::error_map::submit_failure(error) {
             super::error_map::SubmitFailure::InvalidDeployTarget => {
                 unreachable!("volume remove submit is not deploy target")
-            }
-            super::error_map::SubmitFailure::ReservationNotFound { .. }
-            | super::error_map::SubmitFailure::ReservationExpired { .. }
-            | super::error_map::SubmitFailure::StaleReservation { .. }
-            | super::error_map::SubmitFailure::ReservationAlreadyCommitted { .. } => {
-                unreachable!("volume remove submit has no deploy reservation")
             }
             super::error_map::SubmitFailure::ResourceBusy {
                 namespace_id,
@@ -559,12 +541,6 @@ pub async fn core_replace(
         .map_err(|error| match super::error_map::submit_failure(error) {
             super::error_map::SubmitFailure::InvalidDeployTarget => {
                 unreachable!("core replace submit is not deploy target")
-            }
-            super::error_map::SubmitFailure::ReservationNotFound { .. }
-            | super::error_map::SubmitFailure::ReservationExpired { .. }
-            | super::error_map::SubmitFailure::StaleReservation { .. }
-            | super::error_map::SubmitFailure::ReservationAlreadyCommitted { .. } => {
-                unreachable!("core replace submit has no deploy reservation")
             }
             super::error_map::SubmitFailure::ResourceBusy { .. } => {
                 unreachable!("core replace submit has no namespace lock")

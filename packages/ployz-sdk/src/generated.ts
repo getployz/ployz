@@ -12,8 +12,6 @@ export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = 1 as const;
 
 export const DEFAULT_MANAGED_LEASE_TTL_SECONDS = 604800 as const;
 
-export const DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS = 3600 as const;
-
 export type OperationId = Brand<string, "OperationId">;
 
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;

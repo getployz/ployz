@@ -324,11 +324,6 @@ pub enum SubmitOperationError {
 }
 
 #[derive(Debug)]
-pub enum IssueDeployReservationError {
-    StoreStatus(OperationStatusStoreError),
-}
-
-#[derive(Debug)]
 pub enum SubmitMachineAddError {
     Operation(SubmitOperationError),
     JoinTokenMismatch,

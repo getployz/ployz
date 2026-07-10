@@ -247,13 +247,20 @@ impl OperationControllers {
         let namespace_id = target.namespace_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
         if let NamespaceClaim::Busy { owner } = claim {
+            self.repository
+                .check_deploy_reservation_fence(
+                    &namespace_id,
+                    claimed.reservation_id,
+                    &operation_id,
+                )
+                .await?;
             return Err(SubmitCommandError::NamespaceBusy {
                 namespace_id,
                 owner,
             });
         }
 
-        let submitted = self.repository.submit_deploy(claimed).await;
+        let submitted = self.repository.submit_claimed_deploy(claimed).await;
 
         match submitted {
             Ok(accepted) => {
@@ -280,11 +287,7 @@ impl OperationControllers {
             .repository
             .issue_deploy_reservation(namespace_id)
             .await
-            .map_err(|error| match error {
-                crate::operations::log::IssueDeployReservationError::StoreStatus(source) => {
-                    DeployReservationIssueError::Store(source)
-                }
-            })?;
+            .map_err(DeployReservationIssueError::Store)?;
         let expires_at = now
             .checked_add(DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS)
             .and_then(|value| DeployReservationExpiresAt::try_new(value).ok())
