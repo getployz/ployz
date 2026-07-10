@@ -20,8 +20,10 @@ use ployz_nats::connect::{
 use std::time::Duration;
 
 use crate::adapters::nats_server::NatsServerLaunch;
+use crate::lease::{LeaseWorkerUrl, LeaseWorkerUrlError};
 use crate::operation_api::admission::MachineAddBootstrapConfig;
 use crate::role_cli::DaemonProcessRole;
+pub use ployz_core::cert::DEFAULT_LEASE_WORKER_URL;
 pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -29,6 +31,7 @@ pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
 pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
+pub const PLOYZ_LEASE_WORKER_URL_ENV: &str = "PLOYZ_LEASE_WORKER_URL";
 pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
 /// Set by `core-promote` on the new core's control unit: the machine's local
 /// intent mirror to seed a fresh core store from on first startup (ADR 0031).
@@ -100,6 +103,7 @@ pub fn load_daemon_process_config(
                 control = control.with_deploy_machines(deploy_machines);
             }
             control = control.with_core_db_path(load_core_db_path(&env));
+            control = control.with_lease_worker_url(load_lease_worker_url(&env)?);
             control = control.with_seed_from_mirror(load_seed_from_mirror(&env));
             control = control.with_epoch_fence_mirror(epoch_fence_mirror);
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
@@ -282,6 +286,16 @@ fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
     env_value(env, PLOYZ_CORE_DB_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_DB))
+}
+
+pub fn load_lease_worker_url(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<LeaseWorkerUrl, DaemonProcessConfigError> {
+    let Some(value) = env_value(env, PLOYZ_LEASE_WORKER_URL_ENV) else {
+        return Ok(LeaseWorkerUrl::default_worker());
+    };
+    LeaseWorkerUrl::try_new(value.clone())
+        .map_err(|source| DaemonProcessConfigError::InvalidLeaseWorkerUrl { value, source })
 }
 
 fn load_seed_from_mirror(env: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
@@ -557,6 +571,10 @@ pub enum DaemonProcessConfigError {
         value: String,
         source: ployz_core::dataplane::MachineEndpointSubnetError,
     },
+    InvalidLeaseWorkerUrl {
+        value: String,
+        source: LeaseWorkerUrlError,
+    },
 }
 
 impl fmt::Display for DaemonProcessConfigError {
@@ -661,6 +679,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 "{}={value:?} is invalid",
                 PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV
             ),
+            Self::InvalidLeaseWorkerUrl { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_LEASE_WORKER_URL_ENV
+            ),
         }
     }
 }
@@ -683,6 +706,7 @@ pub struct ControlProcessConfig {
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
+    pub lease_worker_url: LeaseWorkerUrl,
 }
 
 impl ControlProcessConfig {
@@ -703,6 +727,7 @@ impl ControlProcessConfig {
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
             dataplane_endpoint_supernet: MachineEndpointSupernet::default_v1(),
+            lease_worker_url: LeaseWorkerUrl::default_worker(),
         }
     }
 
@@ -757,6 +782,12 @@ impl ControlProcessConfig {
         dataplane_endpoint_supernet: MachineEndpointSupernet,
     ) -> Self {
         self.dataplane_endpoint_supernet = dataplane_endpoint_supernet;
+        self
+    }
+
+    #[must_use]
+    pub fn with_lease_worker_url(mut self, lease_worker_url: LeaseWorkerUrl) -> Self {
+        self.lease_worker_url = lease_worker_url;
         self
     }
 

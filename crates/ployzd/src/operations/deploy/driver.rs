@@ -20,6 +20,7 @@ use crate::roles::machine::client::{
 };
 use crate::roles::machine::protocol::MachineContainerInspectRpcRequest;
 use crate::tasks::TaskRegistry;
+use ployz_core::deploy::DeployRouteTarget;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
@@ -79,6 +80,30 @@ where
             });
         }
     };
+    if !facts.has_managed_lease
+        && let Some(service) = request.services.iter().find(|service| {
+            service
+                .routes
+                .iter()
+                .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
+        })
+    {
+        let failure = DeployOperationFailure::AutoDnsWithoutLease {
+            service_id: service.service_id.clone(),
+            namespace_revision_id: request.namespace_revision_id(),
+            message: FailureMessage::try_new(format!(
+                "service {} requests an auto public URL but this cluster has no managed DNS lease; re-run init with --public-url auto or use a custom domain",
+                service.service_id.as_str()
+            ))
+            .expect("generated auto DNS lease guidance is non-empty"),
+        };
+        let failure_record_error = record_operation_failure(&controllers, &accepted, failure)
+            .await
+            .err();
+        return Err(DeployOperationRunError::AutoDnsWithoutLease {
+            failure_record_error,
+        });
+    }
     let command =
         prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
     let mut recorder = controllers;
@@ -252,6 +277,9 @@ pub enum DeployOperationRunError {
     ClaimStart(RecordDeployTransitionError),
     LoadFacts {
         source: DeployFactLoadError,
+        failure_record_error: Option<RecordDeployTransitionError>,
+    },
+    AutoDnsWithoutLease {
         failure_record_error: Option<RecordDeployTransitionError>,
     },
     Execute(DeployExecutionError),

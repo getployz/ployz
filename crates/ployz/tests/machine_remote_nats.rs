@@ -228,6 +228,7 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         installer_script: None,
         public_ip: None,
+        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
     }
 }
 

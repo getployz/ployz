@@ -664,7 +664,8 @@ pub(crate) async fn execute_machine_init(
 
     let activate_config = config.clone().with_cluster_context(Some(context.clone()));
     let activation = activate_first_machine(
-        &FirstMachineActivateCommand::new(identity.machine_id.clone(), command.roles),
+        &FirstMachineActivateCommand::new(identity.machine_id.clone(), command.roles)
+            .with_public_url_mode(command.public_url_mode),
         &activate_config,
     )
     .await?;

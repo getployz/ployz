@@ -26,6 +26,8 @@ pub type InitFirstMachineActivateResponse =
 pub struct InitFirstMachineActivateRequest {
     pub machine_id: MachineId,
     pub roles: InstallRolePolicy,
+    #[serde(default = "PublicUrlMode::default_mode")]
+    pub public_url_mode: PublicUrlMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

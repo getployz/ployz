@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Args;
+use ployz_core::cert::PublicUrlMode;
 use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
@@ -25,6 +26,7 @@ use crate::bootstrap_command::{
     DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
 use crate::client_ids::generate_client_machine_update_id;
+use crate::commands::init::parse_public_url_mode;
 use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::ssh::SshTarget;
@@ -121,6 +123,7 @@ pub struct MachineInitCommand {
     /// `--public-ip` override for the first machine's reachable address. `None`
     /// lets the machine self-discover it at install (the common cloud-VM case).
     pub public_ip: Option<IpAddr>,
+    pub public_url_mode: PublicUrlMode,
 }
 
 impl MachineInitCommand {
@@ -558,6 +561,7 @@ pub(crate) fn machine_init_command(
         cluster_name,
         installer_script,
         public_ip,
+        public_url,
     } = parsed;
 
     let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
@@ -620,6 +624,7 @@ pub(crate) fn machine_init_command(
         cluster_name,
         installer_script: validate_installer_script(installer_script)?,
         public_ip,
+        public_url_mode: parse_public_url_mode(&public_url)?,
     })
 }
 
@@ -661,6 +666,9 @@ pub(crate) struct MachineInitCli {
     /// Override the first machine's public IP instead of self-discovering it.
     #[arg(long)]
     public_ip: Option<String>,
+    /// Choose managed public URLs, bring your own URLs, or no public URLs.
+    #[arg(long, default_value = "auto")]
+    public_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
