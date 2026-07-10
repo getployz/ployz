@@ -1,5 +1,5 @@
+use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::operations::log::{RecordDeployEvidenceError, RecordDeployTransitionError};
-use crate::operations::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::roles::machine::response::log_hint;
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;

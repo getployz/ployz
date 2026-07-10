@@ -1,3 +1,5 @@
+//! Failure classification for machine-scoped transport calls.
+
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
 

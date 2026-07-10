@@ -30,6 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MACHINE_JOIN_REPORT_HANDLER_TIMEOUT: Duration = Duration::from_secs(105);
+const NETWORK_RESOLVE_HANDLER_TIMEOUT: Duration = Duration::from_secs(35);
+const NETWORK_STATUS_HANDLER_TIMEOUT: Duration = Duration::from_secs(65);
 
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
@@ -301,10 +303,7 @@ where
     H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
     F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
 {
-    let mut policy = EndpointExecutionPolicy::default();
-    if C::ENDPOINT == OperationApiEndpoint::MachineJoinReport {
-        policy.request_timeout = MACHINE_JOIN_REPORT_HANDLER_TIMEOUT;
-    }
+    let policy = operation_endpoint_policy(C::ENDPOINT);
     let spec = api_endpoint_spec(C::ENDPOINT);
     let handler = Arc::new(handler);
     runtime
@@ -317,6 +316,18 @@ where
         })
         .await
         .map_err(ApiServiceError::Nats)
+}
+
+fn operation_endpoint_policy(endpoint: OperationApiEndpoint) -> EndpointExecutionPolicy {
+    let mut policy = EndpointExecutionPolicy::default();
+    if endpoint == OperationApiEndpoint::MachineJoinReport {
+        policy.request_timeout = MACHINE_JOIN_REPORT_HANDLER_TIMEOUT;
+    } else if endpoint == OperationApiEndpoint::NetworkResolve {
+        policy.request_timeout = NETWORK_RESOLVE_HANDLER_TIMEOUT;
+    } else if endpoint == OperationApiEndpoint::NetworkStatus {
+        policy.request_timeout = NETWORK_STATUS_HANDLER_TIMEOUT;
+    }
+    policy
 }
 
 async fn operation_api_response<C, H, Fut>(
@@ -360,6 +371,7 @@ pub enum ApiServiceError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_service};
 
     #[test]
@@ -374,6 +386,17 @@ mod tests {
                 .iter()
                 .map(|endpoint| endpoint.subject().to_owned())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn network_query_endpoint_timeouts_cover_their_gather_budgets() {
+        let resolve = operation_endpoint_policy(OperationApiEndpoint::NetworkResolve);
+        let status = operation_endpoint_policy(OperationApiEndpoint::NetworkStatus);
+
+        assert!(
+            resolve.request_timeout > Duration::from_secs(30)
+                && status.request_timeout > Duration::from_secs(60)
         );
     }
 }

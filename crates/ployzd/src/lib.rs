@@ -40,7 +40,6 @@ pub mod operations {
     pub mod deploy;
     pub mod log;
     pub mod machine_lifecycle;
-    pub(crate) mod machine_runtime;
     pub mod machine_update;
     pub mod namespace_remove;
     pub mod network_repair;
@@ -52,6 +51,7 @@ pub mod dispatch;
 pub mod fact_cache;
 pub mod intent;
 pub mod lease;
+pub(crate) mod machine_runtime;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;

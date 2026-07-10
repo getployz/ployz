@@ -2,26 +2,35 @@ use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi, peer::Peer};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::dataplane::{
-    MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, MachineEndpointSubnet, NetworkStatusMode,
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
-    WireGuardRttStatus, WireGuardStatus,
+    MachineEndpointSubnet, NetworkStatusMode, WireGuardConfiguredMtu, WireGuardDetectedMtu,
+    WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+    WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardRttStatus,
+    WireGuardStatus,
 };
-use std::net::Ipv4Addr;
-use std::time::{Duration, SystemTime};
-use tokio::process::Command;
+use std::time::SystemTime;
+use tokio::time::Instant;
 
 use super::host_network::{
-    HostWireGuardApi, WireGuardMtuPolicy, detect_wireguard_mtu, wireguard_host_ipv4,
+    HostWireGuardApi, WireGuardMtuPolicy, detect_wireguard_mtu, probe_wireguard_path_mtu,
+    probe_wireguard_rtt, wireguard_host_ipv4,
 };
-
 const MAX_CONCURRENT_PEER_DIAGNOSTICS: usize = 4;
+
+// WireGuard peer diagnostics finish before the machine endpoint so the host
+// can still inspect eBPF attachment state and serialize the complete testimony.
+pub(crate) const fn dataplane_status_budget(mode: NetworkStatusMode) -> std::time::Duration {
+    match mode {
+        NetworkStatusMode::Snapshot => std::time::Duration::from_secs(20),
+        NetworkStatusMode::ProbePathMtu => std::time::Duration::from_secs(50),
+    }
+}
 
 pub(super) async fn read_wireguard_status(
     wg_ifname: &str,
     policy: WireGuardMtuPolicy,
     mode: NetworkStatusMode,
 ) -> Result<WireGuardStatus, String> {
+    let deadline = Instant::now() + dataplane_status_budget(mode);
     let api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
     let host = api
         .read_interface_data()
@@ -34,17 +43,19 @@ pub(super) async fn read_wireguard_status(
         Ok(mtu) => WireGuardDetectedMtu::Detected { mtu: mtu.get() },
         Err(message) => WireGuardDetectedMtu::Unavailable { message },
     };
-    let interface_mtu = match read_interface_mtu(wg_ifname).await {
-        Ok(mtu) => WireGuardInterfaceMtu::Detected { mtu },
-        Err(message) => WireGuardInterfaceMtu::Unavailable { message },
+    let (interface_mtu_value, interface_mtu) = match read_interface_mtu(wg_ifname).await {
+        Ok(mtu) => (Some(mtu), WireGuardInterfaceMtu::Detected { mtu }),
+        Err(message) => (None, WireGuardInterfaceMtu::Unavailable { message }),
     };
-    let peers = stream::iter(
+    let peers = collect_peer_statuses(
+        wg_ifname,
+        interface_mtu_value,
+        mode,
+        deadline,
         host.peers
             .into_iter()
-            .map(|(key, peer)| peer_status(key.to_string(), peer, mode)),
+            .map(|(key, peer)| (key.to_string(), peer)),
     )
-    .buffered(MAX_CONCURRENT_PEER_DIAGNOSTICS)
-    .try_collect()
     .await?;
 
     Ok(WireGuardStatus {
@@ -56,10 +67,30 @@ pub(super) async fn read_wireguard_status(
     })
 }
 
+async fn collect_peer_statuses(
+    wg_ifname: &str,
+    interface_mtu: Option<u32>,
+    mode: NetworkStatusMode,
+    deadline: Instant,
+    peers: impl IntoIterator<Item = (String, Peer)>,
+) -> Result<Vec<WireGuardPeerStatus>, String> {
+    stream::iter(
+        peers
+            .into_iter()
+            .map(|(key, peer)| peer_status(wg_ifname, interface_mtu, key, peer, mode, deadline)),
+    )
+    .buffered(MAX_CONCURRENT_PEER_DIAGNOSTICS)
+    .try_collect()
+    .await
+}
+
 async fn peer_status(
+    wg_ifname: &str,
+    interface_mtu: Option<u32>,
     public_key: String,
     peer: Peer,
     mode: NetworkStatusMode,
+    deadline: Instant,
 ) -> Result<WireGuardPeerStatus, String> {
     let public_key = WireGuardPublicKey::try_new(public_key).map_err(|error| error.to_string())?;
     let endpoint_subnet = peer_endpoint_subnet(peer.allowed_ips.first().map(ToString::to_string));
@@ -74,17 +105,40 @@ async fn peer_status(
         });
     let (rtt, mtu_probe) = match target {
         Some(target) => {
-            let rtt = match ping(target, None).await {
-                Ok(output) => parse_ping_rtt_micros(&output).map_or_else(
-                    || WireGuardRttStatus::Unavailable {
-                        message: "ping returned no RTT".to_owned(),
+            let rtt =
+                match tokio::time::timeout_at(deadline, probe_wireguard_rtt(wg_ifname, target))
+                    .await
+                {
+                    Ok(Ok(output)) => parse_ping_rtt_micros(&output).map_or_else(
+                        || WireGuardRttStatus::Unavailable {
+                            message: "ping returned no RTT".to_owned(),
+                        },
+                        |micros| WireGuardRttStatus::Measured { micros },
+                    ),
+                    Ok(Err(message)) => WireGuardRttStatus::Unavailable { message },
+                    Err(_) => WireGuardRttStatus::Unavailable {
+                        message: "peer RTT probe exceeded the network status budget".to_owned(),
                     },
-                    |micros| WireGuardRttStatus::Measured { micros },
-                ),
-                Err(message) => WireGuardRttStatus::Unavailable { message },
-            };
+                };
             let mtu_probe = if mode.probes_path_mtu() {
-                probe_path_mtu(target).await
+                match interface_mtu {
+                    Some(interface_mtu) => match tokio::time::timeout_at(
+                        deadline,
+                        probe_wireguard_path_mtu(wg_ifname, target, interface_mtu),
+                    )
+                    .await
+                    {
+                        Ok(Ok(mtu)) => WireGuardMtuProbe::Measured { mtu },
+                        Ok(Err(message)) => WireGuardMtuProbe::Unavailable { message },
+                        Err(_) => WireGuardMtuProbe::Unavailable {
+                            message: "peer path MTU probe exceeded the network status budget"
+                                .to_owned(),
+                        },
+                    },
+                    None => WireGuardMtuProbe::Unavailable {
+                        message: "WireGuard interface MTU is unavailable".to_owned(),
+                    },
+                }
             } else {
                 WireGuardMtuProbe::NotRequested
             };
@@ -136,51 +190,6 @@ fn peer_endpoint_subnet(value: Option<String>) -> WireGuardPeerEndpointSubnet {
     )
 }
 
-async fn probe_path_mtu(target: Ipv4Addr) -> WireGuardMtuProbe {
-    let mut low = MIN_WIREGUARD_MTU;
-    let mut high = MAX_WIREGUARD_MTU;
-    if let Err(message) = ping(target, Some(low)).await {
-        return WireGuardMtuProbe::Unavailable { message };
-    }
-    while low < high {
-        let candidate = (low + high).div_ceil(2);
-        if ping(target, Some(candidate)).await.is_ok() {
-            low = candidate;
-        } else {
-            high = candidate - 1;
-        }
-    }
-    WireGuardMtuProbe::Measured { mtu: low }
-}
-
-async fn ping(target: Ipv4Addr, mtu: Option<u32>) -> Result<String, String> {
-    let mut command = Command::new("ping");
-    command.args(["-n", "-c", "1", "-W", "1"]);
-    if let Some(mtu) = mtu {
-        command.args(["-M", "do", "-s", &icmp_payload_size(mtu).to_string()]);
-    }
-    command
-        .arg(target.to_string())
-        .env("LC_ALL", "C")
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(2), command.output())
-        .await
-        .map_err(|_| format!("ping {target} timed out"))?
-        .map_err(|error| format!("start ping {target}: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        Err(format!(
-            "ping {target} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
-}
-
-const fn icmp_payload_size(mtu: u32) -> u32 {
-    mtu.saturating_sub(28)
-}
-
 fn parse_ping_rtt_micros(output: &str) -> Option<u64> {
     let value = output.split("time=").nth(1)?.split_whitespace().next()?;
     let millis = value.trim_end_matches("ms").parse::<f64>().ok()?;
@@ -199,6 +208,18 @@ async fn read_interface_mtu(ifname: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use defguard_wireguard_rs::{key::Key, net::IpAddrMask};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn peer_with_overlay_subnet() -> Peer {
+        let mut peer = Peer::new(Key::generate());
+        peer.allowed_ips = vec![IpAddrMask::new(
+            IpAddr::V4(Ipv4Addr::new(10, 198, 2, 0)),
+            24,
+        )];
+        peer
+    }
+
     #[test]
     fn peer_endpoint_subnet_preserves_invalid_observed_values() {
         let status = peer_endpoint_subnet(Some("not-a-subnet".to_owned()));
@@ -210,12 +231,36 @@ mod tests {
     }
 
     #[test]
-    fn parses_ping_rtt_and_accounts_for_probe_headers() {
+    fn parses_ping_rtt() {
         assert_eq!(
             parse_ping_rtt_micros("64 bytes from 10.198.2.254: icmp_seq=1 ttl=64 time=1.234 ms"),
             Some(1_234)
         );
-        assert_eq!(icmp_payload_size(1420), 1392);
-        assert_eq!(icmp_payload_size(20), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_probe_budget_returns_every_peer_with_typed_unavailability() {
+        let peer = peer_with_overlay_subnet();
+        let public_key = peer.public_key.to_string();
+        let deadline = Instant::now();
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+
+        let statuses = collect_peer_statuses(
+            "ployz0",
+            Some(1420),
+            NetworkStatusMode::ProbePathMtu,
+            deadline,
+            (0..200).map(|_| (public_key.clone(), peer.clone())),
+        )
+        .await
+        .expect("expired diagnostics remain status testimony");
+
+        assert!(
+            statuses.len() == 200
+                && statuses.iter().all(|status| {
+                    matches!(status.rtt, WireGuardRttStatus::Unavailable { .. })
+                        && matches!(status.mtu_probe, WireGuardMtuProbe::Unavailable { .. })
+                })
+        );
     }
 }

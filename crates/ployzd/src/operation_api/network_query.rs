@@ -16,7 +16,7 @@ use ployz_sdk_types::{
 };
 
 use crate::intent::service::NatsIntentReader;
-use crate::operations::machine_runtime::MachineRequestFailure;
+use crate::machine_runtime::MachineRequestFailure;
 use crate::roles::dns::service::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
 };
@@ -416,6 +416,7 @@ mod tests {
         MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
         MachineDataplaneStatusRpcResponse, MachineRpcResponse,
     };
+    use ployz_core::roles::InstallRolePolicy;
 
     #[test]
     fn normalizes_supported_name_forms() {
@@ -843,6 +844,7 @@ mod tests {
             machine_id: machine_id(id),
             name: MachineName::try_new(id).expect("machine name"),
             activated_by: operation_id(&format!("op_{id}")),
+            roles: InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Active,
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),

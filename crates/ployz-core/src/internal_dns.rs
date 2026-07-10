@@ -1,6 +1,6 @@
-//! Internal DNS names and their projection from machine facts.
+//! Internal DNS names and their projection from intent plus machine facts.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::dataplane::INTERNAL_DNS_SUFFIX;
 use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
+use crate::state::IntentSnapshot;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
@@ -142,17 +143,41 @@ pub struct InternalServiceNameError {
 }
 
 /// Fully-qualified internal service names mapped to their running service
-/// containers' endpoint IPv4 addresses.
+/// containers' endpoint IPv4 addresses, constrained by current operator intent.
 #[must_use]
 pub fn internal_dns_records(
+    intent: &IntentSnapshot,
     snapshots: &[MachineFactsSnapshot],
 ) -> BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
+    let active_machine_ids = intent
+        .active_machines
+        .iter()
+        .map(|machine| &machine.machine_id)
+        .collect::<BTreeSet<_>>();
+    let serving_entries = intent
+        .serving_target_entries
+        .iter()
+        .map(|entry| {
+            (
+                &entry.namespace_id,
+                &entry.service_id,
+                &entry.namespace_revision_entry_id,
+            )
+        })
+        .collect::<BTreeSet<_>>();
     let mut records = BTreeMap::<InternalServiceName, Vec<Ipv4Addr>>::new();
     for container in snapshots
         .iter()
+        .filter(|snapshot| active_machine_ids.contains(snapshot.machine_id()))
         .flat_map(|snapshot| snapshot.containers().containers())
     {
-        if !container.is_service() {
+        if !container.is_service()
+            || !serving_entries.contains(&(
+                &container.identity.namespace_id,
+                &container.identity.service_id,
+                &container.identity.namespace_revision_entry_id,
+            ))
+        {
             continue;
         }
         let ContainerRuntimeState::Running {

@@ -13,12 +13,12 @@ use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use crate::roles::dns::InternalResolverHealth;
-use crate::roles::dns::internal::spawn_internal_resolver;
+use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
 use crate::roles::dns::projection::{
     DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
 };
 use crate::roles::dns::service::start_dns_role_service;
-use crate::roles::dns::source::load_dns_projection_update_from_nats;
+use crate::roles::dns::source::load_dns_source_refresh_from_nats;
 use crate::roles::machine::intent_mirror::MachineIntentMirror;
 use crate::roles::nats_failover::{
     IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
@@ -130,6 +130,12 @@ pub async fn start_dns_process_with_client(
         .await
         .map_err(DnsProcessError::StartFactsCache)?;
     let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
+    let internal_dns_intent = InternalDnsIntentCache::default();
+    internal_dns_intent.record_if_available(
+        failover
+            .as_ref()
+            .and_then(|failover| failover.mirror.load()),
+    );
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
     let internal_resolver_health = internal_resolver_bind.map(|bind| {
@@ -138,6 +144,7 @@ pub async fn start_dns_process_with_client(
         }));
         tasks.push(spawn_internal_resolver(
             facts_cache.cache(),
+            internal_dns_intent.clone(),
             bind,
             shutdown.subscribe(),
             Arc::clone(&health),
@@ -174,7 +181,7 @@ pub async fn start_dns_process_with_client(
     let mut refresh_shutdown = shutdown.subscribe();
     let refresh_task = tokio::spawn(async move {
         let mut backoff = refresh_interval;
-        let source = DnsProcessSource::new(stores);
+        let source = DnsProcessSource::new(stores, internal_dns_intent);
 
         loop {
             let attempt = source.refresh_with_timeout(&task_runtime).await;
@@ -222,11 +229,15 @@ pub enum DnsProcessAttempt {
 
 struct DnsProcessSource {
     stores: DnsProcessStores,
+    internal_dns_intent: InternalDnsIntentCache,
 }
 
 impl DnsProcessSource {
-    fn new(stores: DnsProcessStores) -> Self {
-        Self { stores }
+    fn new(stores: DnsProcessStores, internal_dns_intent: InternalDnsIntentCache) -> Self {
+        Self {
+            stores,
+            internal_dns_intent,
+        }
     }
 
     async fn refresh_with_timeout(
@@ -244,14 +255,14 @@ impl DnsProcessSource {
         &self,
         runtime: &Mutex<DnsProjector>,
     ) -> Result<DnsProjectorTick, DnsProcessError> {
-        let update =
-            load_dns_projection_update_from_nats(&self.stores.intent_reader, &self.stores.facts)
-                .await;
+        let refresh =
+            load_dns_source_refresh_from_nats(&self.stores.intent_reader, &self.stores.facts).await;
+        self.internal_dns_intent.record_if_available(refresh.intent);
         let mut runtime = runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        Ok(runtime.apply_source_update(update))
+        Ok(runtime.apply_source_update(refresh.projection))
     }
 }
 

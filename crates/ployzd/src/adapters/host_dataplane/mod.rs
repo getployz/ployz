@@ -28,6 +28,7 @@ pub use host_network::WireGuardMtuPolicy;
 pub(crate) use host_network::resolve_wireguard_mtu;
 use host_network::{ensure_private_key, ensure_wireguard_interface, public_key_from_private_key};
 use host_routes::HostDataplaneRouteProgramming;
+pub(crate) use host_status::dataplane_status_budget;
 
 const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_WIREGUARD_PRIVATE_KEY: &str = "/etc/ployz/wireguard.key";

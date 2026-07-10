@@ -1,9 +1,9 @@
 //! Request-side NATS adapters for machine-local services.
 
+use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, PreStartHookRuntimeError,
 };
-use crate::operations::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,

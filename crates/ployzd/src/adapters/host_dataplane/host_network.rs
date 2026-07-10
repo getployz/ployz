@@ -37,7 +37,7 @@ const WIREGUARD_ENCAP_OVERHEAD: u32 = 80;
 #[cfg(target_os = "linux")]
 const IPV4_ICMP_OVERHEAD: u32 = 28;
 #[cfg(target_os = "linux")]
-const MTU_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const WIREGUARD_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WireGuardMtu(u32);
@@ -193,6 +193,30 @@ pub(super) async fn probe_wireguard_path_mtu(
     .await
 }
 
+#[cfg(target_os = "linux")]
+pub(super) async fn probe_wireguard_rtt(
+    wg_ifname: &str,
+    peer_gateway: Ipv4Addr,
+) -> Result<String, String> {
+    let output = run_wireguard_ping(wg_ifname, peer_gateway, None).await?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(format!(
+            "peer RTT probe failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) async fn probe_wireguard_rtt(
+    _wg_ifname: &str,
+    _peer_gateway: Ipv4Addr,
+) -> Result<String, String> {
+    Err("WireGuard RTT probing is supported only on Linux".to_owned())
+}
+
 async fn probe_path_mtu<F, Fut>(configured_mtu: u32, mut probe: F) -> Result<u32, String>
 where
     F: FnMut(u32) -> Fut,
@@ -225,33 +249,7 @@ async fn probe_wireguard_packet(
     mtu: u32,
 ) -> Result<bool, String> {
     let payload_size = mtu.saturating_sub(IPV4_ICMP_OVERHEAD);
-    let output = tokio::time::timeout(
-        MTU_PROBE_TIMEOUT,
-        Command::new("ping")
-            .args([
-                "-4",
-                "-I",
-                wg_ifname,
-                "-M",
-                "do",
-                "-c",
-                "1",
-                "-W",
-                "1",
-                "-s",
-                &payload_size.to_string(),
-                &peer_gateway.to_string(),
-            ])
-            .output(),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "path MTU probe timed out after {}s",
-            MTU_PROBE_TIMEOUT.as_secs()
-        )
-    })?
-    .map_err(|source| format!("start path MTU probe: {source}"))?;
+    let output = run_wireguard_ping(wg_ifname, peer_gateway, Some(payload_size)).await?;
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -260,6 +258,32 @@ async fn probe_wireguard_packet(
             String::from_utf8_lossy(&output.stderr).trim()
         )),
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn run_wireguard_ping(
+    wg_ifname: &str,
+    peer_gateway: Ipv4Addr,
+    payload_size: Option<u32>,
+) -> Result<std::process::Output, String> {
+    let mut command = Command::new("ping");
+    command.args(["-4", "-I", wg_ifname, "-n", "-c", "1", "-W", "1"]);
+    if let Some(payload_size) = payload_size {
+        command.args(["-M", "do", "-s", &payload_size.to_string()]);
+    }
+    command
+        .arg(peer_gateway.to_string())
+        .env("LC_ALL", "C")
+        .kill_on_drop(true);
+    tokio::time::timeout(WIREGUARD_PING_TIMEOUT, command.output())
+        .await
+        .map_err(|_| {
+            format!(
+                "WireGuard ping timed out after {}s",
+                WIREGUARD_PING_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|source| format!("start WireGuard ping: {source}"))
 }
 
 #[cfg(not(target_os = "linux"))]

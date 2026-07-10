@@ -19,7 +19,7 @@ use ployz_core::ops::{
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
-pub use crate::operations::machine_runtime::MachineRuntimeUnavailableReason;
+pub use crate::machine_runtime::MachineRuntimeUnavailableReason;
 pub use facts::{
     DeployFactLoadError, DeployMachineCandidates, load_deploy_execution_facts_from_nats,
 };

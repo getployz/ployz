@@ -11,6 +11,7 @@ use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::machine::MachineName;
 use ployz_core::ops::FailureMessage;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
@@ -75,6 +76,7 @@ fn network_status_keeps_no_answer_machine_row() {
                 machine_id: machine_id("machine_a"),
                 name: MachineName::try_new("edge-a").expect("valid machine name"),
                 activated_by: operation_id("op_machine_a"),
+                roles: InstallRolePolicy::install_all(),
                 lifecycle: MachineLifecycle::Active,
                 control_endpoints: vec!["203.0.113.10".parse().expect("valid IP")],
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid socket address")],
@@ -283,6 +285,7 @@ fn status_machine(dataplane: NetworkDataplaneTestimony) -> NetworkStatusMachine 
             machine_id: machine_id("machine_a"),
             name: MachineName::try_new("edge-a").expect("valid machine name"),
             activated_by: operation_id("op_machine_a"),
+            roles: InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Active,
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
