@@ -285,7 +285,8 @@ impl DeployTree {
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
                 | OperationKind::ServiceRestart
-                | OperationKind::NamespaceRemove => {}
+                | OperationKind::NamespaceRemove
+                | OperationKind::VolumeRemove => {}
             },
             OperationEvent::ManagedLeaseSubmitted { .. }
             | OperationEvent::ManagedLeaseCompleted { .. }
@@ -320,7 +321,11 @@ impl DeployTree {
             | OperationEvent::NamespaceRemoveRouteBindingRemoved { .. }
             | OperationEvent::NamespaceRemoveContainerRemoved { .. }
             | OperationEvent::NamespaceRemoveCompleted { .. }
-            | OperationEvent::NamespaceRemoveFailed { .. } => {}
+            | OperationEvent::NamespaceRemoveFailed { .. }
+            | OperationEvent::VolumeRemoveSubmitted { .. }
+            | OperationEvent::VolumeRemoveRunning { .. }
+            | OperationEvent::VolumeRemoveCompleted { .. }
+            | OperationEvent::VolumeRemoveFailed { .. } => {}
         }
     }
 
