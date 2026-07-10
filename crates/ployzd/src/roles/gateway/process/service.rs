@@ -67,12 +67,11 @@ fn handle_certificate_artifact_push(
     let cert_id = request.bundle.active_cert().cert_id.clone();
     let digest = request.expected_digest.clone();
     match store.push_at(&request, current_unix_seconds()) {
-        Ok(outcome) => NatsServiceResponse::json_ok(&CertificateArtifactPushResponse::Ok(
+        Ok(()) => NatsServiceResponse::json_ok(&CertificateArtifactPushResponse::Ok(
             CertificateArtifactPushOk {
                 machine_id,
                 cert_id,
                 digest,
-                outcome,
             },
         )),
         Err(error) => {

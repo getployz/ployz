@@ -9,27 +9,13 @@ use crate::ops::FailureMessage;
 
 use super::{AcmeHttp01Challenge, CustomCertBundle};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CertificateArtifactKind {
-    CustomTlsBundle,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CertificateArtifactPushRequest {
     pub operation_id: OperationId,
-    pub artifact_kind: CertificateArtifactKind,
     pub bundle: CustomCertBundle,
     pub expected_digest: InstallSha256Digest,
     pub expected_size: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CertificateArtifactPushOutcome {
-    Stored,
-    AlreadyPresent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +24,6 @@ pub struct CertificateArtifactPushOk {
     pub machine_id: MachineId,
     pub cert_id: CertId,
     pub digest: InstallSha256Digest,
-    pub outcome: CertificateArtifactPushOutcome,
 }
 
 impl MachineRpcResponder for CertificateArtifactPushOk {
@@ -86,7 +71,6 @@ pub type CertificateChallengeStatusResponse =
 pub enum GatewayCertificateRpcError {
     InvalidRequest { message: FailureMessage },
     ArtifactStoreFailed { message: FailureMessage },
-    ChallengeStateUnavailable { message: FailureMessage },
 }
 
 #[cfg(test)]
@@ -109,7 +93,6 @@ mod tests {
             .expect("bundle reference");
         let request = CertificateArtifactPushRequest {
             operation_id: OperationId::try_new("op_cert").expect("operation id"),
-            artifact_kind: CertificateArtifactKind::CustomTlsBundle,
             expected_digest,
             expected_size: u64::try_from(bundle.material_bytes().len()).expect("bundle size"),
             bundle,

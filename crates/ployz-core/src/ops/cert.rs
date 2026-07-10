@@ -4,15 +4,45 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{ActiveCertState, CertificateProvisionFailure};
-use crate::ids::{CertId, OperationId};
+use crate::cert::ActiveCertState;
+use crate::ids::{CertId, MachineId, OperationId};
 
 use super::events::OperationSubjectRef;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
 };
-use super::text::CancellationReason;
+use super::text::{CancellationReason, FailureMessage};
 use super::{EventSequence, OperationStatus};
+
+/// One typed failure taxonomy shared by deploy-time issuance and renewal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertificateProvisionFailure {
+    OperationEvidenceWrite {
+        message: FailureMessage,
+    },
+    DnsPreflight {
+        message: FailureMessage,
+    },
+    ChallengePublish {
+        message: FailureMessage,
+    },
+    ChallengeReadiness {
+        missing_machine_ids: Vec<MachineId>,
+    },
+    AcmeValidation {
+        message: FailureMessage,
+    },
+    GatewayArtifactPush {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    ActiveCertCommit {
+        attempted_active_cert: ActiveCertState,
+        message: FailureMessage,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

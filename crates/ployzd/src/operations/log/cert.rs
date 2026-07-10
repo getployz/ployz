@@ -2,6 +2,8 @@ use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
 use ployz_core::ids::{CertId, OperationId};
 use ployz_core::ops::{CertOperationFailure, CertOperationState, OperationEvent, OperationStatus};
 
+use crate::intent::certificate_intent::upsert_active_metadata;
+
 use super::{
     CertOperationPayload, CertOperationSubmission, OperationRepository, OperationStatusWrite,
     RecordCertTransitionError, RecordOperationEventError, RecordOperationEventOutcome, RecordTxn,
@@ -101,14 +103,7 @@ impl OperationRepository {
                 let outcome =
                     record_operation_event_in_txn(&transaction, &closure_operation_id, event)?;
                 if matches!(&outcome, RecordTxn::Stored { .. }) {
-                    transaction.execute(
-                        "INSERT INTO custom_certificate_intent (hostname, json) VALUES (?1, ?2)
-                         ON CONFLICT(hostname) DO UPDATE SET json = excluded.json",
-                        rusqlite::params![
-                            active_cert.hostname.as_str(),
-                            crate::core_store::to_json(&active_cert)?,
-                        ],
-                    )?;
+                    upsert_active_metadata(&transaction, &active_cert)?;
                     transaction.commit()?;
                 }
                 Ok(outcome)

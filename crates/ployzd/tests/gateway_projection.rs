@@ -1,6 +1,9 @@
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
+    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
+    custom_bundle_digest,
 };
+use ployz_core::ids::CertId;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
@@ -12,9 +15,10 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::roles::gateway::projection::{
-    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
-    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
-    GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,
+    GatewayCertificateMaterialFailure, GatewayProjectedRoute, GatewayProjection,
+    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
+    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry, GatewayUnroutableContainer,
+    GatewayUpstream, apply_gateway_update, project_gateway,
 };
 use std::net::SocketAddr;
 
@@ -32,6 +36,7 @@ fn gateway_projection_carries_http01_challenges_without_routes() {
     let projection = project_gateway(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: vec![challenge.clone()],
         routes: Vec::new(),
         serving: Vec::new(),
@@ -43,10 +48,108 @@ fn gateway_projection_carries_http01_challenges_without_routes() {
 }
 
 #[test]
+fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
+    let hostname = route_hostname("broken.example.com");
+    let prior_bundle = custom_bundle(hostname.as_str());
+    let challenge = http01_challenge(hostname.as_str());
+    let failure = GatewayCertificateMaterialFailure {
+        hostname: hostname.clone(),
+        message: "local bundle is corrupt".to_owned(),
+    };
+    let previous = GatewayProjectionState {
+        last_good: Some(GatewayProjection {
+            managed_cert_bundle: None,
+            custom_cert_bundles: vec![prior_bundle.clone()],
+            challenges: Vec::new(),
+            routes: Vec::new(),
+        }),
+        last_error: None,
+    };
+
+    let state = apply_gateway_update(
+        previous,
+        GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
+            managed_cert_bundle: None,
+            custom_cert_bundles: Vec::new(),
+            custom_cert_failures: vec![failure.clone()],
+            challenges: vec![challenge.clone()],
+            routes: vec![
+                gateway_route("broken.example.com", "svc_broken"),
+                gateway_route("healthy.example.com", "svc_healthy"),
+            ],
+            serving: Vec::new(),
+            observed_machines: Vec::new(),
+        }),
+    );
+
+    let projection = state.last_good.expect("degraded source still applies");
+    assert_eq!(
+        (
+            projection.custom_cert_bundles,
+            projection.challenges,
+            projection
+                .routes
+                .into_iter()
+                .map(|route| route.target)
+                .collect::<Vec<_>>(),
+            state.last_error,
+        ),
+        (
+            vec![prior_bundle],
+            vec![challenge],
+            vec![
+                route_target("broken.example.com", 443),
+                route_target("healthy.example.com", 443),
+            ],
+            Some(GatewayProjectionError::CertificateMaterial {
+                failures: vec![failure],
+            }),
+        )
+    );
+}
+
+#[test]
+fn failed_custom_material_on_cold_start_suppresses_only_affected_https_route() {
+    let projection = project_gateway(GatewayProjectionInput {
+        managed_cert_bundle: None,
+        custom_cert_bundles: Vec::new(),
+        custom_cert_failures: vec![GatewayCertificateMaterialFailure {
+            hostname: route_hostname("broken.example.com"),
+            message: "local bundle is missing".to_owned(),
+        }],
+        challenges: vec![http01_challenge("broken.example.com")],
+        routes: vec![
+            GatewayRoute {
+                target: route_target("broken.example.com", 80),
+                ..gateway_route("broken.example.com", "svc_broken")
+            },
+            gateway_route("broken.example.com", "svc_broken"),
+            gateway_route("healthy.example.com", "svc_healthy"),
+        ],
+        serving: Vec::new(),
+        observed_machines: Vec::new(),
+    })
+    .expect("one certificate failure does not invalidate the source");
+
+    assert_eq!(
+        projection
+            .routes
+            .into_iter()
+            .map(|route| route.target)
+            .collect::<Vec<_>>(),
+        vec![
+            route_target("broken.example.com", 80),
+            route_target("healthy.example.com", 443),
+        ]
+    );
+}
+
+#[test]
 fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
     let projection = project_gateway(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![
             gateway_route("WWW.example.com", "svc_web"),
@@ -130,6 +233,7 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
     let projection = project_gateway(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
@@ -172,6 +276,7 @@ fn gateway_dials_matching_containers_on_the_route_endpoint_port() {
     let projection = project_gateway(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
@@ -230,6 +335,7 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
     let projection = project_gateway(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![],
@@ -266,6 +372,7 @@ fn gateway_ignores_containers_with_a_different_entry_identity() {
     let projection = project_gateway(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
@@ -328,6 +435,7 @@ fn gateway_rejects_duplicate_route_targets() {
         project_gateway(GatewayProjectionInput {
             managed_cert_bundle: None,
             custom_cert_bundles: Vec::new(),
+            custom_cert_failures: Vec::new(),
             challenges: Vec::new(),
             routes: vec![
                 GatewayRoute {
@@ -357,6 +465,7 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
     let update = GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![
             GatewayRoute {
@@ -506,6 +615,42 @@ fn managed_container(
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
+}
+
+fn custom_bundle(hostname: &str) -> CustomCertBundle {
+    let certificate = format!("certificate for {hostname}");
+    let private_key = format!("private key for {hostname}");
+    let digest = custom_bundle_digest(&certificate, &private_key).expect("bundle digest");
+    CustomCertBundle::try_new(
+        ActiveCertState {
+            cert_id: CertId::try_new(format!("cert_{}", hostname.replace('.', "_")))
+                .expect("cert id"),
+            hostname: route_hostname(hostname),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/bundle.pem",
+                digest.as_str()
+            ))
+            .expect("bundle reference"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1).expect("not before"),
+                CertValidAt::try_new(2).expect("not after"),
+            )
+            .expect("validity"),
+        },
+        certificate,
+        private_key,
+    )
+    .expect("custom bundle")
+}
+
+fn http01_challenge(hostname: &str) -> AcmeHttp01Challenge {
+    AcmeHttp01Challenge::try_new(
+        route_hostname(hostname),
+        AcmeChallengeToken::try_new("challenge-token").expect("token"),
+        AcmeChallengeValue::try_new("challenge-token.account-thumbprint").expect("value"),
+        AcmeChallengeTtlSeconds::try_new(900).expect("ttl"),
+    )
+    .expect("challenge")
 }
 
 fn endpoint_ip(ip: &str) -> std::net::IpAddr {

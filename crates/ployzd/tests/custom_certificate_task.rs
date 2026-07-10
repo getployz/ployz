@@ -2,23 +2,23 @@ use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
-    CertificateArtifactPushOutcome, CertificateArtifactPushRequest,
-    CertificateArtifactPushResponse, CertificateChallengeApplicationStatus,
-    CertificateChallengeStatusOk, CertificateChallengeStatusRequest,
-    CertificateChallengeStatusResponse, CertificateProvisionFailure,
+    CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateChallengeApplicationStatus, CertificateChallengeStatusOk,
+    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_core::ops::{
-    CertOperationFailure, CertOperationState, FailureMessage, OperationStatus, RouteHostname,
+    CertOperationFailure, CertOperationState, CertificateProvisionFailure, FailureMessage,
+    OperationStatus, RouteHostname,
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::{cert_id, operation_id, route_hostname};
@@ -32,7 +32,8 @@ use ployzd::certificate::{
 use ployzd::core_store::CoreStore;
 use ployzd::intent::certificate_intent::CertificateIntentStore;
 use ployzd::operations::log::{CertOperationSubmission, OperationRepository};
-use rcgen::CertifiedKey;
+use rcgen::{CertificateParams, CertifiedKey, KeyPair};
+use time::OffsetDateTime;
 
 #[tokio::test]
 async fn failed_due_renewal_keeps_the_active_certificate_and_records_terminal_evidence() {
@@ -202,7 +203,7 @@ async fn cancelled_waiter_leaves_cleanup_and_terminal_evidence_to_the_owned_task
     .await
     .expect("issuance reaches terminal state");
     assert!(
-        CertificateIntentStore::reader(core_store)
+        CertificateIntentStore::new(core_store)
             .challenges()
             .await
             .expect("challenge intent")
@@ -242,11 +243,20 @@ async fn expired_active_certificate_is_reissued() {
     let (nats, _gateway) = test_nats_with_gateway(true).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
     let state_dir = tempfile::tempdir().expect("certificate state");
+    let initial_now = system_now_seconds();
     let issuer = Arc::new(FakeAcmeIssuer::new([
-        Ok(fixture_certificate("localhost")),
-        Ok(fixture_certificate("localhost")),
+        Ok(fixture_certificate_at(
+            "localhost",
+            initial_now - 60,
+            initial_now + 1,
+        )),
+        Ok(fixture_certificate_at(
+            "localhost",
+            initial_now - 60,
+            initial_now + 3_600,
+        )),
     ]));
-    let now = Arc::new(AtomicU64::new(1));
+    let now = Arc::new(AtomicU64::new(initial_now));
     let clock = {
         let now = Arc::clone(&now);
         Arc::new(move || now.load(Ordering::Relaxed))
@@ -267,7 +277,7 @@ async fn expired_active_certificate_is_reissued() {
         )
         .await
         .expect("initial certificate");
-    now.store(u64::MAX, Ordering::Relaxed);
+    now.store(initial_now + 2, Ordering::Relaxed);
 
     manager
         .ensure(
@@ -306,10 +316,50 @@ async fn certificate_for_another_hostname_is_rejected_before_commit() {
 
     assert!(matches!(
         error,
-        ployzd::certificate::CertificateManagerError::AcmeValidation { .. }
+        CertificateProvisionFailure::AcmeValidation { .. }
     ));
     assert!(
-        CertificateIntentStore::reader(core_store)
+        CertificateIntentStore::new(core_store)
+            .active_certificates()
+            .await
+            .expect("certificate intent")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn future_dated_certificate_is_rejected_before_commit() {
+    let (nats, _gateway) = test_nats_with_gateway(true).await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
+    let state_dir = tempfile::tempdir().expect("certificate state");
+    let now = system_now_seconds();
+    let manager = CertificateManager::with_issuer_and_time(
+        core_store.clone(),
+        nats.controller,
+        test_config(state_dir.path()),
+        Arc::new(FakeAcmeIssuer::new([Ok(fixture_certificate_at(
+            "localhost",
+            now + 60,
+            now + 120,
+        ))])),
+        Arc::new(move || now),
+    );
+
+    let error = manager
+        .ensure(
+            &operation_id("op_deploy_future_cert"),
+            &route_hostname("localhost"),
+            &gateway_targets(),
+        )
+        .await
+        .expect_err("future certificate is rejected");
+
+    assert!(matches!(
+        error,
+        CertificateProvisionFailure::AcmeValidation { .. }
+    ));
+    assert!(
+        CertificateIntentStore::new(core_store)
             .active_certificates()
             .await
             .expect("certificate intent")
@@ -325,7 +375,7 @@ async fn startup_recovery_clears_stale_challenges_and_fails_unfinished_operation
     let hostname = route_hostname("localhost");
     let cert_id = cert_id("cert_localhost");
     let operation_id = operation_id("op_cert_recovery");
-    let intent = CertificateIntentStore::new(core_store.clone(), state_dir.path().to_path_buf());
+    let intent = CertificateIntentStore::new(core_store.clone());
     intent
         .store_challenge(challenge(hostname))
         .await
@@ -445,7 +495,7 @@ async fn failed_completion_projection_cannot_leave_active_metadata() {
         .expect_err("mismatched completion is rejected");
 
     assert!(
-        CertificateIntentStore::reader(core_store)
+        CertificateIntentStore::new(core_store)
             .active_certificates()
             .await
             .expect("active metadata")
@@ -486,7 +536,7 @@ async fn atomic_activation_cannot_be_rewritten_as_failed() {
         .expect_err("completed operation is terminal");
 
     assert_eq!(
-        CertificateIntentStore::reader(core_store.clone())
+        CertificateIntentStore::new(core_store.clone())
             .active_for_hostname(&active.hostname)
             .await
             .expect("active metadata"),
@@ -668,6 +718,29 @@ fn fixture_certificate(hostname: &str) -> IssuedCertificate {
     }
 }
 
+fn fixture_certificate_at(hostname: &str, not_before: u64, not_after: u64) -> IssuedCertificate {
+    let mut params = CertificateParams::new(vec![hostname.to_owned()]).expect("certificate params");
+    params.not_before =
+        OffsetDateTime::from_unix_timestamp(i64::try_from(not_before).expect("not before fits"))
+            .expect("not before timestamp");
+    params.not_after =
+        OffsetDateTime::from_unix_timestamp(i64::try_from(not_after).expect("not after fits"))
+            .expect("not after timestamp");
+    let key = KeyPair::generate().expect("private key");
+    let certificate = params.self_signed(&key).expect("certificate");
+    IssuedCertificate {
+        certificate_chain_pem: certificate.pem(),
+        private_key_pem: key.serialize_pem(),
+    }
+}
+
+fn system_now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after epoch")
+        .as_secs()
+}
+
 fn challenge(hostname: RouteHostname) -> AcmeHttp01Challenge {
     AcmeHttp01Challenge::try_new(
         hostname,
@@ -772,7 +845,6 @@ impl TestGateway {
                         machine_id: push_machine_id.clone(),
                         cert_id: request.bundle.active_cert().cert_id.clone(),
                         digest: request.expected_digest,
-                        outcome: CertificateArtifactPushOutcome::Stored,
                     });
                 let _ = push_client
                     .publish(

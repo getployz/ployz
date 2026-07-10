@@ -3,13 +3,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::{ActiveCertState, CertificateProvisionFailure, CustomCertBundle};
+use ployz_core::cert::{ActiveCertState, CustomCertBundle};
 use ployz_core::ids::{CertId, MachineId, OperationId};
-use ployz_core::ops::{CertOperationFailure, FailureMessage, RouteHostname};
+use ployz_core::ops::{
+    CertOperationFailure, CertificateProvisionFailure, FailureMessage, RouteHostname,
+};
 use ployz_core::subjects::INTENT_CHANGED;
 
+use super::GatewayCertificateTarget;
 use super::gateway::GatewayCertificateClient;
 use super::issuer::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, InstantAcmeIssuer};
+use super::material::{
+    load_custom_certificate, prepare_custom_certificate,
+    validate_custom_certificate_for_activation, write_custom_certificate,
+};
 use crate::core_store::CoreStore;
 use crate::intent::certificate_intent::CertificateIntentStore;
 use crate::operations::log::{CertOperationSubmission, OperationRepository};
@@ -19,8 +26,6 @@ pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.o
 const DNS_TIMEOUT: Duration = Duration::from_secs(10);
 const ISSUE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHALLENGE_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub type CertificateManagerError = CertificateProvisionFailure;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertificateManagerConfig {
@@ -44,15 +49,10 @@ impl CertificateManagerConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayCertificateTarget {
-    pub machine_id: MachineId,
-    pub public_ips: Vec<IpAddr>,
-}
-
 #[derive(Clone)]
 pub struct CertificateManager {
     store: CertificateIntentStore,
+    state_dir: PathBuf,
     repository: OperationRepository,
     client: async_nats::Client,
     gateway_client: GatewayCertificateClient,
@@ -77,12 +77,13 @@ impl CertificateManager {
     ) -> Self {
         let state_dir = std::path::absolute(&config.state_dir)
             .unwrap_or_else(|_| Path::new("/var/lib/ployz").join(&config.state_dir));
-        let store = CertificateIntentStore::new(core_store.clone(), state_dir);
+        let store = CertificateIntentStore::new(core_store.clone());
         let issuer = Arc::new(InstantAcmeIssuer::new(config.directory_url, store.clone()));
         Self::new_with_issuer(
             core_store,
             client,
             store,
+            state_dir,
             issuer,
             Arc::new(system_now_seconds),
         )
@@ -95,13 +96,10 @@ impl CertificateManager {
         config: CertificateManagerConfig,
         issuer: Arc<dyn AcmeIssuer>,
     ) -> Self {
-        let state_dir = std::path::absolute(&config.state_dir)
-            .unwrap_or_else(|_| Path::new("/var/lib/ployz").join(&config.state_dir));
-        let store = CertificateIntentStore::new(core_store.clone(), state_dir);
-        Self::new_with_issuer(
+        Self::with_issuer_and_time(
             core_store,
             client,
-            store,
+            config,
             issuer,
             Arc::new(system_now_seconds),
         )
@@ -117,23 +115,26 @@ impl CertificateManager {
     ) -> Self {
         let state_dir = std::path::absolute(&config.state_dir)
             .unwrap_or_else(|_| Path::new("/var/lib/ployz").join(&config.state_dir));
-        let store = CertificateIntentStore::new(core_store.clone(), state_dir);
-        Self::new_with_issuer(core_store, client, store, issuer, now_seconds)
+        let store = CertificateIntentStore::new(core_store.clone());
+        Self::new_with_issuer(core_store, client, store, state_dir, issuer, now_seconds)
     }
 
     fn new_with_issuer(
         core_store: CoreStore,
         client: async_nats::Client,
         store: CertificateIntentStore,
+        state_dir: PathBuf,
         issuer: Arc<dyn AcmeIssuer>,
         now_seconds: Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self {
             store,
+            state_dir,
             repository: OperationRepository::open(core_store, client.clone()),
             gateway_client: GatewayCertificateClient::new(client.clone()),
             client,
             issuer,
+            // ponytail: global issuance lock; use per-hostname locks if issuance throughput matters.
             issuance_lock: Arc::new(tokio::sync::Mutex::new(())),
             now_seconds,
             issuance_tasks: TaskRegistry::default(),
@@ -240,9 +241,7 @@ impl CertificateManager {
                         if !active.is_usable_at((manager.now_seconds)()) {
                             return None;
                         }
-                        manager
-                            .store
-                            .load_bundle(active)
+                        load_custom_certificate(&manager.state_dir, active)
                             .ok()
                             .map(|bundle| (active.clone(), bundle))
                     });
@@ -332,7 +331,8 @@ impl CertificateManager {
             (Ok(issued), Ok(())) => issued,
         };
 
-        let bundle = match self.store.prepare_active(
+        let bundle = match prepare_custom_certificate(
+            &self.state_dir,
             cert_id.clone(),
             hostname.clone(),
             issued.certificate_chain_pem,
@@ -348,7 +348,17 @@ impl CertificateManager {
                     .await);
             }
         };
-        if let Err(error) = self.store.write_prepared_material(&bundle) {
+        if let Err(error) =
+            validate_custom_certificate_for_activation(bundle.active_cert(), (self.now_seconds)())
+        {
+            let failure = CertificateProvisionFailure::AcmeValidation {
+                message: failure_message(error.to_string()),
+            };
+            return Err(self
+                .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
+                .await);
+        }
+        if let Err(error) = write_custom_certificate(&self.state_dir, &bundle) {
             let failure = active_commit_failure(bundle.active_cert().clone(), error);
             return Err(self
                 .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
@@ -417,28 +427,29 @@ impl CertificateManager {
             .flat_map(|target| target.public_ips.iter().copied())
             .collect::<Vec<_>>();
         if expected_gateway_ips.is_empty() {
-            return Err(dns_failure(DnsPreflightGuidance::NoExpectedGatewayIps {
-                hostname: hostname.clone(),
-            }));
+            return Err(dns_failure(format!(
+                "{} cannot be checked because no expected gateway IPs are known",
+                hostname.as_str()
+            )));
         }
-        let resolved =
-            tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((hostname.as_str(), 0)))
-                .await
-                .map_err(|_| {
-                    dns_failure(DnsPreflightGuidance::ResolutionFailed {
-                        hostname: hostname.clone(),
-                        message: format!(
-                            "DNS resolution timed out after {}ms",
-                            DNS_TIMEOUT.as_millis()
-                        ),
-                    })
-                })?
-                .map_err(|error| {
-                    dns_failure(DnsPreflightGuidance::ResolutionFailed {
-                        hostname: hostname.clone(),
-                        message: error.to_string(),
-                    })
-                })?;
+        let resolved = tokio::time::timeout(
+            DNS_TIMEOUT,
+            tokio::net::lookup_host((hostname.as_str(), 0)),
+        )
+        .await
+        .map_err(|_| {
+            dns_failure(format!(
+                "failed to resolve A/AAAA records for {}: DNS resolution timed out after {}ms",
+                hostname.as_str(),
+                DNS_TIMEOUT.as_millis()
+            ))
+        })?
+        .map_err(|error| {
+            dns_failure(format!(
+                "failed to resolve A/AAAA records for {}: {error}",
+                hostname.as_str()
+            ))
+        })?;
         let mut resolved_ips = resolved.map(|address| address.ip()).collect::<Vec<_>>();
         resolved_ips.sort_unstable();
         resolved_ips.dedup();
@@ -446,11 +457,10 @@ impl CertificateManager {
             let mut expected_gateway_ips = expected_gateway_ips;
             expected_gateway_ips.sort_unstable();
             expected_gateway_ips.dedup();
-            return Err(dns_failure(DnsPreflightGuidance::NoMatchingGatewayIp {
-                hostname: hostname.clone(),
-                resolved_ips,
-                expected_gateway_ips,
-            }));
+            return Err(dns_failure(format!(
+                "{} resolves to {resolved_ips:?}, which is not a non-empty subset of known gateway IPs {expected_gateway_ips:?}",
+                hostname.as_str()
+            )));
         }
         let mut addressed = targets
             .iter()
@@ -553,9 +563,9 @@ fn provision_failure_from_issuer(error: AcmeIssuerError) -> CertificateProvision
     }
 }
 
-fn dns_failure(guidance: DnsPreflightGuidance) -> CertificateProvisionFailure {
+fn dns_failure(message: impl Into<String>) -> CertificateProvisionFailure {
     CertificateProvisionFailure::DnsPreflight {
-        message: failure_message(guidance.to_string()),
+        message: failure_message(message),
     }
 }
 
@@ -577,32 +587,6 @@ fn active_commit_without_attempt(error: impl std::fmt::Display) -> CertificatePr
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message.into()).expect("generated certificate failure is non-empty")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DnsPreflightGuidance {
-    #[error(
-        "{} cannot be checked because no expected gateway IPs are known",
-        hostname.as_str()
-    )]
-    NoExpectedGatewayIps { hostname: RouteHostname },
-    #[error(
-        "failed to resolve A/AAAA records for {}: {message}",
-        hostname.as_str()
-    )]
-    ResolutionFailed {
-        hostname: RouteHostname,
-        message: String,
-    },
-    #[error(
-        "{} resolves to {resolved_ips:?}, which is not a non-empty subset of known gateway IPs {expected_gateway_ips:?}",
-        hostname.as_str()
-    )]
-    NoMatchingGatewayIp {
-        hostname: RouteHostname,
-        resolved_ips: Vec<IpAddr>,
-        expected_gateway_ips: Vec<IpAddr>,
-    },
 }
 
 #[cfg(test)]

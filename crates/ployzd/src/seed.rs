@@ -48,7 +48,7 @@ pub enum SeedOutcome {
 pub async fn seed_core_from_snapshot(
     core_store: &CoreStore,
     snapshot: &IntentSnapshot,
-    certificate_state_dir: &Path,
+    _certificate_state_dir: &Path,
 ) -> Result<SeedOutcome, SeedCoreError> {
     // Only a fresh store (never promoted) may be seeded. Once a store has an epoch
     // row it is a live core, and ControlPlaneEpoch is a promotion generation, not an
@@ -89,8 +89,7 @@ pub async fn seed_core_from_snapshot(
         }
         ployz_core::state::ManagedLeaseProjection::Unacquired => {}
     }
-    let certificate_store =
-        CertificateIntentStore::new(core_store.clone(), certificate_state_dir.to_path_buf());
+    let certificate_store = CertificateIntentStore::new(core_store.clone());
     for active_cert in &snapshot.custom_certificates {
         certificate_store
             .seed_active_metadata(active_cert.clone())
@@ -116,7 +115,10 @@ pub async fn seed_core_from_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{AutoLeaseState, ManagedLeaseAcquireRequest, ManagedLeaseIntent};
+    use ployz_core::cert::{
+        ActiveCertState, AutoLeaseState, CertBundleRef, CertValidAt, CertValidityWindow,
+        ManagedLeaseAcquireRequest, ManagedLeaseIntent,
+    };
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
     use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
     use ployz_test_support::ids::{machine_id, operation_id};
@@ -214,33 +216,9 @@ mod tests {
 
     #[tokio::test]
     async fn seeding_restores_custom_certificate_metadata_without_secret_material() {
-        let source_store = CoreStore::open_in_memory().await.expect("source store");
-        let source_directory = tempfile::tempdir().expect("source certificate state");
-        let source_certificates =
-            CertificateIntentStore::new(source_store, source_directory.path().to_path_buf());
-        let mut worker = StubLeaseWorker::new();
-        let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
-            .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-                ipv4: Vec::new(),
-                ipv6: Vec::new(),
-            }))
-            .expect("acquire fixture certificate")
-        else {
-            panic!("acquire returns certificate");
-        };
-        let hostname =
-            ployz_core::ops::RouteHostname::try_new(acquired.bundle.dns_names[1].clone())
-                .expect("fixture hostname");
-        let source_bundle = source_certificates
-            .prepare_active(
-                ployz_test_support::ids::cert_id("cert_app_example_com"),
-                hostname,
-                acquired.bundle.certificate_chain_pem,
-                acquired.bundle.private_key_pem,
-            )
-            .expect("source certificate");
+        let active = active_certificate();
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
-        snapshot.custom_certificates = vec![source_bundle.active_cert().clone()];
+        snapshot.custom_certificates = vec![active.clone()];
         let target_store = CoreStore::open_in_memory().await.expect("target store");
         let target_directory = tempfile::tempdir().expect("target certificate state");
 
@@ -248,25 +226,14 @@ mod tests {
             .await
             .expect("seed custom certificate");
 
-        let seeded_certificates =
-            CertificateIntentStore::new(target_store, target_directory.path().to_path_buf())
-                .active_certificates()
-                .await
-                .expect("seeded certificates");
+        let seeded_certificates = CertificateIntentStore::new(target_store)
+            .active_certificates()
+            .await
+            .expect("seeded certificates");
         let [seeded] = seeded_certificates.as_slice() else {
             panic!("one certificate is seeded");
         };
-        assert_eq!(seeded, source_bundle.active_cert());
-        assert!(
-            CertificateIntentStore::new(
-                CoreStore::open_in_memory()
-                    .await
-                    .expect("material probe store"),
-                target_directory.path().to_path_buf(),
-            )
-            .load_bundle(seeded)
-            .is_err()
-        );
+        assert_eq!(seeded, &active);
     }
 
     #[tokio::test]
@@ -324,5 +291,22 @@ mod tests {
             store.control_plane_epoch().await.expect("epoch"),
             after_first
         );
+    }
+
+    fn active_certificate() -> ActiveCertState {
+        ActiveCertState {
+            cert_id: ployz_test_support::ids::cert_id("cert_app_example_com"),
+            hostname: ployz_test_support::ids::route_hostname("app.example.com"),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/cert_app_example_com.bundle",
+                "a".repeat(64)
+            ))
+            .expect("bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1).expect("not before"),
+                CertValidAt::try_new(2).expect("not after"),
+            )
+            .expect("validity"),
+        }
     }
 }

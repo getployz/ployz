@@ -1,18 +1,16 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::{ActiveCertState, CertificateProvisionFailure};
-use ployz_core::ops::{CertOperationFailure, FailureMessage, OperationStatus};
+use ployz_core::cert::ActiveCertState;
+use ployz_core::ops::{
+    CertOperationFailure, CertificateProvisionFailure, FailureMessage, OperationStatus,
+};
 use ployz_core::roles::GatewayRole;
-use ployz_core::state::ActiveMachineState;
 
-use super::{CertificateManager, GatewayCertificateTarget};
+use super::{CertificateManager, GatewayCertificateTarget, gateway_certificate_targets};
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::operations::log::{OperationStatusStoreError, RecordCertTransitionError};
-use crate::roles::machine::client::{
-    MachinePlacementFacts, NatsMachineFactsReader, read_machine_placement_facts,
-};
+use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::tasks::TaskRegistry;
 
 pub const CERTIFICATE_RENEWAL_TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -175,41 +173,6 @@ fn due_certificates(
         .collect()
 }
 
-fn gateway_certificate_targets(
-    active_machines: &[ActiveMachineState],
-    placement_facts: &[MachinePlacementFacts],
-) -> Vec<GatewayCertificateTarget> {
-    let fresh_public_ips = placement_facts
-        .iter()
-        .filter_map(|facts| {
-            facts.endpoints.as_ref().map(|endpoints| {
-                (
-                    facts.machine_id.clone(),
-                    endpoints
-                        .control_endpoints
-                        .iter()
-                        .copied()
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                )
-            })
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    active_machines
-        .iter()
-        .filter(|machine| matches!(machine.roles.gateway, GatewayRole::Install))
-        .map(|machine| GatewayCertificateTarget {
-            machine_id: machine.machine_id.clone(),
-            public_ips: fresh_public_ips
-                .get(&machine.machine_id)
-                .cloned()
-                .unwrap_or_default(),
-        })
-        .collect()
-}
-
 pub async fn recover_unfinished_operations(
     manager: &CertificateManager,
 ) -> Result<(), CertificateRenewalTaskError> {
@@ -351,22 +314,11 @@ mod tests {
     use super::{
         CERTIFICATE_RENEWAL_TICK_INTERVAL, CertificateRenewalAttempt, CertificateRenewalHealth,
         CertificateRenewalHealthFailure, CertificateRenewalOutcome, CertificateRenewalTaskError,
-        due_certificates, gateway_certificate_targets, record_renewal_attempt, recovery_failure,
+        due_certificates, record_renewal_attempt, recovery_failure,
     };
-    use crate::certificate::GatewayCertificateTarget;
-    use crate::roles::machine::client::MachinePlacementFacts;
-    use ployz_core::cert::{
-        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
-        CertificateProvisionFailure,
-    };
-    use ployz_core::dataplane::MachineEndpointSubnet;
-    use ployz_core::ids::{CertId, MachineId};
-    use ployz_core::machine::MachineName;
-    use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-    use ployz_core::ops::{FailureMessage, RouteHostname};
-    use ployz_core::roles::InstallRolePolicy;
-    use ployz_core::state::{ActiveMachineState, MachineEndpointObservation, MachineLifecycle};
-    use ployz_test_support::ids::operation_id;
+    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::ids::CertId;
+    use ployz_core::ops::{CertificateProvisionFailure, FailureMessage, RouteHostname};
 
     #[test]
     fn renewal_becomes_due_at_two_thirds_of_validity() {
@@ -374,34 +326,6 @@ mod tests {
 
         assert!(due_certificates(vec![active.clone()], 6).is_empty());
         assert_eq!(due_certificates(vec![active.clone()], 7), [active]);
-    }
-
-    #[test]
-    fn silent_gateway_is_retained_and_foreign_facts_are_excluded() {
-        let gateway = active_gateway("gateway_a");
-        let foreign_id = MachineId::try_new("foreign_a").expect("valid machine id");
-        let foreign_facts = MachinePlacementFacts {
-            machine_id: foreign_id.clone(),
-            lifecycle: MachineLifecycle::Active,
-            containers: Some(
-                MachineContainerObservationSnapshot::try_new(foreign_id.clone(), [])
-                    .expect("valid empty snapshot"),
-            ),
-            platform: None,
-            endpoints: Some(MachineEndpointObservation {
-                machine_id: foreign_id,
-                control_endpoints: vec!["203.0.113.50".parse().expect("valid IP")],
-                mesh_endpoints: Vec::new(),
-            }),
-        };
-
-        assert_eq!(
-            gateway_certificate_targets(&[gateway.clone()], &[foreign_facts]),
-            [GatewayCertificateTarget {
-                machine_id: gateway.machine_id,
-                public_ips: Vec::new(),
-            }]
-        );
     }
 
     #[test]
@@ -479,20 +403,6 @@ mod tests {
                 CertValidAt::try_new(not_after).expect("valid not-after"),
             )
             .expect("valid validity"),
-        }
-    }
-
-    fn active_gateway(machine_id: &str) -> ActiveMachineState {
-        ActiveMachineState {
-            machine_id: MachineId::try_new(machine_id).expect("valid machine id"),
-            name: MachineName::try_new(machine_id).expect("valid machine name"),
-            activated_by: operation_id("op_machine_add"),
-            lifecycle: MachineLifecycle::Active,
-            roles: InstallRolePolicy::install_all(),
-            control_endpoints: Vec::new(),
-            mesh_endpoints: Vec::new(),
-            endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
-                .expect("valid endpoint subnet"),
         }
     }
 }

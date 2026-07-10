@@ -90,13 +90,8 @@ impl AcmeIssueContext {
                 self.challenge_readiness_timeout,
             )
             .await
-            .map_err(|failure| match failure {
-                ployz_core::cert::CertificateProvisionFailure::ChallengeReadiness {
-                    missing_machine_ids,
-                } => AcmeIssuerError::ChallengeReadiness {
-                    missing_machine_ids,
-                },
-                _ => unreachable!("challenge wait returns only readiness failures"),
+            .map_err(|error| AcmeIssuerError::ChallengeReadiness {
+                missing_machine_ids: error.missing_machine_ids,
             })?;
         self.challenge_published.store(true, Ordering::Release);
         Ok(())

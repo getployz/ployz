@@ -54,7 +54,6 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         &nats.intent_reader,
         &nats.facts,
         &GatewayCertificateStore::new(certificate_dir.path().to_path_buf()),
-        1_800_000_000,
     )
     .await;
     let GatewayProjectionUpdate::SourceAvailable(input) = update else {

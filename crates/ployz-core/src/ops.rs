@@ -33,11 +33,10 @@ mod service_restart;
 mod text;
 mod volume_remove;
 
-pub use crate::cert::CertificateProvisionFailure;
 pub use accessors::NextEventSequenceError;
 pub use cert::{
     CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
-    CertTransition,
+    CertTransition, CertificateProvisionFailure,
 };
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use deploy::{

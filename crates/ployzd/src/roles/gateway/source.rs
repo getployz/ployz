@@ -3,8 +3,8 @@
 use crate::fact_cache::FactCache;
 use crate::intent::service::{IntentReadError, NatsIntentReader};
 use crate::roles::gateway::projection::{
-    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionUpdate, GatewayRoute,
-    GatewayServingEntry,
+    GatewayCertificateMaterialFailure, GatewayProjectionError, GatewayProjectionInput,
+    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
 };
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
@@ -17,16 +17,8 @@ pub async fn load_gateway_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
     facts: &FactCache,
     certificate_store: &GatewayCertificateStore,
-    now_seconds: u64,
 ) -> GatewayProjectionUpdate {
-    match load_gateway_projection_input_from_nats(
-        intent_reader,
-        facts,
-        certificate_store,
-        now_seconds,
-    )
-    .await
-    {
+    match load_gateway_projection_input_from_nats(intent_reader, facts, certificate_store).await {
         Ok(input) => GatewayProjectionUpdate::SourceAvailable(input),
         Err(GatewaySourceError::Invalid { message }) => {
             GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource {
@@ -45,7 +37,6 @@ pub async fn load_gateway_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
     facts: &FactCache,
     certificate_store: &GatewayCertificateStore,
-    now_seconds: u64,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let intent = async {
         intent_reader
@@ -56,15 +47,11 @@ pub async fn load_gateway_projection_input_from_nats(
     let intent = intent.await?;
     let observed_machines = facts.machine_container_snapshots();
 
-    let custom_cert_bundles = load_routed_custom_certificates(
+    let (custom_cert_bundles, custom_cert_failures) = load_routed_custom_certificates(
         &intent.custom_certificates,
         &intent.route_bindings,
         certificate_store,
-        now_seconds,
-    )
-    .map_err(|error| GatewaySourceError::Invalid {
-        message: error.to_string(),
-    })?;
+    );
 
     Ok(gateway_projection_input_from_state(
         match intent.managed_lease {
@@ -73,6 +60,7 @@ pub async fn load_gateway_projection_input_from_nats(
             | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
         },
         custom_cert_bundles,
+        custom_cert_failures,
         intent.acme_http01_challenges,
         intent.route_bindings,
         intent.serving_target_entries,
@@ -84,17 +72,26 @@ fn load_routed_custom_certificates(
     active_certificates: &[ployz_core::cert::ActiveCertState],
     routes: &[RouteBindingState],
     certificate_store: &GatewayCertificateStore,
-    now_seconds: u64,
-) -> Result<Vec<ployz_core::cert::CustomCertBundle>, GatewayCertificateStoreError> {
-    active_certificates
-        .iter()
-        .filter(|active| {
-            routes.iter().any(|route| {
-                route.target.port.get() == 443 && route.target.hostname == active.hostname
-            })
-        })
-        .map(|active| certificate_store.load_at(active, now_seconds))
-        .collect()
+) -> (
+    Vec<ployz_core::cert::CustomCertBundle>,
+    Vec<GatewayCertificateMaterialFailure>,
+) {
+    let mut bundles = Vec::new();
+    let mut failures = Vec::new();
+    for active in active_certificates.iter().filter(|active| {
+        routes
+            .iter()
+            .any(|route| route.target.port.get() == 443 && route.target.hostname == active.hostname)
+    }) {
+        match certificate_store.load(active) {
+            Ok(bundle) => bundles.push(bundle),
+            Err(error) => failures.push(GatewayCertificateMaterialFailure {
+                hostname: active.hostname.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
+    (bundles, failures)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -116,6 +113,7 @@ impl From<IntentReadError> for GatewaySourceError {
 fn gateway_projection_input_from_state(
     managed_cert_bundle: Option<ployz_core::cert::ManagedCertBundle>,
     custom_cert_bundles: Vec<ployz_core::cert::CustomCertBundle>,
+    custom_cert_failures: Vec<GatewayCertificateMaterialFailure>,
     challenges: Vec<ployz_core::cert::AcmeHttp01Challenge>,
     routes: Vec<RouteBindingState>,
     serving: Vec<ServingTargetEntry>,
@@ -124,6 +122,7 @@ fn gateway_projection_input_from_state(
     GatewayProjectionInput {
         managed_cert_bundle,
         custom_cert_bundles,
+        custom_cert_failures,
         challenges,
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
         serving: serving
@@ -164,15 +163,14 @@ mod tests {
                 &[active_certificate("app.example.com")],
                 &[],
                 &GatewayCertificateStore::new(state.path().to_path_buf()),
-                1_500,
             )
-            .expect("unrouted metadata is ignored")
+            .0
             .is_empty()
         );
     }
 
     #[test]
-    fn routed_certificate_without_local_material_invalidates_projection_source() {
+    fn routed_certificate_without_local_material_is_reported_per_hostname() {
         let state = tempfile::tempdir().expect("gateway state");
 
         assert!(matches!(
@@ -180,14 +178,16 @@ mod tests {
                 &[active_certificate("app.example.com")],
                 &[route("app.example.com", 443)],
                 &GatewayCertificateStore::new(state.path().to_path_buf()),
-                1_500,
-            ),
-            Err(GatewayCertificateStoreError::ArtifactFile { .. })
+            )
+            .1
+            .as_slice(),
+            [GatewayCertificateMaterialFailure { hostname, .. }]
+                if hostname == &route_hostname("app.example.com")
         ));
     }
 
     #[test]
-    fn routed_certificate_with_invalid_local_material_invalidates_projection_source() {
+    fn routed_certificate_with_invalid_local_material_is_reported_per_hostname() {
         let state = tempfile::tempdir().expect("gateway state");
         let store = GatewayCertificateStore::new(state.path().to_path_buf());
         let active = active_certificate("app.example.com");
@@ -201,9 +201,11 @@ mod tests {
                 &[active],
                 &[route("app.example.com", 443)],
                 &store,
-                1_500,
-            ),
-            Err(GatewayCertificateStoreError::InvalidMaterial { .. })
+            )
+            .1
+            .as_slice(),
+            [GatewayCertificateMaterialFailure { hostname, .. }]
+                if hostname == &route_hostname("app.example.com")
         ));
     }
 

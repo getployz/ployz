@@ -3,7 +3,7 @@
 use ployz_core::cert::{AcmeHttp01Challenge, CustomCertBundle, ManagedCertBundle};
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::{RoutePort, RouteTarget};
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -29,6 +29,7 @@ pub struct GatewayServingEntry {
 pub struct GatewayProjectionInput {
     pub managed_cert_bundle: Option<ManagedCertBundle>,
     pub custom_cert_bundles: Vec<CustomCertBundle>,
+    pub custom_cert_failures: Vec<GatewayCertificateMaterialFailure>,
     pub challenges: Vec<AcmeHttp01Challenge>,
     pub routes: Vec<GatewayRoute>,
     pub serving: Vec<GatewayServingEntry>,
@@ -38,6 +39,12 @@ pub struct GatewayProjectionInput {
     /// answer — the projection never infers liveness from observation age
     /// (ADR 0027, superseding ADR 0009's staleness filter).
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayCertificateMaterialFailure {
+    pub hostname: RouteHostname,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,9 +126,18 @@ impl GatewayProjectionState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayProjectionError {
-    DuplicateRouteTarget { target: RouteTarget },
-    InvalidSource { message: String },
-    SourceUnavailable { message: String },
+    DuplicateRouteTarget {
+        target: RouteTarget,
+    },
+    CertificateMaterial {
+        failures: Vec<GatewayCertificateMaterialFailure>,
+    },
+    InvalidSource {
+        message: String,
+    },
+    SourceUnavailable {
+        message: String,
+    },
 }
 
 #[must_use]
@@ -130,16 +146,38 @@ pub fn apply_gateway_update(
     update: GatewayProjectionUpdate,
 ) -> GatewayProjectionState {
     match update {
-        GatewayProjectionUpdate::SourceAvailable(input) => match project_gateway(input) {
-            Ok(projection) => GatewayProjectionState {
-                last_good: Some(projection),
-                last_error: None,
-            },
-            Err(error) => GatewayProjectionState {
-                last_error: Some(error),
-                ..previous
-            },
-        },
+        GatewayProjectionUpdate::SourceAvailable(mut input) => {
+            let failures = input.custom_cert_failures.clone();
+            if let Some(last_good) = previous.last_good.as_ref() {
+                for failure in &failures {
+                    if input
+                        .custom_cert_bundles
+                        .iter()
+                        .any(|bundle| bundle.active_cert().hostname == failure.hostname)
+                    {
+                        continue;
+                    }
+                    if let Some(bundle) = last_good
+                        .custom_cert_bundles
+                        .iter()
+                        .find(|bundle| bundle.active_cert().hostname == failure.hostname)
+                    {
+                        input.custom_cert_bundles.push(bundle.clone());
+                    }
+                }
+            }
+            match project_gateway(input) {
+                Ok(projection) => GatewayProjectionState {
+                    last_good: Some(projection),
+                    last_error: (!failures.is_empty())
+                        .then_some(GatewayProjectionError::CertificateMaterial { failures }),
+                },
+                Err(error) => GatewayProjectionState {
+                    last_error: Some(error),
+                    ..previous
+                },
+            }
+        }
         GatewayProjectionUpdate::SourceInvalid(error) => GatewayProjectionState {
             last_error: Some(error),
             ..previous
@@ -162,6 +200,7 @@ pub fn project_gateway(
 ) -> Result<GatewayProjection, GatewayProjectionError> {
     let managed_cert_bundle = input.managed_cert_bundle;
     let custom_cert_bundles = input.custom_cert_bundles;
+    let custom_cert_failures = input.custom_cert_failures;
     let challenges = input.challenges;
     let mut input_routes = input.routes;
     input_routes.sort_by(|left, right| left.target.cmp(&right.target));
@@ -189,6 +228,16 @@ pub fn project_gateway(
     let indexed_containers = index_running_containers(&input.observed_machines);
     let mut routes = Vec::with_capacity(input_routes.len());
     for route in input_routes {
+        if route.target.port.get() == 443
+            && custom_cert_failures
+                .iter()
+                .any(|failure| failure.hostname == route.target.hostname)
+            && !custom_cert_bundles
+                .iter()
+                .any(|bundle| bundle.active_cert().hostname == route.target.hostname)
+        {
+            continue;
+        }
         // A binding whose service is absent from the serving target stays
         // attached with no upstreams; the gateway answers unavailable
         // instead of treating the route as invalid state (ADR 0024).

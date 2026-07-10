@@ -3,9 +3,43 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::ids::CertId;
 use crate::install::{InstallContractError, InstallSha256Digest};
+use crate::ops::RouteHostname;
 
-use super::ActiveCertState;
+use super::{CertBundleRef, CertValidityWindow, refresh_due};
+
+/// Active certificate intent/evidence value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ActiveCertState {
+    pub cert_id: CertId,
+    pub hostname: RouteHostname,
+    pub bundle_ref: CertBundleRef,
+    pub validity: CertValidityWindow,
+}
+
+impl ActiveCertState {
+    /// A certificate is eligible for activation or artifact push only inside
+    /// its declared validity window. A gateway may keep serving expired
+    /// last-known-good material until a replacement is available.
+    #[must_use]
+    pub fn is_usable_at(&self, now_seconds: u64) -> bool {
+        self.validity.not_before.unix_seconds() <= now_seconds
+            && now_seconds < self.validity.not_after.unix_seconds()
+    }
+
+    /// Custom certificates renew once two thirds of their validity has elapsed.
+    #[must_use]
+    pub fn needs_renewal(&self, now_seconds: u64) -> bool {
+        refresh_due(
+            self.validity.not_before.unix_seconds(),
+            self.validity.not_after.unix_seconds(),
+            now_seconds,
+        )
+    }
+}
 
 /// Custom certificate material stored behind an active certificate reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +64,10 @@ impl CustomCertBundle {
         certificate_chain_pem: String,
         private_key_pem: String,
     ) -> Result<Self, CustomCertBundleError> {
+        if certificate_chain_pem.as_bytes().contains(&0) || private_key_pem.as_bytes().contains(&0)
+        {
+            return Err(CustomCertBundleError::InvalidMaterialFraming);
+        }
         let expected = custom_bundle_digest(&certificate_chain_pem, &private_key_pem)?;
         let (referenced, _) = active_cert.bundle_ref.artifact_parts()?;
         if referenced != expected {
@@ -41,6 +79,29 @@ impl CustomCertBundle {
             certificate_chain_pem,
             private_key_pem,
         })
+    }
+
+    pub fn try_from_material_bytes(
+        active_cert: ActiveCertState,
+        material: &[u8],
+    ) -> Result<Self, CustomCertBundleError> {
+        let Some(separator) = material.iter().position(|byte| *byte == 0) else {
+            return Err(CustomCertBundleError::InvalidMaterialFraming);
+        };
+        if material[separator + 1..].contains(&0) {
+            return Err(CustomCertBundleError::InvalidMaterialFraming);
+        }
+        let certificate_chain_pem = std::str::from_utf8(&material[..separator])
+            .map_err(|error| CustomCertBundleError::InvalidMaterialUtf8 {
+                message: error.to_string(),
+            })?
+            .to_owned();
+        let private_key_pem = std::str::from_utf8(&material[separator + 1..])
+            .map_err(|error| CustomCertBundleError::InvalidMaterialUtf8 {
+                message: error.to_string(),
+            })?
+            .to_owned();
+        Self::try_new(active_cert, certificate_chain_pem, private_key_pem)
     }
 
     #[must_use]
@@ -106,6 +167,10 @@ pub enum CustomCertBundleError {
     Digest(#[from] InstallContractError),
     #[error("custom cert bundle reference is invalid: {0}")]
     BundleRef(#[from] super::CertTextError),
+    #[error("custom cert bundle material must contain exactly one null separator")]
+    InvalidMaterialFraming,
+    #[error("custom cert bundle material is not UTF-8: {message}")]
+    InvalidMaterialUtf8 { message: String },
 }
 
 /// Digest shared by the bundle reference and core-local artifact.
@@ -156,6 +221,32 @@ mod tests {
                 "private-key".to_owned(),
             ),
             Err(CustomCertBundleError::DigestMismatch)
+        );
+    }
+
+    #[test]
+    fn material_bytes_roundtrip_through_the_validated_bundle() {
+        let bundle = bundle("certificate", "private-key");
+
+        assert_eq!(
+            CustomCertBundle::try_from_material_bytes(
+                bundle.active_cert().clone(),
+                &bundle.material_bytes(),
+            ),
+            Ok(bundle)
+        );
+    }
+
+    #[test]
+    fn material_bytes_require_exactly_one_separator() {
+        let digest = custom_bundle_digest("certificate", "private-key").expect("digest");
+
+        assert_eq!(
+            CustomCertBundle::try_from_material_bytes(
+                active_cert(&digest),
+                b"certificate\0private\0key",
+            ),
+            Err(CustomCertBundleError::InvalidMaterialFraming)
         );
     }
 

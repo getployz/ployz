@@ -52,7 +52,6 @@ const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
 
 mod service;
 
-use service::current_unix_seconds;
 pub use service::start_gateway_certificate_service;
 
 pub struct RunningGatewayProcess {
@@ -424,7 +423,6 @@ impl GatewayProcessSource {
             &stores.intent_reader,
             &facts,
             &certificate_store,
-            current_unix_seconds(),
         )
         .await)
     }

@@ -573,7 +573,7 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployCleanupFinished { .. }
             | OperationEvent::DeployCompleted { .. }
             | OperationEvent::DeployFailed { .. }
-            | OperationEvent::CertRenewalSubmitted { .. }
+            | OperationEvent::CertProvisionSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
             | OperationEvent::CertCompleted { .. }
@@ -659,7 +659,7 @@ fn render_replayed_event_text(
         | OperationEvent::DeployImageAvailabilityVerified { .. }
         | OperationEvent::DeployCleanupFinished { .. }
         | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertProvisionSubmitted { .. }
         | OperationEvent::CertChallengePublished { .. }
         | OperationEvent::CertValidationStarted { .. }
         | OperationEvent::CertCompleted { .. }
@@ -723,7 +723,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployCleanupFinished { .. } => "deploy.cleanup_finished",
         OperationEvent::DeployCompleted { .. } => "deploy.completed",
         OperationEvent::DeployFailed { .. } => "deploy.failed",
-        OperationEvent::CertRenewalSubmitted { .. } => "cert.submitted",
+        OperationEvent::CertProvisionSubmitted { .. } => "cert.submitted",
         OperationEvent::CertChallengePublished { .. } => "cert.challenge_published",
         OperationEvent::CertValidationStarted { .. } => "cert.validation_started",
         OperationEvent::CertCompleted { .. } => "cert.completed",

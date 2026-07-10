@@ -1,6 +1,6 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
-use crate::certificate::GatewayCertificateTarget;
+use crate::certificate::gateway_certificate_targets;
 use crate::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use ployz_core::dataplane::DataplaneMember;
@@ -8,12 +8,11 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::UnusableMachine;
-use ployz_core::roles::GatewayRole;
 use ployz_core::state::{
     ActiveMachineState, IntentSnapshot, MachineLifecycle, MachineUsabilityReason,
     placement_rejection,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
@@ -108,41 +107,6 @@ pub async fn load_deploy_execution_facts_from_nats(
         gateway_certificate_targets,
         step_timeout,
     })
-}
-
-fn gateway_certificate_targets(
-    active_machines: &[ActiveMachineState],
-    placement_facts: &[crate::roles::machine::client::MachinePlacementFacts],
-) -> Vec<GatewayCertificateTarget> {
-    let fresh_public_ips = placement_facts
-        .iter()
-        .filter_map(|facts| {
-            facts.endpoints.as_ref().map(|endpoints| {
-                (
-                    facts.machine_id.clone(),
-                    endpoints
-                        .control_endpoints
-                        .iter()
-                        .copied()
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                )
-            })
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    active_machines
-        .iter()
-        .filter(|machine| matches!(machine.roles.gateway, GatewayRole::Install))
-        .map(|machine| GatewayCertificateTarget {
-            machine_id: machine.machine_id.clone(),
-            public_ips: fresh_public_ips
-                .get(&machine.machine_id)
-                .cloned()
-                .unwrap_or_default(),
-        })
-        .collect()
 }
 
 fn operation_dataplane_members(
@@ -247,74 +211,4 @@ fn classify_machine_usability(
 pub enum DeployFactLoadError {
     #[error("intent could not be read: {message}")]
     IntentRead { message: String },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::gateway_certificate_targets;
-    use crate::roles::machine::client::MachinePlacementFacts;
-    use ployz_core::dataplane::MachineEndpointSubnet;
-    use ployz_core::ids::MachineId;
-    use ployz_core::machine::MachineName;
-    use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-    use ployz_core::roles::{GatewayRole, InstallRolePolicy};
-    use ployz_core::state::{ActiveMachineState, MachineEndpointObservation, MachineLifecycle};
-    use ployz_test_support::ids::operation_id;
-
-    #[test]
-    fn silent_intent_gateway_remains_a_certificate_target() {
-        let gateway = active_gateway("gateway_a");
-
-        assert_eq!(
-            gateway_certificate_targets(&[gateway.clone()], &[]),
-            [crate::certificate::GatewayCertificateTarget {
-                machine_id: gateway.machine_id,
-                public_ips: Vec::new(),
-            }]
-        );
-    }
-
-    #[test]
-    fn foreign_fact_responder_does_not_become_a_certificate_target() {
-        let gateway = active_gateway("gateway_a");
-        let foreign_id = MachineId::try_new("foreign_a").expect("valid machine id");
-        let placement_facts = MachinePlacementFacts {
-            machine_id: foreign_id.clone(),
-            lifecycle: MachineLifecycle::Active,
-            containers: Some(
-                MachineContainerObservationSnapshot::try_new(foreign_id.clone(), [])
-                    .expect("valid empty container snapshot"),
-            ),
-            platform: None,
-            endpoints: Some(MachineEndpointObservation {
-                machine_id: foreign_id,
-                control_endpoints: vec!["203.0.113.10".parse().expect("valid public IP")],
-                mesh_endpoints: Vec::new(),
-            }),
-        };
-
-        assert_eq!(
-            gateway_certificate_targets(&[gateway.clone()], &[placement_facts]),
-            [crate::certificate::GatewayCertificateTarget {
-                machine_id: gateway.machine_id,
-                public_ips: Vec::new(),
-            }]
-        );
-    }
-
-    fn active_gateway(machine_id: &str) -> ActiveMachineState {
-        let mut roles = InstallRolePolicy::install_all();
-        roles.gateway = GatewayRole::Install;
-        ActiveMachineState {
-            machine_id: MachineId::try_new(machine_id).expect("valid machine id"),
-            name: MachineName::try_new(machine_id).expect("valid machine name"),
-            activated_by: operation_id("op_machine_add"),
-            lifecycle: MachineLifecycle::Active,
-            roles,
-            control_endpoints: Vec::new(),
-            mesh_endpoints: Vec::new(),
-            endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
-                .expect("valid endpoint subnet"),
-        }
-    }
 }

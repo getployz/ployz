@@ -70,14 +70,14 @@ impl OperationAction for CertOperationSubmission {
     const KIND: OperationKind = OperationKind::Cert;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
-        OperationEvent::CertRenewalSubmitted {
+        OperationEvent::CertProvisionSubmitted {
             operation_id,
             cert_id: payload.cert_id,
         }
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::CertRenewalSubmitted {
+        let OperationEvent::CertProvisionSubmitted {
             operation_id,
             cert_id,
         } = event

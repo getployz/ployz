@@ -3,21 +3,22 @@ use std::time::Duration;
 
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
-    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactKind,
-    CertificateArtifactPushOutcome, CertificateArtifactPushRequest,
-    CertificateArtifactPushResponse, CertificateChallengeApplicationStatus,
-    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse, CustomCertBundle,
-    GatewayCertificateRpcError, custom_bundle_digest,
+    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateChallengeApplicationStatus, CertificateChallengeStatusRequest,
+    CertificateChallengeStatusResponse, CustomCertBundle, GatewayCertificateRpcError,
+    custom_bundle_digest,
 };
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::machine_rpc::MachineRpcResponse;
+use ployz_core::ops::RouteTarget;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
 use ployz_nats::services::EndpointExecution;
-use ployz_test_support::ids::{cert_id, machine_id, operation_id, route_hostname};
+use ployz_test_support::ids::{cert_id, machine_id, operation_id, route_hostname, route_port};
 use ployzd::roles::gateway::pingora::PingoraRouteRegistry;
 use ployzd::roles::gateway::process::start_gateway_certificate_service;
-use ployzd::roles::gateway::projection::GatewayProjection;
+use ployzd::roles::gateway::projection::{GatewayProjectedRoute, GatewayProjection};
 use ployzd::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};
 use ployzd::service_catalog::{DaemonServiceCatalog, gateway_role_service};
 use rcgen::{CertificateParams, KeyPair};
@@ -68,10 +69,7 @@ fn artifact_push_stores_material_at_gateway_derived_path() {
     let request = artifact_request("app.example.com", &core_path);
     let store = GatewayCertificateStore::new(state.path().to_path_buf());
 
-    assert_eq!(
-        store.push_at(&request, NOW),
-        Ok(CertificateArtifactPushOutcome::Stored)
-    );
+    assert_eq!(store.push_at(&request, NOW), Ok(()));
     let local_path = store
         .artifact_path(request.bundle.active_cert())
         .expect("local artifact path");
@@ -121,10 +119,7 @@ fn repeated_artifact_push_is_idempotent() {
     let store = GatewayCertificateStore::new(state.path().to_path_buf());
     store.push_at(&request, NOW).expect("initial push");
 
-    assert_eq!(
-        store.push_at(&request, NOW),
-        Ok(CertificateArtifactPushOutcome::AlreadyPresent)
-    );
+    assert_eq!(store.push_at(&request, NOW), Ok(()));
 }
 
 #[test]
@@ -136,19 +131,9 @@ fn stored_artifact_is_adopted_from_active_metadata_after_restart() {
         .expect("initial push");
 
     assert_eq!(
-        GatewayCertificateStore::new(state.path().to_path_buf())
-            .load_at(request.bundle.active_cert(), NOW),
+        GatewayCertificateStore::new(state.path().to_path_buf()).load(request.bundle.active_cert()),
         Ok(request.bundle)
     );
-}
-
-#[test]
-fn unknown_artifact_kind_is_rejected_by_the_wire_contract() {
-    let request = artifact_request("app.example.com", Path::new("/core/owned.bundle"));
-    let mut encoded = serde_json::to_value(request).expect("serialize request");
-    encoded["artifact_kind"] = serde_json::json!("unknown");
-
-    assert!(serde_json::from_value::<CertificateArtifactPushRequest>(encoded).is_err());
 }
 
 #[test]
@@ -257,6 +242,70 @@ fn certificate_not_yet_valid_is_rejected() {
     ));
 }
 
+#[test]
+fn expired_certificate_push_is_rejected() {
+    let state = tempfile::tempdir().expect("state directory");
+    let not_after = NOW - 100;
+    let (certificate, private_key) = certificate_material("app.example.com", NOT_BEFORE, not_after);
+    let request = request_from_material(
+        "app.example.com",
+        Path::new("/core/owned.bundle"),
+        certificate,
+        private_key,
+        NOT_BEFORE,
+        not_after,
+    );
+
+    assert!(matches!(
+        GatewayCertificateStore::new(state.path().to_path_buf()).push_at(&request, NOW),
+        Err(GatewayCertificateStoreError::NotUsable { .. })
+    ));
+}
+
+#[test]
+fn expired_stored_certificate_keeps_serving_with_its_renewal_challenge() {
+    let state = tempfile::tempdir().expect("state directory");
+    let not_after = NOW - 100;
+    let (certificate, private_key) = certificate_material("app.example.com", NOT_BEFORE, not_after);
+    let request = request_from_material(
+        "app.example.com",
+        Path::new("/core/owned.bundle"),
+        certificate,
+        private_key,
+        NOT_BEFORE,
+        not_after,
+    );
+    let store = GatewayCertificateStore::new(state.path().to_path_buf());
+    store
+        .push_at(&request, NOT_BEFORE + 1)
+        .expect("certificate is initially activated while valid");
+    let bundle = store
+        .load(request.bundle.active_cert())
+        .expect("lapsed serving material remains loadable");
+    let challenge = challenge("app.example.com", "renewal-token");
+    let registry = PingoraRouteRegistry::new();
+    registry
+        .replace_projection(&GatewayProjection {
+            managed_cert_bundle: None,
+            custom_cert_bundles: vec![bundle],
+            challenges: vec![challenge.clone()],
+            routes: vec![GatewayProjectedRoute {
+                target: RouteTarget::new(route_hostname("app.example.com"), route_port(443)),
+                upstreams: Vec::new(),
+                unroutable_containers: Vec::new(),
+            }],
+        })
+        .expect("lapsed TLS and renewal challenge apply together");
+
+    assert_eq!(
+        (
+            registry.is_https_hostname("app.example.com"),
+            registry.challenge_application_status(&challenge),
+        ),
+        (true, CertificateChallengeApplicationStatus::Applied)
+    );
+}
+
 #[tokio::test]
 async fn artifact_push_endpoint_returns_typed_machine_ack() {
     let nats =
@@ -291,7 +340,6 @@ async fn artifact_push_endpoint_returns_typed_machine_ack() {
             if ok.machine_id == machine_id("machine_7")
                 && ok.cert_id == cert_id("cert_app_example_com")
                 && ok.digest == expected_digest
-                && ok.outcome == CertificateArtifactPushOutcome::Stored
     ));
     service.shutdown().await.expect("service shutdown");
 }
@@ -449,7 +497,6 @@ fn request_from_material(
     .expect("validated bundle");
     CertificateArtifactPushRequest {
         operation_id: operation_id("op_cert"),
-        artifact_kind: CertificateArtifactKind::CustomTlsBundle,
         expected_digest: digest,
         expected_size: u64::try_from(bundle.material_bytes().len()).expect("bundle size"),
         bundle,

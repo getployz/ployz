@@ -315,7 +315,7 @@ impl DeployTree {
             OperationEvent::ManagedLeaseSubmitted { .. }
             | OperationEvent::ManagedLeaseCompleted { .. }
             | OperationEvent::ManagedLeaseFailed { .. }
-            | OperationEvent::CertRenewalSubmitted { .. }
+            | OperationEvent::CertProvisionSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
             | OperationEvent::CertCompleted { .. }

@@ -215,6 +215,7 @@ fn source_input(
     GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![GatewayRoute {
             namespace_id: namespace_id("default"),

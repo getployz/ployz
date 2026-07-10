@@ -94,7 +94,7 @@ pub async fn start_intent_service(
     publish_interval: Duration,
 ) -> Result<RunningIntentService, NatsServiceRuntimeError> {
     let lease_intent = LeaseIntentStore::new(core_store.clone());
-    let certificate_intent = CertificateIntentStore::reader(core_store.clone());
+    let certificate_intent = CertificateIntentStore::new(core_store.clone());
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     // The grant set is a projection of the same store; a thin wrapper over it reads
     // the grants the authorization writer persists there.

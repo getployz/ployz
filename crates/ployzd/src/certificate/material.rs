@@ -1,8 +1,132 @@
+use std::path::{Path, PathBuf};
+
 use pingora::tls::pkey::PKey;
 use pingora::tls::x509::{X509, X509Ref};
-use ployz_core::cert::{CertValidAt, CertValidityWindow};
+use ployz_core::cert::{
+    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
+    custom_bundle_digest,
+};
+use ployz_core::ids::CertId;
+use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::ops::RouteHostname;
 use time::PrimitiveDateTime;
+
+use crate::adapters::atomic_file::write_secret_file_atomically;
+
+pub(crate) fn prepare_custom_certificate(
+    state_dir: &Path,
+    cert_id: CertId,
+    hostname: RouteHostname,
+    certificate_chain_pem: String,
+    private_key_pem: String,
+) -> Result<CustomCertBundle, CertificateMaterialError> {
+    let validity = validate_and_read_validity(&certificate_chain_pem, &private_key_pem, &hostname)?;
+    let digest =
+        custom_bundle_digest(&certificate_chain_pem, &private_key_pem).map_err(invalid_material)?;
+    let path = custom_certificate_material_path_for_digest(state_dir, &cert_id, &digest);
+    let Some(path_text) = path.to_str() else {
+        return Err(CertificateMaterialError::NonUtf8Path { path });
+    };
+    let path = AbsoluteInstallPath::try_new(path_text).map_err(invalid_material)?;
+    let bundle_ref = CertBundleRef::for_bundle(&digest, &path).map_err(invalid_material)?;
+    CustomCertBundle::try_new(
+        ActiveCertState {
+            cert_id,
+            hostname,
+            bundle_ref,
+            validity,
+        },
+        certificate_chain_pem,
+        private_key_pem,
+    )
+    .map_err(invalid_material)
+}
+
+pub(crate) fn write_custom_certificate(
+    state_dir: &Path,
+    bundle: &CustomCertBundle,
+) -> Result<(), CertificateMaterialError> {
+    let path = custom_certificate_material_path(state_dir, bundle.active_cert())?;
+    write_secret_file_atomically(&path, &bundle.material_bytes()).map_err(|error| {
+        CertificateMaterialError::ArtifactFile {
+            path,
+            message: error.to_string(),
+        }
+    })
+}
+
+pub(crate) fn load_custom_certificate(
+    state_dir: &Path,
+    active_cert: &ActiveCertState,
+) -> Result<CustomCertBundle, CertificateMaterialError> {
+    let path = custom_certificate_material_path(state_dir, active_cert)?;
+    let material =
+        std::fs::read(&path).map_err(|error| CertificateMaterialError::ArtifactFile {
+            path,
+            message: error.to_string(),
+        })?;
+    let bundle = CustomCertBundle::try_from_material_bytes(active_cert.clone(), &material)
+        .map_err(invalid_material)?;
+    validate_custom_certificate(&bundle)?;
+    Ok(bundle)
+}
+
+pub(crate) fn custom_certificate_material_path(
+    state_dir: &Path,
+    active_cert: &ActiveCertState,
+) -> Result<PathBuf, CertificateMaterialError> {
+    let (digest, _) = active_cert
+        .bundle_ref
+        .artifact_parts()
+        .map_err(invalid_material)?;
+    Ok(custom_certificate_material_path_for_digest(
+        state_dir,
+        &active_cert.cert_id,
+        &digest,
+    ))
+}
+
+fn custom_certificate_material_path_for_digest(
+    state_dir: &Path,
+    cert_id: &CertId,
+    digest: &InstallSha256Digest,
+) -> PathBuf {
+    state_dir
+        .join("bundles")
+        .join(format!("{}-{}.bundle", cert_id.as_str(), digest.as_str()))
+}
+
+pub(crate) fn validate_custom_certificate(
+    bundle: &CustomCertBundle,
+) -> Result<(), CertificateMaterialError> {
+    let active = bundle.active_cert();
+    let actual = validate_and_read_validity(
+        bundle.certificate_chain_pem(),
+        bundle.private_key_pem(),
+        &active.hostname,
+    )?;
+    if actual != active.validity {
+        return Err(CertificateMaterialError::ValidityMismatch {
+            expected: active.validity,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_custom_certificate_for_activation(
+    active: &ActiveCertState,
+    now_seconds: u64,
+) -> Result<(), CertificateMaterialError> {
+    if !active.is_usable_at(now_seconds) {
+        return Err(CertificateMaterialError::NotActivationEligible {
+            now_seconds,
+            not_before: active.validity.not_before.unix_seconds(),
+            not_after: active.validity.not_after.unix_seconds(),
+        });
+    }
+    Ok(())
+}
 
 pub(crate) fn validate_and_read_validity(
     certificate_chain_pem: &str,
@@ -111,6 +235,12 @@ fn asn1_unix_seconds(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CertificateMaterialError {
+    #[error("certificate material path is not UTF-8: {}", path.display())]
+    NonUtf8Path { path: PathBuf },
+    #[error("invalid certificate material: {message}")]
+    InvalidMaterial { message: String },
+    #[error("certificate material file {}: {message}", path.display())]
+    ArtifactFile { path: PathBuf, message: String },
     #[error("certificate chain is empty")]
     EmptyChain,
     #[error("invalid certificate chain: {message}")]
@@ -126,4 +256,60 @@ pub(crate) enum CertificateMaterialError {
     HostnameMismatch { hostname: RouteHostname },
     #[error("invalid certificate validity: {message}")]
     InvalidValidity { message: String },
+    #[error(
+        "certificate validity differs from active metadata: expected {expected:?}, actual {actual:?}"
+    )]
+    ValidityMismatch {
+        expected: CertValidityWindow,
+        actual: CertValidityWindow,
+    },
+    #[error(
+        "certificate is not eligible for activation at {now_seconds}; validity is {not_before} through {not_after}"
+    )]
+    NotActivationEligible {
+        now_seconds: u64,
+        not_before: u64,
+        not_after: u64,
+    },
+}
+
+fn invalid_material(error: impl std::fmt::Display) -> CertificateMaterialError {
+    CertificateMaterialError::InvalidMaterial {
+        message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::ids::CertId;
+    use ployz_core::ops::RouteHostname;
+
+    use super::*;
+
+    #[test]
+    fn local_path_uses_typed_identity_and_digest_not_referenced_path() {
+        let digest = "a".repeat(64);
+        let active = ActiveCertState {
+            cert_id: CertId::try_new("cert_example").expect("cert id"),
+            hostname: RouteHostname::try_new("example.com").expect("hostname"),
+            bundle_ref: CertBundleRef::try_new(format!("sha256:{digest}:/foreign/forged.bundle"))
+                .expect("bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1_000).expect("not before"),
+                CertValidAt::try_new(2_000).expect("not after"),
+            )
+            .expect("validity"),
+        };
+
+        assert_eq!(
+            custom_certificate_material_path(Path::new("/var/lib/ployz/certificates"), &active)
+                .expect("local path"),
+            Path::new("/var/lib/ployz/certificates")
+                .join("bundles")
+                .join(format!("cert_example-{digest}.bundle"))
+        );
+    }
 }

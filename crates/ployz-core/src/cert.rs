@@ -5,7 +5,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::ids::{CertId, MachineId};
+use crate::ids::CertId;
 use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
 use crate::ops::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
@@ -20,10 +20,12 @@ pub const DEFAULT_LEASE_WORKER_URL: &str = "https://up.ployz.app";
 mod custom_bundle;
 mod gateway_rpc;
 
-pub use custom_bundle::{CustomCertBundle, CustomCertBundleError, custom_bundle_digest};
+pub use crate::ops::CertificateProvisionFailure;
+pub use custom_bundle::{
+    ActiveCertState, CustomCertBundle, CustomCertBundleError, custom_bundle_digest,
+};
 pub use gateway_rpc::{
-    CertificateArtifactKind, CertificateArtifactPushOk, CertificateArtifactPushOutcome,
-    CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     CertificateChallengeApplicationStatus, CertificateChallengeStatusOk,
     CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
     GatewayCertificateRpcError,
@@ -90,11 +92,10 @@ impl ManagedLeaseIntent {
         let AutoLeaseState::Ready { lease, .. } = state.as_ref() else {
             return false;
         };
-        renewal_due(
-            lease.issued_at.unix_seconds(),
-            lease.expires_at.unix_seconds(),
-            now_seconds,
-        )
+        let issued_at = lease.issued_at.unix_seconds();
+        now_seconds
+            >= issued_at
+                .saturating_add(lease.expires_at.unix_seconds().saturating_sub(issued_at) / 2)
     }
 
     #[must_use]
@@ -113,76 +114,12 @@ impl ManagedLeaseIntent {
     }
 }
 
-/// Active certificate intent/evidence value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ActiveCertState {
-    pub cert_id: CertId,
-    pub hostname: RouteHostname,
-    pub bundle_ref: CertBundleRef,
-    pub validity: CertValidityWindow,
-}
-
-impl ActiveCertState {
-    /// A certificate can be served only inside its declared validity window.
-    #[must_use]
-    pub fn is_usable_at(&self, now_seconds: u64) -> bool {
-        self.validity.not_before.unix_seconds() <= now_seconds
-            && now_seconds < self.validity.not_after.unix_seconds()
-    }
-
-    /// Custom certificates renew once two thirds of their validity has elapsed.
-    #[must_use]
-    pub fn needs_renewal(&self, now_seconds: u64) -> bool {
-        refresh_due(
-            self.validity.not_before.unix_seconds(),
-            self.validity.not_after.unix_seconds(),
-            now_seconds,
-        )
-    }
-}
-
-/// One typed failure taxonomy shared by deploy-time issuance and renewal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CertificateProvisionFailure {
-    OperationEvidenceWrite {
-        message: crate::ops::FailureMessage,
-    },
-    DnsPreflight {
-        message: crate::ops::FailureMessage,
-    },
-    ChallengePublish {
-        message: crate::ops::FailureMessage,
-    },
-    ChallengeReadiness {
-        missing_machine_ids: Vec<MachineId>,
-    },
-    AcmeValidation {
-        message: crate::ops::FailureMessage,
-    },
-    GatewayArtifactPush {
-        machine_id: MachineId,
-        message: crate::ops::FailureMessage,
-    },
-    ActiveCertCommit {
-        attempted_active_cert: ActiveCertState,
-        message: crate::ops::FailureMessage,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquireRequest {
     pub ipv4: Vec<Ipv4Addr>,
     pub ipv6: Vec<Ipv6Addr>,
-}
-
-fn renewal_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
-    now_seconds >= issued_at.saturating_add(expires_at.saturating_sub(issued_at) / 2)
 }
 
 fn refresh_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
