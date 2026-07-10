@@ -6,12 +6,16 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::deploy::DeployPlan;
 use crate::ids::{MachineId, OperationId};
 use crate::ops::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
+pub const MIN_WIREGUARD_MTU: u32 = 1280;
+pub const MAX_WIREGUARD_MTU: u32 = 1420;
+pub const OVERLAY_CONNECTIVITY_PROOF_BUDGET: Duration = Duration::from_secs(45);
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 

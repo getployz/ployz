@@ -335,7 +335,8 @@ impl DeployOperationDriver {
         }
 
         let mut dataplane = NatsMachineDataplanePreparer::new(self.client.clone())
-            .with_request_timeout(self.step_timeout);
+            .with_request_timeout(self.step_timeout)
+            .with_mesh_lock(self.controllers.mesh_lock());
         let mut machine_runtime = NatsMachineContainerRuntime::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
         let facts_reader = NatsMachineFactsReader::new(self.client.clone())

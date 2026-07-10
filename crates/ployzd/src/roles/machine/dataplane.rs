@@ -1,11 +1,12 @@
 use super::response::{failure_message, machine_domain_error, machine_success};
 use super::service::MachinePloyzNativeMeshPreparer;
 use crate::roles::machine::protocol::{
-    MachineDataplanePrepareRpcRequest, MachineDataplanePrepareRpcResponse,
-    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
-    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse,
-    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
-    MachinePloyzNativeMeshPrepareRpcRequest,
+    MachineDataplaneMtuProbeRpcOk, MachineDataplaneMtuProbeRpcRequest,
+    MachineDataplaneMtuProbeRpcResponse, MachineDataplanePrepareRpcRequest,
+    MachineDataplanePrepareRpcResponse, MachineDataplaneStatusDomainError,
+    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
+    MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };
 use ployz_core::dataplane::PloyzNativeMeshMachineReady;
 use ployz_core::ids::MachineId;
@@ -81,6 +82,21 @@ where
                 }
             }
         }
+        MachinePloyzNativeMeshPrepareRpcRequest::PrepareWireGuard {
+            endpoint_routes,
+            peers,
+        } => match preparer.prepare_wireguard(&endpoint_routes, &peers).await {
+            Ok(readiness) => machine_success(MachineDataplanePrepareRpcResponse::Ok(
+                MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady {
+                    machine_id,
+                    readiness,
+                },
+            )),
+            Err(error) => machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
+                machine_id,
+                error: error.into(),
+            }),
+        },
         MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane {
             endpoint_routes,
             peers,
@@ -102,5 +118,48 @@ where
                 }
             }
         }
+        MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay { public_keys } => {
+            match preparer.probe_overlay(&public_keys).await {
+                Ok(unreachable) => machine_success(MachineDataplanePrepareRpcResponse::Ok(
+                    MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe {
+                        machine_id,
+                        unreachable,
+                    },
+                )),
+                Err(error) => {
+                    machine_domain_error(MachineDataplanePrepareRpcResponse::DomainError {
+                        machine_id,
+                        error: error.into(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+pub(crate) async fn handle_dataplane_mtu_probe<P>(
+    machine_id: MachineId,
+    preparer: P,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    P: MachinePloyzNativeMeshPreparer,
+{
+    let request = match decode_json_request::<MachineDataplaneMtuProbeRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match preparer.probe_link_mtu(request.peer_gateway).await {
+        Ok(path_mtu) => machine_success(MachineDataplaneMtuProbeRpcResponse::Ok(
+            MachineDataplaneMtuProbeRpcOk {
+                machine_id,
+                peer_machine_id: request.peer_machine_id,
+                path_mtu,
+            },
+        )),
+        Err(error) => machine_domain_error(MachineDataplaneMtuProbeRpcResponse::DomainError {
+            machine_id,
+            error: error.into(),
+        }),
     }
 }

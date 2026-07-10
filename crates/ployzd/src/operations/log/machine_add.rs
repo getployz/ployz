@@ -406,7 +406,7 @@ impl OperationRepository {
         })
     }
 
-    async fn machine_join_report_target(
+    pub(crate) async fn machine_join_report_target(
         &self,
         token: &RawJoinToken,
     ) -> Result<MachineJoinReportTarget, RecordMachineJoinReportError> {

@@ -2,17 +2,16 @@ use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi, peer::Peer};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::dataplane::{
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardMtuProbe, WireGuardPeerStatus, WireGuardPublicKey, WireGuardRttStatus,
-    WireGuardStatus,
+    MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardConfiguredMtu, WireGuardDetectedMtu,
+    WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerStatus,
+    WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
 };
 use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 
 use super::host_network::{
-    HostWireGuardApi, MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardMtuPolicy,
-    detect_wireguard_mtu, wireguard_host_ipv4,
+    HostWireGuardApi, WireGuardMtuPolicy, detect_wireguard_mtu, wireguard_host_ipv4,
 };
 
 const MAX_CONCURRENT_PEER_DIAGNOSTICS: usize = 4;

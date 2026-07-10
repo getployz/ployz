@@ -551,6 +551,44 @@ impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
             },
         )
     }
+
+    async fn prepare_wireguard(
+        &self,
+        _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+        _peers: &[ployz_core::dataplane::WireGuardPeer],
+    ) -> Result<
+        ployz_core::dataplane::WireGuardReady,
+        ployz_core::dataplane::WireGuardEbpfPrepareError,
+    > {
+        Err(
+            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
+                message: ployz_core::ops::FailureMessage::try_new("not used")
+                    .expect("static message is valid"),
+            },
+        )
+    }
+
+    async fn probe_overlay(
+        &self,
+        peers: &[ployz_core::dataplane::WireGuardPublicKey],
+    ) -> Result<
+        Vec<ployz_core::dataplane::WireGuardPublicKey>,
+        ployz_core::dataplane::WireGuardEbpfPrepareError,
+    > {
+        Ok(peers.to_vec())
+    }
+
+    async fn probe_link_mtu(
+        &self,
+        _peer_gateway: std::net::Ipv4Addr,
+    ) -> Result<u32, ployz_core::dataplane::WireGuardEbpfPrepareError> {
+        Err(
+            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
+                message: ployz_core::ops::FailureMessage::try_new("not used")
+                    .expect("static message is valid"),
+            },
+        )
+    }
 }
 
 async fn test_nats() -> TestNats {

@@ -43,6 +43,16 @@ pub(super) enum HostCommandAction {
 
 impl HostCommandPlan {
     #[must_use]
+    pub(super) const fn component(&self) -> PloyzNativeMeshComponent {
+        match &self.action {
+            HostCommandAction::ExistingPath { component, .. }
+            | HostCommandAction::CommandSucceeds { component, .. }
+            | HostCommandAction::SysctlSet { component, .. } => *component,
+            HostCommandAction::PloyzTcBytecode { .. } => PloyzNativeMeshComponent::EbpfForwarding,
+        }
+    }
+
+    #[must_use]
     pub(super) fn readiness_path(
         component: PloyzNativeMeshComponent,
         path: impl Into<PathBuf>,

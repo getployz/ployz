@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use crate::cli::HostRunnerStartup;
@@ -27,7 +28,8 @@ use ployz_nats::connect::{
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportedOutcome,
+    MachineJoinToken,
 };
 
 use crate::runtime::{
@@ -35,6 +37,8 @@ use crate::runtime::{
     PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_URL_ENV, REDEEM_MATERIAL_ATTEMPTS,
     REDEEM_MATERIAL_RETRY_DELAY, failure_message, failure_summary,
 };
+
+const JOIN_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn run_start_command(startup: HostRunnerStartup) -> ExitCode {
     if let Some(join) = &startup.join {
@@ -214,6 +218,7 @@ impl HostRunnerJoinReporter for JoinReporter {
 impl JoinReporter {
     fn report_join_result(&self, request: MachineJoinReportRequest) -> Result<(), FailureMessage> {
         let connect = self.connect.clone()?;
+        let reported_completion = matches!(request.outcome, MachineJoinReportOutcome::Completed);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -223,11 +228,20 @@ impl JoinReporter {
             let client = connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT)
                 .await
                 .map_err(|error| failure_message(&error.to_string()))?;
-            OperationApiClient::new(client)
+            let reported = OperationApiClient::new(client)
+                .with_request_timeout(JOIN_REPORT_REQUEST_TIMEOUT)
                 .machine_join_report(&request)
                 .await
-                .map(|_| ())
-                .map_err(|error| failure_message(&format!("failed to report join result: {error}")))
+                .map_err(|error| {
+                    failure_message(&format!("failed to report join result: {error}"))
+                })?;
+            match reported.outcome {
+                MachineJoinReportedOutcome::Failed { failure } if reported_completion => Err(
+                    failure_message(&format!("machine join rejected by core: {failure:?}")),
+                ),
+                MachineJoinReportedOutcome::Completed
+                | MachineJoinReportedOutcome::Failed { .. } => Ok(()),
+            }
         })
     }
 

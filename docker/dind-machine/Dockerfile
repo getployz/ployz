@@ -22,6 +22,7 @@ RUN apt-get update \
     iproute2 \
     iputils-ping \
     iptables \
+    iputils-ping \
     procps \
     systemd \
     systemd-sysv \

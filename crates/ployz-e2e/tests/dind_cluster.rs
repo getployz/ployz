@@ -18,6 +18,7 @@
 mod support;
 
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
+use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest,
@@ -27,7 +28,9 @@ use ployz_core::deploy::{
     VolumeName,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::machine::MachineCredentialProvisioningStep;
+use ployz_core::machine::{
+    ConnectivityProofUnreachablePeer, MachineAddFailure, MachineCredentialProvisioningStep,
+};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
     NamespaceRemoveOperationState, NetworkRepairOperationState, OperationEvent, OperationStatus,
@@ -76,7 +79,7 @@ use support::dind::formation::{
     CoreContext, add_and_join_edge, connect_core_client, finish, host_client_config,
     init_core_cluster, submit_machine_add,
 };
-use support::dind::join::{parse_install_line, run_edge_join};
+use support::dind::join::{parse_install_line, run_edge_join, run_edge_join_outcome};
 use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, with_evidence};
 
 /// The workload image `scripts/build-dind-machine-image.sh` bakes into the
@@ -641,6 +644,23 @@ async fn scenario_machine_add_via_join_bundle() {
         let events = terminal_operation_events(&core, &add_operation).await;
         assert_machine_add_event_sequence(&events, &machine_id("edge_2"));
 
+        let mangle_forward = core.exec_sh(edge, "iptables -t mangle -S FORWARD").await;
+        assert!(
+            mangle_forward.success(),
+            "read edge mangle/FORWARD rules failed: {mangle_forward:?}"
+        );
+        for direction in ["-i", "-o"] {
+            assert!(
+                mangle_forward.stdout.lines().any(|rule| {
+                    rule.contains(&format!("{direction} ployz-wg0"))
+                        && rule.contains("TCPMSS")
+                        && rule.contains("--clamp-mss-to-pmtu")
+                }),
+                "edge overlay is missing the {direction} TCPMSS clamp rule: {}",
+                mangle_forward.stdout
+            );
+        }
+
         // nats_connection readiness evidence: the edge's machine process connects
         // with its minted credential and publishes observations.
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
@@ -709,6 +729,77 @@ async fn scenario_machine_add_via_join_bundle() {
                 panic!("token re-redeem must be refused as an unknown token: {other:?}");
             }
         }
+    })
+    .await;
+
+    finish(core).await;
+}
+
+/// An edge whose WireGuard UDP cannot reach the core keeps direct TLS NATS
+/// control-plane access but fails admission with typed overlay evidence.
+#[tokio::test]
+async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 1).await;
+    with_evidence(&core.cluster, async {
+        let accepted = submit_machine_add(&core).await;
+        let operation_id = accepted.accepted.operation_id.clone();
+        let install = parse_install_line(&core, accepted);
+        let [edge] = core.cluster.edges() else {
+            panic!("scenario requires exactly one edge machine");
+        };
+        let drop_wireguard = core
+            .exec_sh(
+                edge,
+                &format!(
+                    "iptables -I OUTPUT 1 -p udp -d {} --dport {DEFAULT_WIREGUARD_LISTEN_PORT} -j DROP",
+                    core.core_ip()
+                ),
+            )
+            .await;
+        assert!(
+            drop_wireguard.success(),
+            "install edge WireGuard DROP rule failed: {drop_wireguard:?}"
+        );
+
+        let join = run_edge_join_outcome(&core, edge, &install).await;
+        assert!(
+            !join.success(),
+            "unreachable edge join unexpectedly succeeded: {join:?}"
+        );
+
+        // The proof waits the full handshake budget before the join reports its
+        // failure, so poll the operation until it records the terminal
+        // connectivity-proof failure rather than reading once.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let evidence = loop {
+            let status = operation_status(&core, &operation_id).await;
+            let OperationStatus::MachineAdd { state, .. } = status else {
+                panic!("machine add is not a machine add: {status:?}");
+            };
+            if let MachineAddOperationState::Failed {
+                failure: MachineAddFailure::ConnectivityProofFailed { evidence },
+            } = &state
+            {
+                break evidence.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "unreachable machine add did not fail connectivity proof: {state:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        let core_member = DataplaneMember::default_for_machine(machine_id("core_1"));
+        assert_eq!(
+            evidence.unreachable_peers(),
+            [ConnectivityProofUnreachablePeer {
+                machine_id: machine_id("core_1"),
+                gateway: core_member.endpoint_subnet.bridge_gateway_ipv4(),
+            }]
+        );
     })
     .await;
 
