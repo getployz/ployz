@@ -11,8 +11,8 @@ use crate::process_support::{
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
 use crate::roles::gateway::pingora::{
-    GatewayPingoraFailureRecorder, PingoraRouteRegistry, PingoraRouteRegistryError,
-    PloyzGatewayProxy,
+    GatewayPingoraFailureRecorder, GatewayTlsAccept, PingoraRouteRegistry,
+    PingoraRouteRegistryError, PloyzGatewayProxy,
 };
 use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
 use crate::roles::gateway::route_table::{
@@ -24,6 +24,7 @@ use crate::roles::nats_failover::{
     IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
 };
 use futures_util::StreamExt;
+use pingora::listeners::tls::TlsSettings;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
@@ -173,6 +174,14 @@ pub async fn start_gateway_process_with_client(
         let _ = http_task.await;
         return Err(error);
     }
+    let tls_addr = gateway_tls_listen_addr(listen_addr);
+    if tls_addr.port() != 0
+        && let Err(error) = wait_for_gateway_listener_ready(tls_addr, &http_task).await
+    {
+        let _ = pingora_shutdown.send(true);
+        let _ = http_task.await;
+        return Err(error);
+    }
 
     let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
     let task_runtime = Arc::clone(&runtime);
@@ -309,17 +318,17 @@ impl GatewayProcessSource {
         registry: &PingoraRouteRegistry,
     ) -> Result<GatewayProjectorTick, GatewayProcessError> {
         let update = self.load_update().await?;
-        let tick = {
-            let mut runtime = runtime
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            runtime.apply_source_update(update)
-        };
+        let mut runtime = runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut candidate = runtime.clone();
+        let tick = candidate.apply_source_update(update);
         if let Some(projection) = tick.served.as_ref() {
             registry
                 .replace_projection(projection)
                 .map_err(GatewayProcessError::UpdatePingoraRoutes)?;
         }
+        *runtime = candidate;
 
         Ok(tick)
     }
@@ -696,13 +705,38 @@ fn run_pingora_gateway_server(
     let recorder: GatewayPingoraFailureRecorder = Arc::new(move |failure| {
         record_gateway_http_failure(&health, GatewayHttpFailure::Proxy { message: failure });
     });
-    let proxy = PloyzGatewayProxy::new(registry, listener_port, recorder);
-    let mut service = pingora::proxy::http_proxy_service(&server.configuration, proxy);
-    service.add_tcp(&listen_addr.to_string());
-    server.add_service(service);
+    let proxy = PloyzGatewayProxy::redirecting_managed_http(
+        registry.clone(),
+        listener_port,
+        Arc::clone(&recorder),
+    );
+    let mut http_service = pingora::proxy::http_proxy_service(&server.configuration, proxy);
+    http_service.add_tcp(&listen_addr.to_string());
+    server.add_service(http_service);
+
+    let tls_addr = gateway_tls_listen_addr(listen_addr);
+    let tls_proxy = PloyzGatewayProxy::new(
+        registry.clone(),
+        RoutePort::try_new(443).expect("HTTPS listener port is non-zero"),
+        recorder,
+    );
+    let mut tls_service = pingora::proxy::http_proxy_service(&server.configuration, tls_proxy);
+    let settings = TlsSettings::with_callbacks(Box::new(GatewayTlsAccept::new(&registry)))
+        .expect("dynamic TLS settings are valid");
+    tls_service.add_tls_with_settings(&tls_addr.to_string(), None, settings);
+    server.add_service(tls_service);
     server.run(RunArgs {
         shutdown_signal: Box::new(GatewayPingoraShutdown { shutdown }),
     });
+}
+
+fn gateway_tls_listen_addr(http: SocketAddr) -> SocketAddr {
+    let port = if http.port() == 80 {
+        443
+    } else {
+        http.port().checked_add(363).unwrap_or(0)
+    };
+    SocketAddr::new(http.ip(), port)
 }
 
 struct GatewayPingoraShutdown {

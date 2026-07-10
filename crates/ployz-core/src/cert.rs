@@ -7,6 +7,7 @@ use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
 use crate::ops::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
 use sha2::{Digest, Sha256};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -14,7 +15,6 @@ pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
-pub const DEFAULT_MANAGED_LEASE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const DEFAULT_LEASE_WORKER_URL: &str = "https://up.ployz.app";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,18 +71,33 @@ impl ManagedLeaseIntent {
     }
 
     #[must_use]
-    pub fn needs_renewal(&self, now_seconds: u64) -> bool {
+    pub fn needs_lease_renewal(&self, now_seconds: u64) -> bool {
         let Self::Auto { state } = self else {
             return false;
         };
         let AutoLeaseState::Ready { lease, .. } = state.as_ref() else {
             return false;
         };
-        now_seconds
-            >= lease
-                .issued_at
-                .unix_seconds()
-                .saturating_add(DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2)
+        renewal_due(
+            lease.issued_at.unix_seconds(),
+            lease.expires_at.unix_seconds(),
+            now_seconds,
+        )
+    }
+
+    #[must_use]
+    pub fn needs_certificate_refresh(&self, now_seconds: u64) -> bool {
+        let Self::Auto { state } = self else {
+            return false;
+        };
+        let AutoLeaseState::Ready { bundle, .. } = state.as_ref() else {
+            return false;
+        };
+        refresh_due(
+            bundle.issued_at.unix_seconds(),
+            bundle.expires_at.unix_seconds(),
+            now_seconds,
+        )
     }
 }
 
@@ -101,7 +116,17 @@ pub struct ActiveCertState {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquireRequest {
-    pub cluster_id: String,
+    pub ipv4: Vec<Ipv4Addr>,
+    pub ipv6: Vec<Ipv6Addr>,
+}
+
+fn renewal_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
+    now_seconds >= issued_at.saturating_add(expires_at.saturating_sub(issued_at) / 2)
+}
+
+fn refresh_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
+    now_seconds
+        >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -824,33 +849,6 @@ fn is_base64_url_byte(byte: u8) -> bool {
 mod managed_lease_intent_tests {
     use super::*;
 
-    fn lease(issued_at: u64) -> ManagedLeaseRecord {
-        ManagedLeaseRecord::try_new(
-            ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-            LeaseBearerToken::try_new("lease-token").expect("valid token"),
-            LeaseIssuedAt::try_new(issued_at).expect("positive issued timestamp"),
-            LeaseExpiresAt::try_new(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS)
-                .expect("positive expiry timestamp"),
-        )
-        .expect("valid lease window")
-    }
-
-    fn ready_intent(issued_at: u64) -> ManagedLeaseIntent {
-        let lease = lease(issued_at);
-        let bundle = ManagedCertBundle::try_new(
-            lease.name.clone(),
-            lease.name.wildcard_and_apex(),
-            "certificate".to_owned(),
-            "private-key".to_owned(),
-            lease.issued_at,
-            lease.expires_at,
-        )
-        .expect("valid bundle");
-        ManagedLeaseIntent::Auto {
-            state: Box::new(AutoLeaseState::Ready { lease, bundle }),
-        }
-    }
-
     #[test]
     fn auto_without_lease_needs_acquisition() {
         let ManagedLeaseIntent::Auto { state } = ManagedLeaseIntent::empty(PublicUrlMode::Auto)
@@ -869,26 +867,56 @@ mod managed_lease_intent_tests {
     }
 
     #[test]
-    fn auto_lease_needs_renewal_at_half_ttl() {
-        let issued_at = 1_000;
-        let intent = ready_intent(issued_at);
+    fn certificate_refresh_uses_bundle_validity_window() {
+        let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
+        let lease = ManagedLeaseRecord::try_new(
+            name.clone(),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            LeaseIssuedAt::try_new(1_000).expect("issued"),
+            LeaseExpiresAt::try_new(1_200).expect("expires"),
+        )
+        .expect("lease");
+        let bundle = ManagedCertBundle::try_new(
+            name.clone(),
+            name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            LeaseIssuedAt::try_new(1_000).expect("issued"),
+            LeaseExpiresAt::try_new(1_100).expect("expires"),
+        )
+        .expect("bundle");
+        let intent = ManagedLeaseIntent::Auto {
+            state: Box::new(AutoLeaseState::Ready { lease, bundle }),
+        };
 
-        assert!(intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2));
+        assert!(!intent.needs_certificate_refresh(1_065));
+        assert!(intent.needs_certificate_refresh(1_066));
     }
 
     #[test]
-    fn auto_lease_does_not_need_renewal_before_half_ttl() {
-        let issued_at = 1_000;
-        let intent = ready_intent(issued_at);
+    fn lease_renewal_uses_record_validity_window() {
+        let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
+        let lease = ManagedLeaseRecord::try_new(
+            name.clone(),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            LeaseIssuedAt::try_new(1_000).expect("issued"),
+            LeaseExpiresAt::try_new(1_100).expect("expires"),
+        )
+        .expect("lease");
+        let bundle = ManagedCertBundle::try_new(
+            name.clone(),
+            name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            LeaseIssuedAt::try_new(1_000).expect("issued"),
+            LeaseExpiresAt::try_new(1_200).expect("expires"),
+        )
+        .expect("bundle");
+        let intent = ManagedLeaseIntent::Auto {
+            state: Box::new(AutoLeaseState::Ready { lease, bundle }),
+        };
 
-        assert!(!intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2 - 1));
-    }
-
-    #[test]
-    fn non_auto_lease_never_needs_renewal() {
-        let issued_at = 1_000;
-        let intent = ManagedLeaseIntent::None;
-
-        assert!(!intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS));
+        assert!(!intent.needs_lease_renewal(1_049));
+        assert!(intent.needs_lease_renewal(1_050));
     }
 }

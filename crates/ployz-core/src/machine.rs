@@ -293,6 +293,7 @@ pub fn active_machine_from_completed_add(
     operation_id: OperationId,
     machine_id: MachineId,
     name: MachineName,
+    roles: crate::roles::InstallRolePolicy,
     endpoint_subnet: MachineEndpointSubnet,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
@@ -307,6 +308,7 @@ pub fn active_machine_from_completed_add(
         machine_id,
         name,
         activated_by: operation_id,
+        roles,
         control_endpoints: Vec::new(),
         mesh_endpoints: Vec::new(),
         endpoint_subnet,

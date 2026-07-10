@@ -212,6 +212,7 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_1").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
+            roles: ployz_core::roles::InstallRolePolicy::install_all(),
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")

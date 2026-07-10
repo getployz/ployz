@@ -1,10 +1,10 @@
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
-    CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
-    DEFAULT_MANAGED_LEASE_TTL_SECONDS, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-    LeaseTimestampError, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquired,
-    ManagedLeaseError, ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
+    CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow, LeaseBearerToken,
+    LeaseExpiresAt, LeaseIssuedAt, LeaseTimestampError, ManagedCertBundle,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseError, ManagedLeaseName,
+    ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
     DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,

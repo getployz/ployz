@@ -46,13 +46,16 @@ pub async fn load_deploy_execution_facts_from_nats(
                 message: source.to_string(),
             })?;
     let active_machines = intent.active_machines.clone();
-    let has_managed_lease = intent.managed_lease.is_some();
+    let managed_lease = match &intent.managed_lease {
+        ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => Some(lease.name.clone()),
+        ployz_core::state::ManagedLeaseProjection::Unacquired
+        | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
+    };
     let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates.clone());
-    let namespace_route_bindings = intent
-        .route_bindings
-        .into_iter()
-        .filter(|binding| binding.namespace_id == request.namespace_id)
-        .collect::<Vec<_>>();
+    // Hostnames share one managed DNS lease across the cluster, so minting
+    // must see bindings in every namespace. Namespace-scoped removal still
+    // filters inside the planner.
+    let namespace_route_bindings = intent.route_bindings;
     let namespace_serving_entries = intent
         .serving_target_entries
         .into_iter()
@@ -97,7 +100,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         observed_machines,
         machine_platforms,
         namespace_cleanup_candidates,
-        has_managed_lease,
+        managed_lease,
         step_timeout,
     })
 }
