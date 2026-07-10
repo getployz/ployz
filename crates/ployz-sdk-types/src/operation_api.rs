@@ -2,21 +2,22 @@
 
 use crate::{
     AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
-    CoreReplaceReported, CoreReplaceRequest, DeploySubmitError, DeploySubmitRequest,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
-    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
-    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
-    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
-    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationStatusSnapshot,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    CoreReplaceReported, CoreReplaceRequest, DeployReserveError, DeployReserveRequest,
+    DeployReserved, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
+    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError,
+    NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest, NetworkResolveError,
+    NetworkResolveRequest, NetworkResolveResult, NetworkStatusError, NetworkStatusRequest,
+    NetworkStatusResult, OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
+    ServiceListError, ServiceListRequest, ServiceListResult, ServiceRestartError,
+    ServiceRestartRequest, ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult,
+    VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -35,6 +36,7 @@ pub trait OperationApiContract {
 macro_rules! operation_api_contracts {
     ($macro:ident) => {
         $macro!(
+            $crate::operation_api::DeployReserveApi,
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
@@ -63,6 +65,18 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::OpsWatchApi
         );
     };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeployReserveApi;
+
+impl OperationApiContract for DeployReserveApi {
+    type Request = DeployReserveRequest;
+    type Success = DeployReserved;
+    type Error = DeployReserveError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeployReserve;
+    const RESPONSE_ALIAS: &'static str = "DeployReserveResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

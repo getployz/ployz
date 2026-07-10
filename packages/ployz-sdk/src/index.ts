@@ -21,6 +21,7 @@ export {
   certValidAt,
   containerId,
   containerMountPath,
+  deployReservationId,
   eventSequence,
   failureMessage,
   imageReference,
@@ -65,6 +66,9 @@ import {
 import type {
   AcceptedOperation,
   ContainerRuntimeSpec,
+  DeployReservationId,
+  DeployReserveError,
+  DeployReserveRequest,
   DeploySubmitError,
   DeploySubmitRequest,
   EventSequence,
@@ -198,7 +202,12 @@ export class PloyzClient {
   }
 
   async deploy(input: PloyzDeployInput): Promise<OperationHandle> {
-    const request = deploySubmitRequest(input);
+    const reserveRequest = deployReserveRequest(input);
+    const reservation = unwrapApiResponse(
+      "deploy.reserve",
+      await this.#transport.request("deploy.reserve", reserveRequest),
+    );
+    const request = deploySubmitRequest(input, reservation.reservation_id);
     const accepted = unwrapApiResponse(
       "deploy.submit",
       await this.#transport.request("deploy.submit", request),
@@ -336,9 +345,17 @@ export function imageDefaultRuntime(): ContainerRuntimeSpec {
   };
 }
 
-export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
+export function deployReserveRequest(input: PloyzDeployInput): DeployReserveRequest {
+  return { namespace_id: namespaceId(input.namespaceId ?? "default") };
+}
+
+export function deploySubmitRequest(
+  input: PloyzDeployInput,
+  reservationId: DeployReservationId,
+): DeploySubmitRequest {
   return {
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
+    reservation_id: reservationId,
     target: {
       namespace_id: namespaceId(input.namespaceId ?? "default"),
       services: [
@@ -367,7 +384,7 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     machine_id: machineId(input.machineId),
     name: machineName(input.name),
-    roles: input.roles,
+    roles: { gateway: input.roles.gateway },
   };
 }
 
@@ -384,7 +401,7 @@ export function initFirstMachineActivateRequest(
 ): InitFirstMachineActivateRequest {
   return {
     machine_id: machineId(input.machineId),
-    roles: input.roles,
+    roles: { gateway: input.roles.gateway },
     public_url_mode: input.publicUrlMode ?? "auto",
   };
 }
@@ -573,6 +590,7 @@ function unwrapApiResponse<T, E>(
 }
 
 export type PloyzOperationError =
+  | PloyzApiError<DeployReserveError>
   | PloyzApiError<DeploySubmitError>
   | PloyzApiError<InitFirstMachineActivateError>
   | PloyzApiError<MachineAddError>

@@ -20,8 +20,9 @@ pub use queries::{
     VolumeQueryService, ops_list, ops_status, ops_status_missing, ops_watch,
 };
 pub use submit::{
-    core_replace, deploy_submit, machine_add, machine_drain, machine_resume, machine_update,
-    namespace_remove, network_repair, owned_operation, service_restart, volume_remove,
+    core_replace, deploy_reserve, deploy_submit, machine_add, machine_drain, machine_resume,
+    machine_update, namespace_remove, network_repair, owned_operation, service_restart,
+    volume_remove,
 };
 
 use crate::adapters::nats_authorization::MachineCredentialMint;

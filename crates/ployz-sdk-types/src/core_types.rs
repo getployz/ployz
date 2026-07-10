@@ -19,7 +19,8 @@ pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
     ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
-    DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
+    DeployPlanStep, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
+    DeployReservationNumberError, DeployRoute, DeployRouteTarget, DeployServicePlan,
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
     LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
@@ -78,7 +79,7 @@ pub use ployz_core::ops::{
     CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployOperationState, DeployRunningStage, PreStartHookFailure,
 };
-pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
 pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{

@@ -701,6 +701,7 @@ mod tests {
             state: ExistingManagedContainerState::Running {
                 ip: None,
                 health: ployz_core::machine_runtime::ContainerHealth::None,
+                started_at_unix_ms: None,
             },
             health_status: None,
             resolved_image_identity: None,

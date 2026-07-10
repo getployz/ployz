@@ -406,7 +406,6 @@ pub fn first_machine_install_target_from_spec(
         machine_id,
         dataplane_endpoint_supernet,
         gateway: _,
-        dns: _,
         machine_public_ip,
         machine_bootstrap_url,
         machine_join_template_file,
@@ -814,18 +813,9 @@ mod tests {
     }
 
     #[test]
-    fn parser_honors_explicit_dns_opt_out_in_spec() {
+    fn parser_rejects_explicit_dns_opt_out_in_spec() {
         let path = write_temp_spec_with(FIRST_MACHINE_INSTALL_SPEC_NO_DNS, "no-dns");
-        let command = load_command(["install".into(), "--spec".into(), path.into()])
-            .expect("first-machine install command loads");
-
-        let HostRunnerCommand::FirstMachineInstall(target) = command else {
-            panic!("expected first-machine install command");
-        };
-        assert_eq!(
-            target.roles,
-            ployz_core::roles::InstallRolePolicy::install_all().without_dns()
-        );
+        assert!(load_command(["install".into(), "--spec".into(), path.into()]).is_err());
     }
 
     #[test]
@@ -996,7 +986,6 @@ mod tests {
     const FIRST_MACHINE_INSTALL_SPEC: &str = r#"{
         "machine_id": "machine_1",
         "gateway": "install",
-        "dns": "install",
         "machine_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,

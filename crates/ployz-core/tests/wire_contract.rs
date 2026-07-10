@@ -729,7 +729,11 @@ fn managed_container_observation_wire_shape_nests_identity() {
             .operation("op_1")
             .step("step_1")
             .build(),
-        state: ployz_core::machine_runtime::ContainerRuntimeState::running_unroutable(),
+        state: ployz_core::machine_runtime::ContainerRuntimeState::Running {
+            ip: None,
+            health: ployz_core::machine_runtime::ContainerHealth::None,
+            started_at_unix_ms: Some(1_783_670_950_123),
+        },
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
@@ -748,7 +752,11 @@ fn managed_container_observation_wire_shape_nests_identity() {
                 "step_id": "step_1",
                 "kind": "service",
             },
-            "state": { "state": "running", "health": "none" },
+            "state": {
+                "state": "running",
+                "health": "none",
+                "started_at_unix_ms": 1_783_670_950_123_u64,
+            },
         })
     );
 }

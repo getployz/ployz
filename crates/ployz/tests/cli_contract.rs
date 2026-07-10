@@ -152,8 +152,8 @@ fn cli_init_activate_first_machine_rejects_unknown_public_url_choice() {
 }
 
 #[test]
-fn cli_init_activate_first_machine_accepts_role_opt_outs() {
-    let command = parse_command(
+fn cli_init_activate_first_machine_rejects_dns_opt_out() {
+    let error = parse_command(
         [
             "internal",
             "init",
@@ -165,18 +165,9 @@ fn cli_init_activate_first_machine_accepts_role_opt_outs() {
         ]
         .map(str::to_owned),
     )
-    .expect("activation-only init command parses");
+    .expect_err("DNS is required on every workload-eligible machine");
 
-    let PloyzctlCommand::InitFirstMachineActivate(command) = command else {
-        panic!("expected first-machine activation command");
-    };
-
-    assert_eq!(
-        command.roles,
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns()
-    );
+    assert!(error.to_string().contains("unexpected argument '--no-dns'"));
 }
 
 #[test]
@@ -1050,6 +1041,7 @@ fn ops_watch_renders_persisted_operation_events() {
                 1,
                 ployz_core::ops::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
+                    reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                     target: deploy_request(),
                 },
             ),
@@ -1076,6 +1068,7 @@ fn ops_watch_renders_failed_deploy_details() {
                 1,
                 ployz_core::ops::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
+                    reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                     target: deploy_request(),
                 },
             ),
@@ -1252,7 +1245,7 @@ fn ops_status_renders_unclaimed_machine_add() {
 
     assert_eq!(
         output,
-        "operation op_machine\nkind machine-add\nmachine machine_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\ntimeline\n"
+        "operation op_machine\nkind machine-add\nmachine machine_2 name edge_2 gateway skip\nstate completed\nlast-event 9\ntimeline\n"
     );
 }
 
@@ -1500,7 +1493,6 @@ fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Optio
         r#"{{
             "machine_id": "machine_1",
             "gateway": "install",
-            "dns": "install",
             "machine_public_ip": {machine_public_ip},
             "machine_bootstrap_url": null,
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",

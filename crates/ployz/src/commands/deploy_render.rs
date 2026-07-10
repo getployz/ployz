@@ -74,6 +74,7 @@ impl DeployTree {
             OperationEvent::DeploySubmitted {
                 operation_id,
                 target,
+                ..
             } => {
                 self.deploy = Some(ObservedDeploy {
                     operation_id: operation_id.clone(),

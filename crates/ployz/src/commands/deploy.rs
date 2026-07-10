@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use clap::Args;
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployRequest, DeployReservationId, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort};
@@ -31,9 +32,10 @@ pub struct DeployCommand {
 
 impl DeployCommand {
     #[must_use]
-    pub fn into_request(self) -> DeploySubmitRequest {
+    pub fn into_request(self, reservation_id: DeployReservationId) -> DeploySubmitRequest {
         DeploySubmitRequest {
             idempotency_key: self.idempotency_key,
+            reservation_id,
             target: DeployRequest {
                 namespace_id: self.namespace_id,
                 services: self.services,

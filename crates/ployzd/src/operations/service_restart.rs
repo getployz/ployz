@@ -235,7 +235,7 @@ impl ServiceRestartOperation {
     ) -> Result<(), ServiceRestartFailure> {
         let deadline = Instant::now() + self.step_timeout;
         loop {
-            let observation = machine_runtime
+            let inspection = machine_runtime
                 .inspect_container(
                     &target.machine_id,
                     MachineContainerInspectRpcRequest {
@@ -244,7 +244,7 @@ impl ServiceRestartOperation {
                 )
                 .await
                 .map_err(|error| health_failure_from_inspect_error(error, &target.container_id))?;
-            if let Some(observation) = observation {
+            if let Some(observation) = inspection.observation {
                 match restart_health_observation(operation_id, target, observation.state)? {
                     RestartHealthObservation::Ready => return Ok(()),
                     RestartHealthObservation::Waiting => {}

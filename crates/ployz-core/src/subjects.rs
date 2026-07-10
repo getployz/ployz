@@ -21,6 +21,7 @@ pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
+pub const OPERATOR_DEPLOY_RESERVE: &str = "plz.v1.rpc.operator.command.deploy.reserve";
 pub const OPERATOR_OPS_LIST: &str = "plz.v1.rpc.operator.query.ops.list";
 pub const OPERATOR_OPS_STATUS: &str = "plz.v1.rpc.operator.query.ops.status";
 pub const OPERATOR_OPS_WATCH: &str = "plz.v1.rpc.operator.query.ops.watch";
@@ -49,6 +50,7 @@ pub const OPERATOR_CORE_REPLACE: &str = "plz.v1.rpc.operator.command.core.replac
 pub const OPERATOR_CORE_REPLACE_REPORT: &str = "plz.v1.rpc.operator.command.core.replace.report";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
+    DeployReserve,
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
@@ -88,6 +90,7 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::DeployReserve => "deploy.reserve",
             Self::DeploySubmit => "deploy.submit",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
@@ -120,6 +123,7 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn subject(self) -> &'static str {
         match self {
+            Self::DeployReserve => OPERATOR_DEPLOY_RESERVE,
             Self::DeploySubmit => OPERATOR_DEPLOY_SUBMIT,
             Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => OPERATOR_MACHINE_ADD,
@@ -162,7 +166,8 @@ impl OperationApiEndpoint {
             | Self::NamespaceRemove
             | Self::VolumeRemove
             | Self::CoreReplace => OperationApiEndpointExecution::AcceptsOperation,
-            Self::InitFirstMachineActivate
+            Self::DeployReserve
+            | Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
             | Self::MachineJoinReport
             | Self::CoreReplaceReport => OperationApiEndpointExecution::MutatesOperation,

@@ -8,7 +8,8 @@ use ployz_sdk_types::{
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudFounderBootstrapResult, CoreReplaceError,
     CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
-    DeployOperationState, DeployRequest, DeployRunningStage, DeployServiceSpec, DeploySubmitError,
+    DeployOperationState, DeployRequest, DeployReservationId, DeployReserveError,
+    DeployReserveRequest, DeployReserved, DeployRunningStage, DeployServiceSpec, DeploySubmitError,
     DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference,
     ImageReferenceError, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
     InitFirstMachineActivated, InstallContractError, InstallRolePolicy, LeaseBearerToken,
@@ -38,12 +39,12 @@ use ployz_sdk_types::{
     VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     WireGuardPublicKey, WireGuardReady,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
-        LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
-        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
-        VolumeRemoveApi,
+        CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -213,6 +214,7 @@ fn sdk_exports_operation_api_wire_types() {
     let request = DeploySubmitRequest {
         idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
             .expect("valid idempotency key"),
+        reservation_id: DeployReservationId::first(),
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             services: vec![DeployServiceSpec {
@@ -234,14 +236,32 @@ fn sdk_exports_operation_api_wire_types() {
             start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
         },
     };
+    let mut legacy_event = serde_json::to_value(OperationEvent::DeploySubmitted {
+        operation_id: operation_id.clone(),
+        reservation_id: Some(DeployReservationId::first()),
+        target: request.target.clone(),
+    })
+    .expect("event serializes");
+    let serde_json::Value::Object(fields) = &mut legacy_event else {
+        panic!("event should serialize as an object");
+    };
+    fields.remove("reservation_id");
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"idempotency_key":"idem_deploy_123","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1,"runtime":{"command":null,"entrypoint":null,"environment":{},"stop_grace_period":10}}]}}"#
+        r#"{"idempotency_key":"idem_deploy_123","reservation_id":"1","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1,"runtime":{"command":null,"entrypoint":null,"environment":{},"stop_grace_period":10}}]}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),
         r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.progress.namespace.default.operation.op_123.>","start_sequence":"1"}}"#
+    );
+    assert_eq!(
+        serde_json::from_value::<OperationEvent>(legacy_event).expect("legacy event deserializes"),
+        OperationEvent::DeploySubmitted {
+            operation_id: operation_id.clone(),
+            reservation_id: None,
+            target: request.target.clone(),
+        }
     );
 
     let OperationApiResponse::Ok { value } = response else {
@@ -286,7 +306,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"}}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"}}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
@@ -321,7 +341,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"},"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"},"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
@@ -395,6 +415,7 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     .expect("fixture is json");
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
+    assert_fixture::<DeployReserveRequest>(&fixture, "deploy_reserve_request");
     assert_fixture::<InitFirstMachineActivateRequest>(
         &fixture,
         "init_first_machine_activate_request",
@@ -417,6 +438,10 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
+    assert_fixture::<OperationApiResponse<DeployReserved, DeployReserveError>>(
+        &fixture,
+        "deploy_reserve_response",
+    );
     assert_fixture::<OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>>(
         &fixture,
         "init_first_machine_activate_response",
@@ -441,6 +466,7 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
 
 #[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
+    assert_contract::<DeployReserveApi, DeployReserveRequest, DeployReserved, DeployReserveError>();
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<
         InitFirstMachineActivateApi,
@@ -534,6 +560,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_eq!(
         operation_api_contract_endpoints(),
         [
+            OperationApiEndpoint::DeployReserve,
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,
@@ -565,6 +592,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_eq!(
         operation_api_contract_rows(),
         vec![
+            (
+                "deploy.reserve",
+                "plz.v1.rpc.operator.command.deploy.reserve",
+                OperationApiEndpointExecution::MutatesOperation,
+                "DeployReserveRequest".to_owned(),
+                "DeployReserved".to_owned(),
+                "DeployReserveError".to_owned(),
+                "DeployReserveResponse",
+            ),
             (
                 "deploy.submit",
                 "plz.v1.rpc.operator.command.deploy.submit",

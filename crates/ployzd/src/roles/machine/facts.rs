@@ -1,3 +1,4 @@
+use super::current_unix_ms;
 use super::response::{failure_message, machine_domain_error, machine_success};
 use crate::roles::machine::endpoints::{observe_interface_endpoints, observe_machine_endpoints};
 use crate::roles::machine::protocol::{
@@ -19,7 +20,7 @@ use ployz_core::subjects::machine_facts;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const MACHINE_DATA_PATH: &str = "/var/lib/ployz";
 pub(crate) const MACHINE_FACTS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -295,17 +296,16 @@ fn bytes_from_blocks(blocks: u64, block_size: u64) -> u64 {
 
 pub(crate) fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
     match state {
-        ExistingManagedContainerState::Running { ip, health } => {
-            ContainerRuntimeState::running_at_with_health(ip, health)
-        }
+        ExistingManagedContainerState::Running {
+            ip,
+            health,
+            started_at_unix_ms,
+        } => ContainerRuntimeState::Running {
+            ip,
+            health,
+            started_at_unix_ms,
+        },
         ExistingManagedContainerState::StartableStopped
         | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
     }
-}
-
-pub(crate) fn current_unix_ms() -> u64 {
-    let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-        return 0;
-    };
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
