@@ -33,13 +33,14 @@ use ployz_sdk_types::{
     RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    SubjectTokenError,
+    SubjectTokenError, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
+    VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
         MachineListApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
         OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -422,6 +423,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         AcceptedOperation,
         NamespaceRemoveError,
     >();
+    assert_contract::<VolumeRemoveApi, VolumeRemoveRequest, AcceptedOperation, VolumeRemoveError>();
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
     );
@@ -434,6 +436,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<NetworkRepairApi, NetworkRepairRequest, AcceptedOperation, NetworkRepairError>(
     );
     assert_contract::<ServiceListApi, ServiceListRequest, ServiceListResult, ServiceListError>();
+    assert_contract::<VolumeListApi, VolumeListRequest, VolumeListResult, VolumeListError>();
     assert_contract::<ServiceInspectApi, ServiceInspectRequest, ServiceSnapshot, ServiceInspectError>(
     );
     assert_contract::<
@@ -493,6 +496,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,
             OperationApiEndpoint::NamespaceRemove,
+            OperationApiEndpoint::VolumeRemove,
             OperationApiEndpoint::CoreReplace,
             OperationApiEndpoint::CoreReplaceReport,
             OperationApiEndpoint::MachineList,
@@ -502,6 +506,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::MachineJoinRedeem,
             OperationApiEndpoint::MachineJoinReport,
             OperationApiEndpoint::ServiceList,
+            OperationApiEndpoint::VolumeList,
             OperationApiEndpoint::ServiceInspect,
             OperationApiEndpoint::RuntimeSnapshot,
             OperationApiEndpoint::LogsTail,
@@ -586,6 +591,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "NamespaceRemoveResponse",
             ),
             (
+                "volume.remove",
+                "plz.v1.rpc.operator.command.volume.remove",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "VolumeRemoveRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "VolumeRemoveError".to_owned(),
+                "VolumeRemoveResponse",
+            ),
+            (
                 "core.replace",
                 "plz.v1.rpc.operator.command.core.replace",
                 OperationApiEndpointExecution::AcceptsOperation,
@@ -665,6 +679,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "ServiceListResult".to_owned(),
                 "ServiceListError".to_owned(),
                 "ServiceListResponse",
+            ),
+            (
+                "volume.list",
+                "plz.v1.rpc.operator.query.volume.list",
+                OperationApiEndpointExecution::Query,
+                "VolumeListRequest".to_owned(),
+                "VolumeListResult".to_owned(),
+                "VolumeListError".to_owned(),
+                "VolumeListResponse",
             ),
             (
                 "service.inspect",

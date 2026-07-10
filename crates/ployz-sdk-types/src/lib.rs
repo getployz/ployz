@@ -25,6 +25,7 @@ mod ops;
 mod runtime;
 mod service;
 pub mod typescript;
+mod volume;
 
 pub use cloud_bootstrap::*;
 pub use core_replace::*;
@@ -37,3 +38,4 @@ pub use network::*;
 pub use ops::*;
 pub use runtime::*;
 pub use service::*;
+pub use volume::*;

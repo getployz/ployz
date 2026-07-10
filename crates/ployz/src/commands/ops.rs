@@ -235,6 +235,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedLease => "managed-lease",
         OperationKind::NamespaceRemove => "namespace-remove",
+        OperationKind::VolumeRemove => "volume-remove",
     }
 }
 
@@ -290,6 +291,11 @@ fn operation_subject(status: &OperationStatus) -> String {
         OperationStatus::NamespaceRemove { namespace_id, .. } => {
             format!("namespace {}", namespace_id.as_str())
         }
+        OperationStatus::VolumeRemove {
+            namespace_id,
+            volume_name,
+            ..
+        } => format!("volume {}/{}", namespace_id.as_str(), volume_name.as_str()),
         OperationStatus::ManagedLease { subject, .. } => match subject {
             ployz_sdk_types::ManagedLeaseSubject::Acquire => "lease acquisition".to_owned(),
             ployz_sdk_types::ManagedLeaseSubject::DownloadBundle { lease } => {
@@ -334,6 +340,7 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::ServiceRestart { state, .. } => service_restart_state(state).to_owned(),
         OperationStatus::ManagedLease { state, .. } => managed_lease_state(state).to_owned(),
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
+        OperationStatus::VolumeRemove { state, .. } => volume_remove_state(state).to_owned(),
     }
 }
 
@@ -418,6 +425,19 @@ const fn namespace_remove_running_stage(
     }
 }
 
+const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::VolumeRemoveOperationState::Accepted => "accepted",
+        ployz_sdk_types::VolumeRemoveOperationState::Running { stage } => match stage {
+            ployz_sdk_types::VolumeRemoveRunningStage::RemovingVolumeData => {
+                "running:removing-volume-data"
+            }
+        },
+        ployz_sdk_types::VolumeRemoveOperationState::Completed => "completed",
+        ployz_sdk_types::VolumeRemoveOperationState::Failed { .. } => "failed",
+    }
+}
+
 fn status_failure_detail(status: &OperationStatus) -> Option<String> {
     match status {
         OperationStatus::Deploy {
@@ -448,7 +468,8 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::NetworkRepair { .. }
         | OperationStatus::ServiceRestart { .. }
         | OperationStatus::ManagedLease { .. }
-        | OperationStatus::NamespaceRemove { .. } => None,
+        | OperationStatus::NamespaceRemove { .. }
+        | OperationStatus::VolumeRemove { .. } => None,
     }
 }
 
@@ -608,6 +629,10 @@ impl DeployEventRenderContext {
             | OperationEvent::NamespaceRemoveContainerRemoved { .. }
             | OperationEvent::NamespaceRemoveCompleted { .. }
             | OperationEvent::NamespaceRemoveFailed { .. }
+            | OperationEvent::VolumeRemoveSubmitted { .. }
+            | OperationEvent::VolumeRemoveRunning { .. }
+            | OperationEvent::VolumeRemoveCompleted { .. }
+            | OperationEvent::VolumeRemoveFailed { .. }
             | OperationEvent::Cancelled { .. } => {}
         }
     }
@@ -677,6 +702,10 @@ fn render_replayed_event_text(
         | OperationEvent::NamespaceRemoveContainerRemoved { .. }
         | OperationEvent::NamespaceRemoveCompleted { .. }
         | OperationEvent::NamespaceRemoveFailed { .. }
+        | OperationEvent::VolumeRemoveSubmitted { .. }
+        | OperationEvent::VolumeRemoveRunning { .. }
+        | OperationEvent::VolumeRemoveCompleted { .. }
+        | OperationEvent::VolumeRemoveFailed { .. }
         | OperationEvent::Cancelled { .. } => {
             format!("{} {}", event.sequence.get(), label)
         }
@@ -784,6 +813,10 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         }
         OperationEvent::NamespaceRemoveCompleted { .. } => "namespace.remove.completed",
         OperationEvent::NamespaceRemoveFailed { .. } => "namespace.remove.failed",
+        OperationEvent::VolumeRemoveSubmitted { .. } => "volume.remove.submitted",
+        OperationEvent::VolumeRemoveRunning { .. } => "volume.remove.running",
+        OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed",
+        OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

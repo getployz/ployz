@@ -4,7 +4,7 @@ use crate::operation_api::{
     OperationApiHandlers, core_replace, core_replace_report, deploy_submit,
     init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
     machine_join_report, machine_resume, machine_update, namespace_remove, network_repair,
-    ops_list, ops_status, ops_watch, service_restart,
+    ops_list, ops_status, ops_watch, service_restart, volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -20,7 +20,7 @@ use ployz_sdk_types::{
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
         NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, OperationApiContract, OpsListApi,
         OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi,
+        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -71,6 +71,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { namespace_remove(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::VolumeRemove => {
+            bind_operation_contract::<VolumeRemoveApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { volume_remove(&handlers, request).await },
             )
             .await
         }
@@ -171,6 +179,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, _request| async move { handlers.service_query().list().await },
+            )
+            .await
+        }
+        OperationApiEndpoint::VolumeList => {
+            bind_operation_contract::<VolumeListApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, _request| async move { handlers.volume_query().list().await },
             )
             .await
         }

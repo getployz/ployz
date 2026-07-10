@@ -43,6 +43,7 @@ pub mod operations {
     pub mod namespace_remove;
     pub mod network_repair;
     pub mod service_restart;
+    pub mod volume_remove;
 }
 pub mod core_store;
 pub mod dispatch;

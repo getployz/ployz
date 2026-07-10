@@ -1,10 +1,9 @@
 //! Runtime execution for parsed CLI commands.
 
+use std::fmt;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{fmt, io};
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::PloyzctlCommand;
@@ -12,6 +11,7 @@ use crate::commands::init::{
     FirstMachineActivateCommand, FirstMachineActivationOutput, FirstMachineInitMode,
 };
 use crate::config::{ClusterContext, ClusterContextError, load_cluster_context};
+use crate::confirmation::{confirm_namespace_remove, confirm_volume_remove};
 use crate::host_runner_install::{
     LocalHostRunnerInstallError, run_host_runner_first_machine_install,
 };
@@ -375,6 +375,14 @@ pub async fn execute_command(
             )
             .await
         }
+        PloyzctlCommand::VolumeList(command) => {
+            render_api_call(
+                config,
+                async |api| api.volume_list(&command.into_request()).await,
+                |result| crate::commands::volume::VolumeListOutput::from_result(result).render(),
+            )
+            .await
+        }
         PloyzctlCommand::ServiceInspect(command) => {
             render_api_call(
                 config,
@@ -406,6 +414,24 @@ pub async fn execute_command(
             let api = operation_api_client(config).await?;
             let accepted = api
                 .namespace_remove(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            if detach {
+                return Ok(PloyzctlExecutionOutput::stdout(
+                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                        .render(),
+                ));
+            }
+            watch_accepted_operation(&api, accepted.operation_id, config).await
+        }
+        PloyzctlCommand::VolumeRemove(command) => {
+            let detach = command.detach;
+            if !command.force {
+                confirm_volume_remove(&command.namespace_id, &command.volume_name)?;
+            }
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .volume_remove(&command.into_request())
                 .await
                 .map_err(api_error)?;
             if detach {
@@ -480,35 +506,6 @@ async fn follow_logs(
         }
         request = command.request_after(next_since);
         async_sleep(config.ops_watch_poll_interval()).await;
-    }
-}
-
-fn confirm_namespace_remove(
-    namespace_id: &ployz_core::ids::NamespaceId,
-) -> Result<(), PloyzctlExecutionError> {
-    let prompt = crate::commands::namespace::NamespaceRemoveConfirmation {
-        namespace_id: namespace_id.clone(),
-        volume_backed_services: Vec::new(),
-    }
-    .prompt();
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(|error| {
-        PloyzctlExecutionError::ReadNamespaceRemoveConfirmation {
-            message: error.to_string(),
-        }
-    })?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer).map_err(|error| {
-        PloyzctlExecutionError::ReadNamespaceRemoveConfirmation {
-            message: error.to_string(),
-        }
-    })?;
-    if answer.trim() == namespace_id.as_str() {
-        Ok(())
-    } else {
-        Err(PloyzctlExecutionError::NamespaceRemoveNotConfirmed {
-            namespace_id: namespace_id.clone(),
-        })
     }
 }
 
@@ -807,6 +804,17 @@ pub enum PloyzctlExecutionError {
     },
     #[error("failed to read namespace rm confirmation: {message}")]
     ReadNamespaceRemoveConfirmation { message: String },
+    #[error(
+        "volume rm {}/{} was not confirmed",
+        namespace_id.as_str(),
+        volume_name.as_str()
+    )]
+    VolumeRemoveNotConfirmed {
+        namespace_id: ployz_core::ids::NamespaceId,
+        volume_name: ployz_core::deploy::VolumeName,
+    },
+    #[error("failed to read volume rm confirmation: {message}")]
+    ReadVolumeRemoveConfirmation { message: String },
     #[error("first machine activation failed: {source}")]
     FirstMachineActivateApi {
         source: OperationApiClientError<InitFirstMachineActivateError>,

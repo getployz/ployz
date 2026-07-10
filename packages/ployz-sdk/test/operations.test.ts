@@ -599,6 +599,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "NamespaceRemoveResponse",
     },
     {
+      name: "volume.remove",
+      subject: "plz.v1.rpc.operator.command.volume.remove",
+      execution: "accepts_operation",
+      request: "VolumeRemoveRequest",
+      success: "AcceptedOperation",
+      error: "VolumeRemoveError",
+      response: "VolumeRemoveResponse",
+    },
+    {
       name: "core.replace",
       subject: "plz.v1.rpc.operator.command.core.replace",
       execution: "accepts_operation",
@@ -678,6 +687,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "ServiceListResult",
       error: "ServiceListError",
       response: "ServiceListResponse",
+    },
+    {
+      name: "volume.list",
+      subject: "plz.v1.rpc.operator.query.volume.list",
+      execution: "query",
+      request: "VolumeListRequest",
+      success: "VolumeListResult",
+      error: "VolumeListError",
+      response: "VolumeListResponse",
     },
     {
       name: "service.inspect",
@@ -978,6 +996,7 @@ function defaultFixture(): OperationFixture {
           namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
           image: imageReference("nginx:1.27-alpine"),
           desired_replicas: replicaCount(1),
+          volume_names: [],
         },
         route_bindings: [],
         testimony: {
@@ -1010,6 +1029,7 @@ function defaultFixture(): OperationFixture {
             namespace_revision_entry_id: namespaceRevisionEntryId("rev_2"),
             image: imageReference("nginx:1.27-alpine"),
             desired_replicas: replicaCount(1),
+            volume_names: [],
           },
           route_bindings: [],
           testimony: {

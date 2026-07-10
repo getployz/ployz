@@ -6,9 +6,9 @@ use crate::operations::log::{
     MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
     NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
     OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError,
+    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
 };
-use ployz_core::deploy::DeployRequest;
+use ployz_core::deploy::{DeployRequest, VolumeName};
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
     InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
@@ -86,6 +86,13 @@ pub struct NamespaceRemoveSubmitCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRepairSubmitCommand {
     pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeRemoveSubmitCommand {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
 }
 
 /// Bootstrap material available at submit time.
@@ -368,6 +375,46 @@ impl OperationControllers {
             .submit_namespace_remove(NamespaceRemoveOperationSubmission {
                 operation_id,
                 namespace_id: command.namespace_id,
+            })
+            .await;
+        match submitted {
+            Ok(accepted) => {
+                if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&accepted.namespace_id, &accepted.operation_id)
+                        .await;
+                }
+                Ok(accepted)
+            }
+            Err(error) => {
+                if matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &command.operation_id)
+                        .await;
+                }
+                Err(SubmitCommandError::Submit(error))
+            }
+        }
+    }
+
+    pub async fn submit_volume_remove(
+        &self,
+        command: VolumeRemoveSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedVolumeRemoveSubmission, SubmitCommandError> {
+        let namespace_id = command.namespace_id.clone();
+        let operation_id = command.operation_id.clone();
+        let claim = self.claim_namespace(&namespace_id, &operation_id).await;
+        if let NamespaceClaim::Busy { owner } = claim {
+            return Err(SubmitCommandError::NamespaceBusy {
+                namespace_id,
+                owner,
+            });
+        }
+
+        let submitted = self
+            .repository
+            .submit_volume_remove(VolumeRemoveOperationSubmission {
+                operation_id,
+                namespace_id: command.namespace_id,
+                volume_name: command.volume_name,
             })
             .await;
         match submitted {

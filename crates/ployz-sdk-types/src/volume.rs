@@ -1,0 +1,79 @@
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use crate::core_types::*;
+use crate::ops::{AcceptedOperation, OperationApiResponse};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeListRequest {}
+
+pub type VolumeListResponse = OperationApiResponse<VolumeListResult, VolumeListError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeListResult {
+    pub volumes: Vec<VolumeSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeSnapshot {
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
+    pub machine_id: MachineId,
+    pub status: VolumeStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeStatus {
+    InUse,
+    Orphaned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeListError {
+    #[error("volume list unavailable: {message}")]
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeRemoveRequest {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
+}
+
+pub type VolumeRemoveResponse = OperationApiResponse<AcceptedOperation, VolumeRemoveError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeRemoveError {
+    #[error(
+        "namespace {} is busy with operation {}",
+        .namespace_id.as_str(),
+        .owner_operation_id.as_str()
+    )]
+    ResourceBusy {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        owner_operation_id: OperationId,
+    },
+    #[error("volume remove {} unavailable: {message}", .operation_id.as_str())]
+    Unavailable {
+        operation_id: OperationId,
+        message: String,
+    },
+    #[error(
+        "operation {} already recorded a different event at sequence {}",
+        .operation_id.as_str(),
+        .sequence.get()
+    )]
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}

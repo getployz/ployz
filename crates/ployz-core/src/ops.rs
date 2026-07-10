@@ -19,6 +19,7 @@ mod accessors;
 mod cert;
 mod core_replace;
 mod deploy;
+mod event_subjects;
 mod events;
 mod machine_add;
 mod machine_lifecycle;
@@ -31,6 +32,7 @@ mod replay;
 mod routes;
 mod service_restart;
 mod text;
+mod volume_remove;
 
 pub use accessors::NextEventSequenceError;
 pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
@@ -76,6 +78,10 @@ pub use service_restart::{
     ServiceRestartTransition, project_service_restart_transition,
 };
 pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
+pub use volume_remove::{
+    VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    VolumeRemoveTransition, project_volume_remove_transition,
+};
 
 pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 
@@ -93,6 +99,7 @@ pub enum OperationKind {
     ServiceRestart,
     ManagedLease,
     NamespaceRemove,
+    VolumeRemove,
 }
 
 /// Operation status projection rebuilt from local operation evidence.
@@ -167,6 +174,13 @@ pub enum OperationStatus {
         id: OperationId,
         namespace_id: NamespaceId,
         state: NamespaceRemoveOperationState,
+        last_event_sequence: EventSequence,
+    },
+    VolumeRemove {
+        id: OperationId,
+        namespace_id: NamespaceId,
+        volume_name: crate::deploy::VolumeName,
+        state: VolumeRemoveOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -319,6 +333,22 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn volume_remove_accepted(
+        id: OperationId,
+        namespace_id: NamespaceId,
+        volume_name: crate::deploy::VolumeName,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::VolumeRemove {
+            id,
+            namespace_id,
+            volume_name,
+            state: VolumeRemoveOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub fn managed_lease_accepted(
         id: OperationId,
         subject: ManagedLeaseSubject,
@@ -345,6 +375,7 @@ impl OperationStatus {
             Self::ServiceRestart { state, .. } => state.is_terminal(),
             Self::ManagedLease { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
+            Self::VolumeRemove { state, .. } => state.is_terminal(),
         }
     }
 }

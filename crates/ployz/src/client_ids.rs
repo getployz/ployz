@@ -1,5 +1,6 @@
 //! Client-side operation IDs for ergonomic commands.
 
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId, SubjectTokenError};
 use ployz_core::ops::OperationIdempotencyKey;
 
@@ -73,6 +74,16 @@ pub(crate) fn generate_client_namespace_remove_id(
     namespace_id: &NamespaceId,
 ) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
     generate_client_operation_id("namespace_rm", namespace_id.as_str())
+}
+
+pub(crate) fn generate_client_volume_remove_id(
+    namespace_id: &NamespaceId,
+    volume_name: &VolumeName,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id(
+        "volume_rm",
+        &format!("{}_{}", namespace_id.as_str(), volume_name.as_str()),
+    )
 }
 
 pub(crate) fn generate_client_core_replace_id(
