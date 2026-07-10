@@ -20,7 +20,11 @@ use ployz_core::ops::{
 };
 use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
-use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest, ServiceInspectRequest};
+use ployz_nats::operation_api_client::OperationApiClientError;
+use ployz_sdk_types::{
+    DeployReserveRequest, DeploySubmitError, DeploySubmitRequest, OpsStatusRequest,
+    ServiceInspectRequest,
+};
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
@@ -60,10 +64,8 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let _runtime =
         ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
     let api = OperationApiClient::new(nats.user_client());
-    let request = DeploySubmitRequest {
-        idempotency_key: idempotency_key("idem_api_123"),
-        target: deploy_target("svc_api"),
-    };
+    let request = reserved_deploy_request(&api, "idem_api_123", deploy_target("svc_api")).await?;
+    let reservation_id = request.reservation_id;
 
     let accepted = api.deploy_submit(&request).await?;
 
@@ -108,9 +110,71 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         first.event,
         OperationEvent::DeploySubmitted {
             operation_id: accepted.operation_id,
+            reservation_id: Some(reservation_id),
             target: deploy_target("svc_api"),
         }
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let nats = TestNats::start_with_machines(&[]).await;
+    let config = nats
+        .control_config(machine_id("core_1"))
+        .with_machine_bootstrap(machine_bootstrap_config());
+    let _runtime = ployzd::roles::control::start_control_process_with_client(
+        nats.controller_client(),
+        &config,
+    )
+    .await?;
+    let api = OperationApiClient::new(nats.user_client());
+    let namespace_id = namespace_id("default");
+    let older = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: namespace_id.clone(),
+        })
+        .await?;
+    let newer = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: namespace_id.clone(),
+        })
+        .await?;
+
+    let accepted = api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_newer"),
+            reservation_id: newer.reservation_id,
+            target: deploy_target("svc_api"),
+        })
+        .await?;
+    wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
+
+    let error = api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_older"),
+            reservation_id: older.reservation_id,
+            target: deploy_target("svc_api"),
+        })
+        .await
+        .expect_err("older reservation is fenced after the newer submit");
+
+    assert!(matches!(
+        error,
+        OperationApiClientError::Domain {
+            error: DeploySubmitError::StaleReservation {
+                namespace_id: rejected_namespace,
+                reservation_id,
+                last_committed_reservation_id,
+                ..
+            },
+            ..
+        } if rejected_namespace == namespace_id
+            && reservation_id == older.reservation_id
+            && last_committed_reservation_id == newer.reservation_id
+    ));
 
     Ok(())
 }
@@ -138,10 +202,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
     )
     .await?;
     let api = OperationApiClient::new(nats.user_client());
-    let request = DeploySubmitRequest {
-        idempotency_key: idempotency_key("idem_e2e_run"),
-        target: deploy_target("svc_api"),
-    };
+    let request = reserved_deploy_request(&api, "idem_e2e_run", deploy_target("svc_api")).await?;
 
     let accepted = api.deploy_submit(&request).await?;
     let deploy_operation = accepted.operation_id.clone();
@@ -174,6 +235,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         vec![
             OperationEvent::DeploySubmitted {
                 operation_id: deploy_operation.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: deploy_target("svc_api"),
             },
             OperationEvent::DeployPlanningStarted {
@@ -298,15 +360,17 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     .await?;
     let upstream = TestUpstream::start().await;
     let api = OperationApiClient::new(nats.user_client());
-    let request = DeploySubmitRequest {
-        idempotency_key: idempotency_key("idem_e2e_route"),
-        target: deploy_target_with_route(
+    let request = reserved_deploy_request(
+        &api,
+        "idem_e2e_route",
+        deploy_target_with_route(
             "svc_api",
             "api.example.com",
             gateway_runtime.listen_addr().port(),
             upstream.port(),
         ),
-    };
+    )
+    .await?;
 
     let accepted = api.deploy_submit(&request).await?;
 
@@ -386,15 +450,17 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     let api = OperationApiClient::new(nats.user_client());
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let route_host = format!("machine-down.local:{}", route_port.get());
-    let request = DeploySubmitRequest {
-        idempotency_key: idempotency_key("idem_e2e_machine_runtime_down_route"),
-        target: deploy_target_with_route(
+    let request = reserved_deploy_request(
+        &api,
+        "idem_e2e_machine_runtime_down_route",
+        deploy_target_with_route(
             "svc_api",
             "machine-down.local",
             route_port.get(),
             upstream.port(),
         ),
-    };
+    )
+    .await?;
 
     let accepted = api.deploy_submit(&request).await?;
 
@@ -491,15 +557,17 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     let api = OperationApiClient::new(nats.user_client());
     let route_hostname = route_hostname("control-down.local");
     let route_port = route_port(gateway_runtime.listen_addr().port());
-    let request = DeploySubmitRequest {
-        idempotency_key: idempotency_key("idem_e2e_control_down_route"),
-        target: deploy_target_with_route(
+    let request = reserved_deploy_request(
+        &api,
+        "idem_e2e_control_down_route",
+        deploy_target_with_route(
             "svc_api",
             route_hostname.as_str(),
             route_port.get(),
             first_upstream_port,
         ),
-    };
+    )
+    .await?;
 
     let accepted = api.deploy_submit(&request).await?;
 
@@ -607,10 +675,12 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     .await?;
     let upstream = TestUpstream::start_with_expected_requests(2).await;
     let api = OperationApiClient::new(nats.user_client());
-    let request = DeploySubmitRequest {
-        idempotency_key: idempotency_key("idem_e2e_two_machine_route"),
-        target: deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
-    };
+    let request = reserved_deploy_request(
+        &api,
+        "idem_e2e_two_machine_route",
+        deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
+    )
+    .await?;
 
     let accepted = api.deploy_submit(&request).await?;
     let deploy_operation = accepted.operation_id.clone();
@@ -723,6 +793,23 @@ fn image(value: &str) -> ImageReference {
 
 fn replicas(value: u16) -> ReplicaCount {
     ReplicaCount::try_new(value).expect("valid replica count")
+}
+
+async fn reserved_deploy_request(
+    api: &OperationApiClient,
+    idempotency: &str,
+    target: DeployRequest,
+) -> Result<DeploySubmitRequest, Box<dyn Error + Send + Sync>> {
+    let reservation = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: target.namespace_id.clone(),
+        })
+        .await?;
+    Ok(DeploySubmitRequest {
+        idempotency_key: idempotency_key(idempotency),
+        reservation_id: reservation.reservation_id,
+        target,
+    })
 }
 
 fn deploy_target(service_id: &str) -> DeployRequest {

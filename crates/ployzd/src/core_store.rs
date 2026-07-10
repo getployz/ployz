@@ -120,6 +120,19 @@ const MIGRATIONS: &[&str] = &[
         json TEXT NOT NULL
     );
     ",
+    "
+    DELETE FROM deploy_claims;
+    CREATE TABLE deploy_reservations (
+        namespace_id                  TEXT PRIMARY KEY,
+        last_issued                   TEXT NOT NULL,
+        last_committed                TEXT,
+        committed_owner_operation_id  TEXT,
+        CHECK (
+            (last_committed IS NULL AND committed_owner_operation_id IS NULL)
+            OR (last_committed IS NOT NULL AND committed_owner_operation_id IS NOT NULL)
+        )
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -366,6 +379,7 @@ mod tests {
             "managed_lease_intent",
             "operation_events",
             "operations",
+            "deploy_reservations",
             "route_bindings",
             "serving_targets",
             "volume_pins",
@@ -407,5 +421,24 @@ mod tests {
             reopened.control_plane_epoch().await.expect("read epoch"),
             ControlPlaneEpoch::initial()
         );
+    }
+
+    #[tokio::test]
+    async fn deploy_reservation_commit_requires_an_operation_owner() {
+        let store = CoreStore::open_in_memory().await.expect("open store");
+
+        let error = store
+            .call(|conn| {
+                conn.execute(
+                    "INSERT INTO deploy_reservations
+                     (namespace_id, last_issued, last_committed)
+                     VALUES ('default', '1', '1')",
+                    [],
+                )
+            })
+            .await
+            .expect_err("committed reservation without owner is rejected");
+
+        assert!(matches!(error, CoreStoreError::Sqlite(_)));
     }
 }

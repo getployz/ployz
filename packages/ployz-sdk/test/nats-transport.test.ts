@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  deployReservationId,
   eventSequence,
   imageDefaultRuntime,
   imageReference,
@@ -37,6 +38,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   assert.ok(payload instanceof Uint8Array);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(payload)), {
     idempotency_key: "idem_deploy_123",
+    reservation_id: "1",
     target: {
       namespace_id: "default",
       services: [
@@ -200,6 +202,7 @@ function jsonResponse(value: unknown): PloyzNatsResponseMessage {
 function deploySubmitRequest(): DeploySubmitRequest {
   return {
     idempotency_key: operationIdempotencyKey("idem_deploy_123"),
+    reservation_id: deployReservationId(1),
     target: {
       namespace_id: namespaceId("default"),
       services: [

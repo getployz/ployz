@@ -607,6 +607,7 @@ fn deploy_submit_request() -> DeploySubmitRequest {
     DeploySubmitRequest {
         idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
             .expect("valid idempotency key"),
+        reservation_id: ployz_core::deploy::DeployReservationId::first(),
         target: deploy_target("svc_api"),
     }
 }

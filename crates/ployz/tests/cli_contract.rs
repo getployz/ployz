@@ -1041,6 +1041,7 @@ fn ops_watch_renders_persisted_operation_events() {
                 1,
                 ployz_core::ops::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
+                    reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                     target: deploy_request(),
                 },
             ),
@@ -1067,6 +1068,7 @@ fn ops_watch_renders_failed_deploy_details() {
                 1,
                 ployz_core::ops::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
+                    reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                     target: deploy_request(),
                 },
             ),

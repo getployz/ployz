@@ -10,6 +10,7 @@ import {
   type CertValidAt,
   type ContainerId,
   type ContainerMountPath,
+  type DeployReservationId,
   type EventSequence,
   type FailureMessage,
   type ImageReference,
@@ -147,6 +148,10 @@ export function replicaCount(value: number): ReplicaCount {
 
 export function eventSequence(value: U64WireInput): EventSequence {
   return positiveU64String(value, "event sequence") as EventSequence;
+}
+
+export function deployReservationId(value: U64WireInput): DeployReservationId {
+  return positiveU64String(value, "deploy reservation id") as DeployReservationId;
 }
 
 export function certValidAt(value: U64WireInput): CertValidAt {
