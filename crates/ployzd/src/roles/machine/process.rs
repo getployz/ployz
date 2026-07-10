@@ -698,6 +698,13 @@ mod tests {
     struct ReadyWireGuardEbpf;
 
     impl crate::roles::machine::service::MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
+        async fn read_ployz_native_mesh_status(
+            &self,
+            _probe: bool,
+        ) -> Result<ployz_core::dataplane::MachineDataplaneStatus, String> {
+            Err("dataplane status is unavailable".to_owned())
+        }
+
         async fn read_wireguard_public_key(
             &self,
         ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {

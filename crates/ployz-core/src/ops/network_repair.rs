@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataplane::{PloyzNativeMeshComponent, PloyzNativeMeshPrepareReport};
 use crate::ids::{MachineId, OperationId};
+use crate::internal_dns::InternalDnsFactWatermark;
 
 use super::events::OperationEvent;
 use super::projection::{
@@ -63,30 +64,63 @@ pub enum NetworkRepairFailure {
     DataplaneReportInvalid {
         message: FailureMessage,
     },
-    MachineFactsRefreshUnavailable {
-        machine_id: MachineId,
-        message: FailureMessage,
-    },
     MachineFactsRefreshFailed {
+        outcomes: Vec<NetworkRepairMachineFactsRefreshOutcome>,
+    },
+    DnsRefreshFailed {
+        confirmed_machine_ids: Vec<MachineId>,
+        problems: Vec<NetworkRepairDnsRefreshProblem>,
+    },
+    ProgressRecordFailed {
+        phase: NetworkRepairProgressPhase,
+        message: FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkRepairProgressPhase {
+    Starting,
+    RecordingDataplaneEvidence,
+    AdvancingMachineFacts,
+    RecordingMachineFactsEvidence,
+    AdvancingDnsRefresh,
+    RecordingDnsRefreshEvidence,
+    Completing,
+    RecordingTerminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkRepairMachineFactsRefreshOutcome {
+    Refreshed {
+        machine_id: MachineId,
+        observed_at_unix_ms: u64,
+    },
+    Unavailable {
         machine_id: MachineId,
         message: FailureMessage,
     },
-    DnsRefreshUnavailable {
+    Failed {
         machine_id: MachineId,
         message: FailureMessage,
-    },
-    DnsRefreshStale {
-        machine_id: MachineId,
-        stale_machine_ids: Vec<MachineId>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct NetworkRepairMachineFactWatermark {
-    pub machine_id: MachineId,
-    pub observed_at_unix_ms: u64,
+#[serde(tag = "problem", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkRepairDnsRefreshProblem {
+    Unavailable {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    Stale {
+        machine_id: MachineId,
+        stale_machine_ids: Vec<MachineId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +137,7 @@ pub enum NetworkRepairEvidence {
         report: PloyzNativeMeshPrepareReport,
     },
     MachineFactsRefreshed {
-        watermarks: Vec<NetworkRepairMachineFactWatermark>,
+        watermarks: Vec<InternalDnsFactWatermark>,
     },
     DnsRefreshConfirmed {
         machine_ids: Vec<MachineId>,
@@ -256,6 +290,12 @@ fn transition_allowed(
                 stage: NetworkRepairRunningStage::PreparingDataplane,
             }
             | NetworkRepairOperationState::Cancelled { .. },
+        )
+        | (
+            NetworkRepairOperationState::Accepted,
+            NetworkRepairOperationState::Failed {
+                failure: NetworkRepairFailure::ProgressRecordFailed { .. },
+            },
         )
         | (
             NetworkRepairOperationState::Running {

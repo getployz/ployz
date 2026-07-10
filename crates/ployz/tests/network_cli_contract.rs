@@ -1,14 +1,20 @@
-use ployz::commands::network::NetworkStatusOutput;
+use std::net::Ipv4Addr;
+
+use ployz::commands::network::{NetworkResolveOutput, NetworkStatusOutput};
 use ployz::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::dataplane::{
     EbpfForwardingReady, MachineEndpointSubnet, PloyzNativeMeshMachineReady,
     PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
 };
+use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::machine::MachineName;
+use ployz_core::ops::FailureMessage;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use ployz_sdk_types::{
-    NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkStatusMachine,
+    NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
+    NetworkResolveResult, NetworkStatusMachine,
 };
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 
@@ -54,7 +60,7 @@ fn cli_parses_detached_network_repair() {
         request
             .operation_id
             .as_str()
-            .starts_with("op_network_repair_cluster_")
+            .starts_with("op_network_repair_machine_a_")
     );
 }
 
@@ -82,6 +88,180 @@ fn network_status_keeps_no_answer_machine_row() {
         output,
         "machine machine_a edge-a endpoint-subnet 10.198.1.0/24\n  dataplane no answer\n  internal-dns no answer\n"
     );
+}
+
+#[test]
+fn network_status_renders_dataplane_failures() {
+    let failures = [
+        (
+            NetworkDataplaneTestimony::ReadFailed {
+                message: FailureMessage::try_new("wg read failed").expect("failure message"),
+            },
+            "dataplane read failed: wg read failed",
+        ),
+        (
+            NetworkDataplaneTestimony::WrongResponder {
+                actual_machine_id: machine_id("machine_b"),
+            },
+            "dataplane wrong responder: machine_b",
+        ),
+        (NetworkDataplaneTestimony::TimedOut, "dataplane timed out"),
+        (
+            NetworkDataplaneTestimony::RequestFailed {
+                message: "request failed".to_owned(),
+            },
+            "dataplane request failed: request failed",
+        ),
+        (
+            NetworkDataplaneTestimony::ProtocolFailed {
+                message: "bad headers".to_owned(),
+            },
+            "dataplane protocol failed: bad headers",
+        ),
+        (
+            NetworkDataplaneTestimony::DecodeFailed {
+                message: "bad json".to_owned(),
+            },
+            "dataplane decode failed: bad json",
+        ),
+    ];
+
+    for (dataplane, expected) in failures {
+        let output = NetworkStatusOutput {
+            machines: vec![status_machine(dataplane)],
+        }
+        .render();
+        assert!(output.contains(expected));
+    }
+}
+
+#[test]
+fn network_status_renders_internal_dns_failures() {
+    let failures = [
+        (
+            NetworkInternalDnsTestimony::WrongResponder {
+                actual_machine_id: machine_id("machine_b"),
+            },
+            "internal-dns wrong responder: machine_b",
+        ),
+        (
+            NetworkInternalDnsTestimony::TimedOut,
+            "internal-dns timed out",
+        ),
+        (
+            NetworkInternalDnsTestimony::RequestFailed {
+                message: "request failed".to_owned(),
+            },
+            "internal-dns request failed: request failed",
+        ),
+        (
+            NetworkInternalDnsTestimony::ProtocolFailed {
+                message: "bad headers".to_owned(),
+            },
+            "internal-dns protocol failed: bad headers",
+        ),
+        (
+            NetworkInternalDnsTestimony::DecodeFailed {
+                message: "bad json".to_owned(),
+            },
+            "internal-dns decode failed: bad json",
+        ),
+    ];
+
+    for (internal_dns, expected) in failures {
+        let mut machine = status_machine(NetworkDataplaneTestimony::NoAnswer);
+        machine.internal_dns = internal_dns;
+        let output = NetworkStatusOutput {
+            machines: vec![machine],
+        }
+        .render();
+        assert!(output.contains(expected));
+    }
+}
+
+#[test]
+fn network_resolve_marks_consistent_and_divergent_answer_sets() {
+    let name = InternalServiceName::new(
+        &ServiceId::try_new("web").expect("service id"),
+        &NamespaceId::try_new("team-a").expect("namespace id"),
+    );
+    let testimony = |machine: &str, last_octet| NetworkResolveMachineTestimony::Answered {
+        machine_id: machine_id(machine),
+        addresses: vec![Ipv4Addr::new(10, 42, 1, last_octet)],
+    };
+    let consistent = NetworkResolveOutput::new(NetworkResolveResult {
+        name: name.clone(),
+        machines: vec![testimony("machine_a", 8), testimony("machine_b", 8)],
+    })
+    .render();
+    let divergent = NetworkResolveOutput::new(NetworkResolveResult {
+        name,
+        machines: vec![testimony("machine_a", 8), testimony("machine_b", 9)],
+    })
+    .render();
+
+    assert!(consistent.starts_with("answer-sets consistent\n"));
+    assert!(divergent.starts_with("answer-sets divergent\n"));
+}
+
+#[test]
+fn network_resolve_renders_typed_failures() {
+    let name = InternalServiceName::new(
+        &ServiceId::try_new("web").expect("service id"),
+        &NamespaceId::try_new("team-a").expect("namespace id"),
+    );
+    let output = NetworkResolveOutput::new(NetworkResolveResult {
+        name,
+        machines: vec![
+            NetworkResolveMachineTestimony::WrongResponder {
+                machine_id: machine_id("machine_a"),
+                actual_machine_id: machine_id("machine_b"),
+            },
+            NetworkResolveMachineTestimony::TimedOut {
+                machine_id: machine_id("machine_b"),
+            },
+            NetworkResolveMachineTestimony::RequestFailed {
+                machine_id: machine_id("machine_c"),
+                message: "resolver unavailable".to_owned(),
+            },
+            NetworkResolveMachineTestimony::ProtocolFailed {
+                machine_id: machine_id("machine_d"),
+                message: "wrong echo".to_owned(),
+            },
+            NetworkResolveMachineTestimony::DecodeFailed {
+                machine_id: machine_id("machine_e"),
+                message: "bad json".to_owned(),
+            },
+        ],
+    })
+    .render();
+
+    for expected in [
+        "machine machine_a web.team-a.internal wrong responder: machine_b",
+        "machine machine_b web.team-a.internal timed out",
+        "machine machine_c web.team-a.internal request failed: resolver unavailable",
+        "machine machine_d web.team-a.internal protocol failed: wrong echo",
+        "machine machine_e web.team-a.internal decode failed: bad json",
+    ] {
+        assert!(output.contains(expected));
+    }
+}
+
+fn status_machine(dataplane: NetworkDataplaneTestimony) -> NetworkStatusMachine {
+    NetworkStatusMachine {
+        active: ActiveMachineState {
+            machine_id: machine_id("machine_a"),
+            name: MachineName::try_new("edge-a").expect("valid machine name"),
+            activated_by: operation_id("op_machine_a"),
+            lifecycle: MachineLifecycle::Active,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.1.0/24")
+                .expect("valid endpoint subnet"),
+        },
+        dataplane,
+        internal_dns: NetworkInternalDnsTestimony::NoAnswer,
+    }
 }
 
 #[test]
@@ -151,19 +331,22 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
 
 #[test]
 fn network_repair_watch_renders_dataplane_prepared_evidence() {
-    let report = PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
-        machine_id: machine_id("machine_a"),
-        ready: PloyzNativeMeshReady {
-            wireguard: WireGuardReady {
-                public_key: WireGuardPublicKey::try_new("public-key-a")
-                    .expect("valid wireguard public key"),
-                evidence: Vec::new(),
+    let report = PloyzNativeMeshPrepareReport::for_targets(
+        &[machine_id("machine_a")],
+        [PloyzNativeMeshMachineReady {
+            machine_id: machine_id("machine_a"),
+            ready: PloyzNativeMeshReady {
+                wireguard: WireGuardReady {
+                    public_key: WireGuardPublicKey::try_new("public-key-a")
+                        .expect("valid wireguard public key"),
+                    evidence: Vec::new(),
+                },
+                ebpf_forwarding: EbpfForwardingReady {
+                    evidence: Vec::new(),
+                },
             },
-            ebpf_forwarding: EbpfForwardingReady {
-                evidence: Vec::new(),
-            },
-        },
-    }])
+        }],
+    )
     .expect("valid dataplane report");
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {

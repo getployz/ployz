@@ -3,8 +3,8 @@ use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfAttachmentStatus,
     EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineDataplaneStatus,
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshReady,
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence, WireGuardStatus,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError, WireGuardInterfaceMtu,
+    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence, WireGuardStatus,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
@@ -184,7 +184,7 @@ async fn machine_role_service_refreshes_and_publishes_full_facts() {
         .expect("flush snapshot subscription");
     let watermark = NatsMachineFactsReader::new(nats.client)
         .with_request_timeout(Duration::from_secs(1))
-        .refresh_machine_facts(&machine_id("machine_a"), operation_id("op_repair"))
+        .refresh_machine_facts(&machine_id("machine_a"))
         .await
         .expect("facts refresh succeeds");
     let message = tokio::time::timeout(Duration::from_secs(1), snapshots.next())
@@ -1704,7 +1704,7 @@ fn machine_dataplane_status() -> MachineDataplaneStatus {
             interface: "ployz-wg0".to_owned(),
             configured_mtu: WireGuardConfiguredMtu::Auto,
             detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
-            interface_mtu: Some(1420),
+            interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
             peers: Vec::new(),
         },
         ebpf_attachment: EbpfAttachmentStatus::Attached,

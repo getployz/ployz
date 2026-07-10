@@ -1,18 +1,21 @@
 //! Machine-local NATS RPC protocol types.
 
 use ployz_core::dataplane::{
-    MachineDataplaneStatus, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareRequest, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
-    WireGuardPeer, WireGuardPublicKey,
+    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareRequest,
+    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::machine_runtime::{
-    MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerObservation,
-};
+use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerObservation};
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
+
+mod dataplane_status;
+mod facts;
+
+pub use dataplane_status::*;
+pub use facts::*;
 
 /// Shared machine RPC response envelope: every endpoint answers either with its
 /// success payload or with `{ machine_id, error }`. The serialized shape is
@@ -70,60 +73,6 @@ impl MachineRpcResponder for MachineEnsureEndpointNetworkRpcOk {
 
 pub type MachineEnsureEndpointNetworkRpcResponse =
     MachineRpcResponse<MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineFactsGetRpcRequest {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineFactsGetRpcOk {
-    pub facts: MachineFactsSnapshot,
-}
-
-impl MachineRpcResponder for MachineFactsGetRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        self.facts.machine_id()
-    }
-}
-
-pub type MachineFactsGetRpcResponse =
-    MachineRpcResponse<MachineFactsGetRpcOk, MachineFactsGetDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineFactsGetDomainError {
-    GatherFailed { message: FailureMessage },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineFactsRefreshRpcRequest {
-    pub operation_id: OperationId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineFactsRefreshRpcOk {
-    pub machine_id: MachineId,
-    pub observed_at_unix_ms: u64,
-}
-
-impl MachineRpcResponder for MachineFactsRefreshRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
-        machine_id
-    }
-}
-
-pub type MachineFactsRefreshRpcResponse =
-    MachineRpcResponse<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineFactsRefreshDomainError {
-    RefreshFailed { message: FailureMessage },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
@@ -483,34 +432,6 @@ impl MachineRpcResponder for MachineSubstrateReportRpcOk {
 
 pub type MachineSubstrateReportRpcResponse =
     MachineRpcResponse<MachineSubstrateReportRpcOk, MachineSubstrateUpdateDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineDataplaneStatusRpcRequest {
-    pub probe: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineDataplaneStatusRpcOk {
-    pub machine_id: MachineId,
-    pub value: MachineDataplaneStatus,
-}
-
-impl MachineRpcResponder for MachineDataplaneStatusRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        &self.machine_id
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineDataplaneStatusDomainError {
-    ReadFailed { message: FailureMessage },
-}
-
-pub type MachineDataplaneStatusRpcResponse =
-    MachineRpcResponse<MachineDataplaneStatusRpcOk, MachineDataplaneStatusDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

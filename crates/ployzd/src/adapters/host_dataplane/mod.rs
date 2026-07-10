@@ -17,6 +17,7 @@ use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 mod host_commands;
 mod host_network;
 mod host_routes;
+mod host_status;
 
 #[cfg(test)]
 use host_commands::HostCommandAction;
@@ -167,7 +168,7 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
         probe: bool,
     ) -> Result<MachineDataplaneStatus, String> {
         let wireguard =
-            host_network::read_wireguard_status(&self.wg_ifname, self.mtu_policy, probe).await?;
+            host_status::read_wireguard_status(&self.wg_ifname, self.mtu_policy, probe).await?;
         let ebpf_attachment = match &self.route_programming {
             Some(routes) => routes.attachment_status(self.command_timeout).await,
             None => EbpfAttachmentStatus::Unknown {

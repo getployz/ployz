@@ -287,14 +287,13 @@ impl NatsMachineFactsReader {
     pub async fn refresh_machine_facts(
         &self,
         machine_id: &MachineId,
-        operation_id: OperationId,
     ) -> Result<u64, MachineFactsRefreshError> {
         call_machine::<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::FactsRefresh,
-            &MachineFactsRefreshRpcRequest { operation_id },
+            &MachineFactsRefreshRpcRequest {},
         )
         .await
         .map(|ok| ok.observed_at_unix_ms)

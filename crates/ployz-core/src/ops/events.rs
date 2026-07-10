@@ -228,7 +228,7 @@ pub enum OperationEvent {
     },
     NetworkRepairMachineFactsRefreshed {
         operation_id: OperationId,
-        watermarks: Vec<super::NetworkRepairMachineFactWatermark>,
+        watermarks: Vec<crate::internal_dns::InternalDnsFactWatermark>,
     },
     NetworkRepairDnsRefreshConfirmed {
         operation_id: OperationId,

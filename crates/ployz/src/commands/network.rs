@@ -5,8 +5,9 @@ use ployz_sdk_types::{
     NetworkInternalDnsTestimony, NetworkRepairRequest, NetworkResolveMachineTestimony,
     NetworkResolveRequest, NetworkResolveResult, NetworkStatusMachine, NetworkStatusRequest,
     NetworkStatusResult, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
-    WireGuardMtuProbe, WireGuardRttStatus,
+    WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardRttStatus,
 };
+use std::net::Ipv4Addr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::client_ids::generate_client_network_repair_id;
@@ -66,16 +67,17 @@ impl NetworkRepairCommand {
 pub(crate) fn network_repair_command(
     parsed: NetworkRepairCli,
 ) -> Result<NetworkRepairCommand, PloyzctlCliError> {
-    let operation_id = generate_client_network_repair_id()
+    let machine_id = parsed
+        .machine
+        .map(ployz_core::ids::MachineId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("machine id", error))?;
+    let operation_id = generate_client_network_repair_id(machine_id.as_ref())
         .map_err(|error| invalid_value("network repair", error))?
         .operation_id;
     Ok(NetworkRepairCommand {
         operation_id,
-        machine_id: parsed
-            .machine
-            .map(ployz_core::ids::MachineId::try_new)
-            .transpose()
-            .map_err(|error| invalid_value("machine id", error))?,
+        machine_id,
         detach: parsed.detach,
     })
 }
@@ -127,6 +129,23 @@ fn render_status_rows(machine: &NetworkStatusMachine) -> Vec<String> {
     )];
     match &machine.dataplane {
         NetworkDataplaneTestimony::NoAnswer => rows.push("  dataplane no answer".to_owned()),
+        NetworkDataplaneTestimony::ReadFailed { message } => {
+            rows.push(format!("  dataplane read failed: {}", message.as_str()));
+        }
+        NetworkDataplaneTestimony::WrongResponder { actual_machine_id } => rows.push(format!(
+            "  dataplane wrong responder: {}",
+            actual_machine_id.as_str()
+        )),
+        NetworkDataplaneTestimony::TimedOut => rows.push("  dataplane timed out".to_owned()),
+        NetworkDataplaneTestimony::RequestFailed { message } => {
+            rows.push(format!("  dataplane request failed: {message}"));
+        }
+        NetworkDataplaneTestimony::ProtocolFailed { message } => {
+            rows.push(format!("  dataplane protocol failed: {message}"));
+        }
+        NetworkDataplaneTestimony::DecodeFailed { message } => {
+            rows.push(format!("  dataplane decode failed: {message}"));
+        }
         NetworkDataplaneTestimony::Answered { value } => {
             let configured = match value.wireguard.configured_mtu {
                 WireGuardConfiguredMtu::Auto => "auto".to_owned(),
@@ -138,10 +157,12 @@ fn render_status_rows(machine: &NetworkStatusMachine) -> Vec<String> {
                     format!("unavailable({message})")
                 }
             };
-            let interface_mtu = value
-                .wireguard
-                .interface_mtu
-                .map_or_else(|| "unknown".to_owned(), |mtu| mtu.to_string());
+            let interface_mtu = match &value.wireguard.interface_mtu {
+                WireGuardInterfaceMtu::Detected { mtu } => mtu.to_string(),
+                WireGuardInterfaceMtu::Unavailable { message } => {
+                    format!("unavailable({message})")
+                }
+            };
             let ebpf = match &value.ebpf_attachment {
                 EbpfAttachmentStatus::Attached => "attached".to_owned(),
                 EbpfAttachmentStatus::Detached { message } => format!("detached({message})"),
@@ -188,6 +209,22 @@ fn render_status_rows(machine: &NetworkStatusMachine) -> Vec<String> {
     }
     match &machine.internal_dns {
         NetworkInternalDnsTestimony::NoAnswer => rows.push("  internal-dns no answer".to_owned()),
+        NetworkInternalDnsTestimony::WrongResponder { actual_machine_id } => rows.push(format!(
+            "  internal-dns wrong responder: {}",
+            actual_machine_id.as_str()
+        )),
+        NetworkInternalDnsTestimony::TimedOut => {
+            rows.push("  internal-dns timed out".to_owned());
+        }
+        NetworkInternalDnsTestimony::RequestFailed { message } => {
+            rows.push(format!("  internal-dns request failed: {message}"));
+        }
+        NetworkInternalDnsTestimony::ProtocolFailed { message } => {
+            rows.push(format!("  internal-dns protocol failed: {message}"));
+        }
+        NetworkInternalDnsTestimony::DecodeFailed { message } => {
+            rows.push(format!("  internal-dns decode failed: {message}"));
+        }
         NetworkInternalDnsTestimony::Answered { value } => {
             let resolver = match &value.resolver {
                 InternalDnsResolverStatus::AwaitingBind { attempts } => {
@@ -222,7 +259,7 @@ fn render_status_rows(machine: &NetworkStatusMachine) -> Vec<String> {
     rows
 }
 
-fn render_addresses<T: ToString>(addresses: &[T]) -> String {
+fn render_addresses(addresses: &[Ipv4Addr]) -> String {
     let rendered = addresses
         .iter()
         .map(ToString::to_string)
@@ -248,27 +285,90 @@ impl NetworkResolveOutput {
 
     #[must_use]
     pub fn render(&self) -> String {
-        render_rows(self.result.machines.iter().map(|machine| match machine {
-            NetworkResolveMachineTestimony::Answered {
-                machine_id,
-                name,
-                addresses,
-            } => {
-                format!(
-                    "machine {} {} A {}",
-                    machine_id.as_str(),
-                    name.as_str(),
-                    render_addresses(addresses)
-                )
-            }
-            NetworkResolveMachineTestimony::NoAnswer { machine_id } => {
-                format!(
-                    "machine {} {} no answer",
-                    machine_id.as_str(),
-                    self.result.name.as_str()
-                )
-            }
-        }))
+        let mut answer_sets = self
+            .result
+            .machines
+            .iter()
+            .filter_map(|machine| match machine {
+                NetworkResolveMachineTestimony::Answered { addresses, .. } => Some(addresses),
+                NetworkResolveMachineTestimony::NoAnswer { .. }
+                | NetworkResolveMachineTestimony::WrongResponder { .. }
+                | NetworkResolveMachineTestimony::TimedOut { .. }
+                | NetworkResolveMachineTestimony::RequestFailed { .. }
+                | NetworkResolveMachineTestimony::ProtocolFailed { .. }
+                | NetworkResolveMachineTestimony::DecodeFailed { .. } => None,
+            })
+            .map(Vec::as_slice);
+        let consistent = answer_sets
+            .next()
+            .is_none_or(|first| answer_sets.all(|addresses| addresses == first));
+        let summary = if consistent {
+            "answer-sets consistent"
+        } else {
+            "answer-sets divergent"
+        };
+        render_rows(
+            std::iter::once(summary.to_owned()).chain(self.result.machines.iter().map(|machine| {
+                match machine {
+                    NetworkResolveMachineTestimony::Answered {
+                        machine_id,
+                        addresses,
+                    } => {
+                        format!(
+                            "machine {} {} A {}",
+                            machine_id.as_str(),
+                            self.result.name.as_str(),
+                            render_addresses(addresses)
+                        )
+                    }
+                    NetworkResolveMachineTestimony::NoAnswer { machine_id } => {
+                        format!(
+                            "machine {} {} no answer",
+                            machine_id.as_str(),
+                            self.result.name.as_str()
+                        )
+                    }
+                    NetworkResolveMachineTestimony::WrongResponder {
+                        machine_id,
+                        actual_machine_id,
+                    } => format!(
+                        "machine {} {} wrong responder: {}",
+                        machine_id.as_str(),
+                        self.result.name.as_str(),
+                        actual_machine_id.as_str()
+                    ),
+                    NetworkResolveMachineTestimony::TimedOut { machine_id } => format!(
+                        "machine {} {} timed out",
+                        machine_id.as_str(),
+                        self.result.name.as_str()
+                    ),
+                    NetworkResolveMachineTestimony::RequestFailed {
+                        machine_id,
+                        message,
+                    } => format!(
+                        "machine {} {} request failed: {message}",
+                        machine_id.as_str(),
+                        self.result.name.as_str()
+                    ),
+                    NetworkResolveMachineTestimony::ProtocolFailed {
+                        machine_id,
+                        message,
+                    } => format!(
+                        "machine {} {} protocol failed: {message}",
+                        machine_id.as_str(),
+                        self.result.name.as_str()
+                    ),
+                    NetworkResolveMachineTestimony::DecodeFailed {
+                        machine_id,
+                        message,
+                    } => format!(
+                        "machine {} {} decode failed: {message}",
+                        machine_id.as_str(),
+                        self.result.name.as_str()
+                    ),
+                }
+            })),
+        )
     }
 }
 

@@ -47,41 +47,112 @@ pub(super) fn render_network_repair_failure(
         ployz_sdk_types::NetworkRepairFailure::DataplaneReportInvalid { message } => {
             format!("dataplane-report-invalid message={}", message.as_str())
         }
-        ployz_sdk_types::NetworkRepairFailure::MachineFactsRefreshUnavailable {
+        ployz_sdk_types::NetworkRepairFailure::MachineFactsRefreshFailed { outcomes } => format!(
+            "machine-facts-refresh-failed outcomes={}",
+            outcomes
+                .iter()
+                .map(render_machine_facts_outcome)
+                .collect::<Vec<_>>()
+                .join(";")
+        ),
+        ployz_sdk_types::NetworkRepairFailure::DnsRefreshFailed {
+            confirmed_machine_ids,
+            problems,
+        } => format!(
+            "dns-refresh-failed confirmed={} problems={}",
+            confirmed_machine_ids
+                .iter()
+                .map(|machine_id| machine_id.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            problems
+                .iter()
+                .map(render_dns_refresh_problem)
+                .collect::<Vec<_>>()
+                .join(";")
+        ),
+        ployz_sdk_types::NetworkRepairFailure::ProgressRecordFailed { phase, message } => {
+            format!(
+                "progress-record-failed phase={} message={}",
+                render_progress_phase(*phase),
+                message.as_str()
+            )
+        }
+    }
+}
+
+fn render_machine_facts_outcome(
+    outcome: &ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome,
+) -> String {
+    match outcome {
+        ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Refreshed {
+            machine_id,
+            observed_at_unix_ms,
+        } => format!(
+            "machine={}:refreshed@{observed_at_unix_ms}",
+            machine_id.as_str()
+        ),
+        ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Unavailable {
             machine_id,
             message,
         } => format!(
-            "machine-facts-refresh-unavailable machine={} message={}",
+            "machine={}:unavailable:{}",
             machine_id.as_str(),
-            message.as_str(),
+            message.as_str()
         ),
-        ployz_sdk_types::NetworkRepairFailure::MachineFactsRefreshFailed {
+        ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Failed {
             machine_id,
             message,
         } => format!(
-            "machine-facts-refresh-failed machine={} message={}",
+            "machine={}:failed:{}",
             machine_id.as_str(),
-            message.as_str(),
+            message.as_str()
         ),
-        ployz_sdk_types::NetworkRepairFailure::DnsRefreshUnavailable {
+    }
+}
+
+fn render_dns_refresh_problem(problem: &ployz_sdk_types::NetworkRepairDnsRefreshProblem) -> String {
+    match problem {
+        ployz_sdk_types::NetworkRepairDnsRefreshProblem::Unavailable {
             machine_id,
             message,
         } => format!(
-            "dns-refresh-unavailable machine={} message={}",
+            "machine={}:unavailable:{}",
             machine_id.as_str(),
-            message.as_str(),
+            message.as_str()
         ),
-        ployz_sdk_types::NetworkRepairFailure::DnsRefreshStale {
+        ployz_sdk_types::NetworkRepairDnsRefreshProblem::Stale {
             machine_id,
             stale_machine_ids,
         } => format!(
-            "dns-refresh-stale machine={} stale-machines={}",
+            "machine={}:stale:{}",
             machine_id.as_str(),
             stale_machine_ids
                 .iter()
                 .map(|machine_id| machine_id.as_str())
                 .collect::<Vec<_>>()
-                .join(","),
+                .join(",")
         ),
+    }
+}
+
+const fn render_progress_phase(phase: ployz_sdk_types::NetworkRepairProgressPhase) -> &'static str {
+    match phase {
+        ployz_sdk_types::NetworkRepairProgressPhase::Starting => "starting",
+        ployz_sdk_types::NetworkRepairProgressPhase::RecordingDataplaneEvidence => {
+            "recording-dataplane-evidence"
+        }
+        ployz_sdk_types::NetworkRepairProgressPhase::AdvancingMachineFacts => {
+            "advancing-machine-facts"
+        }
+        ployz_sdk_types::NetworkRepairProgressPhase::RecordingMachineFactsEvidence => {
+            "recording-machine-facts-evidence"
+        }
+        ployz_sdk_types::NetworkRepairProgressPhase::AdvancingDnsRefresh => "advancing-dns-refresh",
+        ployz_sdk_types::NetworkRepairProgressPhase::RecordingDnsRefreshEvidence => {
+            "recording-dns-refresh-evidence"
+        }
+        ployz_sdk_types::NetworkRepairProgressPhase::Completing => "completing",
+        ployz_sdk_types::NetworkRepairProgressPhase::RecordingTerminal => "recording-terminal",
     }
 }

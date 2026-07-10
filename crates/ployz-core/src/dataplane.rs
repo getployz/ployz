@@ -31,7 +31,7 @@ pub struct WireGuardStatus {
     pub interface: String,
     pub configured_mtu: WireGuardConfiguredMtu,
     pub detected_mtu: WireGuardDetectedMtu,
-    pub interface_mtu: Option<u32>,
+    pub interface_mtu: WireGuardInterfaceMtu,
     pub peers: Vec<WireGuardPeerStatus>,
 }
 
@@ -47,6 +47,14 @@ pub enum WireGuardConfiguredMtu {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WireGuardDetectedMtu {
+    Detected { mtu: u32 },
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardInterfaceMtu {
     Detected { mtu: u32 },
     Unavailable { message: String },
 }
@@ -637,16 +645,16 @@ pub struct PloyzNativeMeshPrepareReport {
 }
 
 impl PloyzNativeMeshPrepareReport {
-    pub fn for_request(
-        request: &PloyzNativeMeshPrepareRequest,
+    pub fn for_targets(
+        expected_machines: &[MachineId],
         machines: impl IntoIterator<Item = PloyzNativeMeshMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
         let machines = machines.into_iter().collect::<Vec<_>>();
-        if request.machines.is_empty() || machines.is_empty() {
+        if expected_machines.is_empty() || machines.is_empty() {
             return Err(WireGuardEbpfPrepareReportError::Empty);
         }
-        let requested = request.machines.iter().collect::<BTreeSet<_>>();
-        if requested.len() != request.machines.len() {
+        let expected = expected_machines.iter().collect::<BTreeSet<_>>();
+        if expected.len() != expected_machines.len() {
             return Err(WireGuardEbpfPrepareReportError::DuplicateMachine);
         }
         let actual = machines
@@ -656,26 +664,8 @@ impl PloyzNativeMeshPrepareReport {
         if actual.len() != machines.len() {
             return Err(WireGuardEbpfPrepareReportError::DuplicateMachine);
         }
-        if requested != actual {
+        if expected != actual {
             return Err(WireGuardEbpfPrepareReportError::MachineSetMismatch);
-        }
-
-        Ok(Self { machines })
-    }
-
-    pub fn from_machines(
-        machines: impl IntoIterator<Item = PloyzNativeMeshMachineReady>,
-    ) -> Result<Self, WireGuardEbpfPrepareReportError> {
-        let machines = machines.into_iter().collect::<Vec<_>>();
-        if machines.is_empty() {
-            return Err(WireGuardEbpfPrepareReportError::Empty);
-        }
-        let mut seen = BTreeSet::new();
-        if machines
-            .iter()
-            .any(|machine| !seen.insert(machine.machine_id.clone()))
-        {
-            return Err(WireGuardEbpfPrepareReportError::DuplicateMachine);
         }
 
         Ok(Self { machines })
@@ -929,6 +919,41 @@ mod tests {
 
     fn machine_id(value: &str) -> MachineId {
         MachineId::try_new(value).expect("valid machine id")
+    }
+
+    fn ready_machine(machine: &str) -> PloyzNativeMeshMachineReady {
+        PloyzNativeMeshMachineReady {
+            machine_id: machine_id(machine),
+            ready: PloyzNativeMeshReady {
+                wireguard: WireGuardReady {
+                    public_key: WireGuardPublicKey::try_new(format!("public-{machine}"))
+                        .expect("valid wireguard public key"),
+                    evidence: Vec::new(),
+                },
+                ebpf_forwarding: EbpfForwardingReady {
+                    evidence: Vec::new(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn for_targets_requires_reported_set_to_equal_expected() {
+        let expected = [machine_id("machine_a"), machine_id("machine_b")];
+        assert!(matches!(
+            PloyzNativeMeshPrepareReport::for_targets(&expected, [ready_machine("machine_a")]),
+            Err(WireGuardEbpfPrepareReportError::MachineSetMismatch)
+        ));
+        let report = PloyzNativeMeshPrepareReport::for_targets(
+            &expected,
+            [ready_machine("machine_a"), ready_machine("machine_b")],
+        )
+        .expect("matching report");
+        assert_eq!(report.machines.len(), 2);
+        assert!(matches!(
+            PloyzNativeMeshPrepareReport::for_targets(&[], [ready_machine("machine_a")]),
+            Err(WireGuardEbpfPrepareReportError::Empty)
+        ));
     }
 
     fn operation_id(value: &str) -> OperationId {

@@ -8,15 +8,16 @@ use crate::roles::machine::client::{
     MachineFactsRefreshError, NatsMachineDataplanePreparer, NatsMachineFactsReader,
 };
 use crate::tasks::TaskRegistry;
-use futures_util::future::{join_all, try_join_all};
+use futures_util::future::join_all;
 use ployz_core::dataplane::{
     DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::internal_dns::{InternalDnsFactWatermark, InternalDnsResolverStatus};
 use ployz_core::ops::{
-    FailureMessage, NetworkRepairEvidence, NetworkRepairFailure, NetworkRepairMachineFactWatermark,
-    NetworkRepairRunningStage, NetworkRepairTransition,
+    FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
+    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase, NetworkRepairRunningStage,
+    NetworkRepairTransition,
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
@@ -24,6 +25,8 @@ use std::time::Duration;
 
 const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DNS_STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+const RECORD_ATTEMPTS: usize = 3;
+const RECORD_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub struct NetworkRepairOperation {
@@ -71,9 +74,7 @@ impl NetworkRepairOperation {
     pub async fn run(self, accepted: AcceptedNetworkRepairSubmission) {
         let operation_id = accepted.operation_id;
         if let Err(error) = self
-            .controllers
-            .repository()
-            .record_network_repair_transition(
+            .record_transition_with_retry(
                 &operation_id,
                 NetworkRepairTransition::Running {
                     stage: NetworkRepairRunningStage::PreparingDataplane,
@@ -82,6 +83,12 @@ impl NetworkRepairOperation {
             .await
         {
             record_warning(&operation_id, "record-running", &error);
+            self.record_progress_failure(
+                &operation_id,
+                NetworkRepairProgressPhase::Starting,
+                &error,
+            )
+            .await;
             return;
         }
         let intent = match self.intent_reader.intent().await {
@@ -161,7 +168,7 @@ impl NetworkRepairOperation {
             .record_evidence(
                 &operation_id,
                 NetworkRepairEvidence::DataplanePrepared { report },
-                "record-dataplane-prepared",
+                NetworkRepairProgressPhase::RecordingDataplaneEvidence,
             )
             .await
         {
@@ -171,13 +178,14 @@ impl NetworkRepairOperation {
             .record_stage(
                 &operation_id,
                 NetworkRepairRunningStage::RefreshingMachineFacts,
+                NetworkRepairProgressPhase::AdvancingMachineFacts,
             )
             .await
         {
             return;
         }
         let watermarks = match self
-            .refresh_machine_facts(&operation_id, &machine_ids)
+            .refresh_machine_facts(&machine_ids)
             .await
         {
             Ok(watermarks) => watermarks,
@@ -193,7 +201,7 @@ impl NetworkRepairOperation {
                 NetworkRepairEvidence::MachineFactsRefreshed {
                     watermarks: watermarks.clone(),
                 },
-                "record-machine-facts-refreshed",
+                NetworkRepairProgressPhase::RecordingMachineFactsEvidence,
             )
             .await
         {
@@ -203,6 +211,7 @@ impl NetworkRepairOperation {
             .record_stage(
                 &operation_id,
                 NetworkRepairRunningStage::ConfirmingDnsRefresh,
+                NetworkRepairProgressPhase::AdvancingDnsRefresh,
             )
             .await
         {
@@ -222,33 +231,35 @@ impl NetworkRepairOperation {
                 NetworkRepairEvidence::DnsRefreshConfirmed {
                     machine_ids: confirmed,
                 },
-                "record-dns-refresh-confirmed",
+                NetworkRepairProgressPhase::RecordingDnsRefreshEvidence,
             )
             .await
         {
             return;
         }
-        self.record_terminal(&operation_id, NetworkRepairTransition::Completed)
-            .await;
+        self.record_terminal_for_phase(
+            &operation_id,
+            NetworkRepairTransition::Completed,
+            NetworkRepairProgressPhase::Completing,
+        )
+        .await;
     }
 
     async fn record_stage(
         &self,
         operation_id: &OperationId,
         stage: NetworkRepairRunningStage,
+        phase: NetworkRepairProgressPhase,
     ) -> bool {
         match self
-            .controllers
-            .repository()
-            .record_network_repair_transition(
-                operation_id,
-                NetworkRepairTransition::Running { stage },
-            )
+            .record_transition_with_retry(operation_id, NetworkRepairTransition::Running { stage })
             .await
         {
             Ok(_) => true,
             Err(error) => {
                 record_warning(operation_id, "record-running", &error);
+                self.record_progress_failure(operation_id, phase, &error)
+                    .await;
                 false
             }
         }
@@ -258,17 +269,17 @@ impl NetworkRepairOperation {
         &self,
         operation_id: &OperationId,
         evidence: NetworkRepairEvidence,
-        phase: &str,
+        phase: NetworkRepairProgressPhase,
     ) -> bool {
         match self
-            .controllers
-            .repository()
-            .record_network_repair_evidence(operation_id, evidence)
+            .record_evidence_with_retry(operation_id, evidence)
             .await
         {
             Ok(_) => true,
             Err(error) => {
-                record_warning(operation_id, phase, &error);
+                record_warning(operation_id, progress_phase_name(phase), &error);
+                self.record_progress_failure(operation_id, phase, &error)
+                    .await;
                 false
             }
         }
@@ -276,26 +287,52 @@ impl NetworkRepairOperation {
 
     async fn refresh_machine_facts(
         &self,
-        operation_id: &OperationId,
         machine_ids: &[MachineId],
-    ) -> Result<Vec<NetworkRepairMachineFactWatermark>, NetworkRepairFailure> {
-        try_join_all(machine_ids.iter().map(|machine_id| async move {
-            self.facts_reader
-                .refresh_machine_facts(machine_id, operation_id.clone())
+    ) -> Result<Vec<InternalDnsFactWatermark>, NetworkRepairFailure> {
+        let outcomes = join_all(machine_ids.iter().map(|machine_id| async move {
+            match self
+                .facts_reader
+                .refresh_machine_facts(machine_id)
                 .await
-                .map(|observed_at_unix_ms| NetworkRepairMachineFactWatermark {
+            {
+                Ok(observed_at_unix_ms) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
                     machine_id: machine_id.clone(),
                     observed_at_unix_ms,
-                })
-                .map_err(machine_facts_refresh_failure)
+                },
+                Err(error) => machine_facts_refresh_outcome(error),
+            }
         }))
-        .await
+        .await;
+        if outcomes.iter().any(|outcome| {
+            !matches!(
+                outcome,
+                NetworkRepairMachineFactsRefreshOutcome::Refreshed { .. }
+            )
+        }) {
+            return Err(NetworkRepairFailure::MachineFactsRefreshFailed { outcomes });
+        }
+        Ok(outcomes
+            .into_iter()
+            .map(|outcome| match outcome {
+                NetworkRepairMachineFactsRefreshOutcome::Refreshed {
+                    machine_id,
+                    observed_at_unix_ms,
+                } => InternalDnsFactWatermark {
+                    machine_id,
+                    observed_at_unix_ms,
+                },
+                NetworkRepairMachineFactsRefreshOutcome::Unavailable { .. }
+                | NetworkRepairMachineFactsRefreshOutcome::Failed { .. } => {
+                    unreachable!("failed outcomes returned above")
+                }
+            })
+            .collect())
     }
 
     async fn confirm_dns_refresh(
         &self,
         machine_ids: &[MachineId],
-        watermarks: &[NetworkRepairMachineFactWatermark],
+        watermarks: &[InternalDnsFactWatermark],
     ) -> Result<Vec<MachineId>, NetworkRepairFailure> {
         let deadline = tokio::time::Instant::now() + self.operation_timeout;
         loop {
@@ -311,28 +348,27 @@ impl NetworkRepairOperation {
                 (machine_id, result)
             }))
             .await;
-            let mut unavailable = None;
-            let mut stale = None;
+            let mut confirmed_machine_ids = Vec::new();
+            let mut problems = Vec::new();
             for (machine_id, result) in results {
-                if let Some(pending) = dns_refresh_pending(
+                if let Some(problem) = dns_refresh_problem(
                     machine_id,
                     result.map_err(|error| error.to_string()),
                     watermarks,
                 ) {
-                    match pending {
-                        pending @ DnsRefreshPending::Unavailable { .. } => {
-                            unavailable = Some(pending);
-                        }
-                        pending @ DnsRefreshPending::Stale { .. } => stale = Some(pending),
-                    }
+                    problems.push(problem);
+                } else {
+                    confirmed_machine_ids.push(machine_id.clone());
                 }
             }
-            let pending = unavailable.or(stale);
-            let Some(pending) = pending else {
-                return Ok(machine_ids.to_vec());
-            };
+            if problems.is_empty() {
+                return Ok(confirmed_machine_ids);
+            }
             if tokio::time::Instant::now() >= deadline {
-                return Err(pending.into_failure());
+                return Err(NetworkRepairFailure::DnsRefreshFailed {
+                    confirmed_machine_ids,
+                    problems,
+                });
             }
             tokio::time::sleep(
                 DNS_REFRESH_POLL_INTERVAL
@@ -347,13 +383,93 @@ impl NetworkRepairOperation {
         operation_id: &OperationId,
         transition: NetworkRepairTransition,
     ) {
+        self.record_terminal_for_phase(
+            operation_id,
+            transition,
+            NetworkRepairProgressPhase::RecordingTerminal,
+        )
+        .await;
+    }
+
+    async fn record_terminal_for_phase(
+        &self,
+        operation_id: &OperationId,
+        transition: NetworkRepairTransition,
+        phase: NetworkRepairProgressPhase,
+    ) {
         if let Err(error) = self
-            .controllers
-            .repository()
-            .record_network_repair_transition(operation_id, transition)
+            .record_transition_with_retry(operation_id, transition)
             .await
         {
             record_warning(operation_id, "record-terminal", &error);
+            self.record_progress_failure(operation_id, phase, &error)
+                .await;
+        }
+    }
+
+    async fn record_progress_failure(
+        &self,
+        operation_id: &OperationId,
+        phase: NetworkRepairProgressPhase,
+        error: &RecordOperationEventError,
+    ) {
+        let transition = NetworkRepairTransition::Failed {
+            failure: NetworkRepairFailure::ProgressRecordFailed {
+                phase,
+                message: failure_message(error.to_string()),
+            },
+        };
+        if let Err(error) = self
+            .record_transition_with_retry(operation_id, transition)
+            .await
+        {
+            record_warning(operation_id, "record-progress-failure", &error);
+        }
+    }
+
+    async fn record_transition_with_retry(
+        &self,
+        operation_id: &OperationId,
+        transition: NetworkRepairTransition,
+    ) -> Result<(), RecordOperationEventError> {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match self
+                .controllers
+                .repository()
+                .record_network_repair_transition(operation_id, transition.clone())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(_) if attempts < RECORD_ATTEMPTS => {
+                    tokio::time::sleep(RECORD_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn record_evidence_with_retry(
+        &self,
+        operation_id: &OperationId,
+        evidence: NetworkRepairEvidence,
+    ) -> Result<(), RecordOperationEventError> {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match self
+                .controllers
+                .repository()
+                .record_network_repair_evidence(operation_id, evidence.clone())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(_) if attempts < RECORD_ATTEMPTS => {
+                    tokio::time::sleep(RECORD_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 }
@@ -375,10 +491,12 @@ fn network_repair_failure(error: DataplanePrepareError) -> NetworkRepairFailure 
     }
 }
 
-fn machine_facts_refresh_failure(error: MachineFactsRefreshError) -> NetworkRepairFailure {
+fn machine_facts_refresh_outcome(
+    error: MachineFactsRefreshError,
+) -> NetworkRepairMachineFactsRefreshOutcome {
     match error {
         MachineFactsRefreshError::Unavailable { machine_id, reason } => {
-            NetworkRepairFailure::MachineFactsRefreshUnavailable {
+            NetworkRepairMachineFactsRefreshOutcome::Unavailable {
                 machine_id,
                 message: reason.failure_message(),
             }
@@ -386,7 +504,7 @@ fn machine_facts_refresh_failure(error: MachineFactsRefreshError) -> NetworkRepa
         MachineFactsRefreshError::RefreshFailed {
             machine_id,
             message,
-        } => NetworkRepairFailure::MachineFactsRefreshFailed {
+        } => NetworkRepairMachineFactsRefreshOutcome::Failed {
             machine_id,
             message,
         },
@@ -395,7 +513,7 @@ fn machine_facts_refresh_failure(error: MachineFactsRefreshError) -> NetworkRepa
 
 fn stale_machine_ids(
     observed: &[InternalDnsFactWatermark],
-    expected: &[NetworkRepairMachineFactWatermark],
+    expected: &[InternalDnsFactWatermark],
 ) -> Vec<MachineId> {
     expected
         .iter()
@@ -409,48 +527,15 @@ fn stale_machine_ids(
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DnsRefreshPending {
-    Unavailable {
-        machine_id: MachineId,
-        message: FailureMessage,
-    },
-    Stale {
-        machine_id: MachineId,
-        stale_machine_ids: Vec<MachineId>,
-    },
-}
-
-impl DnsRefreshPending {
-    fn into_failure(self) -> NetworkRepairFailure {
-        match self {
-            Self::Unavailable {
-                machine_id,
-                message,
-            } => NetworkRepairFailure::DnsRefreshUnavailable {
-                machine_id,
-                message,
-            },
-            Self::Stale {
-                machine_id,
-                stale_machine_ids,
-            } => NetworkRepairFailure::DnsRefreshStale {
-                machine_id,
-                stale_machine_ids,
-            },
-        }
-    }
-}
-
-fn dns_refresh_pending(
+fn dns_refresh_problem(
     machine_id: &MachineId,
     result: Result<DnsStatusRpcOk, String>,
-    expected: &[NetworkRepairMachineFactWatermark],
-) -> Option<DnsRefreshPending> {
+    expected: &[InternalDnsFactWatermark],
+) -> Option<NetworkRepairDnsRefreshProblem> {
     let status = match result {
         Ok(status) if status.machine_id == *machine_id => status.value,
         Ok(status) => {
-            return Some(DnsRefreshPending::Unavailable {
+            return Some(NetworkRepairDnsRefreshProblem::Unavailable {
                 machine_id: machine_id.clone(),
                 message: failure_message(format!(
                     "DNS status answered for {}",
@@ -459,14 +544,14 @@ fn dns_refresh_pending(
             });
         }
         Err(message) => {
-            return Some(DnsRefreshPending::Unavailable {
+            return Some(NetworkRepairDnsRefreshProblem::Unavailable {
                 machine_id: machine_id.clone(),
                 message: failure_message(message),
             });
         }
     };
     if !matches!(status.resolver, InternalDnsResolverStatus::Serving { .. }) {
-        return Some(DnsRefreshPending::Unavailable {
+        return Some(NetworkRepairDnsRefreshProblem::Unavailable {
             machine_id: machine_id.clone(),
             message: failure_message("internal DNS resolver is not serving".to_owned()),
         });
@@ -475,10 +560,25 @@ fn dns_refresh_pending(
     if stale_machine_ids.is_empty() {
         None
     } else {
-        Some(DnsRefreshPending::Stale {
+        Some(NetworkRepairDnsRefreshProblem::Stale {
             machine_id: machine_id.clone(),
             stale_machine_ids,
         })
+    }
+}
+
+const fn progress_phase_name(phase: NetworkRepairProgressPhase) -> &'static str {
+    match phase {
+        NetworkRepairProgressPhase::Starting => "starting",
+        NetworkRepairProgressPhase::RecordingDataplaneEvidence => "record-dataplane-evidence",
+        NetworkRepairProgressPhase::AdvancingMachineFacts => "advance-machine-facts",
+        NetworkRepairProgressPhase::RecordingMachineFactsEvidence => {
+            "record-machine-facts-evidence"
+        }
+        NetworkRepairProgressPhase::AdvancingDnsRefresh => "advance-dns-refresh",
+        NetworkRepairProgressPhase::RecordingDnsRefreshEvidence => "record-dns-refresh-evidence",
+        NetworkRepairProgressPhase::Completing => "completing",
+        NetworkRepairProgressPhase::RecordingTerminal => "record-terminal",
     }
 }
 
@@ -504,16 +604,16 @@ mod tests {
 
     #[test]
     fn dns_refresh_check_distinguishes_silence_health_and_stale_cache() {
-        let expected = vec![NetworkRepairMachineFactWatermark {
+        let expected = vec![InternalDnsFactWatermark {
             machine_id: machine_id("machine_a"),
             observed_at_unix_ms: 42,
         }];
-        let silence = dns_refresh_pending(
+        let silence = dns_refresh_problem(
             &machine_id("machine_b"),
             Err("machine runtime has no responders".to_owned()),
             &expected,
         );
-        let stale = dns_refresh_pending(
+        let stale = dns_refresh_problem(
             &machine_id("machine_b"),
             Ok(DnsStatusRpcOk {
                 machine_id: machine_id("machine_b"),
@@ -529,7 +629,7 @@ mod tests {
             }),
             &expected,
         );
-        let not_serving = dns_refresh_pending(
+        let not_serving = dns_refresh_problem(
             &machine_id("machine_b"),
             Ok(DnsStatusRpcOk {
                 machine_id: machine_id("machine_b"),
@@ -546,19 +646,19 @@ mod tests {
 
         assert!(matches!(
             silence,
-            Some(DnsRefreshPending::Unavailable { machine_id, .. })
+            Some(NetworkRepairDnsRefreshProblem::Unavailable { machine_id, .. })
                 if machine_id == self::machine_id("machine_b")
         ));
         assert_eq!(
             stale,
-            Some(DnsRefreshPending::Stale {
+            Some(NetworkRepairDnsRefreshProblem::Stale {
                 machine_id: machine_id("machine_b"),
                 stale_machine_ids: vec![machine_id("machine_a")],
             })
         );
         assert!(matches!(
             not_serving,
-            Some(DnsRefreshPending::Unavailable { machine_id, message })
+            Some(NetworkRepairDnsRefreshProblem::Unavailable { machine_id, message })
                 if machine_id == self::machine_id("machine_b")
                     && message.as_str().contains("not serving")
         ));

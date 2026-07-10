@@ -33,6 +33,7 @@ use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 mod deploy_follow;
+mod network;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
@@ -337,37 +338,13 @@ pub async fn execute_command(
             .await
         }
         PloyzctlCommand::NetworkStatus(command) => {
-            render_api_call(
-                config,
-                async |api| api.network_status(&command.into_request()).await,
-                |result| {
-                    crate::commands::network::NetworkStatusOutput::from_result(result).render()
-                },
-            )
-            .await
+            network::execute(network::NetworkRuntimeCommand::Status(command), config).await
         }
         PloyzctlCommand::NetworkResolve(command) => {
-            render_api_call(
-                config,
-                async |api| api.network_resolve(&command.into_request()).await,
-                |result| crate::commands::network::NetworkResolveOutput::new(result).render(),
-            )
-            .await
+            network::execute(network::NetworkRuntimeCommand::Resolve(command), config).await
         }
         PloyzctlCommand::NetworkRepair(command) => {
-            let detach = command.detach;
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .network_repair(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
-                        .render(),
-                ));
-            }
-            watch_accepted_operation(&api, accepted.operation_id, config).await
+            network::execute(network::NetworkRuntimeCommand::Repair(command), config).await
         }
         PloyzctlCommand::ServiceList(command) => {
             render_api_call(

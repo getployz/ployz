@@ -92,9 +92,13 @@ pub(crate) fn generate_client_core_replace_id(
     generate_client_operation_id("core_replace", machine_id.as_str())
 }
 
-pub(crate) fn generate_client_network_repair_id()
--> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
-    generate_client_operation_id("network_repair", "cluster")
+pub(crate) fn generate_client_network_repair_id(
+    machine_id: Option<&MachineId>,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id(
+        "network_repair",
+        machine_id.map_or("cluster", MachineId::as_str),
+    )
 }
 
 fn generate_client_operation_id(

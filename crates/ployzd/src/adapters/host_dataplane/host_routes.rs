@@ -22,7 +22,7 @@ impl HostDataplaneRouteProgramming {
         let pin_path = self
             .ebpf_pin_path
             .clone()
-            .unwrap_or_else(|| PathBuf::from("/sys/fs/bpf/ployz"));
+            .unwrap_or_else(|| PathBuf::from(ployz_ebpf_common::DEFAULT_PIN_PATH));
         let missing = ["routes", "egress", "ingress"]
             .into_iter()
             .map(|name| pin_path.join(name))

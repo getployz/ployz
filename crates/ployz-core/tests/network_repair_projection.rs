@@ -3,27 +3,31 @@ use ployz_core::dataplane::{
     PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
 };
 use ployz_core::ops::{
-    NetworkRepairOperationState, NetworkRepairRunningStage, NetworkRepairTransition,
-    OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
-    StatusProjectionError, project_network_repair_transition, project_operation_event,
+    FailureMessage, NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairProgressPhase,
+    NetworkRepairRunningStage, NetworkRepairTransition, OperationEvent, OperationProjection,
+    OperationStatus, ProjectionOperationState, StatusProjectionError,
+    project_network_repair_transition, project_operation_event,
 };
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::ids::{event_sequence, operation_id};
 
 fn dataplane_report() -> PloyzNativeMeshPrepareReport {
-    PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
-        machine_id: machine_id("machine_a"),
-        ready: PloyzNativeMeshReady {
-            wireguard: WireGuardReady {
-                public_key: WireGuardPublicKey::try_new("public-key-a")
-                    .expect("valid wireguard public key"),
-                evidence: Vec::new(),
+    PloyzNativeMeshPrepareReport::for_targets(
+        &[machine_id("machine_a")],
+        [PloyzNativeMeshMachineReady {
+            machine_id: machine_id("machine_a"),
+            ready: PloyzNativeMeshReady {
+                wireguard: WireGuardReady {
+                    public_key: WireGuardPublicKey::try_new("public-key-a")
+                        .expect("valid wireguard public key"),
+                    evidence: Vec::new(),
+                },
+                ebpf_forwarding: EbpfForwardingReady {
+                    evidence: Vec::new(),
+                },
             },
-            ebpf_forwarding: EbpfForwardingReady {
-                evidence: Vec::new(),
-            },
-        },
-    }])
+        }],
+    )
     .expect("valid dataplane report")
 }
 
@@ -149,7 +153,7 @@ fn network_repair_refresh_evidence_advances_only_its_stage_cursor() {
     };
     let event = OperationEvent::NetworkRepairMachineFactsRefreshed {
         operation_id: operation_id("op_network_repair"),
-        watermarks: vec![ployz_core::ops::NetworkRepairMachineFactWatermark {
+        watermarks: vec![ployz_core::internal_dns::InternalDnsFactWatermark {
             machine_id: machine_id("machine_a"),
             observed_at_unix_ms: 42,
         }],
@@ -251,6 +255,31 @@ fn network_repair_rejects_failed_before_running() {
             )),
         })
     );
+}
+
+#[test]
+fn network_repair_can_report_a_failure_to_record_its_initial_running_state() {
+    let accepted = OperationStatus::network_repair_accepted(
+        operation_id("op_network_repair"),
+        None,
+        event_sequence(1),
+    );
+    let failure = NetworkRepairFailure::ProgressRecordFailed {
+        phase: NetworkRepairProgressPhase::Starting,
+        message: FailureMessage::try_new("operation repository unavailable")
+            .expect("failure message"),
+    };
+
+    assert!(matches!(
+        project_network_repair_transition(
+            &accepted,
+            NetworkRepairTransition::Failed { failure },
+            event_sequence(2),
+        )
+        .expect("recording failure is a terminal result"),
+        OperationProjection::StatusChanged { status }
+            if status.is_terminal()
+    ));
 }
 
 #[test]

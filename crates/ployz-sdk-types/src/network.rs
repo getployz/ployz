@@ -4,7 +4,7 @@ use ts_rs::TS;
 use std::net::Ipv4Addr;
 
 use crate::core_types::{
-    ActiveMachineState, EventSequence, InternalDnsStatus, InternalServiceName,
+    ActiveMachineState, EventSequence, FailureMessage, InternalDnsStatus, InternalServiceName,
     MachineDataplaneStatus, MachineId, OperationId,
 };
 use crate::ops::{AcceptedOperation, OperationApiResponse};
@@ -34,6 +34,12 @@ pub struct NetworkStatusMachine {
 pub enum NetworkDataplaneTestimony {
     Answered { value: MachineDataplaneStatus },
     NoAnswer,
+    ReadFailed { message: FailureMessage },
+    WrongResponder { actual_machine_id: MachineId },
+    TimedOut,
+    RequestFailed { message: String },
+    ProtocolFailed { message: String },
+    DecodeFailed { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -41,6 +47,11 @@ pub enum NetworkDataplaneTestimony {
 pub enum NetworkInternalDnsTestimony {
     Answered { value: InternalDnsStatus },
     NoAnswer,
+    WrongResponder { actual_machine_id: MachineId },
+    TimedOut,
+    RequestFailed { message: String },
+    ProtocolFailed { message: String },
+    DecodeFailed { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
@@ -70,11 +81,29 @@ pub struct NetworkResolveResult {
 pub enum NetworkResolveMachineTestimony {
     Answered {
         machine_id: MachineId,
-        name: InternalServiceName,
         addresses: Vec<Ipv4Addr>,
     },
     NoAnswer {
         machine_id: MachineId,
+    },
+    WrongResponder {
+        machine_id: MachineId,
+        actual_machine_id: MachineId,
+    },
+    TimedOut {
+        machine_id: MachineId,
+    },
+    RequestFailed {
+        machine_id: MachineId,
+        message: String,
+    },
+    ProtocolFailed {
+        machine_id: MachineId,
+        message: String,
+    },
+    DecodeFailed {
+        machine_id: MachineId,
+        message: String,
     },
 }
 

@@ -8,7 +8,10 @@ use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::state::ActiveMachineState;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::service_runtime::request_json;
+use ployz_nats::service_protocol::NatsServiceErrorCode;
+use ployz_nats::service_runtime::{
+    NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
+};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveError,
     NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkResolveResult,
@@ -21,8 +24,8 @@ use crate::roles::dns::service::{
 };
 use crate::roles::machine::client::DEFAULT_MACHINE_RPC_TIMEOUT;
 use crate::roles::machine::protocol::{
-    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
-    MachineDataplaneStatusRpcResponse, MachineRpcResponse,
+    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
 };
 
 const MAX_CONCURRENT_DNS_READS: usize = 16;
@@ -94,7 +97,7 @@ async fn gather_network_status(
     probe: bool,
     active_machines: Vec<ActiveMachineState>,
 ) -> Vec<NetworkStatusMachine> {
-    let mut reads = stream::iter(active_machines)
+    let reads = stream::iter(active_machines)
         .map(|active| async move {
             let machine_id = &active.machine_id;
             let dataplane_request = MachineDataplaneStatusRpcRequest { probe };
@@ -112,22 +115,8 @@ async fn gather_network_status(
                 request_timeout,
             );
             let (dataplane, dns) = tokio::join!(dataplane, dns);
-            let dataplane = match dataplane {
-                Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk {
-                    machine_id: responder,
-                    value,
-                })) if responder == *machine_id => NetworkDataplaneTestimony::Answered { value },
-                Ok(MachineRpcResponse::Ok(_))
-                | Ok(MachineRpcResponse::DomainError { .. })
-                | Err(_) => NetworkDataplaneTestimony::NoAnswer,
-            };
-            let internal_dns = match dns {
-                Ok(DnsStatusRpcOk {
-                    machine_id: responder,
-                    value,
-                }) if responder == *machine_id => NetworkInternalDnsTestimony::Answered { value },
-                Ok(_) | Err(_) => NetworkInternalDnsTestimony::NoAnswer,
-            };
+            let dataplane = dataplane_testimony(machine_id, dataplane);
+            let internal_dns = dns_status_testimony(machine_id, dns);
             NetworkStatusMachine {
                 active,
                 dataplane,
@@ -135,10 +124,7 @@ async fn gather_network_status(
             }
         })
         .buffer_unordered(MAX_CONCURRENT_DNS_READS);
-    let mut gathered = Vec::new();
-    while let Some(machine) = reads.next().await {
-        gathered.push(machine);
-    }
+    let mut gathered = reads.collect::<Vec<_>>().await;
     gathered.sort_by(|left, right| left.active.machine_id.cmp(&right.active.machine_id));
     gathered
 }
@@ -165,7 +151,7 @@ async fn gather_dns_answers(
     name: &InternalServiceName,
     machine_ids: Vec<MachineId>,
 ) -> Vec<NetworkResolveMachineTestimony> {
-    let mut answers = stream::iter(machine_ids)
+    let answers = stream::iter(machine_ids)
         .map(|machine_id| async move {
             let response = request_json::<_, DnsResolveRpcOk>(
                 client,
@@ -174,48 +160,204 @@ async fn gather_dns_answers(
                 request_timeout,
             )
             .await;
-            match response {
-                Ok(answer) if answer.machine_id == machine_id && answer.name == *name => {
-                    NetworkResolveMachineTestimony::Answered {
-                        machine_id,
-                        name: answer.name,
-                        addresses: answer.addresses,
-                    }
-                }
-                Ok(_) | Err(_) => NetworkResolveMachineTestimony::NoAnswer { machine_id },
-            }
+            dns_resolve_testimony(machine_id, name, response)
         })
         .buffer_unordered(MAX_CONCURRENT_DNS_READS);
 
-    let mut gathered = Vec::new();
-    while let Some(answer) = answers.next().await {
-        gathered.push(answer);
-    }
+    let mut gathered = answers.collect::<Vec<_>>().await;
     gathered.sort_by(|left, right| testimony_machine_id(left).cmp(testimony_machine_id(right)));
     gathered
+}
+
+fn dns_resolve_testimony(
+    machine_id: MachineId,
+    name: &InternalServiceName,
+    response: Result<DnsResolveRpcOk, NatsJsonServiceRequestError>,
+) -> NetworkResolveMachineTestimony {
+    match response {
+        Ok(answer) if answer.machine_id == machine_id && answer.name == *name => {
+            NetworkResolveMachineTestimony::Answered {
+                machine_id,
+                addresses: answer.addresses,
+            }
+        }
+        Ok(answer) if answer.machine_id != machine_id => {
+            NetworkResolveMachineTestimony::WrongResponder {
+                machine_id,
+                actual_machine_id: answer.machine_id,
+            }
+        }
+        Ok(answer) => NetworkResolveMachineTestimony::ProtocolFailed {
+            machine_id,
+            message: format!(
+                "resolver echoed {}, expected {}",
+                answer.name.as_str(),
+                name.as_str()
+            ),
+        },
+        Err(error) => dns_resolve_error_testimony(machine_id, error),
+    }
+}
+
+fn dns_status_testimony(
+    expected_machine_id: &MachineId,
+    response: Result<DnsStatusRpcOk, NatsJsonServiceRequestError>,
+) -> NetworkInternalDnsTestimony {
+    match response {
+        Ok(DnsStatusRpcOk { machine_id, value }) if machine_id == *expected_machine_id => {
+            NetworkInternalDnsTestimony::Answered { value }
+        }
+        Ok(DnsStatusRpcOk { machine_id, .. }) => NetworkInternalDnsTestimony::WrongResponder {
+            actual_machine_id: machine_id,
+        },
+        Err(NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::NoResponders,
+        }) => NetworkInternalDnsTestimony::NoAnswer,
+        Err(NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::TimedOut,
+        })
+        | Err(NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code: NatsServiceErrorCode::Timeout,
+                    ..
+                },
+        }) => NetworkInternalDnsTestimony::TimedOut,
+        Err(NatsJsonServiceRequestError::ServiceProtocol { error }) => {
+            NetworkInternalDnsTestimony::ProtocolFailed {
+                message: error.to_string(),
+            }
+        }
+        Err(NatsJsonServiceRequestError::DecodeResponse { message }) => {
+            NetworkInternalDnsTestimony::DecodeFailed { message }
+        }
+        Err(error) => NetworkInternalDnsTestimony::RequestFailed {
+            message: error.to_string(),
+        },
+    }
+}
+
+fn dns_resolve_error_testimony(
+    machine_id: MachineId,
+    error: NatsJsonServiceRequestError,
+) -> NetworkResolveMachineTestimony {
+    match error {
+        NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::NoResponders,
+        } => NetworkResolveMachineTestimony::NoAnswer { machine_id },
+        NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::TimedOut,
+        }
+        | NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code: NatsServiceErrorCode::Timeout,
+                    ..
+                },
+        } => NetworkResolveMachineTestimony::TimedOut { machine_id },
+        NatsJsonServiceRequestError::ServiceProtocol { error } => {
+            NetworkResolveMachineTestimony::ProtocolFailed {
+                machine_id,
+                message: error.to_string(),
+            }
+        }
+        NatsJsonServiceRequestError::DecodeResponse { message } => {
+            NetworkResolveMachineTestimony::DecodeFailed {
+                machine_id,
+                message,
+            }
+        }
+        error => NetworkResolveMachineTestimony::RequestFailed {
+            machine_id,
+            message: error.to_string(),
+        },
+    }
+}
+
+fn dataplane_testimony(
+    expected_machine_id: &MachineId,
+    response: Result<MachineDataplaneStatusRpcResponse, NatsJsonServiceRequestError>,
+) -> NetworkDataplaneTestimony {
+    match response {
+        Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk { machine_id, value }))
+            if machine_id == *expected_machine_id =>
+        {
+            NetworkDataplaneTestimony::Answered { value }
+        }
+        Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk { machine_id, .. })) => {
+            NetworkDataplaneTestimony::WrongResponder {
+                actual_machine_id: machine_id,
+            }
+        }
+        Ok(MachineRpcResponse::DomainError { machine_id, .. })
+            if machine_id != *expected_machine_id =>
+        {
+            NetworkDataplaneTestimony::WrongResponder {
+                actual_machine_id: machine_id,
+            }
+        }
+        Ok(MachineRpcResponse::DomainError {
+            error: MachineDataplaneStatusDomainError::ReadFailed { message },
+            ..
+        }) => NetworkDataplaneTestimony::ReadFailed { message },
+        Err(NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::NoResponders,
+        }) => NetworkDataplaneTestimony::NoAnswer,
+        Err(NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::TimedOut,
+        })
+        | Err(NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code: NatsServiceErrorCode::Timeout,
+                    ..
+                },
+        }) => NetworkDataplaneTestimony::TimedOut,
+        Err(NatsJsonServiceRequestError::ServiceProtocol { error }) => {
+            NetworkDataplaneTestimony::ProtocolFailed {
+                message: error.to_string(),
+            }
+        }
+        Err(NatsJsonServiceRequestError::DecodeResponse { message }) => {
+            NetworkDataplaneTestimony::DecodeFailed { message }
+        }
+        Err(error) => NetworkDataplaneTestimony::RequestFailed {
+            message: error.to_string(),
+        },
+    }
 }
 
 const fn testimony_machine_id(testimony: &NetworkResolveMachineTestimony) -> &MachineId {
     match testimony {
         NetworkResolveMachineTestimony::Answered { machine_id, .. }
-        | NetworkResolveMachineTestimony::NoAnswer { machine_id } => machine_id,
+        | NetworkResolveMachineTestimony::NoAnswer { machine_id }
+        | NetworkResolveMachineTestimony::WrongResponder { machine_id, .. }
+        | NetworkResolveMachineTestimony::TimedOut { machine_id }
+        | NetworkResolveMachineTestimony::RequestFailed { machine_id, .. }
+        | NetworkResolveMachineTestimony::ProtocolFailed { machine_id, .. }
+        | NetworkResolveMachineTestimony::DecodeFailed { machine_id, .. } => machine_id,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use futures_util::StreamExt;
     use ployz_core::dataplane::{
         EbpfAttachmentStatus, MachineDataplaneStatus, MachineEndpointSubnet,
-        WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardStatus,
+        WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardInterfaceMtu, WireGuardStatus,
     };
+    use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
     use ployz_core::machine::MachineName;
     use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::ops::FailureMessage;
     use ployz_core::state::{ActiveMachineState, MachineLifecycle};
     use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+    use ployz_nats::service_protocol::NatsServiceErrorHeaderDecodeError;
+    use ployz_nats::service_runtime::{NatsJsonServiceRequestError, NatsServiceRequestFailure};
     use ployz_sdk_types::{
         NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
     };
@@ -223,12 +365,18 @@ mod tests {
         containers,
         ids::{machine_id, operation_id},
     };
+    use tokio::net::UdpSocket;
 
-    use super::{gather_dns_answers, gather_network_status, normalize_internal_name};
+    use super::{
+        dataplane_testimony, dns_resolve_error_testimony, dns_resolve_testimony,
+        dns_status_testimony, gather_dns_answers, gather_network_status, normalize_internal_name,
+    };
     use crate::fact_cache::FactCache;
-    use crate::roles::dns::service::start_dns_role_service;
+    use crate::roles::dns::InternalResolverHealth;
+    use crate::roles::dns::service::{DnsResolveRpcOk, DnsStatusRpcOk, start_dns_role_service};
     use crate::roles::machine::protocol::{
-        MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse,
+        MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
+        MachineDataplaneStatusRpcResponse, MachineRpcResponse,
     };
 
     #[test]
@@ -256,6 +404,184 @@ mod tests {
         assert!(normalize_internal_name("db.Internal").is_none());
     }
 
+    #[test]
+    fn dataplane_testimony_preserves_failures_and_reserves_no_answer_for_silence() {
+        let expected = machine_id("machine_a");
+        let read_failed = dataplane_testimony(
+            &expected,
+            Ok(MachineRpcResponse::DomainError {
+                machine_id: expected.clone(),
+                error: MachineDataplaneStatusDomainError::ReadFailed {
+                    message: FailureMessage::try_new("wireguard read failed")
+                        .expect("failure message"),
+                },
+            }),
+        );
+        assert!(matches!(
+            read_failed,
+            NetworkDataplaneTestimony::ReadFailed { .. }
+        ));
+
+        let wrong = dataplane_testimony(
+            &expected,
+            Ok(MachineRpcResponse::DomainError {
+                machine_id: machine_id("machine_b"),
+                error: MachineDataplaneStatusDomainError::ReadFailed {
+                    message: FailureMessage::try_new("wrong responder").expect("failure message"),
+                },
+            }),
+        );
+        assert!(matches!(
+            wrong,
+            NetworkDataplaneTestimony::WrongResponder { .. }
+        ));
+
+        let cases = [
+            (
+                NatsJsonServiceRequestError::Request {
+                    failure: NatsServiceRequestFailure::NoResponders,
+                },
+                NetworkDataplaneTestimony::NoAnswer,
+            ),
+            (
+                NatsJsonServiceRequestError::Request {
+                    failure: NatsServiceRequestFailure::TimedOut,
+                },
+                NetworkDataplaneTestimony::TimedOut,
+            ),
+            (
+                NatsJsonServiceRequestError::DecodeResponse {
+                    message: "bad json".to_owned(),
+                },
+                NetworkDataplaneTestimony::DecodeFailed {
+                    message: "bad json".to_owned(),
+                },
+            ),
+            (
+                NatsJsonServiceRequestError::ServiceProtocol {
+                    error: NatsServiceErrorHeaderDecodeError::MissingMessage,
+                },
+                NetworkDataplaneTestimony::ProtocolFailed {
+                    message: "missing service error message header".to_owned(),
+                },
+            ),
+        ];
+        for (error, expected_testimony) in cases {
+            assert_eq!(
+                dataplane_testimony(&expected, Err(error)),
+                expected_testimony
+            );
+        }
+
+        assert!(matches!(
+            dns_resolve_error_testimony(
+                expected.clone(),
+                NatsJsonServiceRequestError::Request {
+                    failure: NatsServiceRequestFailure::NoResponders,
+                },
+            ),
+            NetworkResolveMachineTestimony::NoAnswer { .. }
+        ));
+        assert!(matches!(
+            dns_resolve_error_testimony(
+                expected.clone(),
+                NatsJsonServiceRequestError::Request {
+                    failure: NatsServiceRequestFailure::TimedOut,
+                },
+            ),
+            NetworkResolveMachineTestimony::TimedOut { .. }
+        ));
+        assert!(matches!(
+            dns_resolve_error_testimony(
+                expected.clone(),
+                NatsJsonServiceRequestError::DecodeResponse {
+                    message: "bad json".to_owned(),
+                },
+            ),
+            NetworkResolveMachineTestimony::DecodeFailed { .. }
+        ));
+        assert!(matches!(
+            dns_resolve_error_testimony(
+                expected,
+                NatsJsonServiceRequestError::ServiceProtocol {
+                    error: NatsServiceErrorHeaderDecodeError::MissingMessage,
+                },
+            ),
+            NetworkResolveMachineTestimony::ProtocolFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn dns_testimony_preserves_failures_and_reserves_no_answer_for_silence() {
+        let expected = machine_id("machine_a");
+        let name = normalize_internal_name("web.team-a").expect("internal name");
+        let wrong_status = dns_status_testimony(
+            &expected,
+            Ok(DnsStatusRpcOk {
+                machine_id: machine_id("machine_b"),
+                value: InternalDnsStatus {
+                    resolver: InternalDnsResolverStatus::NotConfigured,
+                    fact_watermarks: Vec::new(),
+                },
+            }),
+        );
+        assert!(matches!(
+            wrong_status,
+            NetworkInternalDnsTestimony::WrongResponder { .. }
+        ));
+
+        let wrong_resolve = dns_resolve_testimony(
+            expected.clone(),
+            &name,
+            Ok(DnsResolveRpcOk {
+                machine_id: machine_id("machine_b"),
+                name: name.clone(),
+                addresses: Vec::new(),
+            }),
+        );
+        assert!(matches!(
+            wrong_resolve,
+            NetworkResolveMachineTestimony::WrongResponder { .. }
+        ));
+
+        let cases = [
+            (
+                NatsJsonServiceRequestError::Request {
+                    failure: NatsServiceRequestFailure::NoResponders,
+                },
+                NetworkInternalDnsTestimony::NoAnswer,
+            ),
+            (
+                NatsJsonServiceRequestError::Request {
+                    failure: NatsServiceRequestFailure::TimedOut,
+                },
+                NetworkInternalDnsTestimony::TimedOut,
+            ),
+            (
+                NatsJsonServiceRequestError::DecodeResponse {
+                    message: "bad json".to_owned(),
+                },
+                NetworkInternalDnsTestimony::DecodeFailed {
+                    message: "bad json".to_owned(),
+                },
+            ),
+            (
+                NatsJsonServiceRequestError::ServiceProtocol {
+                    error: NatsServiceErrorHeaderDecodeError::MissingMessage,
+                },
+                NetworkInternalDnsTestimony::ProtocolFailed {
+                    message: "missing service error message header".to_owned(),
+                },
+            ),
+        ];
+        for (error, expected_testimony) in cases {
+            assert_eq!(
+                dns_status_testimony(&expected, Err(error)),
+                expected_testimony
+            );
+        }
+    }
+
     #[tokio::test]
     async fn gathers_each_intended_dns_role_and_keeps_silence() {
         let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
@@ -280,11 +606,42 @@ mod tests {
             )
             .expect("machine facts"),
         );
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind resolver");
+        let bound = socket.local_addr().expect("resolver address");
+        let resolver = tokio::spawn(async move {
+            let mut request = [0_u8; 512];
+            let (length, peer) = socket
+                .recv_from(&mut request)
+                .await
+                .expect("receive DNS query");
+            let question = request
+                .get(12..length)
+                .expect("DNS query includes a question");
+            let [id_high, id_low, ..] = request.as_slice() else {
+                panic!("DNS query includes a transaction id");
+            };
+            let mut response = Vec::from([
+                *id_high, *id_low, 0x85, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            ]);
+            response.extend_from_slice(question);
+            response.extend_from_slice(&[
+                0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x04, 10, 42, 1,
+                8,
+            ]);
+            socket
+                .send_to(&response, peer)
+                .await
+                .expect("send DNS response");
+        });
         let service = start_dns_role_service(
             nats.machine_client(&machine_id("dns_a")).await,
             machine_id("dns_a"),
             cache,
-            None,
+            Some(Arc::new(Mutex::new(InternalResolverHealth::Serving {
+                bound,
+            }))),
         )
         .await
         .expect("DNS role service");
@@ -303,7 +660,6 @@ mod tests {
             vec![
                 NetworkResolveMachineTestimony::Answered {
                     machine_id: machine_id("dns_a"),
-                    name,
                     addresses: vec![Ipv4Addr::new(10, 42, 1, 8)],
                 },
                 NetworkResolveMachineTestimony::NoAnswer {
@@ -311,6 +667,7 @@ mod tests {
                 },
             ]
         );
+        resolver.await.expect("resolver task");
         service.shutdown().await.expect("shutdown DNS role service");
     }
 
@@ -351,7 +708,7 @@ mod tests {
                         interface: "ployz-wg0".to_owned(),
                         configured_mtu: WireGuardConfiguredMtu::Auto,
                         detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
-                        interface_mtu: Some(1420),
+                        interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
                         peers: Vec::new(),
                     },
                     ebpf_attachment: EbpfAttachmentStatus::Attached,

@@ -42,14 +42,6 @@ impl NatsMachineDataplanePreparer {
         request: DataplanePrepareRequest,
         targets: &[MachineId],
     ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
-        let members = request.machines().into_iter().collect::<BTreeSet<_>>();
-        if targets.is_empty() || targets.iter().any(|target| !members.contains(target)) {
-            return Err(DataplanePrepareError::InvalidReport {
-                message: failure_message(
-                    "network repair dataplane targets must be active members".to_owned(),
-                ),
-            });
-        }
         let request = self
             .ployz_native_mesh_prepare_request(request)
             .await
@@ -124,7 +116,7 @@ impl NatsMachineDataplanePreparer {
             }))
             .await?;
 
-        PloyzNativeMeshPrepareReport::from_machines(machines)
+        PloyzNativeMeshPrepareReport::for_targets(targets, machines)
             .map_err(ployz_native_mesh_report_error)
     }
 }

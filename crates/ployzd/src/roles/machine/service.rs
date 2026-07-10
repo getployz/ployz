@@ -252,11 +252,8 @@ pub trait MachinePloyzNativeMeshPreparer {
 
     fn read_ployz_native_mesh_status(
         &self,
-        _probe: bool,
-    ) -> impl Future<Output = Result<ployz_core::dataplane::MachineDataplaneStatus, String>> + Send
-    {
-        async { Err("dataplane status is unavailable".to_owned()) }
-    }
+        probe: bool,
+    ) -> impl Future<Output = Result<ployz_core::dataplane::MachineDataplaneStatus, String>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

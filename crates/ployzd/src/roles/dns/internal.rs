@@ -1,5 +1,6 @@
 //! Machine-local DNS for service names projected directly from machine facts.
 
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,6 +21,8 @@ const DNS_TTL_SECONDS: u32 = 5;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const BIND_RETRY_CAP: Duration = Duration::from_secs(30);
+const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
+const LOCAL_QUERY_ID: u16 = 0x504c;
 
 /// A bounds-checked first DNS question parsed from a UDP datagram.
 #[derive(Debug)]
@@ -82,6 +85,135 @@ fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
         return None;
     };
     Some(u16::from_be_bytes([*high, *low]))
+}
+
+pub(super) async fn query_bound_resolver(
+    bound: SocketAddr,
+    name: &InternalServiceName,
+) -> io::Result<Vec<Ipv4Addr>> {
+    tokio::time::timeout(LOCAL_QUERY_TIMEOUT, async {
+        let local = match bound {
+            SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
+            SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
+        };
+        let socket = UdpSocket::bind(local).await?;
+        socket.connect(bound).await?;
+        socket.send(&a_query_packet(name)?).await?;
+        let mut response = [0_u8; 4096];
+        let length = socket.recv(&mut response).await?;
+        parse_a_response(response.get(..length).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "DNS response length exceeded buffer",
+            )
+        })?)
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local DNS resolver timed out"))?
+}
+
+fn a_query_packet(name: &InternalServiceName) -> io::Result<Vec<u8>> {
+    let mut packet = Vec::from([
+        0x50, 0x4c, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    for label in name.as_str().split('.') {
+        let length = u8::try_from(label.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "DNS label exceeds 255 bytes")
+        })?;
+        packet.push(length);
+        packet.extend_from_slice(label.as_bytes());
+    }
+    packet.push(0);
+    packet.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+    packet.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+    Ok(packet)
+}
+
+fn parse_a_response(response: &[u8]) -> io::Result<Vec<Ipv4Addr>> {
+    if read_u16(response, 0) != Some(LOCAL_QUERY_ID) {
+        return Err(invalid_dns_response(
+            "DNS response transaction id did not match",
+        ));
+    }
+    let flags = response_u16(response, 2)?;
+    if flags & 0x8000 == 0 || flags & 0x000f != 0 {
+        return Err(invalid_dns_response(
+            "DNS resolver returned an unsuccessful response",
+        ));
+    }
+    let question_count = response_u16(response, 4)?;
+    let answer_count = response_u16(response, 6)?;
+    let mut offset = DNS_HEADER_LEN;
+    for _ in 0..question_count {
+        offset = skip_dns_name(response, offset)?;
+        offset = response
+            .get(offset..offset.saturating_add(4))
+            .map(|_| offset + 4)
+            .ok_or_else(|| invalid_dns_response("DNS question was truncated"))?;
+    }
+
+    let mut addresses = Vec::new();
+    for _ in 0..answer_count {
+        offset = skip_dns_name(response, offset)?;
+        let record_type = response_u16(response, offset)?;
+        let class = response_u16(response, offset + 2)?;
+        let data_length = usize::from(response_u16(response, offset + 8)?);
+        offset = offset
+            .checked_add(10)
+            .ok_or_else(|| invalid_dns_response("DNS answer offset overflowed"))?;
+        let data = response
+            .get(offset..offset.saturating_add(data_length))
+            .ok_or_else(|| invalid_dns_response("DNS answer was truncated"))?;
+        if record_type == DNS_TYPE_A && class == DNS_CLASS_IN {
+            let [a, b, c, d] = data else {
+                return Err(invalid_dns_response(
+                    "DNS A record length was not four bytes",
+                ));
+            };
+            addresses.push(Ipv4Addr::new(*a, *b, *c, *d));
+        }
+        offset = offset
+            .checked_add(data_length)
+            .ok_or_else(|| invalid_dns_response("DNS answer offset overflowed"))?;
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    Ok(addresses)
+}
+
+fn skip_dns_name(packet: &[u8], mut offset: usize) -> io::Result<usize> {
+    loop {
+        let length = *packet
+            .get(offset)
+            .ok_or_else(|| invalid_dns_response("DNS name was truncated"))?;
+        if length & 0xc0 == 0xc0 {
+            return packet
+                .get(offset..offset.saturating_add(2))
+                .map(|_| offset + 2)
+                .ok_or_else(|| invalid_dns_response("DNS name pointer was truncated"));
+        }
+        if length & 0xc0 != 0 {
+            return Err(invalid_dns_response("DNS name label was invalid"));
+        }
+        offset = offset
+            .checked_add(1)
+            .ok_or_else(|| invalid_dns_response("DNS name offset overflowed"))?;
+        if length == 0 {
+            return Ok(offset);
+        }
+        offset = offset
+            .checked_add(usize::from(length))
+            .filter(|end| *end <= packet.len())
+            .ok_or_else(|| invalid_dns_response("DNS name label was truncated"))?;
+    }
+}
+
+fn response_u16(packet: &[u8], offset: usize) -> io::Result<u16> {
+    read_u16(packet, offset).ok_or_else(|| invalid_dns_response("DNS response was truncated"))
+}
+
+fn invalid_dns_response(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 /// DNS response codes emitted by the internal resolver.
@@ -291,97 +423,10 @@ mod tests {
         StepId,
     };
     use ployz_core::machine_runtime::{
-        ContainerHealth, ContainerRuntimeState, MachineContainerObservationSnapshot,
-        MachineDiskSpace, MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerKind,
+        ContainerRuntimeState, MachineContainerObservationSnapshot, MachineDiskSpace,
+        MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn projection_sorts_and_deduplicates_running_service_ipv4_addresses() {
-        let snapshots = [facts(
-            "machine_a",
-            [
-                observation("ctr_1", ManagedContainerKind::Service, running("10.42.2.8")),
-                observation("ctr_2", ManagedContainerKind::Service, running("10.42.1.9")),
-                observation("ctr_3", ManagedContainerKind::Service, running("10.42.2.8")),
-            ],
-        )];
-
-        assert_eq!(
-            internal_dns_records(&snapshots),
-            BTreeMap::from([(
-                internal_name(),
-                vec![Ipv4Addr::new(10, 42, 1, 9), Ipv4Addr::new(10, 42, 2, 8)]
-            )])
-        );
-    }
-
-    #[test]
-    fn projection_excludes_exited_unaddressed_ipv6_and_non_service_containers() {
-        let snapshots = [facts(
-            "machine_a",
-            [
-                observation(
-                    "ctr_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::Exited,
-                ),
-                observation(
-                    "ctr_2",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_unroutable(),
-                ),
-                observation(
-                    "ctr_3",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_at("2001:db8::1".parse().expect("valid IPv6")),
-                ),
-                observation("ctr_4", ManagedContainerKind::Job, running("10.42.1.9")),
-            ],
-        )];
-
-        assert!(internal_dns_records(&snapshots).is_empty());
-    }
-
-    #[test]
-    fn projection_does_not_gate_running_service_on_health() {
-        let snapshots = [facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                ContainerRuntimeState::running_at_with_health(
-                    Some(IpAddr::V4(Ipv4Addr::new(10, 42, 1, 9))),
-                    ContainerHealth::Unhealthy,
-                ),
-            )],
-        )];
-
-        let expected = [Ipv4Addr::new(10, 42, 1, 9)];
-        assert_eq!(
-            internal_dns_records(&snapshots)
-                .get(&internal_name())
-                .map(Vec::as_slice),
-            Some(expected.as_slice())
-        );
-    }
-
-    #[test]
-    fn projection_removes_service_missing_from_fresh_facts() {
-        let present = [facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                running("10.42.1.9"),
-            )],
-        )];
-        assert!(internal_dns_records(&present).contains_key(&internal_name()));
-
-        let absent = [facts("machine_a", [])];
-        assert!(!internal_dns_records(&absent).contains_key(&internal_name()));
-    }
 
     #[test]
     fn parser_reads_first_question_and_lowercases_name() {
@@ -527,13 +572,6 @@ mod tests {
         (
             read_u16(response, 2).expect("response flags"),
             read_u16(response, 6).expect("answer count"),
-        )
-    }
-
-    fn internal_name() -> InternalServiceName {
-        InternalServiceName::new(
-            &ServiceId::try_new("db").expect("service id"),
-            &NamespaceId::try_new("default").expect("namespace id"),
         )
     }
 

@@ -11,8 +11,8 @@ pub use ployz_core::dataplane::{
     EbpfForwardingReadyEvidence, MachineDataplaneStatus, MachineEndpointSubnet,
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
     PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
-    WireGuardMtuProbe, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
+    WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerStatus, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
@@ -59,8 +59,9 @@ pub use ployz_core::ops::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
     ManagedLeaseSubject, NamespaceRemoveFailure, NamespaceRemoveOperationState,
-    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairMachineFactWatermark,
-    NetworkRepairOperationState, NetworkRepairRunningStage, NonEmptyTextError, OperationEvent,
+    NamespaceRemoveRunningStage, NetworkRepairDnsRefreshProblem, NetworkRepairFailure,
+    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
+    NetworkRepairProgressPhase, NetworkRepairRunningStage, NonEmptyTextError, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
     OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey, OperationKind,
     OperationStatus, OperationStatusSnapshot, OperationSubject, OperatorHint,

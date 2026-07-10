@@ -213,8 +213,16 @@ impl DataplanePreparer for RecordingWireGuardEbpf {
         self.requests.push(request);
         match &self.failure {
             Some(error) => Err(error.clone()),
-            None => Ok(PloyzNativeMeshPrepareReport::from_machines(ready_machines)
-                .expect("recording report has unique machines")),
+            None => {
+                let expected = ready_machines
+                    .iter()
+                    .map(|machine| machine.machine_id.clone())
+                    .collect::<Vec<_>>();
+                Ok(
+                    PloyzNativeMeshPrepareReport::for_targets(&expected, ready_machines)
+                        .expect("recording report matches requested machines"),
+                )
+            }
         }
     }
 }
