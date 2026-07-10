@@ -5,14 +5,14 @@ use std::net::Ipv4Addr;
 
 use crate::core_types::{
     ActiveMachineState, EventSequence, FailureMessage, InternalDnsStatus, InternalServiceName,
-    MachineDataplaneStatus, MachineId, OperationId,
+    MachineDataplaneStatus, MachineId, NetworkStatusMode, OperationId,
 };
 use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkStatusRequest {
-    pub probe: bool,
+    pub mode: NetworkStatusMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

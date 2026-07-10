@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
+use ployz_core::dataplane::{INTERNAL_DNS_SUFFIX, NetworkStatusMode};
 use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::state::ActiveMachineState;
@@ -22,14 +22,67 @@ use crate::intent::service::NatsIntentReader;
 use crate::roles::dns::service::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
 };
-use crate::roles::machine::client::DEFAULT_MACHINE_RPC_TIMEOUT;
+use crate::roles::machine::client::{DEFAULT_MACHINE_RPC_TIMEOUT, MAX_CONCURRENT_MACHINE_READS};
 use crate::roles::machine::protocol::{
     MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
 };
 
-const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 const NETWORK_PROBE_GATHER_TIMEOUT: Duration = Duration::from_secs(60);
+
+enum NetworkRequestFailure {
+    NoAnswer,
+    TimedOut,
+    RequestFailed { message: String },
+    ProtocolFailed { message: String },
+    DecodeFailed { message: String },
+}
+
+fn network_request_failure(error: NatsJsonServiceRequestError) -> NetworkRequestFailure {
+    match error {
+        NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::NoResponders,
+        } => NetworkRequestFailure::NoAnswer,
+        NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::TimedOut,
+        }
+        | NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code: NatsServiceErrorCode::Timeout,
+                    ..
+                },
+        } => NetworkRequestFailure::TimedOut,
+        NatsJsonServiceRequestError::ServiceProtocol { error } => {
+            NetworkRequestFailure::ProtocolFailed {
+                message: error.to_string(),
+            }
+        }
+        NatsJsonServiceRequestError::DecodeResponse { message } => {
+            NetworkRequestFailure::DecodeFailed { message }
+        }
+        error @ NatsJsonServiceRequestError::EncodeRequest { .. }
+        | error @ NatsJsonServiceRequestError::Request {
+            failure:
+                NatsServiceRequestFailure::InvalidSubject
+                | NatsServiceRequestFailure::MaxPayloadExceeded
+                | NatsServiceRequestFailure::Other { .. },
+        }
+        | error @ NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code:
+                        NatsServiceErrorCode::BadRequest
+                        | NatsServiceErrorCode::Conflict
+                        | NatsServiceErrorCode::Unavailable
+                        | NatsServiceErrorCode::Internal,
+                    ..
+                },
+        } => NetworkRequestFailure::RequestFailed {
+            message: error.to_string(),
+        },
+    }
+}
 
 #[derive(Clone)]
 pub struct NetworkQueryService {
@@ -84,15 +137,14 @@ impl NetworkQueryService {
                 .map_err(|error| NetworkStatusError::Unavailable {
                     message: error.to_string(),
                 })?;
-        let gather_timeout = if request.probe {
-            NETWORK_PROBE_GATHER_TIMEOUT
-        } else {
-            DEFAULT_MACHINE_RPC_TIMEOUT
+        let gather_timeout = match request.mode {
+            NetworkStatusMode::Snapshot => DEFAULT_MACHINE_RPC_TIMEOUT,
+            NetworkStatusMode::ProbePathMtu => NETWORK_PROBE_GATHER_TIMEOUT,
         };
         let machines = gather_network_status(
             &self.client,
             gather_timeout,
-            request.probe,
+            request.mode,
             intent.active_machines,
         )
         .await;
@@ -103,7 +155,7 @@ impl NetworkQueryService {
 async fn gather_network_status(
     client: &async_nats::Client,
     gather_timeout: Duration,
-    probe: bool,
+    mode: NetworkStatusMode,
     active_machines: Vec<ActiveMachineState>,
 ) -> Vec<NetworkStatusMachine> {
     let deadline = tokio::time::Instant::now() + gather_timeout;
@@ -111,7 +163,7 @@ async fn gather_network_status(
         .map(|active| async move {
             let machine_id = &active.machine_id;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let dataplane_request = MachineDataplaneStatusRpcRequest { probe };
+            let dataplane_request = MachineDataplaneStatusRpcRequest { mode };
             let dns_request = DnsStatusRpcRequest {};
             let dataplane = request_json::<_, MachineDataplaneStatusRpcResponse>(
                 client,
@@ -223,29 +275,18 @@ fn dns_status_testimony(
         Ok(DnsStatusRpcOk { machine_id, .. }) => NetworkInternalDnsTestimony::WrongResponder {
             actual_machine_id: machine_id,
         },
-        Err(NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::NoResponders,
-        }) => NetworkInternalDnsTestimony::NoAnswer,
-        Err(NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::TimedOut,
-        })
-        | Err(NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code: NatsServiceErrorCode::Timeout,
-                    ..
-                },
-        }) => NetworkInternalDnsTestimony::TimedOut,
-        Err(NatsJsonServiceRequestError::ServiceProtocol { error }) => {
-            NetworkInternalDnsTestimony::ProtocolFailed {
-                message: error.to_string(),
+        Err(error) => match network_request_failure(error) {
+            NetworkRequestFailure::NoAnswer => NetworkInternalDnsTestimony::NoAnswer,
+            NetworkRequestFailure::TimedOut => NetworkInternalDnsTestimony::TimedOut,
+            NetworkRequestFailure::RequestFailed { message } => {
+                NetworkInternalDnsTestimony::RequestFailed { message }
             }
-        }
-        Err(NatsJsonServiceRequestError::DecodeResponse { message }) => {
-            NetworkInternalDnsTestimony::DecodeFailed { message }
-        }
-        Err(error) => NetworkInternalDnsTestimony::RequestFailed {
-            message: error.to_string(),
+            NetworkRequestFailure::ProtocolFailed { message } => {
+                NetworkInternalDnsTestimony::ProtocolFailed { message }
+            }
+            NetworkRequestFailure::DecodeFailed { message } => {
+                NetworkInternalDnsTestimony::DecodeFailed { message }
+            }
         },
     }
 }
@@ -254,53 +295,27 @@ fn dns_resolve_error_testimony(
     machine_id: MachineId,
     error: NatsJsonServiceRequestError,
 ) -> NetworkResolveMachineTestimony {
-    match error {
-        NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::NoResponders,
-        } => NetworkResolveMachineTestimony::NoAnswer { machine_id },
-        NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::TimedOut,
-        }
-        | NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code: NatsServiceErrorCode::Timeout,
-                    ..
-                },
-        } => NetworkResolveMachineTestimony::TimedOut { machine_id },
-        NatsJsonServiceRequestError::ServiceProtocol { error } => {
-            NetworkResolveMachineTestimony::ProtocolFailed {
+    match network_request_failure(error) {
+        NetworkRequestFailure::NoAnswer => NetworkResolveMachineTestimony::NoAnswer { machine_id },
+        NetworkRequestFailure::TimedOut => NetworkResolveMachineTestimony::TimedOut { machine_id },
+        NetworkRequestFailure::RequestFailed { message } => {
+            NetworkResolveMachineTestimony::RequestFailed {
                 machine_id,
-                message: error.to_string(),
+                message,
             }
         }
-        NatsJsonServiceRequestError::DecodeResponse { message } => {
+        NetworkRequestFailure::ProtocolFailed { message } => {
+            NetworkResolveMachineTestimony::ProtocolFailed {
+                machine_id,
+                message,
+            }
+        }
+        NetworkRequestFailure::DecodeFailed { message } => {
             NetworkResolveMachineTestimony::DecodeFailed {
                 machine_id,
                 message,
             }
         }
-        error @ NatsJsonServiceRequestError::EncodeRequest { .. }
-        | error @ NatsJsonServiceRequestError::Request {
-            failure:
-                NatsServiceRequestFailure::InvalidSubject
-                | NatsServiceRequestFailure::MaxPayloadExceeded
-                | NatsServiceRequestFailure::Other { .. },
-        }
-        | error @ NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code:
-                        NatsServiceErrorCode::BadRequest
-                        | NatsServiceErrorCode::Conflict
-                        | NatsServiceErrorCode::Unavailable
-                        | NatsServiceErrorCode::Internal,
-                    ..
-                },
-        } => NetworkResolveMachineTestimony::RequestFailed {
-            machine_id,
-            message: error.to_string(),
-        },
     }
 }
 
@@ -330,29 +345,18 @@ fn dataplane_testimony(
             error: MachineDataplaneStatusDomainError::ReadFailed { message },
             ..
         }) => NetworkDataplaneTestimony::ReadFailed { message },
-        Err(NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::NoResponders,
-        }) => NetworkDataplaneTestimony::NoAnswer,
-        Err(NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::TimedOut,
-        })
-        | Err(NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code: NatsServiceErrorCode::Timeout,
-                    ..
-                },
-        }) => NetworkDataplaneTestimony::TimedOut,
-        Err(NatsJsonServiceRequestError::ServiceProtocol { error }) => {
-            NetworkDataplaneTestimony::ProtocolFailed {
-                message: error.to_string(),
+        Err(error) => match network_request_failure(error) {
+            NetworkRequestFailure::NoAnswer => NetworkDataplaneTestimony::NoAnswer,
+            NetworkRequestFailure::TimedOut => NetworkDataplaneTestimony::TimedOut,
+            NetworkRequestFailure::RequestFailed { message } => {
+                NetworkDataplaneTestimony::RequestFailed { message }
             }
-        }
-        Err(NatsJsonServiceRequestError::DecodeResponse { message }) => {
-            NetworkDataplaneTestimony::DecodeFailed { message }
-        }
-        Err(error) => NetworkDataplaneTestimony::RequestFailed {
-            message: error.to_string(),
+            NetworkRequestFailure::ProtocolFailed { message } => {
+                NetworkDataplaneTestimony::ProtocolFailed { message }
+            }
+            NetworkRequestFailure::DecodeFailed { message } => {
+                NetworkDataplaneTestimony::DecodeFailed { message }
+            }
         },
     }
 }
@@ -756,7 +760,7 @@ mod tests {
         let result = gather_network_status(
             &nats.controller,
             Duration::from_millis(200),
-            true,
+            ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
             vec![
                 active_machine("machine_a", "10.198.1.0/24"),
                 active_machine("machine_b", "10.198.2.0/24"),

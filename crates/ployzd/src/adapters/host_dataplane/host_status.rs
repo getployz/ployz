@@ -2,9 +2,10 @@ use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi, peer::Peer};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::dataplane::{
-    MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardConfiguredMtu, WireGuardDetectedMtu,
-    WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerStatus,
-    WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
+    MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, MachineEndpointSubnet, NetworkStatusMode,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
+    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
+    WireGuardRttStatus, WireGuardStatus,
 };
 use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime};
@@ -19,7 +20,7 @@ const MAX_CONCURRENT_PEER_DIAGNOSTICS: usize = 4;
 pub(super) async fn read_wireguard_status(
     wg_ifname: &str,
     policy: WireGuardMtuPolicy,
-    probe: bool,
+    mode: NetworkStatusMode,
 ) -> Result<WireGuardStatus, String> {
     let api = WGApi::<HostWireGuardApi>::new(wg_ifname).map_err(|source| source.to_string())?;
     let host = api
@@ -40,7 +41,7 @@ pub(super) async fn read_wireguard_status(
     let peers = stream::iter(
         host.peers
             .into_iter()
-            .map(|(key, peer)| peer_status(key.to_string(), peer, probe)),
+            .map(|(key, peer)| peer_status(key.to_string(), peer, mode)),
     )
     .buffered(MAX_CONCURRENT_PEER_DIAGNOSTICS)
     .try_collect()
@@ -58,10 +59,10 @@ pub(super) async fn read_wireguard_status(
 async fn peer_status(
     public_key: String,
     peer: Peer,
-    probe: bool,
+    mode: NetworkStatusMode,
 ) -> Result<WireGuardPeerStatus, String> {
     let public_key = WireGuardPublicKey::try_new(public_key).map_err(|error| error.to_string())?;
-    let endpoint_subnet = peer.allowed_ips.first().map(ToString::to_string);
+    let endpoint_subnet = peer_endpoint_subnet(peer.allowed_ips.first().map(ToString::to_string));
     let target = peer
         .allowed_ips
         .iter()
@@ -82,7 +83,7 @@ async fn peer_status(
                 ),
                 Err(message) => WireGuardRttStatus::Unavailable { message },
             };
-            let mtu_probe = if probe {
+            let mtu_probe = if mode.probes_path_mtu() {
                 probe_path_mtu(target).await
             } else {
                 WireGuardMtuProbe::NotRequested
@@ -93,7 +94,7 @@ async fn peer_status(
             WireGuardRttStatus::Unavailable {
                 message: "peer has no IPv4 overlay subnet".to_owned(),
             },
-            if probe {
+            if mode.probes_path_mtu() {
                 WireGuardMtuProbe::Unavailable {
                     message: "peer has no IPv4 overlay subnet".to_owned(),
                 }
@@ -120,6 +121,19 @@ async fn peer_status(
         tx_bytes: peer.tx_bytes,
         mtu_probe,
     })
+}
+
+fn peer_endpoint_subnet(value: Option<String>) -> WireGuardPeerEndpointSubnet {
+    let Some(value) = value else {
+        return WireGuardPeerEndpointSubnet::Missing;
+    };
+    MachineEndpointSubnet::try_new(value.clone()).map_or_else(
+        |error| WireGuardPeerEndpointSubnet::Invalid {
+            value,
+            message: error.to_string(),
+        },
+        |subnet| WireGuardPeerEndpointSubnet::Valid { subnet },
+    )
 }
 
 async fn probe_path_mtu(target: Ipv4Addr) -> WireGuardMtuProbe {
@@ -185,6 +199,15 @@ async fn read_interface_mtu(ifname: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn peer_endpoint_subnet_preserves_invalid_observed_values() {
+        let status = peer_endpoint_subnet(Some("not-a-subnet".to_owned()));
+
+        assert!(matches!(
+            status,
+            WireGuardPeerEndpointSubnet::Invalid { value, .. } if value == "not-a-subnet"
+        ));
+    }
 
     #[test]
     fn parses_ping_rtt_and_accounts_for_probe_headers() {

@@ -2,9 +2,10 @@
 
 use ployz_core::dataplane::{
     DEFAULT_WIREGUARD_LISTEN_PORT, EbpfAttachmentStatus, EbpfForwardingReady,
-    MachineDataplaneStatus, OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshComponent,
-    PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    MachineDataplaneStatus, NetworkStatusMode, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
+    PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
+    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
 use std::net::Ipv4Addr;
@@ -166,10 +167,10 @@ impl PloyzNativeMeshPreparer {
 impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
     async fn read_ployz_native_mesh_status(
         &self,
-        probe: bool,
+        mode: NetworkStatusMode,
     ) -> Result<MachineDataplaneStatus, String> {
         let wireguard =
-            host_status::read_wireguard_status(&self.wg_ifname, self.mtu_policy, probe).await?;
+            host_status::read_wireguard_status(&self.wg_ifname, self.mtu_policy, mode).await?;
         let ebpf_attachment = match &self.route_programming {
             Some(routes) => routes.attachment_status(self.command_timeout).await,
             None => EbpfAttachmentStatus::Unknown {

@@ -1190,7 +1190,9 @@ async fn machine_dataplane_status_service_returns_local_testimony() {
             &machine_id("machine_a"),
             MachineServiceEndpoint::DataplaneStatus,
         ),
-        &MachineDataplaneStatusRpcRequest { probe: true },
+        &MachineDataplaneStatusRpcRequest {
+            mode: ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
+        },
         Duration::from_secs(1),
     )
     .await
@@ -1742,7 +1744,7 @@ impl RecordingWireGuardEbpf {
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
     async fn read_ployz_native_mesh_status(
         &self,
-        _probe: bool,
+        _mode: ployz_core::dataplane::NetworkStatusMode,
     ) -> Result<MachineDataplaneStatus, String> {
         Ok(machine_dataplane_status())
     }

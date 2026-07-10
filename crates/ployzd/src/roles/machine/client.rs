@@ -42,7 +42,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CONCURRENT_MACHINE_READS: usize = 16;
+pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {

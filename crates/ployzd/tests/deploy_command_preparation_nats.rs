@@ -517,7 +517,7 @@ struct UnusedPreparer;
 impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
     async fn read_ployz_native_mesh_status(
         &self,
-        _probe: bool,
+        _mode: ployz_core::dataplane::NetworkStatusMode,
     ) -> Result<ployz_core::dataplane::MachineDataplaneStatus, String> {
         Err("dataplane status is unavailable".to_owned())
     }

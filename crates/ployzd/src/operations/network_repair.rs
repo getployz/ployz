@@ -2,13 +2,15 @@
 
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
+use crate::operations::deploy::MachineRuntimeUnavailableReason;
 use crate::operations::log::{AcceptedNetworkRepairSubmission, RecordOperationEventError};
 use crate::roles::dns::service::{DnsStatusRpcOk, DnsStatusRpcRequest};
 use crate::roles::machine::client::{
-    MachineFactsRefreshError, NatsMachineDataplanePreparer, NatsMachineFactsReader,
+    MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineDataplanePreparer,
+    NatsMachineFactsReader,
 };
 use crate::tasks::TaskRegistry;
-use futures_util::future::join_all;
+use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::{
     DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure,
 };
@@ -16,11 +18,14 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::internal_dns::{InternalDnsFactWatermark, InternalDnsResolverStatus};
 use ployz_core::ops::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
-    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase, NetworkRepairRunningStage,
-    NetworkRepairTransition,
+    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase,
+    NetworkRepairRequestFailure, NetworkRepairRunningStage, NetworkRepairTransition,
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::service_runtime::request_json;
+use ployz_nats::service_protocol::NatsServiceErrorCode;
+use ployz_nats::service_runtime::{
+    NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
+};
 use std::time::Duration;
 
 const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -274,7 +279,7 @@ impl NetworkRepairOperation {
         {
             Ok(_) => true,
             Err(error) => {
-                record_warning(operation_id, progress_phase_name(phase), &error);
+                record_warning(operation_id, phase.as_str(), &error);
                 self.record_progress_failure(operation_id, phase, &error)
                     .await;
                 false
@@ -286,16 +291,19 @@ impl NetworkRepairOperation {
         &self,
         machine_ids: &[MachineId],
     ) -> Result<Vec<InternalDnsFactWatermark>, NetworkRepairFailure> {
-        let outcomes = join_all(machine_ids.iter().map(|machine_id| async move {
-            match self.facts_reader.refresh_machine_facts(machine_id).await {
-                Ok(observed_at_unix_ms) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
-                    machine_id: machine_id.clone(),
-                    observed_at_unix_ms,
-                },
-                Err(error) => machine_facts_refresh_outcome(error),
-            }
-        }))
-        .await;
+        let outcomes = stream::iter(machine_ids.iter().cloned())
+            .map(|machine_id| async move {
+                match self.facts_reader.refresh_machine_facts(&machine_id).await {
+                    Ok(observed_at_unix_ms) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
+                        machine_id: machine_id.clone(),
+                        observed_at_unix_ms,
+                    },
+                    Err(error) => machine_facts_refresh_outcome(error),
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
+            .collect::<Vec<_>>()
+            .await;
         if outcomes.iter().any(|outcome| {
             !matches!(
                 outcome,
@@ -330,28 +338,27 @@ impl NetworkRepairOperation {
         let deadline = tokio::time::Instant::now() + self.operation_timeout;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let results = join_all(machine_ids.iter().map(|machine_id| async move {
-                let result = request_json::<_, DnsStatusRpcOk>(
-                    &self.client,
-                    machine_service(machine_id, MachineServiceEndpoint::DnsStatus),
-                    &DnsStatusRpcRequest {},
-                    DNS_STATUS_REQUEST_TIMEOUT.min(remaining),
-                )
+            let results = stream::iter(machine_ids.iter().cloned())
+                .map(|machine_id| async move {
+                    let result = request_json::<_, DnsStatusRpcOk>(
+                        &self.client,
+                        machine_service(&machine_id, MachineServiceEndpoint::DnsStatus),
+                        &DnsStatusRpcRequest {},
+                        DNS_STATUS_REQUEST_TIMEOUT.min(remaining),
+                    )
+                    .await;
+                    (machine_id, result)
+                })
+                .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
+                .collect::<Vec<_>>()
                 .await;
-                (machine_id, result)
-            }))
-            .await;
             let mut confirmed_machine_ids = Vec::new();
             let mut problems = Vec::new();
             for (machine_id, result) in results {
-                if let Some(problem) = dns_refresh_problem(
-                    machine_id,
-                    result.map_err(|error| error.to_string()),
-                    watermarks,
-                ) {
+                if let Some(problem) = dns_refresh_problem(&machine_id, result, watermarks) {
                     problems.push(problem);
                 } else {
-                    confirmed_machine_ids.push(machine_id.clone());
+                    confirmed_machine_ids.push(machine_id);
                 }
             }
             if problems.is_empty() {
@@ -491,7 +498,7 @@ fn machine_facts_refresh_outcome(
         MachineFactsRefreshError::Unavailable { machine_id, reason } => {
             NetworkRepairMachineFactsRefreshOutcome::Unavailable {
                 machine_id,
-                message: reason.failure_message(),
+                failure: machine_runtime_request_failure(reason),
             }
         }
         MachineFactsRefreshError::RefreshFailed {
@@ -500,6 +507,86 @@ fn machine_facts_refresh_outcome(
         } => NetworkRepairMachineFactsRefreshOutcome::Failed {
             machine_id,
             message,
+        },
+    }
+}
+
+fn machine_runtime_request_failure(
+    reason: MachineRuntimeUnavailableReason,
+) -> NetworkRepairRequestFailure {
+    let message = reason.failure_message();
+    match reason {
+        MachineRuntimeUnavailableReason::NoResponders => NetworkRepairRequestFailure::NoAnswer,
+        MachineRuntimeUnavailableReason::RequestTimedOut
+        | MachineRuntimeUnavailableReason::ServiceTimedOut { .. } => {
+            NetworkRepairRequestFailure::TimedOut
+        }
+        MachineRuntimeUnavailableReason::MalformedServiceError { .. } => {
+            NetworkRepairRequestFailure::ProtocolFailed { message }
+        }
+        MachineRuntimeUnavailableReason::DecodeResponse { .. } => {
+            NetworkRepairRequestFailure::DecodeFailed { message }
+        }
+        MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id } => {
+            NetworkRepairRequestFailure::WrongResponder { actual_machine_id }
+        }
+        MachineRuntimeUnavailableReason::EncodeRequest { .. }
+        | MachineRuntimeUnavailableReason::InvalidSubject
+        | MachineRuntimeUnavailableReason::MaxPayloadExceeded
+        | MachineRuntimeUnavailableReason::RequestFailed { .. }
+        | MachineRuntimeUnavailableReason::ServiceBadRequest { .. }
+        | MachineRuntimeUnavailableReason::ServiceConflict { .. }
+        | MachineRuntimeUnavailableReason::ServiceUnavailable { .. }
+        | MachineRuntimeUnavailableReason::ServiceInternal { .. } => {
+            NetworkRepairRequestFailure::RequestFailed { message }
+        }
+    }
+}
+
+fn dns_request_failure(error: NatsJsonServiceRequestError) -> NetworkRepairRequestFailure {
+    match error {
+        NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::NoResponders,
+        } => NetworkRepairRequestFailure::NoAnswer,
+        NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::TimedOut,
+        }
+        | NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code: NatsServiceErrorCode::Timeout,
+                    ..
+                },
+        } => NetworkRepairRequestFailure::TimedOut,
+        NatsJsonServiceRequestError::ServiceProtocol { error } => {
+            NetworkRepairRequestFailure::ProtocolFailed {
+                message: failure_message(error.to_string()),
+            }
+        }
+        NatsJsonServiceRequestError::DecodeResponse { message } => {
+            NetworkRepairRequestFailure::DecodeFailed {
+                message: failure_message(message),
+            }
+        }
+        error @ NatsJsonServiceRequestError::EncodeRequest { .. }
+        | error @ NatsJsonServiceRequestError::Request {
+            failure:
+                NatsServiceRequestFailure::InvalidSubject
+                | NatsServiceRequestFailure::MaxPayloadExceeded
+                | NatsServiceRequestFailure::Other { .. },
+        }
+        | error @ NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code:
+                        NatsServiceErrorCode::BadRequest
+                        | NatsServiceErrorCode::Conflict
+                        | NatsServiceErrorCode::Unavailable
+                        | NatsServiceErrorCode::Internal,
+                    ..
+                },
+        } => NetworkRepairRequestFailure::RequestFailed {
+            message: failure_message(error.to_string()),
         },
     }
 }
@@ -522,7 +609,7 @@ fn stale_machine_ids(
 
 fn dns_refresh_problem(
     machine_id: &MachineId,
-    result: Result<DnsStatusRpcOk, String>,
+    result: Result<DnsStatusRpcOk, NatsJsonServiceRequestError>,
     expected: &[InternalDnsFactWatermark],
 ) -> Option<NetworkRepairDnsRefreshProblem> {
     let status = match result {
@@ -530,23 +617,21 @@ fn dns_refresh_problem(
         Ok(status) => {
             return Some(NetworkRepairDnsRefreshProblem::Unavailable {
                 machine_id: machine_id.clone(),
-                message: failure_message(format!(
-                    "DNS status answered for {}",
-                    status.machine_id.as_str()
-                )),
+                failure: NetworkRepairRequestFailure::WrongResponder {
+                    actual_machine_id: status.machine_id,
+                },
             });
         }
-        Err(message) => {
+        Err(error) => {
             return Some(NetworkRepairDnsRefreshProblem::Unavailable {
                 machine_id: machine_id.clone(),
-                message: failure_message(message),
+                failure: dns_request_failure(error),
             });
         }
     };
     if !matches!(status.resolver, InternalDnsResolverStatus::Serving { .. }) {
-        return Some(NetworkRepairDnsRefreshProblem::Unavailable {
+        return Some(NetworkRepairDnsRefreshProblem::ResolverNotServing {
             machine_id: machine_id.clone(),
-            message: failure_message("internal DNS resolver is not serving".to_owned()),
         });
     }
     let stale_machine_ids = stale_machine_ids(&status.fact_watermarks, expected);
@@ -557,21 +642,6 @@ fn dns_refresh_problem(
             machine_id: machine_id.clone(),
             stale_machine_ids,
         })
-    }
-}
-
-const fn progress_phase_name(phase: NetworkRepairProgressPhase) -> &'static str {
-    match phase {
-        NetworkRepairProgressPhase::Starting => "starting",
-        NetworkRepairProgressPhase::RecordingDataplaneEvidence => "record-dataplane-evidence",
-        NetworkRepairProgressPhase::AdvancingMachineFacts => "advance-machine-facts",
-        NetworkRepairProgressPhase::RecordingMachineFactsEvidence => {
-            "record-machine-facts-evidence"
-        }
-        NetworkRepairProgressPhase::AdvancingDnsRefresh => "advance-dns-refresh",
-        NetworkRepairProgressPhase::RecordingDnsRefreshEvidence => "record-dns-refresh-evidence",
-        NetworkRepairProgressPhase::Completing => "completing",
-        NetworkRepairProgressPhase::RecordingTerminal => "record-terminal",
     }
 }
 
@@ -603,7 +673,9 @@ mod tests {
         }];
         let silence = dns_refresh_problem(
             &machine_id("machine_b"),
-            Err("machine runtime has no responders".to_owned()),
+            Err(NatsJsonServiceRequestError::Request {
+                failure: NatsServiceRequestFailure::NoResponders,
+            }),
             &expected,
         );
         let stale = dns_refresh_problem(
@@ -639,7 +711,10 @@ mod tests {
 
         assert!(matches!(
             silence,
-            Some(NetworkRepairDnsRefreshProblem::Unavailable { machine_id, .. })
+            Some(NetworkRepairDnsRefreshProblem::Unavailable {
+                machine_id,
+                failure: NetworkRepairRequestFailure::NoAnswer,
+            })
                 if machine_id == self::machine_id("machine_b")
         ));
         assert_eq!(
@@ -651,9 +726,8 @@ mod tests {
         );
         assert!(matches!(
             not_serving,
-            Some(NetworkRepairDnsRefreshProblem::Unavailable { machine_id, message })
+            Some(NetworkRepairDnsRefreshProblem::ResolverNotServing { machine_id })
                 if machine_id == self::machine_id("machine_b")
-                    && message.as_str().contains("not serving")
         ));
     }
 }

@@ -24,7 +24,7 @@ where
         Ok(request) => request,
         Err(response) => return response,
     };
-    match preparer.read_ployz_native_mesh_status(request.probe).await {
+    match preparer.read_ployz_native_mesh_status(request.mode).await {
         Ok(value) => machine_success(MachineDataplaneStatusRpcResponse::Ok(
             MachineDataplaneStatusRpcOk { machine_id, value },
         )),

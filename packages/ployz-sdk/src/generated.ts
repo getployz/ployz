@@ -254,11 +254,13 @@ export type NetworkRepairRunningStage = "preparing_dataplane" | "refreshing_mach
 
 export type NetworkRepairFailure = { "kind": "no_active_machines" } | { "kind": "target_machine_not_found", machine_id: MachineId, } | { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "dataplane_convergence_failed", machine_id: MachineId, component: PloyzNativeMeshComponent, message: FailureMessage, } | { "kind": "dataplane_report_invalid", message: FailureMessage, } | { "kind": "machine_facts_refresh_failed", outcomes: Array<NetworkRepairMachineFactsRefreshOutcome>, } | { "kind": "dns_refresh_failed", confirmed_machine_ids: Array<MachineId>, problems: Array<NetworkRepairDnsRefreshProblem>, } | { "kind": "progress_record_failed", phase: NetworkRepairProgressPhase, message: FailureMessage, };
 
-export type NetworkRepairMachineFactsRefreshOutcome = { "outcome": "refreshed", machine_id: MachineId, observed_at_unix_ms: number, } | { "outcome": "unavailable", machine_id: MachineId, message: FailureMessage, } | { "outcome": "failed", machine_id: MachineId, message: FailureMessage, };
+export type NetworkRepairMachineFactsRefreshOutcome = { "outcome": "refreshed", machine_id: MachineId, observed_at_unix_ms: number, } | { "outcome": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "outcome": "failed", machine_id: MachineId, message: FailureMessage, };
 
-export type NetworkRepairDnsRefreshProblem = { "problem": "unavailable", machine_id: MachineId, message: FailureMessage, } | { "problem": "stale", machine_id: MachineId, stale_machine_ids: Array<MachineId>, };
+export type NetworkRepairDnsRefreshProblem = { "problem": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "problem": "resolver_not_serving", machine_id: MachineId, } | { "problem": "stale", machine_id: MachineId, stale_machine_ids: Array<MachineId>, };
 
 export type NetworkRepairProgressPhase = "starting" | "recording_dataplane_evidence" | "advancing_machine_facts" | "recording_machine_facts_evidence" | "advancing_dns_refresh" | "recording_dns_refresh_evidence" | "completing" | "recording_terminal";
+
+export type NetworkRepairRequestFailure = { "failure": "no_answer" } | { "failure": "timed_out" } | { "failure": "request_failed", message: FailureMessage, } | { "failure": "protocol_failed", message: FailureMessage, } | { "failure": "decode_failed", message: FailureMessage, } | { "failure": "wrong_responder", actual_machine_id: MachineId, };
 
 export type VolumeRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: VolumeRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeRemoveFailure, };
 
@@ -318,6 +320,8 @@ export type PloyzNativeMeshReady = { wireguard: WireGuardReady, ebpf_forwarding:
 
 export type MachineDataplaneStatus = { wireguard: WireGuardStatus, ebpf_attachment: EbpfAttachmentStatus, };
 
+export type NetworkStatusMode = "snapshot" | "probe_path_mtu";
+
 export type WireGuardStatus = { interface: string, configured_mtu: WireGuardConfiguredMtu, detected_mtu: WireGuardDetectedMtu, interface_mtu: WireGuardInterfaceMtu, peers: Array<WireGuardPeerStatus>, };
 
 export type WireGuardConfiguredMtu = { "mode": "auto" } | { "mode": "fixed", mtu: number, };
@@ -326,7 +330,9 @@ export type WireGuardDetectedMtu = { "status": "detected", mtu: number, } | { "s
 
 export type WireGuardInterfaceMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
 
-export type WireGuardPeerStatus = { public_key: WireGuardPublicKey, endpoint_subnet: string | null, endpoint: string | null, handshake: WireGuardHandshakeStatus, rtt: WireGuardRttStatus, rx_bytes: number, tx_bytes: number, mtu_probe: WireGuardMtuProbe, };
+export type WireGuardPeerEndpointSubnet = { "status": "missing" } | { "status": "valid", subnet: MachineEndpointSubnet, } | { "status": "invalid", value: string, message: string, };
+
+export type WireGuardPeerStatus = { public_key: WireGuardPublicKey, endpoint_subnet: WireGuardPeerEndpointSubnet, endpoint: string | null, handshake: WireGuardHandshakeStatus, rtt: WireGuardRttStatus, rx_bytes: number, tx_bytes: number, mtu_probe: WireGuardMtuProbe, };
 
 export type WireGuardHandshakeStatus = { "status": "never" } | { "status": "ago", seconds: number, };
 
@@ -475,7 +481,7 @@ export type MachineInspectError = { "error": "no_such_machine", machine_id: Mach
 
 export type InternalServiceName = Brand<string, "InternalServiceName">;
 
-export type NetworkStatusRequest = { probe: boolean, };
+export type NetworkStatusRequest = { mode: NetworkStatusMode, };
 
 export type NetworkStatusResult = { machines: Array<NetworkStatusMachine>, };
 

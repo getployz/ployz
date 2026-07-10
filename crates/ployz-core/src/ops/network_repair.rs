@@ -91,6 +91,34 @@ pub enum NetworkRepairProgressPhase {
     RecordingTerminal,
 }
 
+impl NetworkRepairProgressPhase {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::RecordingDataplaneEvidence => "recording-dataplane-evidence",
+            Self::AdvancingMachineFacts => "advancing-machine-facts",
+            Self::RecordingMachineFactsEvidence => "recording-machine-facts-evidence",
+            Self::AdvancingDnsRefresh => "advancing-dns-refresh",
+            Self::RecordingDnsRefreshEvidence => "recording-dns-refresh-evidence",
+            Self::Completing => "completing",
+            Self::RecordingTerminal => "recording-terminal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkRepairRequestFailure {
+    NoAnswer,
+    TimedOut,
+    RequestFailed { message: FailureMessage },
+    ProtocolFailed { message: FailureMessage },
+    DecodeFailed { message: FailureMessage },
+    WrongResponder { actual_machine_id: MachineId },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
@@ -101,7 +129,7 @@ pub enum NetworkRepairMachineFactsRefreshOutcome {
     },
     Unavailable {
         machine_id: MachineId,
-        message: FailureMessage,
+        failure: NetworkRepairRequestFailure,
     },
     Failed {
         machine_id: MachineId,
@@ -115,7 +143,10 @@ pub enum NetworkRepairMachineFactsRefreshOutcome {
 pub enum NetworkRepairDnsRefreshProblem {
     Unavailable {
         machine_id: MachineId,
-        message: FailureMessage,
+        failure: NetworkRepairRequestFailure,
+    },
+    ResolverNotServing {
+        machine_id: MachineId,
     },
     Stale {
         machine_id: MachineId,

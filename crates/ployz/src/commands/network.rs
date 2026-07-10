@@ -3,9 +3,10 @@ use ployz_core::ids::OperationId;
 use ployz_sdk_types::{
     EbpfAttachmentStatus, InternalDnsResolverStatus, NetworkDataplaneTestimony,
     NetworkInternalDnsTestimony, NetworkRepairRequest, NetworkResolveMachineTestimony,
-    NetworkResolveRequest, NetworkResolveResult, NetworkStatusMachine, NetworkStatusRequest,
-    NetworkStatusResult, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
-    WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardRttStatus,
+    NetworkResolveRequest, NetworkResolveResult, NetworkStatusMachine, NetworkStatusMode,
+    NetworkStatusRequest, NetworkStatusResult, WireGuardConfiguredMtu, WireGuardDetectedMtu,
+    WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+    WireGuardPeerEndpointSubnet, WireGuardRttStatus,
 };
 use std::net::Ipv4Addr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,19 +16,23 @@ use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkStatusCommand {
-    pub probe: bool,
+    pub mode: NetworkStatusMode,
 }
 
 impl NetworkStatusCommand {
     #[must_use]
     pub const fn into_request(self) -> NetworkStatusRequest {
-        NetworkStatusRequest { probe: self.probe }
+        NetworkStatusRequest { mode: self.mode }
     }
 }
 
 pub(crate) const fn network_status_command(parsed: NetworkStatusCli) -> NetworkStatusCommand {
     NetworkStatusCommand {
-        probe: parsed.probe,
+        mode: if parsed.probe {
+            NetworkStatusMode::ProbePathMtu
+        } else {
+            NetworkStatusMode::Snapshot
+        },
     }
 }
 
@@ -193,10 +198,17 @@ fn render_status_rows(machine: &NetworkStatusMachine) -> Vec<String> {
                         format!("unavailable({message})")
                     }
                 };
+                let endpoint_subnet = match &peer.endpoint_subnet {
+                    WireGuardPeerEndpointSubnet::Missing => "unknown".to_owned(),
+                    WireGuardPeerEndpointSubnet::Valid { subnet } => subnet.as_string(),
+                    WireGuardPeerEndpointSubnet::Invalid { value, message } => {
+                        format!("invalid({value}: {message})")
+                    }
+                };
                 format!(
                     "  peer key={} subnet={} endpoint={} handshake-age={} rtt={} rx={} tx={} mtu-probe={}",
                     peer.public_key.as_str(),
-                    peer.endpoint_subnet.as_deref().unwrap_or("unknown"),
+                    endpoint_subnet,
                     endpoint,
                     handshake,
                     rtt,

@@ -1,4 +1,4 @@
-use ployz_core::dataplane::MachineDataplaneStatus;
+use ployz_core::dataplane::{MachineDataplaneStatus, NetworkStatusMode};
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use super::{MachineRpcResponder, MachineRpcResponse};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineDataplaneStatusRpcRequest {
-    pub probe: bool,
+    pub mode: NetworkStatusMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

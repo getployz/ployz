@@ -20,7 +20,7 @@ pub(super) async fn status(
     command: NetworkStatusCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let timeout = if command.probe {
+    let timeout = if command.mode.probes_path_mtu() {
         NETWORK_PROBE_TIMEOUT
     } else {
         NETWORK_QUERY_TIMEOUT

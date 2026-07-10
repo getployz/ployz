@@ -275,7 +275,7 @@ pub trait MachinePloyzNativeMeshPreparer {
 
     fn read_ployz_native_mesh_status(
         &self,
-        probe: bool,
+        mode: ployz_core::dataplane::NetworkStatusMode,
     ) -> impl Future<Output = Result<ployz_core::dataplane::MachineDataplaneStatus, String>> + Send;
 
     fn prepare_wireguard(
