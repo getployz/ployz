@@ -63,14 +63,25 @@ where
     H: DeployHealthChecker,
     S: NamespaceStateCommitter,
 {
-    let (operation_id, mut request, facts, registry_credentials) = input.into_parts();
+    let DeployExecutionInput {
+        operation_id,
+        mut request,
+        facts,
+        registry_credentials,
+    } = input;
     let provisional_command = preparation::prepare_deploy_execution_command_with_credentials(
         operation_id.clone(),
         request.clone(),
         facts.clone(),
         &registry_credentials,
     );
-    if let Err(source) = record_planning(&provisional_command, &mut *ports.recorder).await {
+    if let Err(source) = record_stage(
+        &provisional_command,
+        &mut *ports.recorder,
+        DeployTransition::Planning,
+    )
+    .await
+    {
         return fail_deploy(
             provisional_command.clone(),
             &mut *ports.recorder,
@@ -99,20 +110,6 @@ where
         facts,
         &registry_credentials,
     );
-    execute_prepared_deploy_operation(command, ports).await
-}
-
-async fn execute_prepared_deploy_operation<R, D, N, H, S>(
-    command: DeployExecutionCommand,
-    ports: DeployExecutionPorts<'_, R, D, N, H, S>,
-) -> Result<DeployExecutionOutcome, DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-    D: DataplanePreparer,
-    N: MachineContainerRuntime,
-    H: DeployHealthChecker,
-    S: NamespaceStateCommitter,
-{
     let mut ports = ports;
     match execute_deploy_after_planning(&command, &mut ports).await {
         Ok(outcome) => Ok(outcome),
@@ -446,16 +443,6 @@ pub(super) fn deploy_plan(
         command.namespace_cleanup_candidates().to_vec(),
     )
     .map_err(DeployExecutionError::from)
-}
-
-async fn record_planning<R>(
-    command: &DeployExecutionCommand,
-    recorder: &mut R,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-{
-    record_stage(command, recorder, DeployTransition::Planning).await
 }
 
 async fn run_pre_start_hook<N>(

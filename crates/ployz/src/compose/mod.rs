@@ -42,7 +42,19 @@ pub fn parse_deploy_file(
     let mut value: Value = serde_yaml::from_str(source)
         .map_err(|error| cli_error(format!("invalid compose YAML: {error}")))?;
     apply_merge(&mut value);
-    let mut findings = interpolation_findings(interpolate_value(&mut value, &interpolation_env));
+    let interpolation = interpolate_value(&mut value, &interpolation_env);
+    let invalid_interpolation_paths = interpolation
+        .iter()
+        .filter(|finding| {
+            matches!(
+                finding.kind,
+                InterpolationFindingKind::RequiredVariable { .. }
+                    | InterpolationFindingKind::InvalidExpression { .. }
+            )
+        })
+        .map(|finding| path_from_interpolation(&finding.path))
+        .collect::<BTreeSet<_>>();
+    let mut findings = interpolation_findings(interpolation);
     let compose: ComposeDocument = serde_yaml::from_value(value)
         .map_err(|error| cli_error(format!("invalid compose document: {error}")))?;
     let ComposeDocument {
@@ -117,6 +129,8 @@ pub fn parse_deploy_file(
                                 base_dir,
                                 resolution_env: &interpolation_env,
                             });
+                        service_findings
+                            .retain(|finding| !invalid_interpolation_paths.contains(&finding.path));
                         findings.append(&mut service_findings);
                         if let Some(deploy_service) = deploy_service {
                             deploy_services.push(deploy_service);

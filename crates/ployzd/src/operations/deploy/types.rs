@@ -88,12 +88,6 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
-        self.step_timeout = step_timeout;
-        self
-    }
-
-    #[must_use]
     pub fn step_timeout(&self) -> Duration {
         if self.step_timeout.is_zero() {
             DEFAULT_STEP_TIMEOUT

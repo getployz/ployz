@@ -47,7 +47,7 @@ fn collect_registry_credentials(
     let mut by_registry = BTreeMap::new();
     let mut credentials = BTreeMap::new();
     for (service_id, image) in services {
-        let registry = registry_for_image(image);
+        let registry = image.registry().to_owned();
         if !by_registry.contains_key(&registry) {
             by_registry.insert(registry.clone(), lookup(image)?);
         }
@@ -110,7 +110,7 @@ fn credential_for_image(
     config: &DockerConfig,
     image: &ImageReference,
 ) -> Result<Option<RegistryCredential>, RegistryAuthError> {
-    let registry = registry_for_image(image);
+    let registry = image.registry().to_owned();
     let configured_server = config
         .auths
         .keys()
@@ -244,19 +244,6 @@ fn credential_from_helper(
     credential
         .map(Some)
         .map_err(|error| RegistryAuthError::InvalidCredential(error.to_string()))
-}
-
-fn registry_for_image(image: &ImageReference) -> String {
-    let name = image
-        .as_str()
-        .split_once('@')
-        .map_or(image.as_str(), |(name, _)| name);
-    let first = name.split('/').next().unwrap_or(name);
-    if first.contains('.') || first.contains(':') || first == "localhost" {
-        first.to_owned()
-    } else {
-        "https://index.docker.io/v1/".to_owned()
-    }
 }
 
 fn same_registry(left: &str, right: &str) -> bool {

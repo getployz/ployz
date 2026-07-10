@@ -3,14 +3,16 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use crate::cert::ManagedLeaseName;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
 };
-use crate::image::OciDigest;
+pub use crate::image::{
+    OciDigest, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    RegistryCredentialUsername,
+};
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RouteHostname, RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
@@ -272,145 +274,6 @@ pub enum ImageSource {
         manifest_digest: OciDigest,
         image_id: OciDigest,
     },
-}
-
-/// One deploy-scoped registry credential. It may cross the operator and
-/// machine RPC boundaries, but it is never part of deploy intent or evidence.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RegistryCredential {
-    Basic {
-        username: RegistryCredentialUsername,
-        password: RegistryCredentialSecret,
-    },
-    IdentityToken {
-        token: RegistryCredentialSecret,
-    },
-}
-
-impl RegistryCredential {
-    pub fn try_basic(
-        username: impl Into<String>,
-        password: impl Into<String>,
-    ) -> Result<Self, RegistryCredentialError> {
-        Ok(Self::Basic {
-            username: RegistryCredentialUsername::try_new(username)?,
-            password: RegistryCredentialSecret::try_new(password)?,
-        })
-    }
-
-    pub fn try_identity_token(token: impl Into<String>) -> Result<Self, RegistryCredentialError> {
-        Ok(Self::IdentityToken {
-            token: RegistryCredentialSecret::try_new(token)?,
-        })
-    }
-}
-
-impl fmt::Debug for RegistryCredential {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Basic {
-                username,
-                password: _,
-            } => formatter
-                .debug_struct("RegistryCredential::Basic")
-                .field("username", username)
-                .field("password", &"[redacted]")
-                .finish(),
-            Self::IdentityToken { token: _ } => formatter
-                .debug_struct("RegistryCredential::IdentityToken")
-                .field("token", &"[redacted]")
-                .finish(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct RegistryCredentialUsername(String);
-
-impl RegistryCredentialUsername {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, RegistryCredentialError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(RegistryCredentialError::EmptyUsername);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for RegistryCredentialUsername {
-    type Error = RegistryCredentialError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<RegistryCredentialUsername> for String {
-    fn from(value: RegistryCredentialUsername) -> Self {
-        let RegistryCredentialUsername(value) = value;
-        value
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct RegistryCredentialSecret(String);
-
-impl RegistryCredentialSecret {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, RegistryCredentialError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(RegistryCredentialError::EmptySecret);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn secret(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for RegistryCredentialSecret {
-    type Error = RegistryCredentialError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<RegistryCredentialSecret> for String {
-    fn from(value: RegistryCredentialSecret) -> Self {
-        let RegistryCredentialSecret(value) = value;
-        value
-    }
-}
-
-impl fmt::Debug for RegistryCredentialSecret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self(_secret) = self;
-        formatter.write_str("RegistryCredentialSecret([redacted])")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RegistryCredentialError {
-    #[error("registry credential username is empty")]
-    EmptyUsername,
-    #[error("registry credential secret is empty")]
-    EmptySecret,
 }
 
 impl ImageSource {
@@ -2053,15 +1916,32 @@ impl ImageReference {
         {
             return Err(ImageReferenceError::InvalidCharacter { value });
         }
-        if value.contains('@') {
-            let Some((name, digest)) = value.split_once('@') else {
-                unreachable!("contains checked above");
-            };
-            if name.is_empty() || digest.contains('@') || OciDigest::try_new(digest).is_err() {
-                return Err(ImageReferenceError::InvalidDigest { value });
-            }
+        let (name_and_tag, digest) = value
+            .split_once('@')
+            .map_or((value.as_str(), None), |(name, digest)| {
+                (name, Some(digest))
+            });
+        if let Some(digest) = digest
+            && (digest.contains('@') || OciDigest::try_new(digest).is_err())
+        {
+            return Err(ImageReferenceError::InvalidDigest { value });
         }
-
+        let last_slash = name_and_tag.rfind('/');
+        let (name, tag) = match name_and_tag.rfind(':') {
+            Some(separator) if last_slash.is_none_or(|slash| separator > slash) => (
+                &name_and_tag[..separator],
+                Some(&name_and_tag[separator + 1..]),
+            ),
+            Some(_) | None => (name_and_tag, None),
+        };
+        if !valid_image_name(name) {
+            return Err(ImageReferenceError::InvalidName { value });
+        }
+        if let Some(tag) = tag
+            && !valid_image_tag(tag)
+        {
+            return Err(ImageReferenceError::InvalidTag { value });
+        }
         Ok(Self(value))
     }
 
@@ -2075,6 +1955,27 @@ impl ImageReference {
         self.0
             .rsplit_once('@')
             .and_then(|(_, digest)| OciDigest::try_new(digest).ok())
+    }
+
+    #[must_use]
+    pub fn registry(&self) -> &str {
+        let name = self
+            .0
+            .split_once('@')
+            .map_or(self.as_str(), |(name, _)| name);
+        let last_slash = name.rfind('/');
+        let name = match name.rfind(':') {
+            Some(tag_separator) if last_slash.is_none_or(|slash| tag_separator > slash) => {
+                &name[..tag_separator]
+            }
+            Some(_) | None => name,
+        };
+        let first = name.split('/').next().unwrap_or(name);
+        if name.contains('/') && is_explicit_registry(first) {
+            first
+        } else {
+            "https://index.docker.io/v1/"
+        }
     }
 
     pub fn with_digest(&self, digest: &OciDigest) -> Result<Self, ImageReferenceError> {
@@ -2113,8 +2014,125 @@ pub enum ImageReferenceError {
     Empty,
     #[error("image reference contains invalid characters: {value}")]
     InvalidCharacter { value: String },
+    #[error("image reference has an invalid repository or registry name: {value}")]
+    InvalidName { value: String },
+    #[error("image reference has an invalid tag: {value}")]
+    InvalidTag { value: String },
     #[error("image reference has an invalid digest: {value}")]
     InvalidDigest { value: String },
+}
+
+fn valid_image_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let mut components = name.split('/');
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if name.contains('/') && is_explicit_registry(first) {
+        valid_registry_domain(first) && components.all(valid_repository_component)
+    } else {
+        valid_repository_component(first) && components.all(valid_repository_component)
+    }
+}
+
+fn is_explicit_registry(component: &str) -> bool {
+    component == "localhost"
+        || component.contains('.')
+        || component.contains(':')
+        || component.starts_with('[')
+}
+
+fn valid_registry_domain(domain: &str) -> bool {
+    if let Some(ipv6) = domain.strip_prefix('[') {
+        let Some((address, suffix)) = ipv6.split_once(']') else {
+            return false;
+        };
+        if address.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        return suffix.is_empty() || suffix.strip_prefix(':').is_some_and(valid_registry_port);
+    }
+    let (host, port) = domain
+        .rsplit_once(':')
+        .map_or((domain, None), |(host, port)| (host, Some(port)));
+    if host.is_empty()
+        || host.split('.').any(|label| {
+            label.is_empty()
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                || !label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                || !label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+    {
+        return false;
+    }
+    port.is_none_or(valid_registry_port)
+}
+
+fn valid_registry_port(port: &str) -> bool {
+    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn valid_repository_component(component: &str) -> bool {
+    let bytes = component.as_bytes();
+    let mut index = 0;
+    let consume_alphanumeric = |index: &mut usize| {
+        let start = *index;
+        while bytes
+            .get(*index)
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        {
+            *index += 1;
+        }
+        *index > start
+    };
+    if !consume_alphanumeric(&mut index) {
+        return false;
+    }
+    while index < bytes.len() {
+        let Some(separator) = bytes.get(index).copied() else {
+            return false;
+        };
+        match separator {
+            b'.' => index += 1,
+            b'_' => {
+                index += 1;
+                if bytes.get(index) == Some(&b'_') {
+                    index += 1;
+                }
+            }
+            b'-' => {
+                while bytes.get(index) == Some(&b'-') {
+                    index += 1;
+                }
+            }
+            _ => return false,
+        }
+        if !consume_alphanumeric(&mut index) {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_image_tag(tag: &str) -> bool {
+    let bytes = tag.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes
+            .first()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'.' | b'-'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2176,6 +2194,53 @@ mod image_reference_tests {
             format!("registry.example:5000/team/api@{digest}")
         );
         assert_eq!(pinned.pinned_digest(), Some(digest));
+    }
+
+    #[test]
+    fn image_reference_validates_docker_name_and_tag_grammar() {
+        for value in [
+            "nginx",
+            "redis:7",
+            "ghcr.io/acme/api:Rev_1",
+            "registry.example:5000/team/api:latest",
+            "localhost/team/api",
+            "[::1]:5000/team/api",
+        ] {
+            ImageReference::try_new(value).unwrap_or_else(|error| panic!("{value}: {error}"));
+        }
+
+        for value in [
+            "repo:",
+            "/repo",
+            "repo/",
+            "repo//child",
+            "Repo/image",
+            "ghcr.io/Acme/api",
+            "repo:bad+tag",
+            "bad_host.example/repo",
+            "[not-ipv6]:5000/repo",
+        ] {
+            assert!(
+                ImageReference::try_new(value).is_err(),
+                "{value} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_detection_distinguishes_a_tag_from_an_explicit_registry_port() {
+        assert_eq!(
+            ImageReference::try_new("redis:7")
+                .expect("valid tagged image")
+                .registry(),
+            "https://index.docker.io/v1/"
+        );
+        assert_eq!(
+            ImageReference::try_new("registry.example:5000/team/api:7")
+                .expect("valid explicit registry image")
+                .registry(),
+            "registry.example:5000"
+        );
     }
 }
 

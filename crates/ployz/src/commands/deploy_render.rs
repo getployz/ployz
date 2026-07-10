@@ -8,8 +8,9 @@ use ployz_core::ops::{
     DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
 };
 
-pub(crate) use super::deploy_failure::render_failure_block;
-use super::deploy_failure::{DeployFailureView, artifact_unavailable_reason, failure_cause};
+use super::deploy_failure::{
+    DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
+};
 
 const SPINNER_FRAMES: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -548,7 +549,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     }
 
     let routes = deploy_routes(target)
-        .map(|(service_id, route)| render_route_line(tree, service_id, route))
+        .map(|(service_id, route)| render_route_line(tree, target, service_id, route))
         .collect::<Vec<_>>();
     if !routes.is_empty() {
         groups.push(("routes".to_owned(), routes));
@@ -645,6 +646,67 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
     }
 }
 
+pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
+    let Some(deploy) = &tree.deploy else {
+        return String::new();
+    };
+    let DeployResult::Failed { failure } = &deploy.result else {
+        return String::new();
+    };
+    let target_service = match deploy.target.services.as_slice() {
+        [service] => Some(&service.service_id),
+        [] | [_, _, ..] => None,
+    };
+    let failure_view = DeployFailureView::new(failure, target_service);
+    let service = failure_view.service();
+    let cause = failure_cause(&deploy.target, failure);
+    let safety = failure_view.safety();
+    let machines = failure_view.machines();
+    let retained_containers = failure_view.containers();
+
+    let mut block = format!(
+        "Deploy failed — {}, service {}{}.\n",
+        failure.failure_class().as_str(),
+        service,
+        machines
+            .first()
+            .map_or_else(String::new, |machine| format!(" on {}", machine.as_str())),
+    );
+    block.push_str(&format!("\n  ✗ {cause}\n"));
+    if let Some(container) = retained_containers.last() {
+        block.push_str(&format!(
+            "    failed container {} retained on {}\n",
+            container.container_id.as_str(),
+            container.machine_id.as_str()
+        ));
+    }
+    match safety {
+        FailureSafety::NothingChanged => {
+            block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
+        }
+        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
+        FailureSafety::NoClaim => {}
+    }
+    block.push('\n');
+    if !retained_containers.is_empty() && service != "unknown" {
+        block.push_str(&format!(
+            "  logs:      ployz logs {service} -n {} --failed\n",
+            deploy.target.namespace_id.as_str()
+        ));
+    }
+    block.push_str(&format!(
+        "  timeline:  ployz ops status {}\n",
+        deploy.operation_id.as_str()
+    ));
+    if !matches!(safety, FailureSafety::NothingChanged) {
+        block.push_str(&format!(
+            "  rollback:  ployz deploy rollback -n {}\n",
+            deploy.target.namespace_id.as_str()
+        ));
+    }
+    block
+}
+
 fn distinct_images(target: &DeployRequest) -> Vec<&str> {
     let mut images = Vec::new();
     for service in &target.services {
@@ -697,7 +759,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                     .failure()
                     .map_or_else(String::new, |failure| match failure {
                         DeployOperationFailure::ImageResolutionFailed { .. } => {
-                            failure_cause(tree, failure)
+                            failure_cause(target, failure)
                         }
                         DeployOperationFailure::ArtifactUnavailable { reason, .. } => {
                             artifact_unavailable_reason(reason)
@@ -706,7 +768,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::ImageDigestMismatch { .. }
                         | DeployOperationFailure::SeedUnavailable { .. }
                         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
-                            failure_cause(tree, failure)
+                            failure_cause(target, failure)
                         }
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
@@ -821,7 +883,12 @@ fn render_service_step(
     }
 }
 
-fn render_route_line(tree: &DeployTree, service_id: &str, route: &DeployRoute) -> TreeLine {
+fn render_route_line(
+    tree: &DeployTree,
+    target: &DeployRequest,
+    service_id: &str,
+    route: &DeployRoute,
+) -> TreeLine {
     let text = route_text(service_id, route);
     if tree.is_complete_success() {
         return TreeLine::Settled {
@@ -831,7 +898,7 @@ fn render_route_line(tree: &DeployTree, service_id: &str, route: &DeployRoute) -
     if tree.route_failed(route) {
         let reason = tree
             .failure()
-            .map(|failure| failure_cause(tree, failure))
+            .map(|failure| failure_cause(target, failure))
             .unwrap_or_else(|| "route cutover failed".to_owned());
         return TreeLine::Settled {
             text: format!("✗ {text} — {reason}"),
@@ -879,25 +946,6 @@ fn render_cleanup_lines(
 }
 
 impl DeployTree {
-    pub(super) fn failure_render_context(
-        &self,
-    ) -> Option<(&str, &str, Option<&ServiceId>, &DeployOperationFailure)> {
-        let deploy = self.deploy.as_ref()?;
-        let DeployResult::Failed { failure } = &deploy.result else {
-            return None;
-        };
-        let target_service = match deploy.target.services.as_slice() {
-            [service] => Some(&service.service_id),
-            [] | [_, _, ..] => None,
-        };
-        Some((
-            deploy.operation_id.as_str(),
-            deploy.target.namespace_id.as_str(),
-            target_service,
-            failure,
-        ))
-    }
-
     fn spinner(&self) -> char {
         SPINNER_FRAMES
             .get(self.spinner_frame)

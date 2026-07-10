@@ -190,6 +190,30 @@ async fn deploy_worker_runs_containers_then_completes() {
 }
 
 #[tokio::test]
+async fn digest_pinned_registry_image_skips_resolution() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        pinned_deploy_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("pinned deploy succeeds");
+
+    assert!(runtime.resolutions.is_empty());
+}
+
+#[tokio::test]
 async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull() {
     let mut recorder = RecordingOperations::default();
     let mut dataplane = RecordingWireGuardEbpf::ready();

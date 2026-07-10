@@ -131,7 +131,10 @@ pub struct MachineContainerResolveImageRpcOk {
 
 impl MachineRpcResponder for MachineContainerResolveImageRpcOk {
     fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
+        let Self {
+            machine_id,
+            digest: _,
+        } = self;
         machine_id
     }
 }

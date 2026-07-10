@@ -47,6 +47,9 @@ where
         if !matches!(target.image_source, ImageSource::Registry) {
             continue;
         }
+        if target.image.pinned_digest().is_some() {
+            continue;
+        }
         let Some(service) = command
             .services()
             .iter()
@@ -71,29 +74,26 @@ where
             });
         };
         let requested = target.image.clone();
-        let digest = match requested.pinned_digest() {
-            Some(digest) => digest,
-            None => tokio::time::timeout(
-                command.step_timeout(),
-                machine_runtime.resolve_image(
-                    &machine_id,
-                    MachineContainerResolveImageRpcRequest {
-                        reference: requested.clone(),
-                        credential: service.registry_credential().cloned(),
-                    },
-                ),
+        let digest = tokio::time::timeout(
+            command.step_timeout(),
+            machine_runtime.resolve_image(
+                &machine_id,
+                MachineContainerResolveImageRpcRequest {
+                    reference: requested.clone(),
+                    credential: service.registry_credential().cloned(),
+                },
+            ),
+        )
+        .await
+        .map_err(|_| {
+            image_resolution_failure(
+                service,
+                &machine_id,
+                &requested,
+                deploy_failure_message("image resolution timed out"),
             )
-            .await
-            .map_err(|_| {
-                image_resolution_failure(
-                    service,
-                    &machine_id,
-                    &requested,
-                    deploy_failure_message("image resolution timed out"),
-                )
-            })?
-            .map_err(|error| image_resolution_error(service, &requested, error))?,
-        };
+        })?
+        .map_err(|error| image_resolution_error(service, &requested, error))?;
         let resolved = requested.with_digest(&digest).map_err(|error| {
             image_resolution_failure(
                 service,

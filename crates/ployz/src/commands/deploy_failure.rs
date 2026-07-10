@@ -1,12 +1,11 @@
 use ployz_core::dataplane::{DataplaneProviderFailure, PloyzNativeMeshComponent};
+use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, ServiceId};
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployOperationFailure, HealthCheckFailure,
     PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
-
-use super::deploy_render::DeployTree;
 
 pub(crate) struct DeployFailureContainerEvidence<'a> {
     pub machine_id: &'a MachineId,
@@ -332,57 +331,15 @@ fn push_unique<'a>(machines: &mut Vec<&'a MachineId>, machine_id: &'a MachineId)
     }
 }
 
-pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
-    let Some((operation_id, namespace, target_service, failure)) = tree.failure_render_context()
-    else {
-        return String::new();
-    };
-    let failure_view = DeployFailureView::new(failure, target_service);
-    let service = failure_view.service();
-    let cause = failure_cause(tree, failure);
-    let safety = failure_view.safety();
-    let machines = failure_view.machines();
-    let retained_containers = failure_view.containers();
-
-    let mut block = format!(
-        "Deploy failed — {}, service {}{}.\n",
-        failure.failure_class().as_str(),
-        service,
-        machines
-            .first()
-            .map_or_else(String::new, |machine| format!(" on {}", machine.as_str())),
-    );
-    block.push_str(&format!("\n  ✗ {cause}\n"));
-    if let Some(container) = retained_containers.last() {
-        block.push_str(&format!(
-            "    failed container {} retained on {}\n",
-            container.container_id.as_str(),
-            container.machine_id.as_str()
-        ));
-    }
-    match safety {
-        FailureSafety::NothingChanged => {
-            block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
-        }
-        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
-        FailureSafety::NoClaim => {}
-    }
-    block.push('\n');
-    if !retained_containers.is_empty() && service != "unknown" {
-        block.push_str(&format!(
-            "  logs:      ployz logs {service} -n {namespace} --failed\n"
-        ));
-    }
-    block.push_str(&format!("  timeline:  ployz ops status {operation_id}\n"));
-    if !matches!(safety, FailureSafety::NothingChanged) {
-        block.push_str(&format!(
-            "  rollback:  ployz deploy rollback -n {namespace}\n"
-        ));
-    }
-    block
+fn requested_image<'a>(target: &'a DeployRequest, service_id: &ServiceId) -> Option<&'a str> {
+    target
+        .services
+        .iter()
+        .find(|service| &service.service_id == service_id)
+        .map(|service| service.image.as_str())
 }
 
-pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure) -> String {
+pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFailure) -> String {
     match failure {
         DeployOperationFailure::NoUsableMachines { reasons } => {
             let details = reasons
@@ -421,9 +378,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
         DeployOperationFailure::ArtifactUnavailable {
             service_id, reason, ..
         } => {
-            let image = tree
-                .requested_image(service_id)
-                .unwrap_or("requested image");
+            let image = requested_image(target, service_id).unwrap_or("requested image");
             match reason {
                 ArtifactUnavailableReason::BundleMissing
                 | ArtifactUnavailableReason::BundleUnreadable { .. }
@@ -439,8 +394,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             manifest_digest,
         } => format!(
             "image {} manifest {} is missing from seed {}",
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             manifest_digest.as_str(),
             seed.as_str()
         ),
@@ -451,8 +405,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             actual,
         } => format!(
             "image {} digest mismatch on seed {}: expected {}, got {}",
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             seed.as_str(),
             expected.as_str(),
             actual.as_str()
@@ -464,8 +417,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
         } => format!(
             "image seed {} unavailable for {}: {}",
             seed.as_str(),
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             message.as_str()
         ),
         DeployOperationFailure::UnsupportedTargetPlatform {
@@ -475,8 +427,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             target_platform,
         } => format!(
             "image {} platform {}/{} is incompatible with {} platform {}/{}",
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             image_platform.os,
             image_platform.architecture,
             machine_id.as_str(),

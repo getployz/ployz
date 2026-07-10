@@ -165,6 +165,7 @@ impl DeployOperationRecorder for RecordingOperations {
 }
 
 pub(super) struct RecordingRuntime {
+    pub(super) resolutions: Vec<(MachineId, MachineContainerResolveImageRpcRequest)>,
     pub(super) endpoint_networks: Vec<(MachineId, MachineEnsureEndpointNetworkRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
@@ -455,6 +456,7 @@ impl DeployContainerForAssert {
 impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -474,6 +476,7 @@ impl RecordingRuntime {
 
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -493,6 +496,7 @@ impl RecordingRuntime {
 
     pub(super) fn starting_existing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -512,6 +516,7 @@ impl RecordingRuntime {
 
     pub(super) fn failing_after_first_container() -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -531,6 +536,7 @@ impl RecordingRuntime {
 
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -573,12 +579,12 @@ impl RecordingRuntime {
 impl MachineContainerRuntime for RecordingRuntime {
     async fn resolve_image(
         &mut self,
-        _machine_id: &MachineId,
+        machine_id: &MachineId,
         request: MachineContainerResolveImageRpcRequest,
     ) -> Result<ployz_core::image::OciDigest, MachineImageResolveError> {
-        Ok(ployz_core::image::OciDigest::sha256(
-            request.reference.as_str().as_bytes(),
-        ))
+        let digest = ployz_core::image::OciDigest::sha256(request.reference.as_str().as_bytes());
+        self.resolutions.push((machine_id.clone(), request));
+        Ok(digest)
     }
 
     async fn ensure_image(
@@ -768,6 +774,31 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionInput {
         replicas,
         vec![machine_id("machine_a"), machine_id("machine_b")],
         Vec::new(),
+    )
+}
+
+pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.image = resolved_registry_image(service.image.as_str());
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            namespace_cleanup_candidates: Vec::new(),
+            observed_machines: Vec::new(),
+            managed_lease: None,
+            step_timeout: Duration::from_secs(5),
+        },
     )
 }
 

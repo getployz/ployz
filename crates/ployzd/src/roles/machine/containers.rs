@@ -436,6 +436,10 @@ where
             MachineContainerResolveImageRpcOk { machine_id, digest },
         )),
         Err(MachineContainerRunnerError::ImagePull { message }) => {
+            let message = match request.credential.as_ref() {
+                Some(credential) => credential.redact_secret_in(message),
+                None => message,
+            };
             machine_domain_error(MachineContainerResolveImageRpcResponse::DomainError {
                 machine_id,
                 error: MachineContainerResolveImageDomainError::ResolveFailed {

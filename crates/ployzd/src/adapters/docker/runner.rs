@@ -179,7 +179,10 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             .inspect_registry_image(reference.as_str(), docker_credentials(credential))
             .await
             .map_err(|error| MachineContainerRunnerError::ImagePull {
-                message: format!("resolve Docker image {}: {error}", reference.as_str()),
+                message: redact_registry_credential(
+                    format!("resolve Docker image {}: {error}", reference.as_str()),
+                    credential,
+                ),
             })?;
         let Some(digest) = inspected.descriptor.digest else {
             return Err(MachineContainerRunnerError::ImagePull {
@@ -514,7 +517,10 @@ impl DockerManagedContainerRunner {
 
         while let Some(result) = stream.next().await {
             result.map_err(|error| MachineContainerRunnerError::ImagePull {
-                message: format!("pull Docker image {image}: {error}"),
+                message: redact_registry_credential(
+                    format!("pull Docker image {image}: {error}"),
+                    credential,
+                ),
             })?;
         }
 
@@ -595,6 +601,13 @@ fn docker_credentials(credential: Option<&RegistryCredential>) -> Option<DockerC
             ..DockerCredentials::default()
         },
     })
+}
+
+fn redact_registry_credential(message: String, credential: Option<&RegistryCredential>) -> String {
+    match credential {
+        Some(credential) => credential.redact_secret_in(message),
+        None => message,
+    }
 }
 
 fn endpoint_network_mtu_matches(network: &NetworkInspect, endpoint_mtu: u32) -> bool {
@@ -1535,6 +1548,27 @@ mod tests {
         assert_eq!(token.username, None);
         assert_eq!(token.password, None);
         assert_eq!(token.identitytoken.as_deref(), Some("token"));
+    }
+
+    #[test]
+    fn registry_errors_redact_the_deploy_scoped_secret() {
+        let basic = RegistryCredential::try_basic("alice", "password").expect("valid basic auth");
+        let token = RegistryCredential::try_identity_token("token").expect("valid token auth");
+
+        assert_eq!(
+            redact_registry_credential(
+                "registry reflected password in its response".to_owned(),
+                Some(&basic),
+            ),
+            "registry reflected [redacted] in its response"
+        );
+        assert_eq!(
+            redact_registry_credential(
+                "registry reflected token in its response".to_owned(),
+                Some(&token),
+            ),
+            "registry reflected [redacted] in its response"
+        );
     }
 
     fn managed_identity() -> ManagedContainerIdentity {

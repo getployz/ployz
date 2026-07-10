@@ -34,10 +34,10 @@ pub struct DeployExecutionFacts {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionInput {
-    operation_id: OperationId,
-    request: DeployRequest,
-    facts: DeployExecutionFacts,
-    registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+    pub(super) operation_id: OperationId,
+    pub(super) request: DeployRequest,
+    pub(super) facts: DeployExecutionFacts,
+    pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
 impl DeployExecutionInput {
@@ -60,23 +60,6 @@ impl DeployExecutionInput {
     pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
         self.facts.step_timeout = step_timeout;
         self
-    }
-
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        OperationId,
-        DeployRequest,
-        DeployExecutionFacts,
-        BTreeMap<ServiceId, RegistryCredential>,
-    ) {
-        let Self {
-            operation_id,
-            request,
-            facts,
-            registry_credentials,
-        } = self;
-        (operation_id, request, facts, registry_credentials)
     }
 }
 
