@@ -46,6 +46,7 @@ pub async fn load_deploy_execution_facts_from_nats(
                 message: source.to_string(),
             })?;
     let active_machines = intent.active_machines.clone();
+    let has_managed_lease = intent.managed_lease.is_some();
     let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates.clone());
     let namespace_route_bindings = intent
         .route_bindings
@@ -96,6 +97,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         observed_machines,
         machine_platforms,
         namespace_cleanup_candidates,
+        has_managed_lease,
         step_timeout,
     })
 }

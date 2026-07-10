@@ -32,7 +32,8 @@ use ployzd::roles::machine::protocol::{
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
     MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
-    MachineSubstrateReportRpcResponse,
+    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
 };
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -582,6 +583,51 @@ async fn machine_role_service_removes_container() {
 }
 
 #[tokio::test]
+async fn machine_role_service_removes_volume() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let response = request_json::<_, MachineVolumeRemoveRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::VolumeRemove,
+        ),
+        &MachineVolumeRemoveRpcRequest {
+            operation_id: operation_id("op_123"),
+            docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine service responds");
+
+    assert_eq!(
+        response,
+        MachineVolumeRemoveRpcResponse::Ok(MachineVolumeRemoveRpcOk {
+            machine_id: machine_id("machine_a"),
+        })
+    );
+    assert_eq!(
+        state.volume_removes(),
+        vec!["ployz-n4-prod-v4-data".to_owned()]
+    );
+}
+
+#[tokio::test]
 async fn machine_role_service_publishes_removed_delta_after_remove() {
     let nats = test_nats().await;
     let mut deltas = nats
@@ -1116,6 +1162,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn volume_removes(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_removes
+            .clone()
+    }
+
     fn stops(&self) -> Vec<ContainerId> {
         self.inner
             .lock()
@@ -1133,6 +1187,7 @@ struct RecordingRunnerInner {
     restarts: Vec<ContainerId>,
     stops: Vec<ContainerId>,
     removes: Vec<ContainerId>,
+    volume_removes: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -1287,6 +1342,19 @@ impl MachineContainerRunner for RecordingRunner {
             .expect("recording runner lock is not poisoned")
             .removes
             .push(container_id.clone());
+        Ok(())
+    }
+
+    async fn remove_volume(
+        &self,
+        docker_volume_name: &str,
+    ) -> Result<(), MachineContainerRunnerError> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_removes
+            .push(docker_volume_name.to_owned());
         Ok(())
     }
 

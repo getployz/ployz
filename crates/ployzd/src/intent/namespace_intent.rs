@@ -1,6 +1,8 @@
 //! Core-local namespace intent (route bindings and serving targets), in SQLite.
 
 use crate::core_store::{CoreStore, CoreStoreError, query_json_list, to_json};
+use ployz_core::deploy::VolumeName;
+use ployz_core::ids::NamespaceId;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use rusqlite::{Connection, params};
@@ -90,6 +92,25 @@ impl NamespaceIntentStore {
                         state.volume_name.as_str(),
                         to_json(&state)?
                     ],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
+    }
+
+    pub async fn remove_volume_pin(
+        &self,
+        namespace_id: &NamespaceId,
+        volume_name: &VolumeName,
+    ) -> Result<(), NamespaceIntentStoreError> {
+        let namespace_id = namespace_id.clone();
+        let volume_name = volume_name.clone();
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM volume_pins WHERE namespace_id = ?1 AND volume_name = ?2",
+                    params![namespace_id.as_str(), volume_name.as_str()],
                 )?;
                 Ok(())
             })

@@ -3015,6 +3015,7 @@ dependencies = [
  "pingora",
  "ployz-core",
  "ployz-ebpf-common",
+ "ployz-lease-worker",
  "ployz-nats",
  "ployz-sdk-types",
  "ployz-test-support",
@@ -3029,6 +3030,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "ureq",
 ]
 
 [[package]]

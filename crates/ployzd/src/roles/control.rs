@@ -7,10 +7,13 @@ use crate::adapters::nats_authorization::{
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
+use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use crate::lease::LeaseClient;
+use crate::lease::task::start_managed_lease_task;
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
@@ -42,10 +45,12 @@ pub struct RunningControlProcess {
     deploy_tasks: TaskRegistry,
     service_restart_tasks: TaskRegistry,
     namespace_remove_tasks: TaskRegistry,
+    volume_remove_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
     reachability_tasks: TaskRegistry,
+    managed_lease_tasks: TaskRegistry,
     facts_cache: RunningFactCache,
     authorization: NatsAuthorizationWriter,
 }
@@ -57,10 +62,12 @@ impl RunningControlProcess {
         self.deploy_tasks.abort_all();
         self.service_restart_tasks.abort_all();
         self.namespace_remove_tasks.abort_all();
+        self.volume_remove_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
         self.reachability_tasks.abort_all();
+        self.managed_lease_tasks.abort_all();
         self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
@@ -167,10 +174,13 @@ pub async fn start_control_process_with_client_and_reload(
     let deploy_tasks = TaskRegistry::default();
     let service_restart_tasks = TaskRegistry::default();
     let namespace_remove_tasks = TaskRegistry::default();
+    let volume_remove_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
+    let lease_intent = LeaseIntentStore::new(core_store.clone());
+    let managed_lease_tasks = TaskRegistry::default();
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();
     reachability_tasks.spawn(reconcile_reachability_loop(
@@ -198,6 +208,13 @@ pub async fn start_control_process_with_client_and_reload(
         config.deploy_step_timeout,
         namespace_remove_tasks.clone(),
     );
+    let volume_remove = crate::operations::volume_remove::VolumeRemoveOperation::new(
+        client.clone(),
+        namespace_intent.clone(),
+        controllers.clone(),
+        config.deploy_step_timeout,
+        volume_remove_tasks.clone(),
+    );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
         authorization.handle(),
@@ -221,6 +238,13 @@ pub async fn start_control_process_with_client_and_reload(
         .first()
         .cloned()
         .ok_or(ControlProcessError::MissingDeployMachine)?;
+    start_managed_lease_task(
+        &managed_lease_tasks,
+        lease_intent.clone(),
+        controllers.repository().clone(),
+        LeaseClient::new(config.lease_worker_url.clone()),
+        core_machine_id.clone(),
+    );
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
@@ -251,6 +275,7 @@ pub async fn start_control_process_with_client_and_reload(
                 deploy: deploy_driver,
                 service_restart,
                 namespace_remove,
+                volume_remove,
                 machine_update,
                 machine_lifecycle,
                 machine_mint,
@@ -279,10 +304,12 @@ pub async fn start_control_process_with_client_and_reload(
         deploy_tasks,
         service_restart_tasks,
         namespace_remove_tasks,
+        volume_remove_tasks,
         machine_update_tasks,
         machine_lifecycle_tasks,
         mint_tasks,
         reachability_tasks,
+        managed_lease_tasks,
         facts_cache,
         authorization,
     })
@@ -464,6 +491,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
+            managed_lease: None,
         }
     }
 

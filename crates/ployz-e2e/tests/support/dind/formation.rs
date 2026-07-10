@@ -131,6 +131,49 @@ async fn mount_bpf(docker: &Docker, cluster: &DindCluster) {
     }
 }
 
+async fn start_stub_lease_worker(docker: &Docker, cluster: &DindCluster) {
+    for machine in std::iter::once(cluster.core()).chain(cluster.edges()) {
+        let drop_in_dir = exec_in_container(
+            docker,
+            &machine.container_id,
+            &[
+                "mkdir",
+                "-p",
+                "/etc/systemd/system/ployzd-control.service.d",
+            ],
+        )
+        .await
+        .expect("exec lease worker drop-in mkdir");
+        assert!(
+            drop_in_dir.success(),
+            "lease worker drop-in mkdir failed: {drop_in_dir:?}"
+        );
+        write_file_in_container(
+            docker,
+            &machine.container_id,
+            "/etc/systemd/system/ployzd-control.service.d/lease-worker.conf",
+            "[Service]\nEnvironment=PLOYZ_LEASE_WORKER_URL=http://127.0.0.1:8089\n",
+            "0644",
+        )
+        .await
+        .expect("write lease worker drop-in");
+
+        let command = format!(
+            "systemctl is-active --quiet ployz-stub-lease-worker || \
+             systemd-run --unit=ployz-stub-lease-worker --property=Restart=always \
+             --setenv=PLOYZ_LEASE_WORKER_ADDR=127.0.0.1:8089 \
+             {ARTIFACTS_MOUNT_PATH}/ployz-lease-worker"
+        );
+        let started = exec_in_container(docker, &machine.container_id, &["sh", "-c", &command])
+            .await
+            .expect("exec stub lease worker start");
+        assert!(
+            started.success(),
+            "stub lease worker start failed: {started:?}"
+        );
+    }
+}
+
 /// Copies the host-side material out of the core container (CA plus the
 /// three install-time seeds), both as strings and as host files.
 async fn collect_cluster_material(docker: &Docker, core: &DindMachine) -> ClusterMaterial {
@@ -271,6 +314,7 @@ async fn product_init_core(
 ) -> (ClusterMaterial, OperationApiClient) {
     let core = cluster.core().clone();
     mount_bpf(docker, cluster).await;
+    start_stub_lease_worker(docker, cluster).await;
 
     let shas = ArtifactShas::read(docker, &core).await;
     write_release_manifest(docker, &core, &shas).await;
@@ -299,6 +343,7 @@ async fn product_init_core(
         // listener from loopback to external so the published port and edge
         // joins can reach it.
         public_ip: Some(core.bridge_ip),
+        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await

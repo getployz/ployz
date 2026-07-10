@@ -1,7 +1,10 @@
 //! NATS subject construction helpers.
 
 use crate::ids::{MachineId, NamespaceId, OperationId};
-use crate::ops::{DeployRunningStage, NamespaceRemoveRunningStage, ServiceRestartRunningStage};
+use crate::ops::{
+    DeployRunningStage, NamespaceRemoveRunningStage, ServiceRestartRunningStage,
+    VolumeRemoveRunningStage,
+};
 
 pub const OPERATION_PROGRESS_SCOPE: &str = "plz.v1.progress.>";
 
@@ -33,6 +36,8 @@ pub const OPERATOR_SERVICE_LIST: &str = "plz.v1.rpc.operator.query.service.list"
 pub const OPERATOR_SERVICE_INSPECT: &str = "plz.v1.rpc.operator.query.service.inspect";
 pub const OPERATOR_SERVICE_RESTART: &str = "plz.v1.rpc.operator.command.service.restart";
 pub const OPERATOR_NAMESPACE_REMOVE: &str = "plz.v1.rpc.operator.command.namespace.remove";
+pub const OPERATOR_VOLUME_LIST: &str = "plz.v1.rpc.operator.query.volume.list";
+pub const OPERATOR_VOLUME_REMOVE: &str = "plz.v1.rpc.operator.command.volume.remove";
 pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.snapshot";
 pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
 pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
@@ -55,6 +60,8 @@ pub enum OperationApiEndpoint {
     ServiceInspect,
     ServiceRestart,
     NamespaceRemove,
+    VolumeList,
+    VolumeRemove,
     RuntimeSnapshot,
     LogsTail,
     OpsList,
@@ -89,6 +96,8 @@ impl OperationApiEndpoint {
             Self::ServiceInspect => "service.inspect",
             Self::ServiceRestart => "service.restart",
             Self::NamespaceRemove => "namespace.remove",
+            Self::VolumeList => "volume.list",
+            Self::VolumeRemove => "volume.remove",
             Self::RuntimeSnapshot => "runtime.snapshot",
             Self::LogsTail => "logs.tail",
             Self::OpsList => "ops.list",
@@ -116,6 +125,8 @@ impl OperationApiEndpoint {
             Self::ServiceInspect => OPERATOR_SERVICE_INSPECT,
             Self::ServiceRestart => OPERATOR_SERVICE_RESTART,
             Self::NamespaceRemove => OPERATOR_NAMESPACE_REMOVE,
+            Self::VolumeList => OPERATOR_VOLUME_LIST,
+            Self::VolumeRemove => OPERATOR_VOLUME_REMOVE,
             Self::RuntimeSnapshot => OPERATOR_RUNTIME_SNAPSHOT,
             Self::LogsTail => OPERATOR_LOGS_TAIL,
             Self::OpsList => OPERATOR_OPS_LIST,
@@ -136,6 +147,7 @@ impl OperationApiEndpoint {
             | Self::MachineResume
             | Self::ServiceRestart
             | Self::NamespaceRemove
+            | Self::VolumeRemove
             | Self::CoreReplace => OperationApiEndpointExecution::AcceptsOperation,
             Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
@@ -144,6 +156,7 @@ impl OperationApiEndpoint {
             Self::MachineList
             | Self::MachineInspect
             | Self::ServiceList
+            | Self::VolumeList
             | Self::ServiceInspect
             | Self::RuntimeSnapshot
             | Self::LogsTail
@@ -284,6 +297,15 @@ impl NamespaceRemoveRunningStage {
     }
 }
 
+impl VolumeRemoveRunningStage {
+    #[must_use]
+    pub const fn as_subject(&self) -> &'static str {
+        match self {
+            Self::RemovingVolumeData => "removing_volume_data",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MachineServiceEndpoint {
     Inspect,
@@ -294,6 +316,7 @@ pub enum MachineServiceEndpoint {
     ContainerRestart,
     ContainerStop,
     ContainerRemove,
+    VolumeRemove,
     DataplanePrepare,
     SubstrateUpdate,
     SubstrateReport,
@@ -323,6 +346,7 @@ impl MachineServiceEndpoint {
             Self::ContainerRestart => "container.restart",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
+            Self::VolumeRemove => "volume.remove",
             Self::DataplanePrepare => "dataplane.prepare",
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
@@ -350,6 +374,7 @@ impl MachineServiceEndpoint {
             | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove
+            | Self::VolumeRemove
             | Self::DataplanePrepare
             | Self::SubstrateUpdate
             | Self::ImageBlobPush

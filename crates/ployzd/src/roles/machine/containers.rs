@@ -14,7 +14,8 @@ use crate::roles::machine::protocol::{
     MachineContainerStopRpcRequest, MachineContainerStopRpcResponse,
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineEnsureEndpointNetworkRpcResponse,
-    MachineRunContainerOutcome,
+    MachineRunContainerOutcome, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -268,6 +269,35 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
+        Err(error) => runner_error(error),
+    }
+}
+
+pub(crate) async fn handle_volume_remove<R>(
+    machine_id: MachineId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineVolumeRemoveRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    match runner.remove_volume(&request.docker_volume_name).await {
+        Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+            MachineVolumeRemoveRpcOk { machine_id },
+        )),
+        Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
+            machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                machine_id,
+                error: MachineVolumeRemoveDomainError::RemoveFailed {
+                    message: failure_message(format!("volume remove failed: {message}")),
+                },
+            })
+        }
         Err(error) => runner_error(error),
     }
 }

@@ -157,6 +157,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             namespace_revision_entry_id: target_namespace_revision_entry_id(),
             image: image("registry.example/api:rev_2"),
             desired_replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            volume_names: Vec::new(),
         }]
     );
     assert_eq!(

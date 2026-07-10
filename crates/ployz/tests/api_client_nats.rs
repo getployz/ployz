@@ -1,5 +1,7 @@
 use ployz::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
-use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount, VolumeName,
+};
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
@@ -25,10 +27,12 @@ use ployz_sdk_types::{
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
     MachineListResponse, MachineListResult, MachineName, MachineSnapshot, OperationApiResponse,
     OpsStatusError, OpsStatusResponse, ServiceInspectRequest, ServiceInspectResponse,
-    ServiceListResponse, ServiceListResult, ServiceSnapshot,
+    ServiceListResponse, ServiceListResult, ServiceSnapshot, VolumeListRequest, VolumeListResponse,
+    VolumeListResult, VolumeSnapshot, VolumeStatus,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineListApi,
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        VolumeListApi,
     },
 };
 use ployz_test_support::ids::{event_sequence, machine_id, namespace_id, operation_id};
@@ -289,6 +293,51 @@ async fn operation_api_client_routes_service_list_success() {
         .expect("service list responds");
 
     assert_eq!(result.services, vec![service_snapshot("svc_api", "rev_2")]);
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_volume_list_success() {
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
+    let spec = test_api_service(VolumeListApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
+        .await
+        .expect("service starts");
+    let volume = VolumeSnapshot {
+        namespace_id: namespace_id("prod"),
+        volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        machine_id: machine_id("machine_1"),
+        status: VolumeStatus::Orphaned,
+    };
+
+    runtime
+        .bind_endpoint(endpoint, {
+            let volume = volume.clone();
+            move |_request| {
+                let volume = volume.clone();
+                async move {
+                    let response: VolumeListResponse = OperationApiResponse::Ok {
+                        value: VolumeListResult {
+                            volumes: vec![volume],
+                        },
+                    };
+                    NatsServiceResponse::ok(
+                        serde_json::to_vec(&response).expect("response serializes"),
+                    )
+                }
+            }
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let result = api
+        .volume_list(&VolumeListRequest {})
+        .await
+        .expect("volume list responds");
+
+    assert_eq!(result.volumes, vec![volume]);
 }
 
 #[tokio::test]

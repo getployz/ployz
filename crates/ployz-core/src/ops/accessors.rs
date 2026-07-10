@@ -13,7 +13,9 @@ impl OperationStatus {
             | Self::MachineLifecycle { id, .. }
             | Self::CoreReplace { id, .. }
             | Self::ServiceRestart { id, .. }
+            | Self::ManagedLease { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
+            Self::VolumeRemove { id, .. } => id,
         }
     }
 
@@ -27,7 +29,9 @@ impl OperationStatus {
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
             Self::CoreReplace { .. } => OperationKind::CoreReplace,
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
+            Self::ManagedLease { .. } => OperationKind::ManagedLease,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
+            Self::VolumeRemove { .. } => OperationKind::VolumeRemove,
         }
     }
 
@@ -41,7 +45,10 @@ impl OperationStatus {
             | Self::NamespaceRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
-            Self::Cert { .. } => OperationProgressScope::Cluster,
+            Self::VolumeRemove { namespace_id, .. } => OperationProgressScope::Namespace {
+                namespace_id: namespace_id.clone(),
+            },
+            Self::Cert { .. } | Self::ManagedLease { .. } => OperationProgressScope::Cluster,
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineLifecycle { machine_id, .. }
@@ -78,11 +85,19 @@ impl OperationStatus {
                 last_event_sequence,
                 ..
             }
+            | Self::ManagedLease {
+                last_event_sequence,
+                ..
+            }
             | Self::NamespaceRemove {
                 last_event_sequence,
                 ..
             }
             | Self::MachineUpdate {
+                last_event_sequence,
+                ..
+            }
+            | Self::VolumeRemove {
                 last_event_sequence,
                 ..
             } => *last_event_sequence,

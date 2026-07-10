@@ -26,9 +26,11 @@ pub async fn init_first_machine_activate(
     handlers: &OperationApiHandlers,
     request: InitFirstMachineActivateRequest,
 ) -> Result<InitFirstMachineActivated, InitFirstMachineActivateError> {
+    let public_url_mode = request.public_url_mode;
     let plan = plan_first_machine_activation(&request.machine_id)
         .map_err(|_| InitFirstMachineActivateError::InvalidPlan)?;
     if let Some(active) = first_machine_active_machine(handlers, &request.machine_id).await? {
+        set_public_url_mode_if_unconfigured(handlers.lease_intent(), public_url_mode).await?;
         return Ok(InitFirstMachineActivated {
             operation_id: active.activated_by,
             machine_id: active.machine_id,
@@ -47,11 +49,37 @@ pub async fn init_first_machine_activate(
     .await
     .map_err(|failure| InitFirstMachineActivateError::MachineAdd { failure })?;
     let reported = redeem_seed_and_report(handlers, accepted.join_token).await?;
+    set_public_url_mode(handlers, public_url_mode).await?;
 
     Ok(InitFirstMachineActivated {
         operation_id: reported.operation_id,
         machine_id: reported.machine_id,
     })
+}
+
+async fn set_public_url_mode_if_unconfigured(
+    lease_intent: &crate::intent::lease_intent::LeaseIntentStore,
+    mode: ployz_core::cert::PublicUrlMode,
+) -> Result<(), InitFirstMachineActivateError> {
+    lease_intent
+        .set_mode_if_unconfigured(mode)
+        .await
+        .map_err(|error| InitFirstMachineActivateError::Unavailable {
+            message: error.to_string(),
+        })
+}
+
+async fn set_public_url_mode(
+    handlers: &OperationApiHandlers,
+    mode: ployz_core::cert::PublicUrlMode,
+) -> Result<(), InitFirstMachineActivateError> {
+    handlers
+        .lease_intent()
+        .set_mode(mode)
+        .await
+        .map_err(|error| InitFirstMachineActivateError::Unavailable {
+            message: error.to_string(),
+        })
 }
 
 /// The first-machine join workflow: redeem the join token (waiting boundedly

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
-use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
+use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest, VolumeName};
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::image::OciDigest;
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
@@ -22,28 +22,51 @@ use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
+use super::managed_lease::{ManagedLeaseEvent, ManagedLeaseTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
+use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployRunningStage, MachineAddOperationState, MachineLifecycleFailure,
     MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
     NamespaceRemoveRunningStage, OperationKind, RouteTarget, ServiceRestartFailure,
-    ServiceRestartRunningStage,
+    ServiceRestartRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationSubject {
-    Deploy { service_id: ServiceId },
-    Cert { cert_id: CertId },
-    MachineAdd { machine_id: MachineId },
-    MachineUpdate { machine_id: MachineId },
-    CoreReplace { machine_id: MachineId },
-    ServiceRestart { service_id: ServiceId },
-    NamespaceRemove { namespace_id: NamespaceId },
+    Deploy {
+        service_id: ServiceId,
+    },
+    Cert {
+        cert_id: CertId,
+    },
+    MachineAdd {
+        machine_id: MachineId,
+    },
+    MachineUpdate {
+        machine_id: MachineId,
+    },
+    CoreReplace {
+        machine_id: MachineId,
+    },
+    ServiceRestart {
+        service_id: ServiceId,
+    },
+    ManagedLease {
+        subject: super::ManagedLeaseSubject,
+    },
+    NamespaceRemove {
+        namespace_id: NamespaceId,
+    },
+    VolumeRemove {
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
+    },
 }
 
 /// Local operation evidence event and plain NATS progress payload.
@@ -215,6 +238,19 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: ServiceRestartFailure,
     },
+    ManagedLeaseSubmitted {
+        operation_id: OperationId,
+        subject: super::ManagedLeaseSubject,
+    },
+    ManagedLeaseCompleted {
+        operation_id: OperationId,
+        subject: super::ManagedLeaseSubject,
+    },
+    ManagedLeaseFailed {
+        operation_id: OperationId,
+        subject: super::ManagedLeaseSubject,
+        failure: super::ManagedLeaseOperationFailure,
+    },
     NamespaceRemoveSubmitted {
         operation_id: OperationId,
         namespace_id: NamespaceId,
@@ -238,6 +274,22 @@ pub enum OperationEvent {
     NamespaceRemoveFailed {
         operation_id: OperationId,
         failure: NamespaceRemoveFailure,
+    },
+    VolumeRemoveSubmitted {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
+    },
+    VolumeRemoveRunning {
+        operation_id: OperationId,
+        stage: VolumeRemoveRunningStage,
+    },
+    VolumeRemoveCompleted {
+        operation_id: OperationId,
+    },
+    VolumeRemoveFailed {
+        operation_id: OperationId,
+        failure: VolumeRemoveFailure,
     },
     Cancelled {
         operation_id: OperationId,
@@ -286,12 +338,19 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { operation_id, .. }
             | Self::ServiceRestartCompleted { operation_id }
             | Self::ServiceRestartFailed { operation_id, .. }
+            | Self::ManagedLeaseSubmitted { operation_id, .. }
+            | Self::ManagedLeaseCompleted { operation_id, .. }
+            | Self::ManagedLeaseFailed { operation_id, .. }
             | Self::NamespaceRemoveSubmitted { operation_id, .. }
             | Self::NamespaceRemoveRunning { operation_id, .. }
             | Self::NamespaceRemoveRouteBindingRemoved { operation_id, .. }
             | Self::NamespaceRemoveContainerRemoved { operation_id, .. }
             | Self::NamespaceRemoveCompleted { operation_id }
             | Self::NamespaceRemoveFailed { operation_id, .. }
+            | Self::VolumeRemoveSubmitted { operation_id, .. }
+            | Self::VolumeRemoveRunning { operation_id, .. }
+            | Self::VolumeRemoveCompleted { operation_id }
+            | Self::VolumeRemoveFailed { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -309,8 +368,8 @@ impl OperationEvent {
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
             Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
-            | Self::DeployContainerStarted { .. }
             | Self::DeployImageAvailabilityVerified { .. }
+            | Self::DeployContainerStarted { .. }
             | Self::DeployRunning { .. }
             | Self::DeployCompleted { .. }
             | Self::DeployFailed { .. }
@@ -339,12 +398,19 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { .. }
             | Self::ServiceRestartCompleted { .. }
             | Self::ServiceRestartFailed { .. }
+            | Self::ManagedLeaseSubmitted { .. }
+            | Self::ManagedLeaseCompleted { .. }
+            | Self::ManagedLeaseFailed { .. }
             | Self::NamespaceRemoveSubmitted { .. }
             | Self::NamespaceRemoveRunning { .. }
             | Self::NamespaceRemoveRouteBindingRemoved { .. }
             | Self::NamespaceRemoveContainerRemoved { .. }
             | Self::NamespaceRemoveCompleted { .. }
             | Self::NamespaceRemoveFailed { .. }
+            | Self::VolumeRemoveSubmitted { .. }
+            | Self::VolumeRemoveRunning { .. }
+            | Self::VolumeRemoveCompleted { .. }
+            | Self::VolumeRemoveFailed { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -417,119 +483,21 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { .. }
             | Self::ServiceRestartCompleted { .. }
             | Self::ServiceRestartFailed { .. }
+            | Self::ManagedLeaseSubmitted { .. }
+            | Self::ManagedLeaseCompleted { .. }
+            | Self::ManagedLeaseFailed { .. }
             | Self::NamespaceRemoveSubmitted { .. }
             | Self::NamespaceRemoveRunning { .. }
             | Self::NamespaceRemoveRouteBindingRemoved { .. }
             | Self::NamespaceRemoveContainerRemoved { .. }
             | Self::NamespaceRemoveCompleted { .. }
             | Self::NamespaceRemoveFailed { .. }
+            | Self::VolumeRemoveSubmitted { .. }
+            | Self::VolumeRemoveRunning { .. }
+            | Self::VolumeRemoveCompleted { .. }
+            | Self::VolumeRemoveFailed { .. }
             | Self::Cancelled { .. } => None,
         }
-    }
-
-    /// The stable event token appended under an operation progress scope.
-    #[must_use]
-    pub fn subject_suffix(&self) -> String {
-        match self {
-            Self::DeploySubmitted { .. } => "deploy.submitted".to_owned(),
-            Self::DeployPlanningStarted { .. } => "deploy.planning.started".to_owned(),
-            Self::DeployPlanCreated { .. } => "deploy.plan.created".to_owned(),
-            Self::DeployRunning { stage, .. } => format!("deploy.running.{}", stage.as_subject()),
-            Self::DeployDataplanePrepared { .. } => "deploy.dataplane.prepared".to_owned(),
-            Self::DeployImageAvailabilityVerified {
-                service_id, seed, ..
-            } => format!(
-                "deploy.image.availability_verified.{}.{}",
-                service_id.as_str(),
-                seed.as_str()
-            ),
-            Self::DeployContainerStarted {
-                machine_id,
-                container_id,
-                ..
-            } => format!(
-                "deploy.container.started.{}.{}",
-                machine_id.as_str(),
-                container_id.as_str()
-            ),
-            Self::DeployHealthCheckStarted { .. } => "deploy.health_check.started".to_owned(),
-            Self::DeployCleanupFinished { .. } => "deploy.cleanup.finished".to_owned(),
-            Self::DeployCompleted { .. } => "deploy.completed".to_owned(),
-            Self::DeployFailed { .. } => "deploy.failed".to_owned(),
-            Self::CertRenewalSubmitted { .. } => "cert.submitted".to_owned(),
-            Self::CertChallengePublished { .. } => "cert.challenge.published".to_owned(),
-            Self::CertValidationStarted { .. } => "cert.validation.started".to_owned(),
-            Self::CertCompleted { .. } => "cert.completed".to_owned(),
-            Self::CertFailed { .. } => "cert.failed".to_owned(),
-            Self::MachineAddSubmitted { .. } => "machine.add.submitted".to_owned(),
-            Self::MachineAddJoined { .. } => "machine.add.joined".to_owned(),
-            Self::MachineAddCredentialProvisioned { step, .. } => {
-                format!("machine.add.credential.{}", step.as_subject_token())
-            }
-            Self::MachineAddCompleted { .. } => "machine.add.completed".to_owned(),
-            Self::MachineAddFailed { .. } => "machine.add.failed".to_owned(),
-            Self::MachineUpdateSubmitted { .. } => "machine.update.submitted".to_owned(),
-            Self::MachineUpdateRunning { .. } => "machine.update.running".to_owned(),
-            Self::MachineUpdateCompleted { .. } => "machine.update.completed".to_owned(),
-            Self::MachineUpdateFailed { .. } => "machine.update.failed".to_owned(),
-            Self::MachineLifecycleSubmitted { target, .. } => match target {
-                MachineLifecycle::Active => "machine.lifecycle.resume.submitted".to_owned(),
-                MachineLifecycle::Draining => "machine.lifecycle.drain.submitted".to_owned(),
-            },
-            Self::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed".to_owned(),
-            Self::MachineLifecycleFailed { .. } => "machine.lifecycle.failed".to_owned(),
-            Self::CoreReplaceSubmitted { .. } => "core.replace.submitted".to_owned(),
-            Self::CoreReplaceCompleted { .. } => "core.replace.completed".to_owned(),
-            Self::CoreReplaceFailed { .. } => "core.replace.failed".to_owned(),
-            Self::ServiceRestartSubmitted { .. } => "service.restart.submitted".to_owned(),
-            Self::ServiceRestartRunning { stage, .. } => {
-                format!("service.restart.running.{}", stage.as_subject())
-            }
-            Self::ServiceRestartContainerRestarted {
-                machine_id,
-                container_id,
-                ..
-            } => format!(
-                "service.restart.container.restarted.{}.{}",
-                machine_id.as_str(),
-                container_id.as_str()
-            ),
-            Self::ServiceRestartCompleted { .. } => "service.restart.completed".to_owned(),
-            Self::ServiceRestartFailed { .. } => "service.restart.failed".to_owned(),
-            Self::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted".to_owned(),
-            Self::NamespaceRemoveRunning { stage, .. } => {
-                format!("namespace.remove.running.{}", stage.as_subject())
-            }
-            Self::NamespaceRemoveRouteBindingRemoved { target, .. } => format!(
-                "namespace.remove.route_binding.removed.{}.{}",
-                target.hostname.as_str(),
-                target.port.get()
-            ),
-            Self::NamespaceRemoveContainerRemoved {
-                machine_id,
-                container_id,
-                ..
-            } => format!(
-                "namespace.remove.container.removed.{}.{}",
-                machine_id.as_str(),
-                container_id.as_str()
-            ),
-            Self::NamespaceRemoveCompleted { .. } => "namespace.remove.completed".to_owned(),
-            Self::NamespaceRemoveFailed { .. } => "namespace.remove.failed".to_owned(),
-            Self::Cancelled { .. } => "cancelled".to_owned(),
-        }
-    }
-
-    /// The durable stream subject this event publishes under. Subjects are a
-    /// persisted contract: renderings must never change for an existing
-    /// variant.
-    #[must_use]
-    pub fn subject(&self, scope: &crate::subjects::OperationProgressScope) -> String {
-        crate::subjects::operation_progress_subject(
-            scope,
-            self.operation_id(),
-            &self.subject_suffix(),
-        )
     }
 }
 
@@ -543,6 +511,7 @@ pub enum OperationSubjectRef {
     MachineUpdate(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
+    ManagedLease(super::ManagedLeaseSubject),
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -574,9 +543,17 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: ServiceRestartEvent,
     },
+    ManagedLease {
+        operation_id: OperationId,
+        event: ManagedLeaseEvent,
+    },
     NamespaceRemove {
         operation_id: OperationId,
         event: NamespaceRemoveEvent,
+    },
+    VolumeRemove {
+        operation_id: OperationId,
+        event: VolumeRemoveEvent,
     },
 }
 
@@ -590,7 +567,9 @@ impl ClassifiedOperationEvent {
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
+            | Self::ManagedLease { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
+            Self::VolumeRemove { operation_id, .. } => operation_id,
         }
     }
 }
@@ -916,6 +895,34 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     failure,
                 }),
             },
+            OperationEvent::ManagedLeaseSubmitted {
+                operation_id,
+                subject,
+            } => Self::ManagedLease {
+                operation_id,
+                event: ManagedLeaseEvent::Submitted { subject },
+            },
+            OperationEvent::ManagedLeaseCompleted {
+                operation_id,
+                subject,
+            } => Self::ManagedLease {
+                operation_id,
+                event: ManagedLeaseEvent::Transition {
+                    subject,
+                    transition: ManagedLeaseTransition::Completed,
+                },
+            },
+            OperationEvent::ManagedLeaseFailed {
+                operation_id,
+                subject,
+                failure,
+            } => Self::ManagedLease {
+                operation_id,
+                event: ManagedLeaseEvent::Transition {
+                    subject,
+                    transition: ManagedLeaseTransition::Failed { failure },
+                },
+            },
             OperationEvent::NamespaceRemoveSubmitted {
                 operation_id,
                 namespace_id,
@@ -963,6 +970,35 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     failure,
                 }),
             },
+            OperationEvent::VolumeRemoveSubmitted {
+                operation_id,
+                namespace_id,
+                volume_name,
+            } => Self::VolumeRemove {
+                operation_id,
+                event: VolumeRemoveEvent::Submitted {
+                    namespace_id,
+                    volume_name,
+                },
+            },
+            OperationEvent::VolumeRemoveRunning {
+                operation_id,
+                stage,
+            } => Self::VolumeRemove {
+                operation_id,
+                event: VolumeRemoveEvent::Transition(VolumeRemoveTransition::Running { stage }),
+            },
+            OperationEvent::VolumeRemoveCompleted { operation_id } => Self::VolumeRemove {
+                operation_id,
+                event: VolumeRemoveEvent::Transition(VolumeRemoveTransition::Completed),
+            },
+            OperationEvent::VolumeRemoveFailed {
+                operation_id,
+                failure,
+            } => Self::VolumeRemove {
+                operation_id,
+                event: VolumeRemoveEvent::Transition(VolumeRemoveTransition::Failed { failure }),
+            },
             OperationEvent::Cancelled {
                 operation_id,
                 kind,
@@ -998,11 +1034,19 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                         reason,
                     }),
                 },
+                OperationKind::ManagedLease => Self::ManagedLease {
+                    operation_id,
+                    event: ManagedLeaseEvent::UnsupportedCancellation,
+                },
                 OperationKind::NamespaceRemove => Self::NamespaceRemove {
                     operation_id,
                     event: NamespaceRemoveEvent::Transition(NamespaceRemoveTransition::Cancelled {
                         reason,
                     }),
+                },
+                OperationKind::VolumeRemove => Self::VolumeRemove {
+                    operation_id,
+                    event: VolumeRemoveEvent::Cancelled(reason),
                 },
             },
         }

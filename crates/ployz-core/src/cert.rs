@@ -15,6 +15,76 @@ pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
 pub const DEFAULT_MANAGED_LEASE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+pub const DEFAULT_LEASE_WORKER_URL: &str = "https://up.ployz.app";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PublicUrlMode {
+    Auto,
+    BringYourOwn,
+    None,
+}
+
+impl PublicUrlMode {
+    #[must_use]
+    pub const fn default_mode() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedLeaseIntent {
+    Auto {
+        #[serde(default)]
+        state: Box<AutoLeaseState>,
+    },
+    BringYourOwn,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AutoLeaseState {
+    #[default]
+    Unacquired,
+    RecordOnly {
+        lease: ManagedLeaseRecord,
+    },
+    Ready {
+        lease: ManagedLeaseRecord,
+        bundle: ManagedCertBundle,
+    },
+}
+
+impl ManagedLeaseIntent {
+    #[must_use]
+    pub fn empty(mode: PublicUrlMode) -> Self {
+        match mode {
+            PublicUrlMode::Auto => Self::Auto {
+                state: Box::new(AutoLeaseState::Unacquired),
+            },
+            PublicUrlMode::BringYourOwn => Self::BringYourOwn,
+            PublicUrlMode::None => Self::None,
+        }
+    }
+
+    #[must_use]
+    pub fn needs_renewal(&self, now_seconds: u64) -> bool {
+        let Self::Auto { state } = self else {
+            return false;
+        };
+        let AutoLeaseState::Ready { lease, .. } = state.as_ref() else {
+            return false;
+        };
+        now_seconds
+            >= lease
+                .issued_at
+                .unix_seconds()
+                .saturating_add(DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2)
+    }
+}
 
 /// Active certificate intent/evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,12 +122,21 @@ pub struct ManagedLeaseRenewed {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ManagedLeaseRecordWire", into = "ManagedLeaseRecordWire")]
 pub struct ManagedLeaseRecord {
     pub name: ManagedLeaseName,
     pub token: LeaseBearerToken,
     pub issued_at: LeaseIssuedAt,
     pub expires_at: LeaseExpiresAt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedLeaseRecordWire {
+    name: ManagedLeaseName,
+    token: LeaseBearerToken,
+    issued_at: LeaseIssuedAt,
+    expires_at: LeaseExpiresAt,
 }
 
 impl ManagedLeaseRecord {
@@ -80,6 +159,37 @@ impl ManagedLeaseRecord {
             issued_at,
             expires_at,
         })
+    }
+}
+
+impl TryFrom<ManagedLeaseRecordWire> for ManagedLeaseRecord {
+    type Error = ManagedLeaseError;
+
+    fn try_from(value: ManagedLeaseRecordWire) -> Result<Self, Self::Error> {
+        let ManagedLeaseRecordWire {
+            name,
+            token,
+            issued_at,
+            expires_at,
+        } = value;
+        Self::try_new(name, token, issued_at, expires_at)
+    }
+}
+
+impl From<ManagedLeaseRecord> for ManagedLeaseRecordWire {
+    fn from(value: ManagedLeaseRecord) -> Self {
+        let ManagedLeaseRecord {
+            name,
+            token,
+            issued_at,
+            expires_at,
+        } = value;
+        Self {
+            name,
+            token,
+            issued_at,
+            expires_at,
+        }
     }
 }
 
@@ -209,7 +319,7 @@ positive_u64_wire_error! {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ManagedCertBundleWire", into = "ManagedCertBundleWire")]
 pub struct ManagedCertBundle {
     pub lease: ManagedLeaseName,
     pub dns_names: [String; 2],
@@ -218,6 +328,18 @@ pub struct ManagedCertBundle {
     pub issued_at: LeaseIssuedAt,
     pub expires_at: LeaseExpiresAt,
     pub digest: InstallSha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedCertBundleWire {
+    lease: ManagedLeaseName,
+    dns_names: [String; 2],
+    certificate_chain_pem: String,
+    private_key_pem: String,
+    issued_at: LeaseIssuedAt,
+    expires_at: LeaseExpiresAt,
+    digest: InstallSha256Digest,
 }
 
 impl ManagedCertBundle {
@@ -231,6 +353,12 @@ impl ManagedCertBundle {
     ) -> Result<Self, ManagedLeaseError> {
         if dns_names != name.wildcard_and_apex() {
             return Err(ManagedLeaseError::BundleDnsNamesInvalid { dns_names });
+        }
+        if issued_at.unix_seconds() >= expires_at.unix_seconds() {
+            return Err(ManagedLeaseError::EmptyOrInvertedLease {
+                issued_at,
+                expires_at,
+            });
         }
         let digest = bundle_digest(&certificate_chain_pem, &private_key_pem)?;
 
@@ -251,6 +379,57 @@ impl ManagedCertBundle {
     }
 }
 
+impl TryFrom<ManagedCertBundleWire> for ManagedCertBundle {
+    type Error = ManagedLeaseError;
+
+    fn try_from(value: ManagedCertBundleWire) -> Result<Self, Self::Error> {
+        let ManagedCertBundleWire {
+            lease,
+            dns_names,
+            certificate_chain_pem,
+            private_key_pem,
+            issued_at,
+            expires_at,
+            digest: expected_digest,
+        } = value;
+        let bundle = Self::try_new(
+            lease,
+            dns_names,
+            certificate_chain_pem,
+            private_key_pem,
+            issued_at,
+            expires_at,
+        )?;
+        if bundle.digest != expected_digest {
+            return Err(ManagedLeaseError::BundleDigestMismatch);
+        }
+        Ok(bundle)
+    }
+}
+
+impl From<ManagedCertBundle> for ManagedCertBundleWire {
+    fn from(value: ManagedCertBundle) -> Self {
+        let ManagedCertBundle {
+            lease,
+            dns_names,
+            certificate_chain_pem,
+            private_key_pem,
+            issued_at,
+            expires_at,
+            digest,
+        } = value;
+        Self {
+            lease,
+            dns_names,
+            certificate_chain_pem,
+            private_key_pem,
+            issued_at,
+            expires_at,
+            digest,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ManagedLeaseError {
     #[error("managed lease name is empty")]
@@ -268,6 +447,8 @@ pub enum ManagedLeaseError {
     },
     #[error("managed cert bundle DNS names must be wildcard and apex for its lease")]
     BundleDnsNamesInvalid { dns_names: [String; 2] },
+    #[error("managed cert bundle digest does not match its certificate and private key")]
+    BundleDigestMismatch,
     #[error("managed cert bundle digest is invalid: {0}")]
     Digest(#[from] crate::install::InstallContractError),
 }
@@ -637,4 +818,77 @@ fn bundle_digest(
 
 fn is_base64_url_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+}
+
+#[cfg(test)]
+mod managed_lease_intent_tests {
+    use super::*;
+
+    fn lease(issued_at: u64) -> ManagedLeaseRecord {
+        ManagedLeaseRecord::try_new(
+            ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
+            LeaseBearerToken::try_new("lease-token").expect("valid token"),
+            LeaseIssuedAt::try_new(issued_at).expect("positive issued timestamp"),
+            LeaseExpiresAt::try_new(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS)
+                .expect("positive expiry timestamp"),
+        )
+        .expect("valid lease window")
+    }
+
+    fn ready_intent(issued_at: u64) -> ManagedLeaseIntent {
+        let lease = lease(issued_at);
+        let bundle = ManagedCertBundle::try_new(
+            lease.name.clone(),
+            lease.name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            lease.issued_at,
+            lease.expires_at,
+        )
+        .expect("valid bundle");
+        ManagedLeaseIntent::Auto {
+            state: Box::new(AutoLeaseState::Ready { lease, bundle }),
+        }
+    }
+
+    #[test]
+    fn auto_without_lease_needs_acquisition() {
+        let ManagedLeaseIntent::Auto { state } = ManagedLeaseIntent::empty(PublicUrlMode::Auto)
+        else {
+            panic!("auto mode");
+        };
+        assert!(matches!(*state, AutoLeaseState::Unacquired));
+    }
+
+    #[test]
+    fn non_auto_without_lease_does_not_need_acquisition() {
+        assert!(matches!(
+            ManagedLeaseIntent::empty(PublicUrlMode::BringYourOwn),
+            ManagedLeaseIntent::BringYourOwn
+        ));
+    }
+
+    #[test]
+    fn auto_lease_needs_renewal_at_half_ttl() {
+        let issued_at = 1_000;
+        let intent = ready_intent(issued_at);
+
+        assert!(intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2));
+    }
+
+    #[test]
+    fn auto_lease_does_not_need_renewal_before_half_ttl() {
+        let issued_at = 1_000;
+        let intent = ready_intent(issued_at);
+
+        assert!(!intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS / 2 - 1));
+    }
+
+    #[test]
+    fn non_auto_lease_never_needs_renewal() {
+        let issued_at = 1_000;
+        let intent = ManagedLeaseIntent::None;
+
+        assert!(!intent.needs_renewal(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS));
+    }
 }

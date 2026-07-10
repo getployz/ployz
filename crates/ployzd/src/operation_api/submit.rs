@@ -6,7 +6,7 @@ use crate::operation_api::admission::{
     CoreReplaceSubmitCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
     MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, OperationControllers,
-    ServiceRestartSubmitCommand,
+    ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, OperationId};
@@ -18,6 +18,7 @@ use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
     MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
     NamespaceRemoveError, NamespaceRemoveRequest, ServiceRestartError, ServiceRestartRequest,
+    VolumeRemoveError, VolumeRemoveRequest,
 };
 
 use super::OperationApiHandlers;
@@ -236,6 +237,55 @@ pub async fn namespace_remove(
         accepted.start_sequence,
     );
     handlers.namespace_remove().start(accepted);
+    Ok(operation)
+}
+
+pub async fn volume_remove(
+    handlers: &OperationApiHandlers,
+    request: VolumeRemoveRequest,
+) -> Result<AcceptedOperation, VolumeRemoveError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_volume_remove(VolumeRemoveSubmitCommand {
+            operation_id: request.operation_id,
+            namespace_id: request.namespace_id,
+            volume_name: request.volume_name,
+        })
+        .await
+        .map_err(|error| match super::error_map::submit_failure(error) {
+            super::error_map::SubmitFailure::InvalidDeployTarget => {
+                unreachable!("volume remove submit is not deploy target")
+            }
+            super::error_map::SubmitFailure::ResourceBusy {
+                namespace_id,
+                owner,
+            } => VolumeRemoveError::ResourceBusy {
+                operation_id: operation_id.clone(),
+                namespace_id,
+                owner_operation_id: owner,
+            },
+            super::error_map::SubmitFailure::Unavailable { message } => {
+                VolumeRemoveError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                }
+            }
+            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                VolumeRemoveError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                }
+            }
+        })?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        OperationProgressScope::Namespace {
+            namespace_id: accepted.namespace_id.clone(),
+        },
+        accepted.start_sequence,
+    );
+    handlers.volume_remove().start(accepted);
     Ok(operation)
 }
 

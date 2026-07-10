@@ -20,12 +20,14 @@ use ployz_sdk_types::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
         NamespaceRemoveApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
+        VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -171,6 +173,20 @@ impl OperationApiClient {
         request: &NamespaceRemoveRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<NamespaceRemoveError>> {
         self.request_api::<NamespaceRemoveApi>(request).await
+    }
+
+    pub async fn volume_list(
+        &self,
+        request: &VolumeListRequest,
+    ) -> Result<VolumeListResult, OperationApiClientError<VolumeListError>> {
+        self.request_api::<VolumeListApi>(request).await
+    }
+
+    pub async fn volume_remove(
+        &self,
+        request: &VolumeRemoveRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<VolumeRemoveError>> {
+        self.request_api::<VolumeRemoveApi>(request).await
     }
 
     pub async fn runtime_snapshot(

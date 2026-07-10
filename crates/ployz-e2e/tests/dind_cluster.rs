@@ -25,15 +25,16 @@ use ployz_core::deploy::{
     ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget,
     DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos, HealthcheckRetries,
     HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
-    ReplicaCount, ServiceEnvironment,
+    ReplicaCount, ServiceEnvironment, VolumeName,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::ImageRepository;
 use ployz_core::machine::MachineCredentialProvisioningStep;
-use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus,
+    DeployCompletionOutcome, DeployOperationState, NamespaceRemoveOperationState, OperationEvent,
+    OperationStatus, VolumeRemoveOperationState,
 };
+use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
@@ -49,12 +50,14 @@ use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
-    MachineSnapshot, MachineTestimony,
+    MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest, VolumeListRequest,
+    VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::adapters::docker::labels::{
     CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
     SERVICE_ID_LABEL,
@@ -223,6 +226,30 @@ async fn scenario_init_and_activate_first_machine() {
                 "authorized-users.conf must contain {principal}: {authorized}"
             );
         }
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut last_operations = Vec::new();
+        while Instant::now() < deadline {
+            last_operations = core
+                .api
+                .ops_list(&OpsListRequest { active_only: false })
+                .await
+                .expect("list operations")
+                .operations;
+            if last_operations.iter().any(|snapshot| {
+                matches!(
+                    &snapshot.status,
+                    OperationStatus::ManagedLease {
+                        state: ManagedLeaseOperationState::Completed,
+                        ..
+                    }
+                )
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("managed lease acquisition did not complete: {last_operations:?}");
     })
     .await;
 
@@ -1238,8 +1265,7 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
     );
 }
 
-/// Deploys a service with a named volume, replaces its container, and
-/// confirms the replacement can read data written by the prior container.
+/// Exercises the complete explicit named-volume lifecycle.
 async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
     let first = core
         .api
@@ -1322,6 +1348,156 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
         restored.success() && restored.stdout.trim() == "first",
         "redeployed container did not restore volume marker: {restored:?}"
     );
+
+    let drop_mount = core
+        .api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_dind_volume_drop_mount"),
+            target: volume_deploy_target_without_mount(),
+        })
+        .await
+        .expect("drop-volume deploy submits");
+    let drop_mount_status =
+        wait_for_terminal_deploy_status(core, &drop_mount.operation_id, DEPLOY_TERMINAL_BUDGET)
+            .await;
+    assert!(
+        matches!(
+            drop_mount_status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed { .. },
+                ..
+            }
+        ),
+        "drop-volume deploy did not complete: {drop_mount_status:?}"
+    );
+    assert_volume_status(core, VolumeStatus::Orphaned).await;
+
+    let docker_volume_name = "ployz-n6-volume-v4-data";
+    let preserved = core
+        .exec_on(
+            machine,
+            &[
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                &format!("{docker_volume_name}:/data"),
+                WORKLOAD_IMAGE,
+                "cat",
+                "/data/marker",
+            ],
+        )
+        .await;
+    assert!(
+        preserved.success() && preserved.stdout.trim() == "first",
+        "orphaned volume did not preserve data: {preserved:?}"
+    );
+
+    let reattach = core
+        .api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: idempotency_key("idem_dind_volume_reattach"),
+            target: volume_deploy_target(
+                "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
+            ),
+        })
+        .await
+        .expect("volume reattach deploy submits");
+    let reattach_status =
+        wait_for_terminal_deploy_status(core, &reattach.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            reattach_status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed { .. },
+                ..
+            }
+        ),
+        "volume reattach deploy did not complete: {reattach_status:?}"
+    );
+    assert_volume_status(core, VolumeStatus::InUse).await;
+
+    let namespace_remove = core
+        .api
+        .namespace_remove(&NamespaceRemoveRequest {
+            operation_id: operation_id("op_dind_volume_namespace_remove"),
+            namespace_id: namespace_id("volume"),
+        })
+        .await
+        .expect("namespace remove submits");
+    let namespace_remove_status = wait_for_terminal_status(
+        &core.api,
+        &namespace_remove.operation_id,
+        DEPLOY_TERMINAL_BUDGET,
+    )
+    .await;
+    assert!(
+        matches!(
+            namespace_remove_status,
+            OperationStatus::NamespaceRemove {
+                state: NamespaceRemoveOperationState::Completed,
+                ..
+            }
+        ),
+        "namespace remove did not complete: {namespace_remove_status:?}"
+    );
+    assert_volume_status(core, VolumeStatus::Orphaned).await;
+
+    let volume_remove = core
+        .api
+        .volume_remove(&VolumeRemoveRequest {
+            operation_id: operation_id("op_dind_volume_remove"),
+            namespace_id: namespace_id("volume"),
+            volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        })
+        .await
+        .expect("volume remove submits");
+    let volume_remove_status = wait_for_terminal_status(
+        &core.api,
+        &volume_remove.operation_id,
+        DEPLOY_TERMINAL_BUDGET,
+    )
+    .await;
+    assert!(
+        matches!(
+            volume_remove_status,
+            OperationStatus::VolumeRemove {
+                state: VolumeRemoveOperationState::Completed,
+                ..
+            }
+        ),
+        "volume remove did not complete: {volume_remove_status:?}"
+    );
+    let volumes = core
+        .api
+        .volume_list(&VolumeListRequest {})
+        .await
+        .expect("volume list after remove");
+    assert!(volumes.volumes.is_empty(), "removed pin remains listed");
+    let inspect_removed = core
+        .exec_on(
+            machine,
+            &["docker", "volume", "inspect", docker_volume_name],
+        )
+        .await;
+    assert!(
+        !inspect_removed.success(),
+        "explicitly removed Docker volume still exists: {inspect_removed:?}"
+    );
+}
+
+async fn assert_volume_status(core: &CoreContext, expected: VolumeStatus) {
+    let listed = core
+        .api
+        .volume_list(&VolumeListRequest {})
+        .await
+        .expect("volume list succeeds");
+    let [volume] = listed.volumes.as_slice() else {
+        panic!("expected one listed volume, got {:?}", listed.volumes);
+    };
+    assert_eq!(volume.namespace_id.as_str(), "volume");
+    assert_eq!(volume.volume_name.as_str(), "data");
+    assert_eq!(volume.status, expected);
 }
 
 async fn build_derived_image(
@@ -1459,6 +1635,15 @@ volumes:
         namespace_id: parsed.namespace_id,
         services: parsed.services,
     }
+}
+
+fn volume_deploy_target_without_mount() -> DeployRequest {
+    let mut target = volume_deploy_target("while true; do sleep 600; done");
+    let [service] = target.services.as_mut_slice() else {
+        panic!("volume target has one service");
+    };
+    service.runtime.volume_mounts.clear();
+    target
 }
 
 fn failing_healthcheck_deploy_target() -> DeployRequest {

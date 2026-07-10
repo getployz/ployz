@@ -374,6 +374,7 @@ fn activate_cloud_founder_machine(
     let request = InitFirstMachineActivateRequest {
         machine_id: machine_id.clone(),
         roles: ployz_core::roles::InstallRolePolicy::install_all(),
+        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

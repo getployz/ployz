@@ -1,6 +1,7 @@
 //! Core-owned operator intent service.
 
 use crate::core_store::CoreStore;
+use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
@@ -91,6 +92,7 @@ pub async fn start_intent_service(
     core_store: CoreStore,
     publish_interval: Duration,
 ) -> Result<RunningIntentService, NatsServiceRuntimeError> {
+    let lease_intent = LeaseIntentStore::new(core_store.clone());
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     // The grant set is a projection of the same store; a thin wrapper over it reads
     // the grants the authorization writer persists there.
@@ -100,12 +102,14 @@ pub async fn start_intent_service(
     let publisher_core_machine_id = core_machine_id;
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
+    let service_lease_intent = lease_intent.clone();
     let service_core_store = core_store.clone();
     let service_authorizations = nats_authorizations.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
             let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
+            let lease_intent = service_lease_intent.clone();
             let core_store = service_core_store.clone();
             let nats_authorizations = service_authorizations.clone();
             let core_machine_id = service_core_machine_id.clone();
@@ -115,6 +119,7 @@ pub async fn start_intent_service(
                     &core_machine_id,
                     &machine_roster,
                     &namespace_intent,
+                    &lease_intent,
                     &core_store,
                     &nats_authorizations,
                 )
@@ -132,6 +137,7 @@ pub async fn start_intent_service(
                 &publisher_core_machine_id,
                 &machine_roster,
                 &namespace_intent,
+                &lease_intent,
                 &core_store,
                 &nats_authorizations,
             )
@@ -172,6 +178,7 @@ async fn intent_get_response(
     core_machine_id: &MachineId,
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
+    lease_intent: &LeaseIntentStore,
     core_store: &CoreStore,
     nats_authorizations: &NatsAuthorizationStore,
 ) -> NatsServiceResponse {
@@ -183,6 +190,7 @@ async fn intent_get_response(
         core_machine_id,
         machine_roster,
         namespace_intent,
+        lease_intent,
         core_store,
         nats_authorizations,
     )
@@ -197,6 +205,7 @@ async fn load_intent(
     core_machine_id: &MachineId,
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
+    lease_intent: &LeaseIntentStore,
     core_store: &CoreStore,
     nats_authorizations: &NatsAuthorizationStore,
 ) -> Result<IntentSnapshot, String> {
@@ -216,6 +225,19 @@ async fn load_intent(
         .list()
         .await
         .map_err(|error| error.to_string())?;
+    let managed_lease = match lease_intent
+        .load()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        ployz_core::cert::ManagedLeaseIntent::Auto { state } => match *state {
+            ployz_core::cert::AutoLeaseState::RecordOnly { lease }
+            | ployz_core::cert::AutoLeaseState::Ready { lease, .. } => Some(lease),
+            ployz_core::cert::AutoLeaseState::Unacquired => None,
+        },
+        ployz_core::cert::ManagedLeaseIntent::BringYourOwn
+        | ployz_core::cert::ManagedLeaseIntent::None => None,
+    };
 
     Ok(IntentSnapshot {
         epoch,
@@ -225,6 +247,7 @@ async fn load_intent(
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,
         authorized_users,
+        managed_lease,
     })
 }
 

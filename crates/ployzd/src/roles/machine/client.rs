@@ -16,7 +16,8 @@ use crate::roles::machine::protocol::{
     MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse, MachineRunContainerOutcome,
     MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
-    MachineSubstrateUpdateRpcRequest,
+    MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
@@ -145,6 +146,20 @@ pub enum MachineContainerInspectError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineVolumeRemoveError {
+    #[error("machine {} volume remove unavailable: {}", machine_id.as_str(), message.as_str())]
+    Unavailable {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    #[error("machine {} volume remove failed: {}", machine_id.as_str(), message.as_str())]
+    RemoveFailed {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
     },
 }
 
@@ -509,6 +524,34 @@ impl NatsMachineContainerRuntime {
                 reason,
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn remove_volume(
+        &self,
+        machine_id: &MachineId,
+        request: MachineVolumeRemoveRpcRequest,
+    ) -> Result<(), MachineVolumeRemoveError> {
+        call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::VolumeRemove,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineVolumeRemoveError::Unavailable {
+                machine_id: machine_id.clone(),
+                message: reason.failure_message(),
+            },
+            MachineCallError::Domain(MachineVolumeRemoveDomainError::RemoveFailed { message }) => {
+                MachineVolumeRemoveError::RemoveFailed {
+                    machine_id: machine_id.clone(),
+                    message,
+                }
+            }
         })
     }
 }

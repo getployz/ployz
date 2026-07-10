@@ -648,7 +648,8 @@ fn runner_error_message(
         | MachineContainerRunnerError::Start { message, .. }
         | MachineContainerRunnerError::Stop { message, .. }
         | MachineContainerRunnerError::Restart { message, .. }
-        | MachineContainerRunnerError::Remove { message, .. } => message,
+        | MachineContainerRunnerError::Remove { message, .. }
+        | MachineContainerRunnerError::RemoveVolume { message, .. } => message,
     }
 }
 

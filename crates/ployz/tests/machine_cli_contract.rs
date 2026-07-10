@@ -593,12 +593,57 @@ fn machine_init_parses_target_with_default_roles_and_release() {
     assert_eq!(command.cluster_name.as_str(), "ployz");
     assert_eq!(command.installer_script, None);
     assert_eq!(
+        command.public_url_mode,
+        ployz_core::cert::PublicUrlMode::Auto
+    );
+    assert_eq!(
         command.installer(),
         BootstrapInstaller::BootstrapUrl(
             MachineBootstrapUrl::try_new(DEFAULT_BOOTSTRAP_URL)
                 .expect("default bootstrap url is valid")
         )
     );
+}
+
+#[test]
+fn machine_init_parses_explicit_no_public_url_mode() {
+    let PloyzctlCommand::MachineInit(command) = parse(&[
+        "machine",
+        "init",
+        "root@203.0.113.10",
+        "--public-url",
+        "none",
+    ]) else {
+        panic!("expected machine init command");
+    };
+
+    assert_eq!(
+        command.public_url_mode,
+        ployz_core::cert::PublicUrlMode::None
+    );
+}
+
+#[test]
+fn machine_init_rejects_unknown_public_url_mode() {
+    let error = parse_command(
+        [
+            "machine",
+            "init",
+            "root@203.0.113.10",
+            "--public-url",
+            "managed-ish",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("unknown public URL mode fails");
+
+    assert!(matches!(
+        error,
+        ployz::commands::PloyzctlCliError::InvalidValue {
+            flag: "--public-url",
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub struct DeployExecutionFacts {
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub has_managed_lease: bool,
     pub step_timeout: Duration,
 }
 

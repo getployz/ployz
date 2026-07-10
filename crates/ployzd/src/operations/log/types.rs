@@ -1,3 +1,4 @@
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
@@ -5,8 +6,8 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
 use ployz_core::ops::{
-    EventSequence, MachineAddOperationStateName, OperationIdempotencyKey, OperationStatus,
-    StatusProjectionError,
+    EventSequence, MachineAddOperationStateName, ManagedLeaseSubject, OperationIdempotencyKey,
+    OperationStatus, StatusProjectionError,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
@@ -151,8 +152,32 @@ pub struct NamespaceRemoveOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedLeaseOperationSubmission {
+    pub operation_id: OperationId,
+    pub subject: ManagedLeaseSubject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ManagedLeasePayload {
+    pub(super) subject: ManagedLeaseSubject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NamespaceRemovePayload {
     pub(super) namespace_id: NamespaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeRemoveOperationSubmission {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VolumeRemovePayload {
+    pub(super) namespace_id: NamespaceId,
+    pub(super) volume_name: VolumeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +237,20 @@ pub struct AcceptedNamespaceRemoveSubmission {
     pub start_sequence: EventSequence,
     pub namespace_id: NamespaceId,
     pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedVolumeRemoveSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedManagedLeaseSubmission {
+    pub operation_id: OperationId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +326,8 @@ pub type RecordDeployTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;
 pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
+pub type RecordVolumeRemoveTransitionError = RecordOperationEventError;
+pub type RecordManagedLeaseTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
 

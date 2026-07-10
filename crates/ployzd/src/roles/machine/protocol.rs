@@ -242,6 +242,35 @@ pub enum MachineContainerRemoveDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineVolumeRemoveRpcRequest {
+    pub operation_id: OperationId,
+    pub docker_volume_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineVolumeRemoveRpcOk {
+    pub machine_id: MachineId,
+}
+
+impl MachineRpcResponder for MachineVolumeRemoveRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id } = self;
+        machine_id
+    }
+}
+
+pub type MachineVolumeRemoveRpcResponse =
+    MachineRpcResponse<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineVolumeRemoveDomainError {
+    RemoveFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineContainerRestartRpcRequest {
     pub operation_id: OperationId,
     pub container_id: ContainerId,

@@ -14,7 +14,8 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineImagePull, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
-    MachineSubstrateReportRpcResponse,
+    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
 };
 use ployzd::service_catalog::machine_role_service;
 use std::sync::{Arc, Mutex};
@@ -265,6 +266,71 @@ async fn nats_machine_runtime_calls_container_remove_service() {
             container_id: container_id("ctr_old"),
             expected_identity: managed_identity(),
         }]
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_calls_volume_remove_service() {
+    let nats = test_nats().await;
+    let machine_id = machine_id("machine_a");
+    let spec = machine_role_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject == machine_service(&machine_id, MachineServiceEndpoint::VolumeRemove)
+        })
+        .expect("volume.remove endpoint exists")
+        .clone();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let mut service = start_nats_service(nats.machine_a.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, {
+            let received = Arc::clone(&received);
+            let machine_id = machine_id.clone();
+            move |request| {
+                let request: MachineVolumeRemoveRpcRequest =
+                    serde_json::from_slice(&request.payload)
+                        .expect("volume remove request decodes");
+                received
+                    .lock()
+                    .expect("received volume request lock is not poisoned")
+                    .push(request);
+                let response = MachineVolumeRemoveRpcResponse::Ok(MachineVolumeRemoveRpcOk {
+                    machine_id: machine_id.clone(),
+                });
+                async move {
+                    NatsServiceResponse::ok(
+                        serde_json::to_vec(&response).expect("response serializes"),
+                    )
+                }
+            }
+        })
+        .await
+        .expect("bind volume.remove endpoint");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush service subscription");
+    let runtime = NatsMachineContainerRuntime::new(nats.client);
+    let request = MachineVolumeRemoveRpcRequest {
+        operation_id: operation_id("op_123"),
+        docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
+    };
+
+    runtime
+        .remove_volume(&machine_id, request.clone())
+        .await
+        .expect("machine volume remove succeeds");
+
+    assert_eq!(
+        received
+            .lock()
+            .expect("received volume request lock is not poisoned")
+            .as_slice(),
+        [request]
     );
 }
 

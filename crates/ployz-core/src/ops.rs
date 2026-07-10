@@ -19,16 +19,19 @@ mod accessors;
 mod cert;
 mod core_replace;
 mod deploy;
+mod event_subjects;
 mod events;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
+mod managed_lease;
 mod namespace_remove;
 mod projection;
 mod replay;
 mod routes;
 mod service_restart;
 mod text;
+mod volume_remove;
 
 pub use accessors::NextEventSequenceError;
 pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
@@ -49,6 +52,10 @@ pub use machine_update::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     MachineUpdateTransition,
 };
+pub use managed_lease::{
+    ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
+    ManagedLeaseSubject, ManagedLeaseTransition,
+};
 pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
     NamespaceRemoveTransition, project_namespace_remove_transition,
@@ -66,6 +73,10 @@ pub use service_restart::{
     ServiceRestartTransition, project_service_restart_transition,
 };
 pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
+pub use volume_remove::{
+    VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    VolumeRemoveTransition, project_volume_remove_transition,
+};
 
 pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 
@@ -80,7 +91,9 @@ pub enum OperationKind {
     MachineLifecycle,
     CoreReplace,
     ServiceRestart,
+    ManagedLease,
     NamespaceRemove,
+    VolumeRemove,
 }
 
 /// Operation status projection rebuilt from local operation evidence.
@@ -140,10 +153,23 @@ pub enum OperationStatus {
         state: ServiceRestartOperationState,
         last_event_sequence: EventSequence,
     },
+    ManagedLease {
+        id: OperationId,
+        subject: ManagedLeaseSubject,
+        state: ManagedLeaseOperationState,
+        last_event_sequence: EventSequence,
+    },
     NamespaceRemove {
         id: OperationId,
         namespace_id: NamespaceId,
         state: NamespaceRemoveOperationState,
+        last_event_sequence: EventSequence,
+    },
+    VolumeRemove {
+        id: OperationId,
+        namespace_id: NamespaceId,
+        volume_name: crate::deploy::VolumeName,
+        state: VolumeRemoveOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -287,6 +313,36 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn volume_remove_accepted(
+        id: OperationId,
+        namespace_id: NamespaceId,
+        volume_name: crate::deploy::VolumeName,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::VolumeRemove {
+            id,
+            namespace_id,
+            volume_name,
+            state: VolumeRemoveOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn managed_lease_accepted(
+        id: OperationId,
+        subject: ManagedLeaseSubject,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::ManagedLease {
+            id,
+            subject,
+            state: ManagedLeaseOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
@@ -296,7 +352,9 @@ impl OperationStatus {
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
+            Self::ManagedLease { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
+            Self::VolumeRemove { state, .. } => state.is_terminal(),
         }
     }
 }
