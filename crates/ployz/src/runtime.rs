@@ -337,15 +337,9 @@ pub async fn execute_command(
             )
             .await
         }
-        PloyzctlCommand::NetworkStatus(command) => {
-            network::execute(network::NetworkRuntimeCommand::Status(command), config).await
-        }
-        PloyzctlCommand::NetworkResolve(command) => {
-            network::execute(network::NetworkRuntimeCommand::Resolve(command), config).await
-        }
-        PloyzctlCommand::NetworkRepair(command) => {
-            network::execute(network::NetworkRuntimeCommand::Repair(command), config).await
-        }
+        PloyzctlCommand::NetworkStatus(command) => network::status(command, config).await,
+        PloyzctlCommand::NetworkResolve(command) => network::resolve(command, config).await,
+        PloyzctlCommand::NetworkRepair(command) => network::repair(command, config).await,
         PloyzctlCommand::ServiceList(command) => {
             render_api_call(
                 config,

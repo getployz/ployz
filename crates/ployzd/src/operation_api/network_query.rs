@@ -29,12 +29,12 @@ use crate::roles::machine::protocol::{
 };
 
 const MAX_CONCURRENT_MACHINE_READS: usize = 16;
+const NETWORK_PROBE_GATHER_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct NetworkQueryService {
     intent_reader: NatsIntentReader,
     client: async_nats::Client,
-    request_timeout: Duration,
 }
 
 impl NetworkQueryService {
@@ -43,7 +43,6 @@ impl NetworkQueryService {
         Self {
             intent_reader,
             client,
-            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
     }
 
@@ -64,8 +63,13 @@ impl NetworkQueryService {
             .into_iter()
             .map(|machine| machine.machine_id)
             .collect::<Vec<_>>();
-        let machines =
-            gather_dns_answers(&self.client, self.request_timeout, &name, machine_ids).await;
+        let machines = gather_dns_answers(
+            &self.client,
+            DEFAULT_MACHINE_RPC_TIMEOUT,
+            &name,
+            machine_ids,
+        )
+        .await;
         Ok(NetworkResolveResult { name, machines })
     }
 
@@ -80,9 +84,14 @@ impl NetworkQueryService {
                 .map_err(|error| NetworkStatusError::Unavailable {
                     message: error.to_string(),
                 })?;
+        let gather_timeout = if request.probe {
+            NETWORK_PROBE_GATHER_TIMEOUT
+        } else {
+            DEFAULT_MACHINE_RPC_TIMEOUT
+        };
         let machines = gather_network_status(
             &self.client,
-            self.request_timeout,
+            gather_timeout,
             request.probe,
             intent.active_machines,
         )
@@ -93,26 +102,28 @@ impl NetworkQueryService {
 
 async fn gather_network_status(
     client: &async_nats::Client,
-    request_timeout: Duration,
+    gather_timeout: Duration,
     probe: bool,
     active_machines: Vec<ActiveMachineState>,
 ) -> Vec<NetworkStatusMachine> {
+    let deadline = tokio::time::Instant::now() + gather_timeout;
     let reads = stream::iter(active_machines)
         .map(|active| async move {
             let machine_id = &active.machine_id;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let dataplane_request = MachineDataplaneStatusRpcRequest { probe };
             let dns_request = DnsStatusRpcRequest {};
             let dataplane = request_json::<_, MachineDataplaneStatusRpcResponse>(
                 client,
                 machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
                 &dataplane_request,
-                request_timeout,
+                remaining,
             );
             let dns = request_json::<_, DnsStatusRpcOk>(
                 client,
                 machine_service(machine_id, MachineServiceEndpoint::DnsStatus),
                 &dns_request,
-                request_timeout,
+                remaining,
             );
             let (dataplane, dns) = tokio::join!(dataplane, dns);
             let dataplane = dataplane_testimony(machine_id, dataplane);
@@ -147,17 +158,19 @@ fn normalize_internal_name(name: &str) -> Option<InternalServiceName> {
 
 async fn gather_dns_answers(
     client: &async_nats::Client,
-    request_timeout: Duration,
+    gather_timeout: Duration,
     name: &InternalServiceName,
     machine_ids: Vec<MachineId>,
 ) -> Vec<NetworkResolveMachineTestimony> {
+    let deadline = tokio::time::Instant::now() + gather_timeout;
     let answers = stream::iter(machine_ids)
         .map(|machine_id| async move {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = request_json::<_, DnsResolveRpcOk>(
                 client,
                 machine_service(&machine_id, MachineServiceEndpoint::DnsResolve),
                 &DnsResolveRpcRequest { name: name.clone() },
-                request_timeout,
+                remaining,
             )
             .await;
             dns_resolve_testimony(machine_id, name, response)
