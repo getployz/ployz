@@ -10,7 +10,7 @@ use crate::operations::deploy::{
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
     DeployHealthChecker, DeployMachineCandidates, MachineContainerRuntime,
     ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
-    execute_deploy_operation, load_deploy_execution_facts_from_nats_with_managed_certificate,
+    execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -31,6 +31,8 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
+
+use super::facts::{ManagedCertificateWaitContext, ensure_managed_certificate_for_deploy};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -54,6 +56,9 @@ where
         submission: accepted,
         registry_credentials,
     } = accepted_execution;
+    if !claim_deploy_execution(&stores.controllers, &accepted.operation_id).await? {
+        return Err(DeployOperationRunError::AlreadyStarted);
+    }
     let DeployOperationPorts {
         facts_reader,
         intent_reader,
@@ -63,15 +68,28 @@ where
     } = ports;
     let request = accepted.target.clone();
 
-    let facts = match load_deploy_execution_facts_from_nats_with_managed_certificate(
-        &request,
-        &accepted.operation_id,
-        machine_candidates,
-        intent_reader,
-        facts_reader,
-        &stores,
-        step_timeout,
-    )
+    let facts = match async {
+        ensure_managed_certificate_for_deploy(
+            &request,
+            &accepted.operation_id,
+            intent_reader,
+            ManagedCertificateWaitContext {
+                lease_intent: &stores.lease_intent,
+                lease_client: &stores.lease_client,
+                repository: stores.controllers.repository(),
+                policy: stores.managed_certificate_wait,
+            },
+        )
+        .await?;
+        load_deploy_execution_facts_from_nats(
+            &request,
+            machine_candidates,
+            intent_reader,
+            facts_reader,
+            step_timeout,
+        )
+        .await
+    }
     .await
     {
         Ok(facts) => facts,
@@ -361,12 +379,6 @@ impl DeployOperationDriver {
         self,
         accepted: AcceptedDeployExecution,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
-        if !claim_deploy_execution(&self.stores.controllers, &accepted.submission.operation_id)
-            .await?
-        {
-            return Err(DeployOperationRunError::AlreadyStarted);
-        }
-
         let client = self.stores.intent_change_client.clone();
         let mut dataplane = NatsMachineDataplanePreparer::new(client.clone())
             .with_request_timeout(self.step_timeout)
@@ -398,9 +410,11 @@ impl DeployOperationDriver {
             self.step_timeout,
         )
         .await;
-        controllers
-            .release_namespace(&namespace_id, &operation_id)
-            .await;
+        if !matches!(&result, Err(DeployOperationRunError::AlreadyStarted)) {
+            controllers
+                .release_namespace(&namespace_id, &operation_id)
+                .await;
+        }
         result
     }
 }

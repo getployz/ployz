@@ -640,7 +640,6 @@ pub(super) enum DeployEvent {
 /// as fresh. This is the single source of the evidence→stage mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidenceRequirement {
-    AcceptedOrPlanning,
     Planning,
     RunningStage(DeployRunningStage),
     Cleanup,
@@ -648,10 +647,9 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
-        DeployEvidence::WaitingForManagedCertificate => EvidenceRequirement::AcceptedOrPlanning,
-        DeployEvidence::ImageResolved { .. } | DeployEvidence::PlanCreated { .. } => {
-            EvidenceRequirement::Planning
-        }
+        DeployEvidence::WaitingForManagedCertificate
+        | DeployEvidence::ImageResolved { .. }
+        | DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
         DeployEvidence::DataplanePrepared { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::PreparingDataplane)
         }
@@ -676,10 +674,6 @@ pub fn validate_fresh_deploy_evidence(
         return Err(kind_mismatch(current, OperationKind::Deploy));
     };
     let valid = match evidence_requirement(evidence) {
-        EvidenceRequirement::AcceptedOrPlanning => matches!(
-            state,
-            DeployOperationState::Accepted | DeployOperationState::Planning
-        ),
         EvidenceRequirement::Planning => matches!(state, DeployOperationState::Planning),
         EvidenceRequirement::RunningStage(stage) => {
             evidence_is_current_or_past_running_stage(state, stage)
@@ -722,7 +716,6 @@ fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
 
 fn evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence_requirement(evidence) {
-        EvidenceRequirement::AcceptedOrPlanning => DeployOperationState::Accepted,
         EvidenceRequirement::Planning => DeployOperationState::Planning,
         EvidenceRequirement::RunningStage(stage) => DeployOperationState::Running { stage },
         EvidenceRequirement::Cleanup => DeployOperationState::Running {
@@ -798,10 +791,6 @@ pub(super) fn project_event(
             // Evidence from a phase not yet reached is a stale duplicate and
             // is already satisfied.
             let records = match evidence_requirement(&evidence) {
-                EvidenceRequirement::AcceptedOrPlanning => matches!(
-                    state,
-                    DeployOperationState::Accepted | DeployOperationState::Planning
-                ),
                 EvidenceRequirement::Planning => !matches!(state, DeployOperationState::Accepted),
                 EvidenceRequirement::RunningStage(required) => {
                     evidence_is_current_or_past_running_stage(state, required)

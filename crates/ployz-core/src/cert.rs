@@ -78,7 +78,7 @@ impl ManagedLeaseIntent {
         let AutoLeaseState::Ready { lease, .. } = state.as_ref() else {
             return false;
         };
-        renewal_due(
+        two_thirds_due(
             lease.issued_at.unix_seconds(),
             lease.expires_at.unix_seconds(),
             now_seconds,
@@ -93,7 +93,7 @@ impl ManagedLeaseIntent {
         let AutoLeaseState::Ready { bundle, .. } = state.as_ref() else {
             return false;
         };
-        refresh_due(
+        two_thirds_due(
             bundle.issued_at.unix_seconds(),
             bundle.expires_at.unix_seconds(),
             now_seconds,
@@ -120,12 +120,7 @@ pub struct ManagedLeaseAcquireRequest {
     pub ipv6: Vec<Ipv6Addr>,
 }
 
-fn renewal_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
-    now_seconds
-        >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
-}
-
-fn refresh_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
+fn two_thirds_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
     now_seconds
         >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
 }
@@ -141,26 +136,6 @@ pub enum ManagedCertificateIssuanceFailureKind {
     Caa,
     DnsTxtMissing,
     ProviderError,
-}
-
-impl ManagedCertificateIssuanceFailureKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::RateLimit => "rate_limit",
-            Self::Provider5xx => "provider_5xx",
-            Self::ValidationTimeout => "validation_timeout",
-            Self::Caa => "caa",
-            Self::DnsTxtMissing => "dns_txt_missing",
-            Self::ProviderError => "provider_error",
-        }
-    }
-}
-
-impl std::fmt::Display for ManagedCertificateIssuanceFailureKind {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

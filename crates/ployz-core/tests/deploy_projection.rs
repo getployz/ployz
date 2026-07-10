@@ -455,29 +455,30 @@ fn plan_created_event_records_without_changing_status() {
 }
 
 #[test]
-fn waiting_for_managed_certificate_records_without_changing_accepted_status() {
-    let accepted = OperationStatus::deploy_accepted(
-        operation_id("op_123"),
-        namespace_id("default"),
-        service_id("svc_api"),
-        event_sequence(1),
-    );
+fn waiting_for_managed_certificate_records_without_changing_planning_status() {
+    let planning = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
+        service_id: service_id("svc_api"),
+        state: DeployOperationState::Planning,
+        last_event_sequence: event_sequence(2),
+    };
 
     assert_eq!(
         project_operation_event(
-            &accepted,
+            &planning,
             OperationEvent::DeployWaitingForManagedCertificate {
                 operation_id: operation_id("op_123"),
             },
-            event_sequence(2),
+            event_sequence(3),
         ),
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
-                state: DeployOperationState::Accepted,
-                last_event_sequence: event_sequence(2),
+                state: DeployOperationState::Planning,
+                last_event_sequence: event_sequence(3),
             }),
         })
     );

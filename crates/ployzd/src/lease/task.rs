@@ -284,7 +284,7 @@ async fn run_download_step(
         .download_bundle(lease.name.clone(), lease.token.clone())
         .await
     {
-        Ok(BundleDownloadOutcome::Pending(_)) => {
+        Ok(BundleDownloadOutcome::Pending { .. }) => {
             return Ok(ManagedLeaseTaskOutcome::NoAction);
         }
         Ok(BundleDownloadOutcome::Ready(bundle)) => Ok((lease, Some(bundle))),

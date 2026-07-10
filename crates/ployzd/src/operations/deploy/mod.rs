@@ -22,7 +22,6 @@ use ployz_core::ops::{
 pub use facts::{
     DeployFactLoadError, DeployMachineCandidates, ManagedCertificateWaitPolicy,
     load_deploy_execution_facts_from_nats,
-    load_deploy_execution_facts_from_nats_with_managed_certificate,
 };
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,

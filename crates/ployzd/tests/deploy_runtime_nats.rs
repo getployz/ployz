@@ -26,7 +26,8 @@ use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
 use ployzd::operations::deploy::driver::{
-    DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
+    DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
+    run_deploy_operation,
 };
 use ployzd::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use ployzd::operations::log::{OperationRepository, SubmitOperationError};
@@ -35,6 +36,7 @@ use ployzd::roles::machine::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
+use ployzd::tasks::TaskRegistry;
 use std::time::Duration;
 
 #[tokio::test]
@@ -330,6 +332,59 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
             },
             ..
         }) if message.as_str().contains("re-run init with --public-url auto")
+    ));
+}
+
+#[tokio::test]
+async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock() {
+    let nats = test_nats().await;
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
+        .await
+        .expect("deploy operation accepted");
+    controllers
+        .repository()
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            ployz_core::ops::DeployTransition::Planning,
+        )
+        .await
+        .expect("deploy already started");
+    let driver = DeployOperationDriver::new(
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            controllers: controllers.clone(),
+        },
+        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
+        Duration::from_secs(5),
+        TaskRegistry::default(),
+    );
+
+    let result = driver.run(accepted).await;
+    let second = controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_second"),
+            idempotency_key: idempotency_key("idem_second"),
+            reservation_id: reserve_deploy(&controllers).await,
+            target: deploy_request(1),
+        })
+        .await
+        .expect_err("original deploy still owns the namespace lock");
+
+    assert!(matches!(
+        result,
+        Err(DeployOperationRunError::AlreadyStarted)
+    ));
+    assert!(matches!(
+        second,
+        SubmitCommandError::NamespaceBusy { owner, .. }
+            if owner == operation_id("op_123")
     ));
 }
 

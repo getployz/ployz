@@ -53,12 +53,9 @@ pub struct LeaseClient {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleDownloadOutcome {
     Ready(ManagedCertBundle),
-    Pending(BundlePending),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BundlePending {
-    pub last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    Pending {
+        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -114,7 +111,7 @@ impl LeaseClient {
                 .map_err(LeaseClientError::from_ureq)?;
             if response.status() == ureq::http::StatusCode::ACCEPTED {
                 let BundlePendingResponse::Pending { last_error } = decode_response(&mut response)?;
-                return Ok(BundleDownloadOutcome::Pending(BundlePending { last_error }));
+                return Ok(BundleDownloadOutcome::Pending { last_error });
             }
             decode_response(&mut response).map(BundleDownloadOutcome::Ready)
         })
@@ -273,10 +270,7 @@ mod tests {
             .await
             .expect("lease renewed");
 
-        assert_eq!(
-            pending,
-            BundleDownloadOutcome::Pending(BundlePending { last_error: None })
-        );
+        assert_eq!(pending, BundleDownloadOutcome::Pending { last_error: None });
         assert!(acquired.bundle.is_none());
         assert_eq!(bundle.dns_names, acquired.lease.name.wildcard_and_apex());
         assert_eq!(renewed.lease.name, acquired.lease.name);
@@ -354,9 +348,9 @@ mod tests {
 
         assert_eq!(
             outcome,
-            BundleDownloadOutcome::Pending(BundlePending {
+            BundleDownloadOutcome::Pending {
                 last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
-            })
+            }
         );
         server.await.expect("pending worker");
     }

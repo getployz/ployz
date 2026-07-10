@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
-use super::driver::DeployOperationStores;
 use super::preparation::namespace_cleanup_candidates;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +40,13 @@ impl ManagedCertificateWaitPolicy {
             poll_interval,
         }
     }
+}
+
+pub(super) struct ManagedCertificateWaitContext<'a> {
+    pub(super) lease_intent: &'a LeaseIntentStore,
+    pub(super) lease_client: &'a LeaseClient,
+    pub(super) repository: &'a OperationRepository,
+    pub(super) policy: ManagedCertificateWaitPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,35 +87,26 @@ pub async fn load_deploy_execution_facts_from_nats(
     .await
 }
 
-pub async fn load_deploy_execution_facts_from_nats_with_managed_certificate(
+pub(super) async fn ensure_managed_certificate_for_deploy(
     request: &DeployRequest,
     operation_id: &OperationId,
-    fallback_candidates: DeployMachineCandidates,
     intent_reader: &NatsIntentReader,
-    facts_reader: &NatsMachineFactsReader,
-    stores: &DeployOperationStores,
-    step_timeout: Duration,
-) -> Result<DeployExecutionFacts, DeployFactLoadError> {
+    context: ManagedCertificateWaitContext<'_>,
+) -> Result<(), DeployFactLoadError> {
+    if !requests_auto_hostname(request) {
+        return Ok(());
+    }
     let intent = read_intent(intent_reader).await?;
-    let managed_lease = managed_lease_for_deploy(
-        request,
-        operation_id,
-        &intent.managed_lease,
-        &stores.lease_intent,
-        &stores.lease_client,
-        stores.controllers.repository(),
-        stores.managed_certificate_wait,
-    )
-    .await?;
-    deploy_execution_facts(
-        request,
-        fallback_candidates,
-        facts_reader,
-        intent,
-        managed_lease,
-        step_timeout,
-    )
-    .await
+    ensure_managed_certificate(operation_id, &intent.managed_lease, context).await
+}
+
+fn requests_auto_hostname(request: &DeployRequest) -> bool {
+    request.services.iter().any(|service| {
+        service
+            .routes
+            .iter()
+            .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
+    })
 }
 
 async fn read_intent(
@@ -186,72 +183,40 @@ async fn deploy_execution_facts(
     })
 }
 
-async fn managed_lease_for_deploy(
-    request: &DeployRequest,
+async fn ensure_managed_certificate(
     operation_id: &OperationId,
     projection: &ployz_core::state::ManagedLeaseProjection,
-    lease_intent: &LeaseIntentStore,
-    lease_client: &LeaseClient,
-    repository: &OperationRepository,
-    policy: ManagedCertificateWaitPolicy,
-) -> Result<Option<ployz_core::cert::ManagedLeaseName>, DeployFactLoadError> {
+    context: ManagedCertificateWaitContext<'_>,
+) -> Result<(), DeployFactLoadError> {
     match projection {
-        ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => {
-            Ok(Some(lease.name.clone()))
+        ployz_core::state::ManagedLeaseProjection::Ready { .. }
+        | ployz_core::state::ManagedLeaseProjection::Unacquired => Ok(()),
+        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
+            wait_for_managed_certificate(operation_id, lease, context).await
         }
-        ployz_core::state::ManagedLeaseProjection::Unacquired => Ok(None),
-        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease }
-            if request.services.iter().any(|service| {
-                service
-                    .routes
-                    .iter()
-                    .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
-            }) =>
-        {
-            wait_for_managed_certificate(
-                operation_id,
-                lease,
-                lease_intent,
-                lease_client,
-                repository,
-                policy,
-            )
-            .await
-            .map(Some)
-        }
-        ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => Ok(None),
     }
 }
 
 async fn wait_for_managed_certificate(
     operation_id: &OperationId,
     lease: &ployz_core::cert::ManagedLeaseRecord,
-    lease_intent: &LeaseIntentStore,
-    lease_client: &LeaseClient,
-    repository: &OperationRepository,
-    policy: ManagedCertificateWaitPolicy,
-) -> Result<ployz_core::cert::ManagedLeaseName, DeployFactLoadError> {
-    let deadline = tokio::time::Instant::now() + policy.overall_timeout;
+    context: ManagedCertificateWaitContext<'_>,
+) -> Result<(), DeployFactLoadError> {
+    let deadline = tokio::time::Instant::now() + context.policy.overall_timeout;
     let mut latest_last_error = None;
     let mut waiting_recorded = false;
 
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(DeployFactLoadError::CertificatePending {
-                last_error: latest_last_error,
-            });
-        }
-        let download = tokio::time::timeout(
-            remaining,
-            lease_client.download_bundle(lease.name.clone(), lease.token.clone()),
+        let download = tokio::time::timeout_at(
+            deadline,
+            context
+                .lease_client
+                .download_bundle(lease.name.clone(), lease.token.clone()),
         )
         .await;
         match download {
             Err(_) => {
-                return Err(DeployFactLoadError::CertificatePending {
-                    last_error: latest_last_error,
-                });
+                return Err(certificate_pending(latest_last_error));
             }
             Ok(Err(source)) => {
                 return Err(DeployFactLoadError::ManagedCertificateWorker {
@@ -259,22 +224,24 @@ async fn wait_for_managed_certificate(
                 });
             }
             Ok(Ok(BundleDownloadOutcome::Ready(bundle))) => {
-                return match lease_intent
+                return match context
+                    .lease_intent
                     .store_lease(lease.clone(), Some(bundle))
                     .await
                     .map_err(|source| DeployFactLoadError::ManagedCertificateStore {
                         message: source.to_string(),
                     })? {
-                    StoreLeaseOutcome::Stored => Ok(lease.name.clone()),
+                    StoreLeaseOutcome::Stored => Ok(()),
                     StoreLeaseOutcome::Superseded => {
                         Err(DeployFactLoadError::ManagedCertificateSuperseded)
                     }
                 };
             }
-            Ok(Ok(BundleDownloadOutcome::Pending(pending))) => {
-                latest_last_error = pending.last_error;
+            Ok(Ok(BundleDownloadOutcome::Pending { last_error })) => {
+                latest_last_error = last_error;
                 if !waiting_recorded {
-                    repository
+                    context
+                        .repository
                         .record_deploy_evidence(
                             operation_id,
                             DeployEvidence::WaitingForManagedCertificate,
@@ -288,14 +255,18 @@ async fn wait_for_managed_certificate(
             }
         }
 
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(DeployFactLoadError::CertificatePending {
-                last_error: latest_last_error,
-            });
+        let next_poll = (tokio::time::Instant::now() + context.policy.poll_interval).min(deadline);
+        tokio::time::sleep_until(next_poll).await;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(certificate_pending(latest_last_error));
         }
-        tokio::time::sleep(policy.poll_interval.min(remaining)).await;
     }
+}
+
+fn certificate_pending(
+    last_error: Option<ManagedCertificateIssuanceFailureKind>,
+) -> DeployFactLoadError {
+    DeployFactLoadError::CertificatePending { last_error }
 }
 
 fn operation_dataplane_members(
