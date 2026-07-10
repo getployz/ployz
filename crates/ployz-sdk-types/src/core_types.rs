@@ -70,7 +70,7 @@ pub use ployz_core::ops::{
     CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployOperationState, DeployRunningStage, PreStartHookFailure,
 };
-pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
 pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{

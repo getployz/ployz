@@ -172,10 +172,14 @@ fn assert_observed_running(
     assert_eq!(observation.identity.kind, ManagedContainerKind::Service);
     // Every started container joins the endpoint network (ADR 0023), so
     // the observation always carries an endpoint IP.
-    assert_eq!(
-        observation.state,
-        ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into())
-    );
+    assert!(matches!(
+        &observation.state,
+        ContainerRuntimeState::Running {
+            ip: Some(ip),
+            health: ployz_core::machine_runtime::ContainerHealth::None,
+            started_at_unix_ms: Some(_),
+        } if *ip == std::net::Ipv4Addr::LOCALHOST
+    ));
 }
 
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {

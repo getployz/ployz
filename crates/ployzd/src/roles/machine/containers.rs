@@ -1,4 +1,5 @@
-use super::facts::{current_unix_ms, observation_state};
+use super::current_unix_ms;
+use super::facts::observation_state;
 use super::response::{
     container_start_error, failure_message, inspect_hint, log_hint, machine_domain_error,
     machine_success, runner_error,
@@ -392,6 +393,7 @@ where
         Some(observation) => machine_success(MachineContainerInspectRpcResponse::Ok(
             MachineContainerInspectRpcOk {
                 machine_id,
+                observed_at_unix_ms: current_unix_ms(),
                 observation: Some(observation),
             },
         )),
@@ -399,6 +401,7 @@ where
             Ok(_) => machine_success(MachineContainerInspectRpcResponse::Ok(
                 MachineContainerInspectRpcOk {
                     machine_id,
+                    observed_at_unix_ms: current_unix_ms(),
                     observation: None,
                 },
             )),

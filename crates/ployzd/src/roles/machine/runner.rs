@@ -24,6 +24,7 @@ pub enum ExistingManagedContainerState {
     Running {
         ip: Option<IpAddr>,
         health: ContainerHealth,
+        started_at_unix_ms: Option<u64>,
     },
     StartableStopped,
     NotStartable {

@@ -25,9 +25,7 @@ use crate::roles::machine::protocol::{
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError, OciDigest};
-use ployz_core::machine_runtime::{
-    MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
-};
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
@@ -533,7 +531,7 @@ impl NatsMachineContainerRuntime {
         &self,
         machine_id: &MachineId,
         request: MachineContainerInspectRpcRequest,
-    ) -> Result<Option<ManagedContainerObservation>, MachineContainerInspectError> {
+    ) -> Result<MachineContainerInspectRpcOk, MachineContainerInspectError> {
         call_machine::<MachineContainerInspectRpcOk, MachineContainerInspectDomainError>(
             &self.client,
             self.request_timeout,
@@ -542,7 +540,6 @@ impl NatsMachineContainerRuntime {
             &request,
         )
         .await
-        .map(|ok| ok.observation)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => MachineContainerInspectError::Unavailable {
                 machine_id: machine_id.clone(),

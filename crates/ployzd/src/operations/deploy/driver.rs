@@ -19,7 +19,9 @@ use crate::roles::machine::client::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
     NatsMachineFactsReader,
 };
-use crate::roles::machine::protocol::MachineContainerInspectRpcRequest;
+use crate::roles::machine::protocol::{
+    MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
+};
 use crate::tasks::TaskRegistry;
 use ployz_core::deploy::DeployRouteTarget;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
@@ -468,12 +470,14 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
         &mut self,
         containers: &[DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
-        let mut running_since = vec![None; containers.len()];
-
         loop {
             let mut all_confirmed = true;
-            for (container, running_since) in containers.iter().zip(&mut running_since) {
-                let observation = self
+            for container in containers {
+                let MachineContainerInspectRpcOk {
+                    observation,
+                    observed_at_unix_ms,
+                    ..
+                } = self
                     .runtime
                     .inspect_container(
                         &container.machine_id,
@@ -487,17 +491,14 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
                     Some(observation) => observed_container_readiness(
                         observation,
                         container.requires_docker_healthcheck,
+                        observed_at_unix_ms,
                     ),
                     None => ObservedContainerReadiness::Pending,
                 };
-                match update_container_confirmation(
-                    readiness,
-                    running_since,
-                    tokio::time::Instant::now(),
-                ) {
-                    ContainerConfirmation::Confirmed => {}
-                    ContainerConfirmation::Pending => all_confirmed = false,
-                    ContainerConfirmation::Failed(message) => {
+                match readiness {
+                    ObservedContainerReadiness::Confirmed => {}
+                    ObservedContainerReadiness::Pending => all_confirmed = false,
+                    ObservedContainerReadiness::Failed(message) => {
                         return Err(unhealthy_container(container, message));
                     }
                 }
@@ -512,42 +513,32 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
     }
 }
 
-fn update_container_confirmation(
-    readiness: ObservedContainerReadiness,
-    running_since: &mut Option<tokio::time::Instant>,
-    observed_at: tokio::time::Instant,
-) -> ContainerConfirmation {
-    match readiness {
-        ObservedContainerReadiness::Confirmed => ContainerConfirmation::Confirmed,
-        ObservedContainerReadiness::RunningUnconfirmed => {
-            let started_at = running_since.get_or_insert(observed_at);
-            if observed_at.duration_since(*started_at) >= DEPLOY_RUNNING_CONFIRMATION_WINDOW {
-                ContainerConfirmation::Confirmed
-            } else {
-                ContainerConfirmation::Pending
-            }
-        }
-        ObservedContainerReadiness::Pending => {
-            *running_since = None;
-            ContainerConfirmation::Pending
-        }
-        ObservedContainerReadiness::Failed(message) => ContainerConfirmation::Failed(message),
-    }
-}
-
 fn observed_container_readiness(
     observation: &ployz_core::machine_runtime::ManagedContainerObservation,
     requires_docker_healthcheck: bool,
+    observed_at_unix_ms: u64,
 ) -> ObservedContainerReadiness {
     match &observation.state {
-        ContainerRuntimeState::Running { health, .. } => match health {
+        ContainerRuntimeState::Running {
+            health,
+            started_at_unix_ms,
+            ..
+        } => match health {
             ContainerHealth::Starting => ObservedContainerReadiness::Pending,
             ContainerHealth::Healthy => ObservedContainerReadiness::Confirmed,
             ContainerHealth::Unhealthy => ObservedContainerReadiness::Failed("unhealthy"),
             ContainerHealth::None if requires_docker_healthcheck => {
                 ObservedContainerReadiness::Pending
             }
-            ContainerHealth::None => ObservedContainerReadiness::RunningUnconfirmed,
+            ContainerHealth::None => match started_at_unix_ms {
+                Some(started_at_unix_ms)
+                    if observed_at_unix_ms.saturating_sub(*started_at_unix_ms)
+                        >= DEPLOY_RUNNING_CONFIRMATION_WINDOW.as_millis() as u64 =>
+                {
+                    ObservedContainerReadiness::Confirmed
+                }
+                Some(_) | None => ObservedContainerReadiness::Pending,
+            },
         },
         ContainerRuntimeState::Exited => ObservedContainerReadiness::Failed("container exited"),
     }
@@ -555,14 +546,6 @@ fn observed_container_readiness(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObservedContainerReadiness {
-    Confirmed,
-    RunningUnconfirmed,
-    Pending,
-    Failed(&'static str),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContainerConfirmation {
     Confirmed,
     Pending,
     Failed(&'static str),
@@ -609,61 +592,46 @@ mod tests {
     };
 
     #[test]
-    fn running_confirmation_restarts_after_an_interrupted_observation() {
-        let started_at = tokio::time::Instant::now();
-        let mut running_since = None;
-
-        let confirmed = [
-            update_container_confirmation(
-                ObservedContainerReadiness::RunningUnconfirmed,
-                &mut running_since,
-                started_at,
-            ),
-            update_container_confirmation(
-                ObservedContainerReadiness::Pending,
-                &mut running_since,
-                started_at + Duration::from_secs(1),
-            ),
-            update_container_confirmation(
-                ObservedContainerReadiness::RunningUnconfirmed,
-                &mut running_since,
-                started_at + Duration::from_secs(2),
-            ),
-            update_container_confirmation(
-                ObservedContainerReadiness::RunningUnconfirmed,
-                &mut running_since,
-                started_at + Duration::from_secs(4),
-            ),
-        ];
+    fn running_confirmation_uses_observed_container_start_time() {
+        let mut observation = observation(
+            "machine_a",
+            "ctr_1",
+            ContainerRuntimeState::running_unroutable(),
+        );
+        observation.state = ContainerRuntimeState::Running {
+            ip: None,
+            health: ContainerHealth::None,
+            started_at_unix_ms: Some(1_000),
+        };
 
         assert_eq!(
-            confirmed,
-            [
-                ContainerConfirmation::Pending,
-                ContainerConfirmation::Pending,
-                ContainerConfirmation::Pending,
-                ContainerConfirmation::Confirmed,
-            ]
+            observed_container_readiness(&observation, false, 2_500),
+            ObservedContainerReadiness::Confirmed
         );
     }
 
     #[test]
     fn docker_health_confirms_immediately() {
-        let observed_at = tokio::time::Instant::now();
-        let mut running_since = None;
-
         assert_eq!(
-            update_container_confirmation(
-                ObservedContainerReadiness::Confirmed,
-                &mut running_since,
-                observed_at,
+            observed_container_readiness(
+                &observation(
+                    "machine_a",
+                    "ctr_1",
+                    ContainerRuntimeState::Running {
+                        ip: None,
+                        health: ContainerHealth::Healthy,
+                        started_at_unix_ms: None,
+                    },
+                ),
+                false,
+                0,
             ),
-            ContainerConfirmation::Confirmed
+            ObservedContainerReadiness::Confirmed,
         );
     }
 
     #[test]
-    fn health_classifies_running_without_endpoint_as_unconfirmed() {
+    fn health_waits_when_running_start_time_is_missing() {
         assert_eq!(
             observed_container_readiness(
                 &observation(
@@ -672,8 +640,9 @@ mod tests {
                     ContainerRuntimeState::running_unroutable()
                 ),
                 false,
+                0,
             ),
-            ObservedContainerReadiness::RunningUnconfirmed
+            ObservedContainerReadiness::Pending
         );
     }
 
@@ -687,6 +656,7 @@ mod tests {
                     ContainerRuntimeState::running_unroutable()
                 ),
                 true,
+                0,
             ),
             ObservedContainerReadiness::Pending
         );
@@ -703,9 +673,11 @@ mod tests {
                         ContainerRuntimeState::Running {
                             ip: None,
                             health: ContainerHealth::Healthy,
+                            started_at_unix_ms: None,
                         },
                     ),
                     requires_docker_healthcheck,
+                    0,
                 ),
                 ObservedContainerReadiness::Confirmed
             );
@@ -718,6 +690,7 @@ mod tests {
             observed_container_readiness(
                 &observation("machine_a", "ctr_1", ContainerRuntimeState::Exited),
                 false,
+                0,
             ),
             ObservedContainerReadiness::Failed("container exited")
         );
@@ -733,9 +706,11 @@ mod tests {
                     ContainerRuntimeState::Running {
                         ip: None,
                         health: ContainerHealth::Starting,
+                        started_at_unix_ms: None,
                     }
                 ),
                 true,
+                0,
             ),
             ObservedContainerReadiness::Pending
         );
@@ -747,9 +722,11 @@ mod tests {
                     ContainerRuntimeState::Running {
                         ip: None,
                         health: ContainerHealth::Unhealthy,
+                        started_at_unix_ms: None,
                     }
                 ),
                 true,
+                0,
             ),
             ObservedContainerReadiness::Failed("unhealthy")
         );
