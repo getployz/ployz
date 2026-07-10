@@ -32,6 +32,8 @@ use ployz_core::machine_runtime::{
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
@@ -136,11 +138,14 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             let ExistingManagedContainerState::Running { health, .. } = &mut container.state else {
                 continue;
             };
-            *health = docker_container_health(docker, &container.container_id)
-                .await
-                .map_err(|error| MachineContainerRunnerError::ListExisting {
-                    message: error.to_string(),
-                })?;
+            let (observed_health, started_at_unix_ms) =
+                docker_container_details(docker, &container.container_id)
+                    .await
+                    .map_err(|error| MachineContainerRunnerError::ListExisting {
+                        message: error,
+                    })?;
+            *health = observed_health;
+            container.started_at_unix_ms = started_at_unix_ms;
         }
 
         Ok(containers)
@@ -595,26 +600,38 @@ fn docker_container_state(
     }
 }
 
-async fn docker_container_health(
+async fn docker_container_details(
     docker: &Docker,
     container_id: &ContainerId,
-) -> Result<ContainerHealth, BollardError> {
+) -> Result<(ContainerHealth, Option<i64>), String> {
     let inspect = docker
         .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
-        .await?;
-    Ok(
-        match inspect
-            .state
-            .and_then(|state| state.health)
-            .and_then(|health| health.status)
-            .unwrap_or(HealthStatusEnum::NONE)
-        {
-            HealthStatusEnum::NONE | HealthStatusEnum::EMPTY => ContainerHealth::None,
-            HealthStatusEnum::STARTING => ContainerHealth::Starting,
-            HealthStatusEnum::HEALTHY => ContainerHealth::Healthy,
-            HealthStatusEnum::UNHEALTHY => ContainerHealth::Unhealthy,
-        },
-    )
+        .await
+        .map_err(|error| error.to_string())?;
+    let state = inspect.state;
+    let health = match state
+        .as_ref()
+        .and_then(|state| state.health.as_ref())
+        .and_then(|health| health.status)
+        .unwrap_or(HealthStatusEnum::NONE)
+    {
+        HealthStatusEnum::NONE | HealthStatusEnum::EMPTY => ContainerHealth::None,
+        HealthStatusEnum::STARTING => ContainerHealth::Starting,
+        HealthStatusEnum::HEALTHY => ContainerHealth::Healthy,
+        HealthStatusEnum::UNHEALTHY => ContainerHealth::Unhealthy,
+    };
+    let started_at_unix_ms = state
+        .and_then(|state| state.started_at)
+        .map(|started_at| parse_docker_started_at(&started_at))
+        .transpose()?;
+    Ok((health, started_at_unix_ms))
+}
+
+fn parse_docker_started_at(started_at: &str) -> Result<i64, String> {
+    let parsed = OffsetDateTime::parse(started_at, &Rfc3339)
+        .map_err(|error| format!("invalid Docker StartedAt `{started_at}`: {error}"))?;
+    i64::try_from(parsed.unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| format!("Docker StartedAt `{started_at}` is out of range"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -864,6 +881,7 @@ fn existing_container_from_summary(
         health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
         resolved_image_identity: summary.image_id,
         created_at_unix_seconds: summary.created,
+        started_at_unix_ms: None,
     })
 }
 
@@ -1263,7 +1281,17 @@ mod tests {
                 health_status: None,
                 resolved_image_identity: None,
                 created_at_unix_seconds: None,
+                started_at_unix_ms: None,
             }
+        );
+    }
+
+    #[test]
+    fn docker_started_at_becomes_unix_milliseconds() {
+        assert_eq!(
+            parse_docker_started_at("2026-07-10T08:09:10.123456789Z")
+                .expect("Docker timestamp parses"),
+            1_783_670_950_123,
         );
     }
 

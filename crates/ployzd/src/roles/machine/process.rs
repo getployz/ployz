@@ -714,6 +714,7 @@ mod tests {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
+            started_at_unix_ms: None,
         }]);
         let mut facts_sub = nats
             .client

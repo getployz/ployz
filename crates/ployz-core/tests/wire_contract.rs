@@ -730,6 +730,7 @@ fn managed_container_observation_wire_shape_nests_identity() {
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
+        started_at_unix_ms: Some(1_783_670_950_123),
     };
 
     assert_eq!(
@@ -746,6 +747,7 @@ fn managed_container_observation_wire_shape_nests_identity() {
                 "kind": "service",
             },
             "state": { "state": "running", "health": "none" },
+            "started_at_unix_ms": 1_783_670_950_123_i64,
         })
     );
 }

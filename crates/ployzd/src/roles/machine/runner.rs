@@ -16,6 +16,7 @@ pub struct ExistingManagedContainer {
     pub health_status: Option<ManagedContainerHealthStatus>,
     pub resolved_image_identity: Option<String>,
     pub created_at_unix_seconds: Option<i64>,
+    pub started_at_unix_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

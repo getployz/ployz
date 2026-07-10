@@ -14,6 +14,7 @@ use ployzd::roles::machine::runner::{
 };
 use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct ObservingContainerRunner {
@@ -80,6 +81,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
+            started_at_unix_ms: None,
         };
         let snapshot = self
             .snapshot()
@@ -105,6 +107,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
                 state: ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into()),
+                started_at_unix_ms: Some(current_unix_ms()),
                 ..observation
             })
             .map_err(|error| MachineContainerRunnerError::Start {
@@ -236,6 +239,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
                 state: ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into()),
+                started_at_unix_ms: Some(current_unix_ms()),
                 ..existing
             })
             .map_err(|error| MachineContainerRunnerError::Restart {
@@ -368,6 +372,7 @@ fn existing_container_from_observation(
         health_status: observation.health_status,
         resolved_image_identity: observation.resolved_image_identity.clone(),
         created_at_unix_seconds: observation.created_at_unix_seconds,
+        started_at_unix_ms: observation.started_at_unix_ms,
     }
 }
 
@@ -379,6 +384,13 @@ fn existing_container_state(state: &ContainerRuntimeState) -> ExistingManagedCon
         },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
+}
+
+fn current_unix_ms() -> i64 {
+    let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn empty_snapshot(machine_id: &MachineId) -> MachineContainerObservationSnapshot {

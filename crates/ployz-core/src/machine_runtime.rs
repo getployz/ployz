@@ -382,6 +382,8 @@ pub struct ManagedContainerObservation {
     pub resolved_image_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_unix_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<i64>,
 }
 
 impl ManagedContainerObservation {

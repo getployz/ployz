@@ -137,6 +137,7 @@ where
             health_status: container.health_status,
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
+            started_at_unix_ms: container.started_at_unix_ms,
         });
     let containers = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
         .map_err(MachineFactsReadError::BuildContainerSnapshot)?;
