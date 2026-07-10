@@ -1,0 +1,10 @@
+name: fixture_pre_start_depends_on
+services:
+  first:
+    image: alpine:3.20
+  second:
+    image: alpine:3.20
+    depends_on:
+      - first
+    pre_start:
+      command: ["sh", "-c", "echo ready"]

@@ -63,6 +63,9 @@ fn service_catalogs_keep_control_and_machine_surfaces_separate() {
     }));
     assert!(!machine.has_endpoint_subject(OPERATOR_OPS_STATUS));
     assert!(machine.has_endpoint_subject("plz.v1.rpc.machine.query.machine_7.inspect"));
+    assert!(
+        machine.has_endpoint_subject("plz.v1.rpc.machine.command.machine_7.container.run_hook")
+    );
 }
 
 #[test]

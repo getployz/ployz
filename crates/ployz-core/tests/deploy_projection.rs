@@ -558,6 +558,7 @@ fn plan_created_event() -> OperationEvent {
                     machine_id: machine_id("machine_a"),
                     slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
                 }],
+                pre_start: None,
             }],
             volume_pin_commits: Vec::new(),
             cleanup_containers: Vec::new(),

@@ -1,0 +1,37 @@
+{
+  "namespace_id": "fixture_pre_start_depends_on",
+  "services": [
+    {
+      "service_id": "first",
+      "image": "alpine:3.20",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      }
+    },
+    {
+      "service_id": "second",
+      "image": "alpine:3.20",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      },
+      "pre_start": {
+        "command": [
+          "sh",
+          "-c",
+          "echo ready"
+        ]
+      },
+      "depends_on": [
+        "first"
+      ]
+    }
+  ]
+}
