@@ -301,6 +301,10 @@ impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
             },
         })
     }
+
+    async fn probe_overlay(&self, _targets: &[std::net::Ipv4Addr]) -> Vec<std::net::Ipv4Addr> {
+        Vec::new()
+    }
 }
 
 fn existing_container_from_observation(

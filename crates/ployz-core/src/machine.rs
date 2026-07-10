@@ -153,6 +153,8 @@ pub enum MachineAddFailure {
     BootstrapFailed { message: FailureMessage },
     #[error("machine readiness failed: {evidence}")]
     ReadinessFailed { evidence: MachineReadinessEvidence },
+    #[error("overlay connectivity proof failed: {evidence}")]
+    ConnectivityProofFailed { evidence: ConnectivityProofEvidence },
     #[error("authorization render failed: {message}")]
     AuthorizationRenderFailed { message: FailureMessage },
     #[error("NATS reload failed: {message}")]
@@ -164,6 +166,77 @@ pub enum MachineAddFailure {
     /// operation non-terminal.
     #[error("credential evidence write failed: {message}")]
     CredentialEvidenceWriteFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ConnectivityProofEvidence {
+    unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
+}
+
+impl ConnectivityProofEvidence {
+    pub fn try_new(
+        unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
+    ) -> Result<Self, ConnectivityProofEvidenceError> {
+        if unreachable_peers.is_empty() {
+            return Err(ConnectivityProofEvidenceError::Empty);
+        }
+        Ok(Self { unreachable_peers })
+    }
+
+    #[must_use]
+    pub fn unreachable_peers(&self) -> &[ConnectivityProofUnreachablePeer] {
+        &self.unreachable_peers
+    }
+}
+
+impl fmt::Display for ConnectivityProofEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, peer) in self.unreachable_peers.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(", ")?;
+            }
+            write!(
+                formatter,
+                "{} at {}",
+                peer.machine_id.as_str(),
+                peer.gateway
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ConnectivityProofUnreachablePeer {
+    pub machine_id: MachineId,
+    #[cfg_attr(feature = "typescript", ts(type = "string"))]
+    pub gateway: std::net::Ipv4Addr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectivityProofEvidenceError {
+    #[error("connectivity proof evidence has no unreachable peers")]
+    Empty,
+}
+
+impl<'de> Deserialize<'de> for ConnectivityProofEvidence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireEvidence {
+            unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
+        }
+
+        let wire = WireEvidence::deserialize(deserializer)?;
+        Self::try_new(wire.unreachable_peers).map_err(serde::de::Error::custom)
+    }
 }
 
 /// One step of the per-machine credential minting work that runs after a

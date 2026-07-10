@@ -62,6 +62,7 @@ pub struct OperationApiHandlers {
     local_machine_id: MachineId,
     intent_change_client: async_nats::Client,
     machine_roster: MachineRosterStore,
+    facts_reader: NatsMachineFactsReader,
     machine_query: Arc<MachineQueryService>,
     service_query: Arc<ServiceQueryService>,
     runtime_snapshot_query: Arc<RuntimeSnapshotQueryService>,
@@ -100,7 +101,7 @@ impl OperationApiHandlers {
             facts.clone(),
             facts_reader.clone(),
         );
-        let logs_query = LogsQueryService::new(intent_reader, facts_reader, logs_tailer);
+        let logs_query = LogsQueryService::new(intent_reader, facts_reader.clone(), logs_tailer);
         Self {
             controllers,
             deploy_driver: Arc::new(deploy_driver),
@@ -114,6 +115,7 @@ impl OperationApiHandlers {
             local_machine_id,
             intent_change_client,
             machine_roster,
+            facts_reader,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
             runtime_snapshot_query: Arc::new(runtime_snapshot_query),

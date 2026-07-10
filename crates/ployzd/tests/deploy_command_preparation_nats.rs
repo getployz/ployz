@@ -527,6 +527,10 @@ impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
             },
         )
     }
+
+    async fn probe_overlay(&self, targets: &[std::net::Ipv4Addr]) -> Vec<std::net::Ipv4Addr> {
+        targets.to_vec()
+    }
 }
 
 async fn test_nats() -> TestNats {

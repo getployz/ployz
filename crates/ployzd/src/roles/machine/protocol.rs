@@ -400,6 +400,9 @@ pub enum MachinePloyzNativeMeshPrepareRpcRequest {
         endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
         peers: Vec<WireGuardPeer>,
     },
+    ProbeOverlay {
+        targets: Vec<std::net::Ipv4Addr>,
+    },
 }
 
 impl From<PloyzNativeMeshPrepareRequest> for MachineDataplanePrepareRpcRequest {
@@ -437,6 +440,10 @@ pub enum MachinePloyzNativeMeshPrepareRpcOk {
     Ready {
         readiness: PloyzNativeMeshMachineReady,
     },
+    OverlayProbe {
+        machine_id: MachineId,
+        unreachable: Vec<std::net::Ipv4Addr>,
+    },
 }
 
 impl MachinePloyzNativeMeshPrepareRpcOk {
@@ -445,6 +452,7 @@ impl MachinePloyzNativeMeshPrepareRpcOk {
         match self {
             Self::PublicKey { machine_id, .. } => machine_id,
             Self::Ready { readiness } => &readiness.machine_id,
+            Self::OverlayProbe { machine_id, .. } => machine_id,
         }
     }
 }
@@ -454,6 +462,7 @@ impl MachineRpcResponder for MachinePloyzNativeMeshPrepareRpcOk {
         match self {
             Self::PublicKey { machine_id, .. } => machine_id,
             Self::Ready { readiness } => &readiness.machine_id,
+            Self::OverlayProbe { machine_id, .. } => machine_id,
         }
     }
 }

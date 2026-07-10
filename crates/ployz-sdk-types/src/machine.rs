@@ -179,7 +179,12 @@ pub enum MachineJoinReportOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineJoinReportFailure {
-    BootstrapFailed { message: FailureMessage },
+    BootstrapFailed {
+        message: FailureMessage,
+    },
+    ConnectivityProofFailed {
+        evidence: crate::core_types::ConnectivityProofEvidence,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

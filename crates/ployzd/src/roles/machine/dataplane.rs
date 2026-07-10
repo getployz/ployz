@@ -75,5 +75,14 @@ where
                 }
             }
         }
+        MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay { targets } => {
+            let unreachable = preparer.probe_overlay(&targets).await;
+            machine_success(MachineDataplanePrepareRpcResponse::Ok(
+                MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe {
+                    machine_id,
+                    unreachable,
+                },
+            ))
+        }
     }
 }

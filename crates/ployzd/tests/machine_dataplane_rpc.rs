@@ -61,6 +61,49 @@ async fn nats_machine_preparer_calls_wireguard_ebpf_prepare_service() {
 }
 
 #[tokio::test]
+async fn nats_machine_preparer_returns_unreachable_overlay_targets() {
+    let nats = test_nats().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let _service =
+        start_wireguard_ebpf_prepare_service(nats.machine_a, &machine_id("machine_a"), {
+            let received = Arc::clone(&received);
+            move |request| {
+                received
+                    .lock()
+                    .expect("received request lock is not poisoned")
+                    .push(request);
+            }
+        })
+        .await;
+    let preparer = NatsMachineDataplanePreparer::new(nats.client);
+    let target = Ipv4Addr::new(10, 198, 1, 1);
+
+    let unreachable = preparer
+        .probe_overlay(
+            operation_id("op_123"),
+            &machine_id("machine_a"),
+            vec![machine_id("machine_a")],
+            vec![target],
+        )
+        .await
+        .expect("overlay probe succeeds");
+
+    assert_eq!(unreachable, vec![target]);
+    assert_eq!(
+        received
+            .lock()
+            .expect("received request lock is not poisoned")
+            .as_slice(),
+        [native_mesh_rpc_request(
+            &["machine_a"],
+            MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay {
+                targets: vec![target],
+            },
+        )]
+    );
+}
+
+#[tokio::test]
 async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -454,6 +497,16 @@ fn wireguard_ebpf_prepare_ok_response(
                 MachineDataplanePrepareRpcResponse::Ok(MachinePloyzNativeMeshPrepareRpcOk::Ready {
                     readiness: ready_machine_for_id(machine_id),
                 }),
+            ))
+        }
+        MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay { targets } => {
+            NatsServiceResponse::ok(encode_wireguard_ebpf_response(
+                MachineDataplanePrepareRpcResponse::Ok(
+                    MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe {
+                        machine_id,
+                        unreachable: targets,
+                    },
+                ),
             ))
         }
     }

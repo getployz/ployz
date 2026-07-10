@@ -298,6 +298,11 @@ impl DeployOperationDriver {
         });
     }
 
+    #[must_use]
+    pub(crate) const fn step_timeout(&self) -> Duration {
+        self.step_timeout
+    }
+
     pub async fn run(
         self,
         accepted: AcceptedDeploySubmission,

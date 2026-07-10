@@ -214,6 +214,7 @@ impl HostRunnerJoinReporter for JoinReporter {
 impl JoinReporter {
     fn report_join_result(&self, request: MachineJoinReportRequest) -> Result<(), FailureMessage> {
         let connect = self.connect.clone()?;
+        let reported_completion = matches!(request.outcome, MachineJoinReportOutcome::Completed);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -223,11 +224,20 @@ impl JoinReporter {
             let client = connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT)
                 .await
                 .map_err(|error| failure_message(&error.to_string()))?;
-            OperationApiClient::new(client)
+            let reported = OperationApiClient::new(client)
                 .machine_join_report(&request)
                 .await
-                .map(|_| ())
-                .map_err(|error| failure_message(&format!("failed to report join result: {error}")))
+                .map_err(|error| {
+                    failure_message(&format!("failed to report join result: {error}"))
+                })?;
+            match reported.outcome {
+                MachineJoinReportOutcome::Failed { failure } if reported_completion => Err(
+                    failure_message(&format!("machine join rejected by core: {failure:?}")),
+                ),
+                MachineJoinReportOutcome::Completed | MachineJoinReportOutcome::Failed { .. } => {
+                    Ok(())
+                }
+            }
         })
     }
 

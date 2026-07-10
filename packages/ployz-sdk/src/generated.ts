@@ -196,7 +196,11 @@ export type MachineAddOperationState = { "state": "pending", join_token: IssuedJ
 
 export type MachineAddOperationStateName = "pending" | "joining" | "completed" | "failed" | "cancelled";
 
-export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "authorization_render_failed", message: FailureMessage, } | { "kind": "nats_reload_failed", message: FailureMessage, } | { "kind": "minted_credential_unusable", message: FailureMessage, } | { "kind": "credential_evidence_write_failed", message: FailureMessage, };
+export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "connectivity_proof_failed", evidence: ConnectivityProofEvidence, } | { "kind": "authorization_render_failed", message: FailureMessage, } | { "kind": "nats_reload_failed", message: FailureMessage, } | { "kind": "minted_credential_unusable", message: FailureMessage, } | { "kind": "credential_evidence_write_failed", message: FailureMessage, };
+
+export type ConnectivityProofEvidence = { unreachable_peers: Array<ConnectivityProofUnreachablePeer>, };
+
+export type ConnectivityProofUnreachablePeer = { machine_id: MachineId, gateway: string, };
 
 export type MachineCredentialProvisioningStep = "minted" | "rendered" | "reloaded" | "verified" | "material_ready";
 
@@ -540,7 +544,7 @@ export type MachineJoinReportRequest = { join_token: MachineJoinToken, outcome: 
 
 export type MachineJoinReportOutcome = { "outcome": "completed" } | { "outcome": "failed", failure: MachineJoinReportFailure, };
 
-export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, };
+export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "connectivity_proof_failed", evidence: ConnectivityProofEvidence, };
 
 export type MachineJoinReported = { operation_id: OperationId, machine_id: MachineId, last_event_sequence: EventSequence, outcome: MachineJoinReportOutcome, };
 

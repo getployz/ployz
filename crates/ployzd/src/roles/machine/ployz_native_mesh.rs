@@ -18,6 +18,7 @@ use ployz_core::dataplane::{
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use std::collections::BTreeSet;
+use std::net::Ipv4Addr;
 
 impl DataplanePreparer for NatsMachineDataplanePreparer {
     async fn prepare_dataplane(
@@ -37,6 +38,47 @@ impl DataplanePreparer for NatsMachineDataplanePreparer {
 }
 
 impl NatsMachineDataplanePreparer {
+    pub async fn probe_overlay(
+        &self,
+        operation_id: ployz_core::ids::OperationId,
+        machine_id: &MachineId,
+        machines: Vec<MachineId>,
+        targets: Vec<Ipv4Addr>,
+    ) -> Result<Vec<Ipv4Addr>, WireGuardEbpfPrepareError> {
+        let request = MachineDataplanePrepareRpcRequest::ployz_native_mesh(
+            operation_id,
+            machines,
+            MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay {
+                targets: targets.clone(),
+            },
+        );
+        let response = request_machine_dataplane(self, machine_id, &request).await?;
+        match response {
+            MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { unreachable, .. } => {
+                if unreachable.iter().all(|target| targets.contains(target)) {
+                    Ok(unreachable)
+                } else {
+                    Err(invalid_ployz_native_mesh_report(format!(
+                        "machine {} returned an overlay probe target that was not requested",
+                        machine_id.as_str()
+                    )))
+                }
+            }
+            MachinePloyzNativeMeshPrepareRpcOk::PublicKey { .. } => {
+                Err(invalid_ployz_native_mesh_report(format!(
+                    "machine {} returned public key for overlay probe request",
+                    machine_id.as_str()
+                )))
+            }
+            MachinePloyzNativeMeshPrepareRpcOk::Ready { .. } => {
+                Err(invalid_ployz_native_mesh_report(format!(
+                    "machine {} returned dataplane readiness for overlay probe request",
+                    machine_id.as_str()
+                )))
+            }
+        }
+    }
+
     async fn ployz_native_mesh_prepare_request(
         &self,
         request: DataplanePrepareRequest,
@@ -245,6 +287,12 @@ async fn read_machine_wireguard_public_key(
                 machine_id.as_str()
             )))
         }
+        MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned overlay probe for public key request",
+                machine_id.as_str()
+            )))
+        }
     }
 }
 
@@ -259,6 +307,12 @@ async fn prepare_machine_ployz_native_mesh(
         MachinePloyzNativeMeshPrepareRpcOk::PublicKey { .. } => {
             Err(invalid_ployz_native_mesh_report(format!(
                 "machine {} returned public key for dataplane prepare request",
+                machine_id.as_str()
+            )))
+        }
+        MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned overlay probe for dataplane prepare request",
                 machine_id.as_str()
             )))
         }

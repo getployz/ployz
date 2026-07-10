@@ -94,6 +94,26 @@ impl HostDataplaneRouteProgramming {
                     self.wg_ifname.clone(),
                 ],
             ),
+            HostCommandPlan::provisioning_command(
+                PloyzNativeMeshComponent::WireGuard,
+                "sh",
+                [
+                    "-c".to_owned(),
+                    "iptables -t mangle -C FORWARD -o \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || iptables -t mangle -A FORWARD -o \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu".to_owned(),
+                    "--".to_owned(),
+                    self.wg_ifname.clone(),
+                ],
+            ),
+            HostCommandPlan::provisioning_command(
+                PloyzNativeMeshComponent::WireGuard,
+                "sh",
+                [
+                    "-c".to_owned(),
+                    "iptables -t mangle -C FORWARD -i \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || iptables -t mangle -A FORWARD -i \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu".to_owned(),
+                    "--".to_owned(),
+                    self.wg_ifname.clone(),
+                ],
+            ),
         ];
         requirements.extend(
             endpoint_routes
@@ -183,6 +203,26 @@ mod tests {
                 "iptables -C FORWARD -i \"$1\" -o \"$2\" -j ACCEPT || iptables -I FORWARD 1 -i \"$1\" -o \"$2\" -j ACCEPT",
                 "--",
                 "br-ployz",
+                "ployz-wg0"
+            ]
+        )));
+        assert!(requirements.contains(&HostCommandPlan::provisioning_command(
+            PloyzNativeMeshComponent::WireGuard,
+            "sh",
+            [
+                "-c",
+                "iptables -t mangle -C FORWARD -o \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || iptables -t mangle -A FORWARD -o \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+                "--",
+                "ployz-wg0"
+            ]
+        )));
+        assert!(requirements.contains(&HostCommandPlan::provisioning_command(
+            PloyzNativeMeshComponent::WireGuard,
+            "sh",
+            [
+                "-c",
+                "iptables -t mangle -C FORWARD -i \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || iptables -t mangle -A FORWARD -i \"$1\" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+                "--",
                 "ployz-wg0"
             ]
         )));

@@ -411,6 +411,23 @@ async fn scenario_machine_add_via_join_bundle() {
         let events = terminal_operation_events(&core, &add_operation).await;
         assert_machine_add_event_sequence(&events, &machine_id("edge_2"));
 
+        let mangle_forward = core.exec_sh(edge, "iptables -t mangle -S FORWARD").await;
+        assert!(
+            mangle_forward.success(),
+            "read edge mangle/FORWARD rules failed: {mangle_forward:?}"
+        );
+        for direction in ["-i", "-o"] {
+            assert!(
+                mangle_forward.stdout.lines().any(|rule| {
+                    rule.contains(&format!("{direction} ployz-wg0"))
+                        && rule.contains("TCPMSS")
+                        && rule.contains("--clamp-mss-to-pmtu")
+                }),
+                "edge overlay is missing the {direction} TCPMSS clamp rule: {}",
+                mangle_forward.stdout
+            );
+        }
+
         // nats_connection readiness evidence: the edge's machine process connects
         // with its minted credential and publishes observations.
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;

@@ -346,9 +346,9 @@ pub struct RecordedMachineJoinReport {
     pub status_write: OperationStatusWrite,
 }
 
-pub(super) struct MachineJoinReportTarget {
-    pub(super) operation_id: OperationId,
-    pub(super) machine_id: MachineId,
+pub(crate) struct MachineJoinReportTarget {
+    pub(crate) operation_id: OperationId,
+    pub(crate) machine_id: MachineId,
 }
 
 #[derive(Debug)]

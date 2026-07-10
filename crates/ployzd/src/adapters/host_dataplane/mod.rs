@@ -6,6 +6,7 @@ use ployz_core::dataplane::{
     WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -262,6 +263,22 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
                 evidence: ebpf_forwarding,
             },
         })
+    }
+
+    async fn probe_overlay(&self, targets: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+        let mut unreachable = Vec::new();
+        for target in targets {
+            let mut ping = tokio::process::Command::new("ping");
+            ping.args(["-c1", "-W2"]).arg(target.to_string());
+            let reached = matches!(
+                tokio::time::timeout(self.command_timeout, ping.status()).await,
+                Ok(Ok(status)) if status.success()
+            );
+            if !reached {
+                unreachable.push(*target);
+            }
+        }
+        unreachable
     }
 }
 

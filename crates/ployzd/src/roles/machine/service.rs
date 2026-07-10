@@ -199,6 +199,11 @@ pub trait MachinePloyzNativeMeshPreparer {
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
     ) -> impl Future<Output = Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError>> + Send;
+
+    fn probe_overlay(
+        &self,
+        targets: &[std::net::Ipv4Addr],
+    ) -> impl Future<Output = Vec<std::net::Ipv4Addr>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
