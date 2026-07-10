@@ -49,6 +49,25 @@ fn managed_bundle_covers_wildcard_and_apex_for_lease() {
 }
 
 #[test]
+fn managed_bundle_validity_is_a_half_open_time_window() {
+    let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
+    let bundle = ManagedCertBundle::try_new(
+        lease.clone(),
+        lease.wildcard_and_apex(),
+        "certificate".to_owned(),
+        "private-key".to_owned(),
+        LeaseIssuedAt::try_new(100).expect("issued at"),
+        LeaseExpiresAt::try_new(200).expect("expires at"),
+    )
+    .expect("valid bundle");
+
+    assert!(!bundle.is_valid_at(99));
+    assert!(bundle.is_valid_at(100));
+    assert!(bundle.is_valid_at(199));
+    assert!(!bundle.is_valid_at(200));
+}
+
+#[test]
 fn managed_lease_record_deserialization_rejects_inverted_validity() {
     let value = serde_json::json!({
         "name": "brisk-river-x7f3",

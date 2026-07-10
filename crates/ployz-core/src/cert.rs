@@ -411,6 +411,11 @@ impl ManagedCertBundle {
     pub fn dns_names(&self) -> [&str; 2] {
         [self.dns_names[0].as_str(), self.dns_names[1].as_str()]
     }
+
+    #[must_use]
+    pub const fn is_valid_at(&self, now_seconds: u64) -> bool {
+        self.issued_at.unix_seconds() <= now_seconds && now_seconds < self.expires_at.unix_seconds()
+    }
 }
 
 impl TryFrom<ManagedCertBundleWire> for ManagedCertBundle {
