@@ -31,6 +31,8 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
         tick.state,
         current_state(GatewayProjection {
             managed_cert_bundle: None,
+            custom_cert_bundles: Vec::new(),
+            challenges: Vec::new(),
             routes: vec![api.clone()],
         })
     );
@@ -56,6 +58,8 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
         failed_state(
             GatewayProjection {
                 managed_cert_bundle: None,
+                custom_cert_bundles: Vec::new(),
+                challenges: Vec::new(),
                 routes: vec![api.clone()],
             },
             source_unavailable(),
@@ -82,6 +86,8 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
         failed_state(
             GatewayProjection {
                 managed_cert_bundle: None,
+                custom_cert_bundles: Vec::new(),
+                challenges: Vec::new(),
                 routes: vec![api.clone()],
             },
             invalid_source(),
@@ -113,6 +119,8 @@ fn gateway_runtime_applies_later_route_changes_after_outage() {
         tick.state,
         current_state(GatewayProjection {
             managed_cert_bundle: None,
+            custom_cert_bundles: Vec::new(),
+            challenges: Vec::new(),
             routes: vec![api_v2.clone()],
         })
     );
@@ -206,6 +214,8 @@ fn source_input(
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         managed_cert_bundle: None,
+        custom_cert_bundles: Vec::new(),
+        challenges: Vec::new(),
         routes: vec![GatewayRoute {
             namespace_id: namespace_id("default"),
             target: route_target(hostname, 443),
@@ -272,6 +282,8 @@ fn projected_route_with_upstreams(
 fn route_table(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> GatewayRouteTable {
     GatewayRouteTable::from_projection(GatewayProjection {
         managed_cert_bundle: None,
+        custom_cert_bundles: Vec::new(),
+        challenges: Vec::new(),
         routes: routes.into_iter().collect(),
     })
 }

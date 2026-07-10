@@ -46,6 +46,8 @@ pub async fn load_gateway_projection_input_from_nats(
             ployz_core::state::ManagedLeaseProjection::Unacquired
             | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
         },
+        intent.custom_certificates,
+        intent.acme_http01_challenges,
         intent.route_bindings,
         intent.serving_target_entries,
         observed_machines,
@@ -70,12 +72,16 @@ impl From<IntentReadError> for GatewaySourceError {
 
 fn gateway_projection_input_from_state(
     managed_cert_bundle: Option<ployz_core::cert::ManagedCertBundle>,
+    custom_cert_bundles: Vec<ployz_core::cert::CustomCertBundle>,
+    challenges: Vec<ployz_core::cert::AcmeHttp01Challenge>,
     routes: Vec<RouteBindingState>,
     serving: Vec<ServingTargetEntry>,
     observed_machines: Vec<MachineContainerObservationSnapshot>,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         managed_cert_bundle,
+        custom_cert_bundles,
+        challenges,
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
         serving: serving
             .into_iter()

@@ -1,6 +1,6 @@
 //! Gateway projection read-model.
 
-use ployz_core::cert::ManagedCertBundle;
+use ployz_core::cert::{AcmeHttp01Challenge, CustomCertBundle, ManagedCertBundle};
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::{RoutePort, RouteTarget};
@@ -28,6 +28,8 @@ pub struct GatewayServingEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjectionInput {
     pub managed_cert_bundle: Option<ManagedCertBundle>,
+    pub custom_cert_bundles: Vec<CustomCertBundle>,
+    pub challenges: Vec<AcmeHttp01Challenge>,
     pub routes: Vec<GatewayRoute>,
     pub serving: Vec<GatewayServingEntry>,
     /// Machines' self-reported container snapshots. Gateways serve every
@@ -41,6 +43,8 @@ pub struct GatewayProjectionInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjection {
     pub managed_cert_bundle: Option<ManagedCertBundle>,
+    pub custom_cert_bundles: Vec<CustomCertBundle>,
+    pub challenges: Vec<AcmeHttp01Challenge>,
     pub routes: Vec<GatewayProjectedRoute>,
 }
 
@@ -157,6 +161,8 @@ pub fn project_gateway(
     input: GatewayProjectionInput,
 ) -> Result<GatewayProjection, GatewayProjectionError> {
     let managed_cert_bundle = input.managed_cert_bundle;
+    let custom_cert_bundles = input.custom_cert_bundles;
+    let challenges = input.challenges;
     let mut input_routes = input.routes;
     input_routes.sort_by(|left, right| left.target.cmp(&right.target));
 
@@ -225,6 +231,8 @@ pub fn project_gateway(
 
     Ok(GatewayProjection {
         managed_cert_bundle,
+        custom_cert_bundles,
+        challenges,
         routes,
     })
 }

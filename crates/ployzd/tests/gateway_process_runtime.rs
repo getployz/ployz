@@ -1,10 +1,17 @@
 use futures_util::StreamExt;
+use ployz_core::cert::{
+    AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
+};
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::{GatewayServingStatus, RouteBindingState};
+use ployz_core::state::{
+    ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot, ManagedLeaseProjection,
+    RouteBindingState,
+};
 use ployz_core::subjects::{gateway_status, machine_facts};
+use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
@@ -18,6 +25,7 @@ use ployzd::roles::gateway::process::{
     start_gateway_process_with_client,
 };
 use ployzd::roles::gateway::projection::GatewayUpstream;
+use ployzd::service_catalog::{intent_get_endpoint_spec, intent_service};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -109,6 +117,51 @@ async fn gateway_process_serves_http_from_nats_projection() {
     assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
     assert!(upstream_request.contains("\r\nConnection: close\r\n"));
     drop(client);
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn gateway_process_serves_http01_challenge_before_route_attachment() {
+    let nats = TestNats::start().await;
+    let challenge = AcmeHttp01Challenge::try_new(
+        route_hostname("app.example.com"),
+        AcmeChallengeToken::try_new("challenge-token").expect("valid token"),
+        AcmeChallengeValue::try_new("challenge-token.account-thumbprint")
+            .expect("valid key authorization"),
+        AcmeChallengeTtlSeconds::try_new(900).expect("valid ttl"),
+    )
+    .expect("valid challenge");
+    let _intent = nats.start_static_intent(challenge.clone()).await;
+    let runtime = start_gateway_process_with_client(
+        nats.machine_client.clone(),
+        Duration::from_millis(10),
+        socket_addr("127.0.0.1:0"),
+        machine_id("machine_7"),
+        None,
+    )
+    .await
+    .expect("gateway runtime starts");
+    wait_until(Duration::from_secs(2), || {
+        runtime
+            .served_projection()
+            .is_some_and(|projection| projection.challenges == vec![challenge.clone()])
+    })
+    .await;
+
+    let mut client = TcpStream::connect(runtime.listen_addr())
+        .await
+        .expect("connect gateway");
+    client
+        .write_all(
+            b"GET /.well-known/acme-challenge/challenge-token HTTP/1.1\r\nHost: app.example.com\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .expect("write challenge request");
+    let response = read_response_until(&mut client, b"challenge-token.account-thumbprint").await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("\r\n\r\nchallenge-token.account-thumbprint"));
 
     runtime.shutdown().await;
 }
@@ -294,6 +347,35 @@ impl TestNats {
         )
         .await
         .expect("intent runtime starts")
+    }
+
+    async fn start_static_intent(&self, challenge: AcmeHttp01Challenge) -> RunningNatsService {
+        let mut service = start_nats_service(self.client.clone(), &intent_service())
+            .await
+            .expect("intent service starts");
+        service
+            .bind_endpoint(&intent_get_endpoint_spec(), move |_request| {
+                let snapshot = IntentSnapshot {
+                    epoch: ControlPlaneEpoch::initial(),
+                    core_machine_id: machine_id("machine_a"),
+                    active_machines: Vec::new(),
+                    route_bindings: Vec::new(),
+                    serving_target_entries: Vec::new(),
+                    volume_pins: Vec::new(),
+                    authorized_users: Vec::new(),
+                    managed_lease: ManagedLeaseProjection::Unacquired,
+                    custom_certificates: Vec::new(),
+                    acme_http01_challenges: vec![challenge.clone()],
+                };
+                async move { NatsServiceResponse::json_ok(&snapshot) }
+            })
+            .await
+            .expect("intent endpoint binds");
+        self.client
+            .flush()
+            .await
+            .expect("intent service subscription is ready");
+        service
     }
 
     async fn publish_machine_facts(&self, snapshot: MachineContainerObservationSnapshot) {

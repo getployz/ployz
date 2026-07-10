@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{ManagedCertBundle, ManagedLeaseRecord};
+use crate::cert::{AcmeHttp01Challenge, CustomCertBundle, ManagedCertBundle, ManagedLeaseRecord};
 use crate::dataplane::MachineEndpointSubnet;
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
@@ -140,6 +140,10 @@ pub struct IntentSnapshot {
     pub authorized_users: Vec<NatsAuthorizedUser>,
     #[serde(default)]
     pub managed_lease: ManagedLeaseProjection,
+    #[serde(default)]
+    pub custom_certificates: Vec<CustomCertBundle>,
+    #[serde(default)]
+    pub acme_http01_challenges: Vec<AcmeHttp01Challenge>,
 }
 
 #[derive(Deserialize)]
@@ -164,6 +168,10 @@ struct IntentSnapshotWire {
     managed_lease: Option<ManagedLeaseProjectionWire>,
     #[serde(default)]
     managed_cert_bundle: Option<ManagedCertBundle>,
+    #[serde(default)]
+    custom_certificates: Vec<CustomCertBundle>,
+    #[serde(default)]
+    acme_http01_challenges: Vec<AcmeHttp01Challenge>,
 }
 
 impl<'de> Deserialize<'de> for IntentSnapshot {
@@ -201,6 +209,8 @@ impl<'de> Deserialize<'de> for IntentSnapshot {
             volume_pins: wire.volume_pins,
             authorized_users: wire.authorized_users,
             managed_lease,
+            custom_certificates: wire.custom_certificates,
+            acme_http01_challenges: wire.acme_http01_challenges,
         })
     }
 }
@@ -389,6 +399,8 @@ mod tests {
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
             managed_lease: ManagedLeaseProjection::Ready { lease, bundle },
+            custom_certificates: Vec::new(),
+            acme_http01_challenges: Vec::new(),
         }
     }
 }

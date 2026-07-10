@@ -274,6 +274,7 @@ impl DeployRunningStage {
             Self::EnsuringImages => "ensuring_images",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
+            Self::EnsuringCertificates => "ensuring_certificates",
             Self::RouteCutover => "route_cutover",
             Self::ServingTargetCommit => "serving_target_commit",
             Self::RemovingSupersededContainers => "removing_superseded_containers",

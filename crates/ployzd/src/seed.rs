@@ -9,11 +9,13 @@
 //! intent back.
 
 use crate::core_store::{CoreStore, CoreStoreError};
+use crate::intent::certificate_intent::{CertificateIntentStore, CertificateIntentStoreError};
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use ployz_core::state::IntentSnapshot;
+use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SeedCoreError {
@@ -25,6 +27,8 @@ pub enum SeedCoreError {
     Authorizations(#[from] NatsAuthorizationStoreError),
     #[error("seeding managed lease intent: {0}")]
     ManagedLease(#[from] LeaseIntentStoreError),
+    #[error("seeding custom certificate intent: {0}")]
+    Certificate(#[from] CertificateIntentStoreError),
     #[error("seeding control-plane epoch: {0}")]
     Epoch(#[from] CoreStoreError),
 }
@@ -44,6 +48,7 @@ pub enum SeedOutcome {
 pub async fn seed_core_from_snapshot(
     core_store: &CoreStore,
     snapshot: &IntentSnapshot,
+    certificate_state_dir: &Path,
 ) -> Result<SeedOutcome, SeedCoreError> {
     // Only a fresh store (never promoted) may be seeded. Once a store has an epoch
     // row it is a live core, and ControlPlaneEpoch is a promotion generation, not an
@@ -83,6 +88,19 @@ pub async fn seed_core_from_snapshot(
             lease_store.restore_lease_record(lease.clone()).await?
         }
         ployz_core::state::ManagedLeaseProjection::Unacquired => {}
+    }
+    let certificate_store =
+        CertificateIntentStore::new(core_store.clone(), certificate_state_dir.to_path_buf());
+    for bundle in &snapshot.custom_certificates {
+        certificate_store
+            .commit_active(
+                bundle.active_cert.cert_id.clone(),
+                bundle.active_cert.hostname.clone(),
+                bundle.active_cert.validity,
+                bundle.certificate_chain_pem.clone(),
+                bundle.private_key_pem.clone(),
+            )
+            .await?;
     }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
@@ -136,6 +154,8 @@ mod tests {
                 nkey_public: MintedNatsUser::generate().expect("mint").public,
             }],
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            custom_certificates: Vec::new(),
+            acme_http01_challenges: Vec::new(),
         }
     }
 
@@ -145,7 +165,8 @@ mod tests {
         // Mirror is at epoch 3; a fresh store mints 1.
         let snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial().next().next());
 
-        let outcome = seed_core_from_snapshot(&store, &snapshot)
+        let certificates = tempfile::tempdir().expect("certificate state");
+        let outcome = seed_core_from_snapshot(&store, &snapshot, certificates.path())
             .await
             .expect("seed");
 
@@ -178,7 +199,8 @@ mod tests {
             bundle: acquired.bundle.clone(),
         };
 
-        seed_core_from_snapshot(&store, &snapshot)
+        let certificates = tempfile::tempdir().expect("certificate state");
+        seed_core_from_snapshot(&store, &snapshot, certificates.path())
             .await
             .expect("seed ready lease");
 
@@ -197,20 +219,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn seeding_recreates_custom_certificate_bundle_files() {
+        let source_store = CoreStore::open_in_memory().await.expect("source store");
+        let source_directory = tempfile::tempdir().expect("source certificate state");
+        let source_certificates =
+            CertificateIntentStore::new(source_store, source_directory.path().to_path_buf());
+        let mut worker = StubLeaseWorker::new();
+        let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
+            .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
+            }))
+            .expect("acquire fixture certificate")
+        else {
+            panic!("acquire returns certificate");
+        };
+        let validity = crate::certificate::material::validate_and_read_validity(
+            &acquired.bundle.certificate_chain_pem,
+            &acquired.bundle.private_key_pem,
+            &ployz_core::ops::RouteHostname::try_new(acquired.bundle.dns_names[1].clone())
+                .expect("fixture hostname"),
+        )
+        .expect("certificate validity");
+        let hostname =
+            ployz_core::ops::RouteHostname::try_new(acquired.bundle.dns_names[1].clone())
+                .expect("fixture hostname");
+        let source_bundle = source_certificates
+            .commit_active(
+                ployz_test_support::ids::cert_id("cert_app_example_com"),
+                hostname,
+                validity,
+                acquired.bundle.certificate_chain_pem,
+                acquired.bundle.private_key_pem,
+            )
+            .await
+            .expect("source certificate");
+        let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
+        snapshot.custom_certificates = vec![source_bundle];
+        let target_store = CoreStore::open_in_memory().await.expect("target store");
+        let target_directory = tempfile::tempdir().expect("target certificate state");
+
+        seed_core_from_snapshot(&target_store, &snapshot, target_directory.path())
+            .await
+            .expect("seed custom certificate");
+
+        let seeded_bundles =
+            CertificateIntentStore::new(target_store, target_directory.path().to_path_buf())
+                .active_certificates()
+                .await
+                .expect("seeded certificates");
+        let [seeded] = seeded_bundles.as_slice() else {
+            panic!("one certificate is seeded");
+        };
+        let (_, path) = seeded
+            .active_cert
+            .bundle_ref
+            .artifact_parts()
+            .expect("bundle reference");
+        assert!(std::path::Path::new(path.as_str()).is_file());
+        assert!(std::path::Path::new(path.as_str()).starts_with(target_directory.path()));
+    }
+
+    #[tokio::test]
     async fn re_running_on_an_advanced_store_is_a_no_op() {
         let store = CoreStore::open_in_memory().await.expect("store");
-        let first =
-            seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
-                .await
-                .expect("first seed");
+        let first = seed_core_from_snapshot(
+            &store,
+            &snapshot_at_epoch(ControlPlaneEpoch::initial()),
+            tempfile::tempdir().expect("certificate state").path(),
+        )
+        .await
+        .expect("first seed");
         assert_eq!(first, SeedOutcome::Seeded);
         let after_first = store.control_plane_epoch().await.expect("epoch");
 
         // The store now fences above the mirror; a stale re-run must not roll back.
-        let second =
-            seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
-                .await
-                .expect("second seed");
+        let second = seed_core_from_snapshot(
+            &store,
+            &snapshot_at_epoch(ControlPlaneEpoch::initial()),
+            tempfile::tempdir().expect("certificate state").path(),
+        )
+        .await
+        .expect("second seed");
         assert_eq!(second, SeedOutcome::AlreadyPromoted);
         assert_eq!(
             store.control_plane_epoch().await.expect("epoch"),
@@ -224,6 +314,7 @@ mod tests {
         seed_core_from_snapshot(
             &store,
             &snapshot_at_epoch(ControlPlaneEpoch::initial().next()),
+            tempfile::tempdir().expect("certificate state").path(),
         )
         .await
         .expect("first seed");
@@ -232,9 +323,13 @@ mod tests {
         // A mirror captured at the store's own generation (operator changes keep the
         // epoch, which is a promotion generation not an intent revision) must not
         // re-seed — that would replay stale intent under a higher epoch.
-        let outcome = seed_core_from_snapshot(&store, &snapshot_at_epoch(after_first))
-            .await
-            .expect("same-epoch seed");
+        let outcome = seed_core_from_snapshot(
+            &store,
+            &snapshot_at_epoch(after_first),
+            tempfile::tempdir().expect("certificate state").path(),
+        )
+        .await
+        .expect("same-epoch seed");
         assert_eq!(outcome, SeedOutcome::AlreadyPromoted);
         assert_eq!(
             store.control_plane_epoch().await.expect("epoch"),

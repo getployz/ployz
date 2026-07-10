@@ -9,11 +9,13 @@ use ployz_core::ids::{
 };
 use ployz_core::image::OciPlatform;
 use ployz_core::ops::{
-    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteTarget,
+    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname,
+    RouteTarget,
 };
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
@@ -28,6 +30,8 @@ pub struct DeployExecutionCommand {
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) dataplane_members: Vec<DataplaneMember>,
+    pub(super) custom_certificate_hostnames: Vec<RouteHostname>,
+    pub(super) gateway_public_ips: Vec<IpAddr>,
     pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub(super) step_timeout: Duration,
 }
@@ -85,6 +89,16 @@ impl DeployExecutionCommand {
             .iter()
             .map(|member| member.machine_id.clone())
             .collect()
+    }
+
+    #[must_use]
+    pub fn custom_certificate_hostnames(&self) -> &[RouteHostname] {
+        &self.custom_certificate_hostnames
+    }
+
+    #[must_use]
+    pub fn gateway_public_ips(&self) -> &[IpAddr] {
+        &self.gateway_public_ips
     }
 
     #[must_use]
@@ -226,10 +240,11 @@ impl DeployContainer {
     }
 }
 
-pub struct DeployExecutionPorts<'a, R, D, N, H, S> {
+pub struct DeployExecutionPorts<'a, R, D, N, H, C, S> {
     pub recorder: &'a mut R,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
+    pub certificate_provisioner: &'a mut C,
     pub namespace_state: &'a mut S,
 }

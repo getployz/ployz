@@ -7,11 +7,13 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::UnusableMachine;
+use ployz_core::roles::GatewayRole;
 use ployz_core::state::{
     ActiveMachineState, IntentSnapshot, MachineLifecycle, MachineUsabilityReason,
     placement_rejection,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
@@ -88,6 +90,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         .collect();
     let dataplane_members =
         operation_dataplane_members(request, &active_machines, answering_machines);
+    let gateway_public_ips = gateway_public_ips(&active_machines, &placement_facts);
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
@@ -101,8 +104,29 @@ pub async fn load_deploy_execution_facts_from_nats(
         machine_platforms,
         namespace_cleanup_candidates,
         managed_lease,
+        gateway_public_ips,
         step_timeout,
     })
+}
+
+fn gateway_public_ips(
+    active_machines: &[ActiveMachineState],
+    placement_facts: &[crate::roles::machine::client::MachinePlacementFacts],
+) -> Vec<IpAddr> {
+    let gateway_machines = active_machines
+        .iter()
+        .filter(|machine| matches!(machine.roles.gateway, GatewayRole::Install))
+        .map(|machine| machine.machine_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    placement_facts
+        .iter()
+        .filter(|facts| gateway_machines.contains(&facts.machine_id))
+        .filter_map(|facts| facts.endpoints.as_ref())
+        .flat_map(|endpoints| endpoints.control_endpoints.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn operation_dataplane_members(
@@ -207,4 +231,34 @@ fn classify_machine_usability(
 pub enum DeployFactLoadError {
     #[error("intent could not be read: {message}")]
     IntentRead { message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gateway_public_ips;
+    use crate::roles::machine::client::MachinePlacementFacts;
+    use ployz_core::ids::MachineId;
+    use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
+    use ployz_core::state::{MachineEndpointObservation, MachineLifecycle};
+
+    #[test]
+    fn answering_placement_facts_do_not_supply_gateway_ips_without_intent_roster() {
+        let machine_id = MachineId::try_new("machine_a").expect("valid machine id");
+        let placement_facts = MachinePlacementFacts {
+            machine_id: machine_id.clone(),
+            lifecycle: MachineLifecycle::Active,
+            containers: Some(
+                MachineContainerObservationSnapshot::try_new(machine_id.clone(), [])
+                    .expect("valid empty container snapshot"),
+            ),
+            platform: None,
+            endpoints: Some(MachineEndpointObservation {
+                machine_id,
+                control_endpoints: vec!["203.0.113.10".parse().expect("valid public IP")],
+                mesh_endpoints: Vec::new(),
+            }),
+        };
+
+        assert!(gateway_public_ips(&[], &[placement_facts]).is_empty());
+    }
 }

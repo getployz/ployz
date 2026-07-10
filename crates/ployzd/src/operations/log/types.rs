@@ -1,5 +1,5 @@
 use ployz_core::deploy::{DeployReservationId, VolumeName};
-use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
@@ -48,6 +48,11 @@ pub(super) struct DeployOperationPayload {
     pub(super) target: ployz_core::deploy::DeployRequest,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CertOperationPayload {
+    pub(super) cert_id: CertId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMachineAddSubmission {
@@ -92,6 +97,12 @@ pub struct DeployOperationSubmission {
     pub idempotency_key: OperationIdempotencyKey,
     pub reservation_id: DeployReservationId,
     pub target: ployz_core::deploy::DeployRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertOperationSubmission {
+    pub operation_id: OperationId,
+    pub cert_id: CertId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +204,14 @@ pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
     pub target: ployz_core::deploy::DeployRequest,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCertSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub cert_id: CertId,
     pub should_start_execution: bool,
 }
 
@@ -343,6 +362,7 @@ pub enum RecordOperationEventError {
 }
 
 pub type RecordDeployTransitionError = RecordOperationEventError;
+pub type RecordCertTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;
 pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;

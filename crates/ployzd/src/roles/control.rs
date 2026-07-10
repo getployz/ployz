@@ -4,6 +4,8 @@ use crate::adapters::nats_authorization::{
     MachineCredentialMint, MintResumeError, MintVerifyEndpoint, NatsAuthorizationWriter,
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
+use crate::certificate::CertificateManager;
+use crate::certificate::task::start_certificate_renewal_task;
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
@@ -51,6 +53,7 @@ pub struct RunningControlProcess {
     mint_tasks: TaskRegistry,
     reachability_tasks: TaskRegistry,
     managed_lease_tasks: TaskRegistry,
+    certificate_tasks: TaskRegistry,
     facts_cache: RunningFactCache,
     authorization: NatsAuthorizationWriter,
 }
@@ -68,6 +71,7 @@ impl RunningControlProcess {
         self.mint_tasks.abort_all();
         self.reachability_tasks.abort_all();
         self.managed_lease_tasks.abort_all();
+        self.certificate_tasks.abort_all();
         self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
@@ -130,7 +134,12 @@ pub async fn start_control_process_with_client_and_reload(
     reject_stale_core_epoch(&core_store, config.epoch_fence_mirror.as_deref()).await?;
     let repository = OperationRepository::open(core_store.clone(), client.clone());
     let pending_join_recovery = if let Some(mirror_path) = &config.seed_from_mirror {
-        seed_core_from_mirror(&core_store, mirror_path).await?;
+        seed_core_from_mirror(
+            &core_store,
+            mirror_path,
+            &config.certificate_manager.state_dir,
+        )
+        .await?;
         load_pending_join_recovery(mirror_path)
     } else {
         Vec::new()
@@ -181,6 +190,13 @@ pub async fn start_control_process_with_client_and_reload(
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let lease_intent = LeaseIntentStore::new(core_store.clone());
     let managed_lease_tasks = TaskRegistry::default();
+    let certificate_tasks = TaskRegistry::default();
+    let certificate_manager = CertificateManager::new(
+        core_store.clone(),
+        client.clone(),
+        config.certificate_manager.clone(),
+    )
+    .with_task_registry(certificate_tasks.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();
     reachability_tasks.spawn(reconcile_reachability_loop(
@@ -192,6 +208,7 @@ pub async fn start_control_process_with_client_and_reload(
         namespace_intent.clone(),
         controllers.clone(),
         DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
+        certificate_manager.clone(),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );
@@ -244,6 +261,12 @@ pub async fn start_control_process_with_client_and_reload(
         controllers.repository().clone(),
         LeaseClient::new(config.lease_worker_url.clone()),
         facts.clone(),
+        machine_roster.clone(),
+    );
+    start_certificate_renewal_task(
+        &certificate_tasks,
+        certificate_manager,
+        NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
     );
     let intent = start_intent_service(
@@ -311,6 +334,7 @@ pub async fn start_control_process_with_client_and_reload(
         mint_tasks,
         reachability_tasks,
         managed_lease_tasks,
+        certificate_tasks,
         facts_cache,
         authorization,
     })
@@ -336,6 +360,7 @@ pub async fn run_control_until_shutdown(
 async fn seed_core_from_mirror(
     core_store: &CoreStore,
     mirror_path: &Path,
+    certificate_state_dir: &Path,
 ) -> Result<(), ControlProcessError> {
     // Once the store has been promoted it is authoritative; skip the mirror entirely
     // so a later restart neither re-reads it nor bricks on a since-deleted mirror.
@@ -352,7 +377,7 @@ async fn seed_core_from_mirror(
     let snapshot = MachineIntentMirror::new(mirror_path.to_path_buf())
         .load()
         .ok_or_else(|| ControlProcessError::SeedMirrorMissing(mirror_path.to_path_buf()))?;
-    seed_core_from_snapshot(core_store, &snapshot)
+    seed_core_from_snapshot(core_store, &snapshot, certificate_state_dir)
         .await
         .map_err(ControlProcessError::SeedCore)?;
     Ok(())
@@ -493,6 +518,8 @@ mod tests {
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            custom_certificates: Vec::new(),
+            acme_http01_challenges: Vec::new(),
         }
     }
 
@@ -534,7 +561,7 @@ mod tests {
             .expect("write mirror");
 
         let store = CoreStore::open_in_memory().await.expect("store");
-        seed_core_from_mirror(&store, &mirror_path)
+        seed_core_from_mirror(&store, &mirror_path, dir.path())
             .await
             .expect("seed succeeds");
         // Fence lands at max(mirror=3, fresh=1).next() = 4, above the succeeded core.
@@ -544,9 +571,13 @@ mod tests {
     #[tokio::test]
     async fn a_configured_but_missing_mirror_is_an_error() {
         let store = CoreStore::open_in_memory().await.expect("store");
-        let error = seed_core_from_mirror(&store, Path::new("/no/such/intent-mirror.json"))
-            .await
-            .expect_err("missing mirror errors");
+        let error = seed_core_from_mirror(
+            &store,
+            Path::new("/no/such/intent-mirror.json"),
+            Path::new("/tmp"),
+        )
+        .await
+        .expect_err("missing mirror errors");
         assert!(matches!(error, ControlProcessError::SeedMirrorMissing(_)));
     }
 

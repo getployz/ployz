@@ -2,6 +2,7 @@
 
 use crate::roles::gateway::projection::GatewayProjection;
 use async_trait::async_trait;
+use bytes::Bytes;
 use pingora::Error;
 use pingora::ErrorType::{
     AcceptError, BindError, ConnectError, ConnectNoRoute, ConnectProxyFailure, ConnectRefused,
@@ -37,13 +38,16 @@ pub struct PingoraRouteRegistry {
 
 struct PingoraGatewaySnapshot {
     routes: BTreeMap<RouteTarget, Arc<PingoraRoutePool>>,
-    tls: Option<PreparedGatewayTls>,
+    tls_by_hostname: BTreeMap<String, PreparedGatewayTls>,
+    managed_hostnames: BTreeSet<String>,
+    https_hostnames: BTreeSet<String>,
+    challenges: BTreeMap<(String, String), String>,
 }
 
+#[derive(Clone)]
 struct PreparedGatewayTls {
     certificates: Vec<pingora::tls::x509::X509>,
     private_key: pingora::tls::pkey::PKey<pingora::tls::pkey::Private>,
-    routed_hostnames: BTreeSet<String>,
 }
 
 impl PingoraRouteRegistry {
@@ -52,7 +56,10 @@ impl PingoraRouteRegistry {
         Self {
             inner: Arc::new(RwLock::new(PingoraGatewaySnapshot {
                 routes: BTreeMap::new(),
-                tls: None,
+                tls_by_hostname: BTreeMap::new(),
+                managed_hostnames: BTreeSet::new(),
+                https_hostnames: BTreeSet::new(),
+                challenges: BTreeMap::new(),
             })),
         }
     }
@@ -61,29 +68,11 @@ impl PingoraRouteRegistry {
         &self,
         projection: &GatewayProjection,
     ) -> Result<(), PingoraRouteRegistryError> {
-        let mut routes = BTreeMap::new();
-        for route in &projection.routes {
-            let upstreams = route
-                .upstreams
-                .iter()
-                .map(|upstream| upstream.address)
-                .collect::<Vec<_>>();
-            routes.insert(
-                route.target.clone(),
-                Arc::new(PingoraRoutePool::new(upstreams)?),
-            );
-        }
-
-        let tls = projection
-            .managed_cert_bundle
-            .as_ref()
-            .map(|bundle| prepare_gateway_tls(bundle, projection))
-            .transpose()?;
+        let snapshot = prepare_gateway_snapshot(projection)?;
         *self
             .inner
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            PingoraGatewaySnapshot { routes, tls };
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
         Ok(())
     }
 
@@ -92,12 +81,27 @@ impl PingoraRouteRegistry {
         self.inner
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .tls
-            .as_ref()
-            .is_some_and(|tls| {
-                tls.routed_hostnames
-                    .contains(&hostname.to_ascii_lowercase())
-            })
+            .managed_hostnames
+            .contains(&hostname.to_ascii_lowercase())
+    }
+
+    #[must_use]
+    pub fn is_https_hostname(&self, hostname: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .https_hostnames
+            .contains(&hostname.to_ascii_lowercase())
+    }
+
+    #[must_use]
+    pub fn http01_challenge(&self, hostname: &str, token: &str) -> Option<String> {
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .challenges
+            .get(&(hostname.to_ascii_lowercase(), token.to_owned()))
+            .cloned()
     }
 
     #[must_use]
@@ -192,11 +196,11 @@ impl PingoraRoutePool {
 pub enum PingoraRouteRegistryError {
     #[error("invalid gateway backend address: {message}")]
     InvalidBackendAddress { message: String },
-    #[error("invalid managed gateway certificate chain: {message}")]
+    #[error("invalid gateway certificate chain: {message}")]
     InvalidCertificateChain { message: String },
-    #[error("invalid managed gateway private key: {message}")]
+    #[error("invalid gateway private key: {message}")]
     InvalidPrivateKey { message: String },
-    #[error("managed gateway certificate does not match its private key")]
+    #[error("gateway certificate does not match its private key")]
     CertificateKeyMismatch,
 }
 
@@ -274,7 +278,22 @@ impl ProxyHttp for PloyzGatewayProxy {
 
         if self.redirect_managed_http {
             let hostname = authority.split(':').next().unwrap_or(authority);
-            if self.registry.is_managed_hostname(hostname) {
+            let path = session.downstream_session.req_header().uri.path();
+            if let Some(value) =
+                http01_token(path).and_then(|token| self.registry.http01_challenge(hostname, token))
+            {
+                let mut response = ResponseHeader::build(200, Some(2))?;
+                response.insert_header("content-type", "application/octet-stream")?;
+                response.insert_header("content-length", value.len().to_string())?;
+                session
+                    .write_response_header(Box::new(response), false)
+                    .await?;
+                session
+                    .write_response_body(Some(Bytes::from(value)), true)
+                    .await?;
+                return Ok(true);
+            }
+            if self.registry.is_https_hostname(hostname) {
                 let location = format!(
                     "https://{}{}",
                     hostname,
@@ -411,11 +430,10 @@ impl TlsAccept for GatewayTlsAccept {
                 .snapshot
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            snapshot.tls.as_ref().and_then(|tls| {
-                tls.routed_hostnames
-                    .contains(&server_name.to_ascii_lowercase())
-                    .then(|| (tls.certificates.clone(), tls.private_key.clone()))
-            })
+            snapshot
+                .tls_by_hostname
+                .get(&server_name.to_ascii_lowercase())
+                .map(|tls| (tls.certificates.clone(), tls.private_key.clone()))
         };
         let Some((certificates, private_key)) = prepared else {
             return;
@@ -436,14 +454,80 @@ impl TlsAccept for GatewayTlsAccept {
     }
 }
 
-fn prepare_gateway_tls(
-    bundle: &ManagedCertBundle,
+fn prepare_gateway_snapshot(
     projection: &GatewayProjection,
+) -> Result<PingoraGatewaySnapshot, PingoraRouteRegistryError> {
+    let mut routes = BTreeMap::new();
+    for route in &projection.routes {
+        let upstreams = route
+            .upstreams
+            .iter()
+            .map(|upstream| upstream.address)
+            .collect::<Vec<_>>();
+        routes.insert(
+            route.target.clone(),
+            Arc::new(PingoraRoutePool::new(upstreams)?),
+        );
+    }
+
+    let mut tls_by_hostname = BTreeMap::new();
+    let mut managed_hostnames = BTreeSet::new();
+    let mut https_hostnames = BTreeSet::new();
+    if let Some(bundle) = projection.managed_cert_bundle.as_ref() {
+        let tls = prepare_gateway_tls(&bundle.certificate_chain_pem, &bundle.private_key_pem)?;
+        for route in &projection.routes {
+            let hostname = route.target.hostname.as_str();
+            if managed_bundle_serves_hostname(bundle, hostname) {
+                managed_hostnames.insert(hostname.to_owned());
+                tls_by_hostname.insert(hostname.to_owned(), tls.clone());
+                if route.target.port.get() == 443 {
+                    https_hostnames.insert(hostname.to_owned());
+                }
+            }
+        }
+    }
+
+    for bundle in &projection.custom_cert_bundles {
+        let hostname = bundle.active_cert.hostname.as_str();
+        if !projection.routes.iter().any(|route| {
+            route.target.port.get() == 443 && route.target.hostname.as_str() == hostname
+        }) {
+            continue;
+        }
+        let tls = prepare_gateway_tls(&bundle.certificate_chain_pem, &bundle.private_key_pem)?;
+        tls_by_hostname.insert(hostname.to_owned(), tls);
+        https_hostnames.insert(hostname.to_owned());
+    }
+
+    let challenges = projection
+        .challenges
+        .iter()
+        .map(|challenge| {
+            (
+                (
+                    challenge.hostname().as_str().to_owned(),
+                    challenge.token().as_str().to_owned(),
+                ),
+                challenge.value().as_str().to_owned(),
+            )
+        })
+        .collect();
+
+    Ok(PingoraGatewaySnapshot {
+        routes,
+        tls_by_hostname,
+        managed_hostnames,
+        https_hostnames,
+        challenges,
+    })
+}
+
+fn prepare_gateway_tls(
+    certificate_chain_pem: &str,
+    private_key_pem: &str,
 ) -> Result<PreparedGatewayTls, PingoraRouteRegistryError> {
-    let certificates = pingora::tls::x509::X509::stack_from_pem(
-        bundle.certificate_chain_pem.as_bytes(),
-    )
-    .map_err(|error| PingoraRouteRegistryError::InvalidCertificateChain {
+    let certificates = pingora::tls::x509::X509::stack_from_pem(certificate_chain_pem.as_bytes())
+        .map_err(|error| PingoraRouteRegistryError::InvalidCertificateChain {
         message: error.to_string(),
     })?;
     if certificates.is_empty() {
@@ -451,12 +535,10 @@ fn prepare_gateway_tls(
             message: "certificate chain is empty".to_owned(),
         });
     }
-    let private_key = pingora::tls::pkey::PKey::private_key_from_pem(
-        bundle.private_key_pem.as_bytes(),
-    )
-    .map_err(|error| PingoraRouteRegistryError::InvalidPrivateKey {
-        message: error.to_string(),
-    })?;
+    let private_key = pingora::tls::pkey::PKey::private_key_from_pem(private_key_pem.as_bytes())
+        .map_err(|error| PingoraRouteRegistryError::InvalidPrivateKey {
+            message: error.to_string(),
+        })?;
     let Some(leaf) = certificates.first() else {
         return Err(PingoraRouteRegistryError::InvalidCertificateChain {
             message: "certificate chain is empty".to_owned(),
@@ -470,18 +552,15 @@ fn prepare_gateway_tls(
     if !leaf_public_key.public_eq(&private_key) {
         return Err(PingoraRouteRegistryError::CertificateKeyMismatch);
     }
-    let routed_hostnames = projection
-        .routes
-        .iter()
-        .map(|route| route.target.hostname.as_str())
-        .filter(|hostname| managed_bundle_serves_hostname(bundle, hostname))
-        .map(str::to_owned)
-        .collect();
     Ok(PreparedGatewayTls {
         certificates,
         private_key,
-        routed_hostnames,
     })
+}
+
+fn http01_token(path: &str) -> Option<&str> {
+    let token = path.strip_prefix("/.well-known/acme-challenge/")?;
+    (!token.is_empty() && !token.contains('/')).then_some(token)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

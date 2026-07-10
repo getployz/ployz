@@ -11,7 +11,7 @@ use ployz_core::install::{
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::security::NatsPrincipal;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 
 use ployz_nats::connect::{
@@ -20,6 +20,7 @@ use ployz_nats::connect::{
 use std::time::Duration;
 
 use crate::adapters::nats_server::NatsServerLaunch;
+use crate::certificate::{CertificateManagerConfig, DEFAULT_ACME_DIRECTORY_URL};
 use crate::lease::{LeaseWorkerUrl, LeaseWorkerUrlError};
 use crate::operation_api::admission::MachineAddBootstrapConfig;
 use crate::role_cli::DaemonProcessRole;
@@ -32,6 +33,7 @@ pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
 pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
 pub const PLOYZ_LEASE_WORKER_URL_ENV: &str = "PLOYZ_LEASE_WORKER_URL";
+pub const PLOYZ_ACME_DIRECTORY_URL_ENV: &str = "PLOYZ_ACME_DIRECTORY_URL";
 pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
 /// Set by `core-promote` on the new core's control unit: the machine's local
 /// intent mirror to seed a fresh core store from on first startup (ADR 0031).
@@ -103,6 +105,8 @@ pub fn load_daemon_process_config(
                 control = control.with_deploy_machines(deploy_machines);
             }
             control = control.with_core_db_path(load_core_db_path(&env));
+            let certificate_manager = load_certificate_manager_config(&control.core_db_path, &env);
+            control = control.with_certificate_manager_config(certificate_manager);
             control = control.with_lease_worker_url(load_lease_worker_url(&env)?);
             control = control.with_seed_from_mirror(load_seed_from_mirror(&env));
             control = control.with_epoch_fence_mirror(epoch_fence_mirror);
@@ -286,6 +290,16 @@ fn load_core_db_path(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
     env_value(env, PLOYZ_CORE_DB_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_DB))
+}
+
+fn load_certificate_manager_config(
+    core_db_path: &std::path::Path,
+    env: &impl Fn(&str) -> Option<String>,
+) -> CertificateManagerConfig {
+    let mut config = CertificateManagerConfig::for_core_db(core_db_path);
+    config.directory_url = env_value(env, PLOYZ_ACME_DIRECTORY_URL_ENV)
+        .unwrap_or_else(|| DEFAULT_ACME_DIRECTORY_URL.to_owned());
+    config
 }
 
 pub fn load_lease_worker_url(
@@ -707,6 +721,7 @@ pub struct ControlProcessConfig {
     pub machine_bootstrap: MachineAddBootstrapConfig,
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub lease_worker_url: LeaseWorkerUrl,
+    pub certificate_manager: CertificateManagerConfig,
 }
 
 impl ControlProcessConfig {
@@ -728,6 +743,7 @@ impl ControlProcessConfig {
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
             dataplane_endpoint_supernet: MachineEndpointSupernet::default_v1(),
             lease_worker_url: LeaseWorkerUrl::default_worker(),
+            certificate_manager: CertificateManagerConfig::for_core_db(Path::new(DEFAULT_CORE_DB)),
         }
     }
 
@@ -748,6 +764,7 @@ impl ControlProcessConfig {
 
     #[must_use]
     pub fn with_core_db_path(mut self, core_db_path: PathBuf) -> Self {
+        self.certificate_manager = CertificateManagerConfig::for_core_db(&core_db_path);
         self.core_db_path = core_db_path;
         self
     }
@@ -788,6 +805,15 @@ impl ControlProcessConfig {
     #[must_use]
     pub fn with_lease_worker_url(mut self, lease_worker_url: LeaseWorkerUrl) -> Self {
         self.lease_worker_url = lease_worker_url;
+        self
+    }
+
+    #[must_use]
+    pub fn with_certificate_manager_config(
+        mut self,
+        certificate_manager: CertificateManagerConfig,
+    ) -> Self {
+        self.certificate_manager = certificate_manager;
         self
     }
 

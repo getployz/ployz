@@ -47,6 +47,11 @@ impl CertOperationState {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CertOperationFailure {
+    DnsPreflightFailed {
+        cert_id: CertId,
+        message: FailureMessage,
+        retained_active_cert: Option<ActiveCertState>,
+    },
     ChallengePublishFailed {
         cert_id: CertId,
         message: FailureMessage,
@@ -69,7 +74,8 @@ impl CertOperationFailure {
     #[must_use]
     pub const fn cert_id(&self) -> &CertId {
         match self {
-            Self::ChallengePublishFailed { cert_id, .. }
+            Self::DnsPreflightFailed { cert_id, .. }
+            | Self::ChallengePublishFailed { cert_id, .. }
             | Self::AcmeValidationFailed { cert_id, .. }
             | Self::ActiveCertCommitFailed { cert_id, .. } => cert_id,
         }

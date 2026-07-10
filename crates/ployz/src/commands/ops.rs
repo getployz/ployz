@@ -499,6 +499,7 @@ const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
         DeployRunningStage::EnsuringImages => "running:ensuring-images",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
+        DeployRunningStage::EnsuringCertificates => "running:ensuring-certificates",
         DeployRunningStage::RouteCutover => "running:route-cutover",
         DeployRunningStage::ServingTargetCommit => "running:active-service-commit",
         DeployRunningStage::RemovingSupersededContainers => {

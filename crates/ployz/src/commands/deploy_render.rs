@@ -780,6 +780,8 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::ContainerStartFailed { .. }
                         | DeployOperationFailure::PreStartHookFailed { .. }
                         | DeployOperationFailure::HealthCheckFailed { .. }
+                        | DeployOperationFailure::CertificateProvisionFailed { .. }
+                        | DeployOperationFailure::CertificateProvisionTimedOut { .. }
                         | DeployOperationFailure::ControlPlaneCommitFailed { .. }
                         | DeployOperationFailure::RouteCutoverFailed { .. } => String::new(),
                     });
@@ -835,7 +837,7 @@ fn render_service_step(
             let name = format!("{}.{} on {}", service_id, slot.get(), machine_id.as_str());
             if tree.is_complete_success()
                 || tree.stage().is_some_and(|stage| {
-                    stage_rank(stage) >= stage_rank(DeployRunningStage::RouteCutover)
+                    stage_rank(stage) >= stage_rank(DeployRunningStage::EnsuringCertificates)
                 })
             {
                 return TreeLine::Settled {
@@ -869,6 +871,7 @@ fn render_service_step(
                 Some(DeployRunningStage::EnsuringImages) => "ensuring images",
                 Some(DeployRunningStage::StartingContainers)
                 | Some(DeployRunningStage::WaitingForHealth)
+                | Some(DeployRunningStage::EnsuringCertificates)
                 | Some(DeployRunningStage::RouteCutover)
                 | Some(DeployRunningStage::ServingTargetCommit)
                 | Some(DeployRunningStage::RemovingSupersededContainers)
@@ -905,6 +908,7 @@ fn render_route_line(
         };
     }
     let step_text = match tree.stage() {
+        Some(DeployRunningStage::EnsuringCertificates) => "ensuring certificate",
         Some(DeployRunningStage::RouteCutover) => "cutting over",
         Some(DeployRunningStage::ServingTargetCommit)
         | Some(DeployRunningStage::RemovingSupersededContainers) => "committing",
@@ -993,9 +997,10 @@ const fn stage_rank(stage: DeployRunningStage) -> u8 {
         DeployRunningStage::EnsuringImages => 1,
         DeployRunningStage::StartingContainers => 2,
         DeployRunningStage::WaitingForHealth => 3,
-        DeployRunningStage::RouteCutover => 4,
-        DeployRunningStage::ServingTargetCommit => 5,
-        DeployRunningStage::RemovingSupersededContainers => 6,
+        DeployRunningStage::EnsuringCertificates => 4,
+        DeployRunningStage::RouteCutover => 5,
+        DeployRunningStage::ServingTargetCommit => 6,
+        DeployRunningStage::RemovingSupersededContainers => 7,
     }
 }
 

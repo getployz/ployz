@@ -1,6 +1,7 @@
 //! Core-owned operator intent service.
 
 use crate::core_store::CoreStore;
+use crate::intent::certificate_intent::CertificateIntentStore;
 use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
@@ -93,6 +94,7 @@ pub async fn start_intent_service(
     publish_interval: Duration,
 ) -> Result<RunningIntentService, NatsServiceRuntimeError> {
     let lease_intent = LeaseIntentStore::new(core_store.clone());
+    let certificate_intent = CertificateIntentStore::reader(core_store.clone());
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     // The grant set is a projection of the same store; a thin wrapper over it reads
     // the grants the authorization writer persists there.
@@ -103,6 +105,7 @@ pub async fn start_intent_service(
     let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
     let service_lease_intent = lease_intent.clone();
+    let service_certificate_intent = certificate_intent.clone();
     let service_core_store = core_store.clone();
     let service_authorizations = nats_authorizations.clone();
     service
@@ -110,6 +113,7 @@ pub async fn start_intent_service(
             let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
             let lease_intent = service_lease_intent.clone();
+            let certificate_intent = service_certificate_intent.clone();
             let core_store = service_core_store.clone();
             let nats_authorizations = service_authorizations.clone();
             let core_machine_id = service_core_machine_id.clone();
@@ -120,6 +124,7 @@ pub async fn start_intent_service(
                     &machine_roster,
                     &namespace_intent,
                     &lease_intent,
+                    &certificate_intent,
                     &core_store,
                     &nats_authorizations,
                 )
@@ -138,6 +143,7 @@ pub async fn start_intent_service(
                 &machine_roster,
                 &namespace_intent,
                 &lease_intent,
+                &certificate_intent,
                 &core_store,
                 &nats_authorizations,
             )
@@ -179,6 +185,7 @@ async fn intent_get_response(
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     lease_intent: &LeaseIntentStore,
+    certificate_intent: &CertificateIntentStore,
     core_store: &CoreStore,
     nats_authorizations: &NatsAuthorizationStore,
 ) -> NatsServiceResponse {
@@ -191,6 +198,7 @@ async fn intent_get_response(
         machine_roster,
         namespace_intent,
         lease_intent,
+        certificate_intent,
         core_store,
         nats_authorizations,
     )
@@ -206,6 +214,7 @@ async fn load_intent(
     machine_roster: &MachineRosterStore,
     namespace_intent: &NamespaceIntentStore,
     lease_intent: &LeaseIntentStore,
+    certificate_intent: &CertificateIntentStore,
     core_store: &CoreStore,
     nats_authorizations: &NatsAuthorizationStore,
 ) -> Result<IntentSnapshot, String> {
@@ -246,6 +255,14 @@ async fn load_intent(
             ployz_core::state::ManagedLeaseProjection::Unacquired
         }
     };
+    let custom_certificates = certificate_intent
+        .active_certificates()
+        .await
+        .map_err(|error| error.to_string())?;
+    let acme_http01_challenges = certificate_intent
+        .challenges()
+        .await
+        .map_err(|error| error.to_string())?;
 
     Ok(IntentSnapshot {
         epoch,
@@ -256,6 +273,8 @@ async fn load_intent(
         volume_pins: namespace_intent.volume_pins,
         authorized_users,
         managed_lease,
+        custom_certificates,
+        acme_http01_challenges,
     })
 }
 
