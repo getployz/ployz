@@ -73,14 +73,16 @@ pub async fn seed_core_from_snapshot(
         namespace.replace_volume_pin(pin.clone()).await?;
     }
     let lease_store = LeaseIntentStore::new(core_store.clone());
-    match (&snapshot.managed_lease, &snapshot.managed_cert_bundle) {
-        (Some(record), Some(bundle)) => {
+    match &snapshot.managed_lease {
+        ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } => {
             lease_store
-                .store_lease(record.clone(), bundle.clone())
+                .store_lease(lease.clone(), bundle.clone())
                 .await?;
         }
-        (Some(record), None) => lease_store.restore_lease_record(record.clone()).await?,
-        (None, Some(_)) | (None, None) => {}
+        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
+            lease_store.restore_lease_record(lease.clone()).await?
+        }
+        ployz_core::state::ManagedLeaseProjection::Unacquired => {}
     }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
@@ -117,6 +119,7 @@ mod tests {
                 machine_id: machine_id("machine_a"),
                 name: ployz_core::machine::MachineName::try_new("machine_a").expect("name"),
                 activated_by: operation_id("op_activate"),
+                roles: ployz_core::roles::InstallRolePolicy::install_all(),
                 lifecycle: MachineLifecycle::Active,
                 control_endpoints: Vec::new(),
                 mesh_endpoints: Vec::new(),
@@ -132,8 +135,7 @@ mod tests {
                 principal: NatsPrincipal::Operator,
                 nkey_public: MintedNatsUser::generate().expect("mint").public,
             }],
-            managed_lease: None,
-            managed_cert_bundle: None,
+            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         }
     }
 
@@ -171,8 +173,10 @@ mod tests {
             panic!("acquire returns lease");
         };
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
-        snapshot.managed_lease = Some(acquired.lease.clone());
-        snapshot.managed_cert_bundle = Some(acquired.bundle.clone());
+        snapshot.managed_lease = ployz_core::state::ManagedLeaseProjection::Ready {
+            lease: acquired.lease.clone(),
+            bundle: acquired.bundle.clone(),
+        };
 
         seed_core_from_snapshot(&store, &snapshot)
             .await

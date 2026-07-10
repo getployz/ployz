@@ -116,6 +116,61 @@ async fn due_lease_renews_and_completes_operation() {
 }
 
 #[tokio::test]
+async fn due_certificate_refresh_downloads_bundle_without_renewing_lease() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
+    let intent = LeaseIntentStore::new(core_store.clone());
+    intent
+        .set_mode(PublicUrlMode::Auto)
+        .await
+        .expect("auto mode");
+    let repository = OperationRepository::open(core_store, nats.controller.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let (client, server) = stub_client(StubLeaseWorker::with_clock(ManualClock::new(now))).await;
+    let acquired = client
+        .acquire(ManagedLeaseAcquireRequest {
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
+        })
+        .await
+        .expect("seed lease");
+    let lease = acquired.lease.clone();
+    let short_bundle = ployz_core::cert::ManagedCertBundle::try_new(
+        lease.name.clone(),
+        lease.name.wildcard_and_apex(),
+        acquired.bundle.certificate_chain_pem,
+        acquired.bundle.private_key_pem,
+        ployz_core::cert::LeaseIssuedAt::try_new(now - 90).expect("issued"),
+        ployz_core::cert::LeaseExpiresAt::try_new(now + 10).expect("expires"),
+    )
+    .expect("short bundle");
+    intent
+        .store_lease(lease.clone(), short_bundle)
+        .await
+        .expect("store local lease");
+
+    let outcome = run_once(&intent, &repository, &client, &FactCache::default())
+        .await
+        .expect("refresh tick");
+
+    assert!(matches!(
+        outcome,
+        ManagedLeaseTaskOutcome::BundleDownloaded { .. }
+    ));
+    let ManagedLeaseIntent::Auto { state } = intent.load().await.expect("intent") else {
+        panic!("auto intent");
+    };
+    let AutoLeaseState::Ready { lease: stored, .. } = *state else {
+        panic!("ready lease");
+    };
+    assert_eq!(stored, lease);
+    server.abort();
+}
+
+#[tokio::test]
 async fn mirrored_lease_downloads_missing_local_bundle() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");

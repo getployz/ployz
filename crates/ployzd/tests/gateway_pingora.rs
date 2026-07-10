@@ -5,8 +5,8 @@ use ployz_core::ops::{RouteHostnameError, RouteTarget};
 use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 use ployz_test_support::ids::{container_id, machine_id, route_hostname, route_port};
 use ployzd::roles::gateway::pingora::{
-    HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteSelectionError,
-    managed_bundle_serves_hostname, route_target_from_authority,
+    HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteRegistryError,
+    PingoraRouteSelectionError, managed_bundle_serves_hostname, route_target_from_authority,
 };
 use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjection, GatewayUpstream,
@@ -99,6 +99,43 @@ fn invalid_tls_projection_retains_previous_routes_and_tls() {
     );
     assert!(registry.is_managed_hostname(&hostname));
     assert_eq!(registry.backend_count(&route_target(&hostname, 443)), 1);
+}
+
+#[test]
+fn mismatched_tls_key_rejects_projection_and_retains_last_good() {
+    let first = valid_bundle();
+    let second = valid_bundle();
+    let hostname = format!("api.{}", first.lease.hostname_suffix());
+    let registry = PingoraRouteRegistry::new();
+    registry
+        .replace_projection(&GatewayProjection {
+            managed_cert_bundle: Some(first.clone()),
+            routes: vec![projected_route_to_endpoint(
+                &hostname,
+                443,
+                "127.0.0.1",
+                8080,
+            )],
+        })
+        .expect("valid initial TLS projection");
+    let mismatched = ManagedCertBundle::try_new(
+        first.lease.clone(),
+        first.lease.wildcard_and_apex(),
+        first.certificate_chain_pem,
+        second.private_key_pem,
+        first.issued_at,
+        first.expires_at,
+    )
+    .expect("bundle wire shape");
+
+    assert!(matches!(
+        registry.replace_projection(&GatewayProjection {
+            managed_cert_bundle: Some(mismatched),
+            routes: Vec::new(),
+        }),
+        Err(PingoraRouteRegistryError::CertificateKeyMismatch)
+    ));
+    assert!(registry.is_managed_hostname(&hostname));
 }
 
 fn valid_bundle() -> ManagedCertBundle {

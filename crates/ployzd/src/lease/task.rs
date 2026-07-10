@@ -13,6 +13,7 @@ use ployz_core::ops::{
 
 use crate::fact_cache::FactCache;
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError, StoreLeaseOutcome};
+use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::lease::{LeaseClient, LeaseClientError};
 use crate::operations::log::{
     ManagedLeaseOperationSubmission, OperationRepository, RecordManagedLeaseTransitionError,
@@ -29,8 +30,9 @@ pub fn start_managed_lease_task(
     repository: OperationRepository,
     client: LeaseClient,
     facts: FactCache,
+    roster: MachineRosterStore,
 ) {
-    registry.spawn(run_loop(lease_intent, repository, client, facts));
+    registry.spawn(run_loop(lease_intent, repository, client, facts, roster));
 }
 
 async fn run_loop(
@@ -38,14 +40,48 @@ async fn run_loop(
     repository: OperationRepository,
     client: LeaseClient,
     facts: FactCache,
+    roster: MachineRosterStore,
 ) {
     if let Err(error) = recover_accepted_operations(&repository).await {
         eprintln!("ployzd managed lease recovery warning: {error}");
     }
     let mut consecutive_failures = 0;
+    let mut acquisition_attempted = false;
     loop {
-        let delay = match run_once(&lease_intent, &repository, &client, &facts).await {
+        let acquiring = matches!(
+            lease_intent.load_if_configured().await,
+            Ok(Some(ManagedLeaseIntent::Auto { state }))
+                if matches!(state.as_ref(), AutoLeaseState::Unacquired)
+        );
+        if !acquisition_allowed(acquisition_attempted, acquiring) {
+            tokio::time::sleep(MANAGED_LEASE_TICK_INTERVAL).await;
+            continue;
+        }
+        if !acquiring {
+            acquisition_attempted = false;
+        }
+        let outcome =
+            run_once_with_roster(&lease_intent, &repository, &client, &facts, &roster).await;
+        let posted_acquisition = acquiring
+            && !matches!(
+                &outcome,
+                Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. })
+                    | Err(ManagedLeaseTaskError::Roster(_))
+            );
+        let delay = match outcome {
             Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration) => {
+                consecutive_failures = 0;
+                MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
+            }
+            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing }) => {
+                eprintln!(
+                    "ployzd managed lease waiting for gateway endpoint testimony: {}",
+                    missing
+                        .iter()
+                        .map(ployz_core::ids::MachineId::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 consecutive_failures = 0;
                 MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
             }
@@ -75,8 +111,13 @@ async fn run_loop(
                 failure_delay(consecutive_failures)
             }
         };
+        acquisition_attempted |= posted_acquisition;
         tokio::time::sleep(delay).await;
     }
+}
+
+const fn acquisition_allowed(attempted: bool, acquiring: bool) -> bool {
+    !attempted || !acquiring
 }
 
 fn failure_delay(consecutive_failures: u32) -> Duration {
@@ -91,18 +132,79 @@ pub async fn run_once(
     client: &LeaseClient,
     facts: &FactCache,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let acquisition = known_gateway_addresses_from_ids(
+        &std::collections::BTreeSet::new(),
+        facts.machine_endpoint_observations(),
+    );
+    run_once_with_addresses(
+        lease_intent,
+        repository,
+        client,
+        acquisition.request,
+        acquisition.missing,
+    )
+    .await
+}
+
+async fn run_once_with_roster(
+    lease_intent: &LeaseIntentStore,
+    repository: &OperationRepository,
+    client: &LeaseClient,
+    facts: &FactCache,
+    roster: &MachineRosterStore,
+) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let gateway_ids = roster
+        .active_machines()
+        .await?
+        .into_iter()
+        .filter(|machine| {
+            matches!(
+                machine.roles.gateway,
+                ployz_core::roles::GatewayRole::Install
+            )
+        })
+        .map(|machine| machine.machine_id)
+        .collect();
+    let acquisition =
+        known_gateway_addresses_from_ids(&gateway_ids, facts.machine_endpoint_observations());
+    if !acquisition.missing.is_empty() {
+        return Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony {
+            missing: acquisition.missing,
+        });
+    }
+    run_once_with_addresses(
+        lease_intent,
+        repository,
+        client,
+        acquisition.request,
+        Vec::new(),
+    )
+    .await
+}
+
+async fn run_once_with_addresses(
+    lease_intent: &LeaseIntentStore,
+    repository: &OperationRepository,
+    client: &LeaseClient,
+    acquisition: ManagedLeaseAcquireRequest,
+    missing_gateways: Vec<ployz_core::ids::MachineId>,
+) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
     let Some(intent) = lease_intent.load_if_configured().await? else {
         return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
     };
-    let needs_renewal = match &intent {
+    let (needs_lease_renewal, needs_certificate_refresh) = match &intent {
         ManagedLeaseIntent::Auto { state }
             if matches!(state.as_ref(), AutoLeaseState::Ready { .. }) =>
         {
-            intent.needs_renewal(now_seconds()?)
+            let now = now_seconds()?;
+            (
+                intent.needs_lease_renewal(now),
+                intent.needs_certificate_refresh(now),
+            )
         }
         ManagedLeaseIntent::Auto { .. }
         | ManagedLeaseIntent::BringYourOwn
-        | ManagedLeaseIntent::None => false,
+        | ManagedLeaseIntent::None => (false, false),
     };
 
     let ManagedLeaseIntent::Auto { state } = intent else {
@@ -116,8 +218,20 @@ pub async fn run_once(
                 repository,
                 ManagedLeaseSubject::Acquire,
                 || async {
+                    if !missing_gateways.is_empty() {
+                        return Err(LeaseClientError::Transport {
+                            message: format!(
+                                "gateway endpoint testimony unavailable for {}",
+                                missing_gateways
+                                    .iter()
+                                    .map(ployz_core::ids::MachineId::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        });
+                    }
                     client
-                        .acquire(known_gateway_addresses(facts))
+                        .acquire(acquisition)
                         .await
                         .map(|acquired| (acquired.lease, acquired.bundle))
                 },
@@ -144,7 +258,25 @@ pub async fn run_once(
             .await
         }
         AutoLeaseState::Ready { lease, bundle: _ } => {
-            if !needs_renewal {
+            if needs_certificate_refresh && !needs_lease_renewal {
+                let subject = ManagedLeaseSubject::DownloadBundle {
+                    lease: lease.name.clone(),
+                };
+                return run_step(
+                    lease_intent,
+                    repository,
+                    subject,
+                    || async {
+                        let bundle = client
+                            .download_bundle(lease.name.clone(), lease.token.clone())
+                            .await?;
+                        Ok((lease, bundle))
+                    },
+                    |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
+                )
+                .await;
+            }
+            if !needs_lease_renewal {
                 return Ok(ManagedLeaseTaskOutcome::NoAction);
             }
             let subject = ManagedLeaseSubject::Renew {
@@ -167,21 +299,20 @@ pub async fn run_once(
     }
 }
 
-fn known_gateway_addresses(facts: &FactCache) -> ManagedLeaseAcquireRequest {
-    gateway_addresses(
-        facts.gateway_statuses(),
-        facts.machine_endpoint_observations(),
-    )
+struct GatewayAddressCandidates {
+    request: ManagedLeaseAcquireRequest,
+    missing: Vec<ployz_core::ids::MachineId>,
 }
 
-fn gateway_addresses(
-    statuses: Vec<ployz_core::state::GatewayStatusObservation>,
+fn known_gateway_addresses_from_ids(
+    gateways: &std::collections::BTreeSet<ployz_core::ids::MachineId>,
     endpoints: Vec<ployz_core::state::MachineEndpointObservation>,
-) -> ManagedLeaseAcquireRequest {
-    let gateways = statuses
-        .into_iter()
-        .map(|status| status.machine_id)
+) -> GatewayAddressCandidates {
+    let answering = endpoints
+        .iter()
+        .map(|endpoint| endpoint.machine_id.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    let missing = gateways.difference(&answering).cloned().collect();
     let mut ipv4 = Vec::new();
     let mut ipv6 = Vec::new();
     for endpoint in endpoints {
@@ -199,7 +330,10 @@ fn gateway_addresses(
     ipv4.dedup();
     ipv6.sort_unstable();
     ipv6.dedup();
-    ManagedLeaseAcquireRequest { ipv4, ipv6 }
+    GatewayAddressCandidates {
+        request: ManagedLeaseAcquireRequest { ipv4, ipv6 },
+        missing,
+    }
 }
 
 async fn run_step<Worker, WorkerFuture, Success>(
@@ -350,17 +484,30 @@ fn now_seconds() -> Result<u64, ManagedLeaseTaskError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagedLeaseTaskOutcome {
     AwaitingConfiguration,
+    AwaitingGatewayTestimony {
+        missing: Vec<ployz_core::ids::MachineId>,
+    },
     NoAction,
-    Acquired { operation_id: OperationId },
-    BundleDownloaded { operation_id: OperationId },
-    Renewed { operation_id: OperationId },
-    Failed { operation_id: OperationId },
+    Acquired {
+        operation_id: OperationId,
+    },
+    BundleDownloaded {
+        operation_id: OperationId,
+    },
+    Renewed {
+        operation_id: OperationId,
+    },
+    Failed {
+        operation_id: OperationId,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManagedLeaseTaskError {
     #[error("{0}")]
     Intent(#[from] LeaseIntentStoreError),
+    #[error("managed lease roster read: {0}")]
+    Roster(#[from] MachineRosterStoreError),
     #[error("managed lease operation id: {0}")]
     OperationId(String),
     #[error("managed lease operation submission failed: {0}")]
@@ -376,9 +523,7 @@ pub enum ManagedLeaseTaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::state::{
-        GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    };
+    use ployz_core::state::MachineEndpointObservation;
     use ployz_test_support::ids::machine_id;
 
     #[test]
@@ -390,13 +535,8 @@ mod tests {
     #[test]
     fn acquisition_addresses_include_only_known_gateway_endpoints() {
         let gateway = machine_id("gateway");
-        let result = gateway_addresses(
-            vec![GatewayStatusObservation {
-                machine_id: gateway.clone(),
-                listen_addr: "0.0.0.0:80".parse().expect("listen address"),
-                serving: GatewayServingStatus::Current,
-                route_count: 0,
-            }],
+        let result = known_gateway_addresses_from_ids(
+            &std::collections::BTreeSet::from([gateway.clone(), machine_id("silent")]),
             vec![
                 MachineEndpointObservation {
                     machine_id: gateway,
@@ -415,12 +555,42 @@ mod tests {
         );
 
         assert_eq!(
-            result.ipv4,
+            result.request.ipv4,
             ["203.0.113.8".parse::<std::net::Ipv4Addr>().expect("IPv4")]
         );
         assert_eq!(
-            result.ipv6,
+            result.request.ipv6,
             ["2001:db8::8".parse::<std::net::Ipv6Addr>().expect("IPv6")]
         );
+        assert_eq!(result.missing, [machine_id("silent")]);
+    }
+
+    #[test]
+    fn failed_non_idempotent_acquisition_is_not_repeated_in_same_run() {
+        assert!(acquisition_allowed(false, true));
+        assert!(!acquisition_allowed(true, true));
+        assert!(acquisition_allowed(true, false));
+    }
+
+    #[test]
+    fn delayed_gateway_testimony_does_not_consume_acquisition_attempt() {
+        let gateway = machine_id("gateway");
+        let gateways = std::collections::BTreeSet::from([gateway.clone()]);
+        let waiting = known_gateway_addresses_from_ids(&gateways, Vec::new());
+        let mut attempted = false;
+        attempted |= waiting.missing.is_empty();
+        assert!(!attempted);
+
+        let ready = known_gateway_addresses_from_ids(
+            &gateways,
+            vec![MachineEndpointObservation {
+                machine_id: gateway,
+                control_endpoints: vec!["203.0.113.8".parse().expect("IPv4")],
+                mesh_endpoints: Vec::new(),
+            }],
+        );
+
+        assert!(ready.missing.is_empty());
+        assert!(acquisition_allowed(attempted, true));
     }
 }

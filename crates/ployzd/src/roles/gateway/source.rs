@@ -41,7 +41,11 @@ pub async fn load_gateway_projection_input_from_nats(
     let observed_machines = facts.machine_container_snapshots();
 
     Ok(gateway_projection_input_from_state(
-        intent.managed_cert_bundle,
+        match intent.managed_lease {
+            ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => Some(bundle),
+            ployz_core::state::ManagedLeaseProjection::Unacquired
+            | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
+        },
         intent.route_bindings,
         intent.serving_target_entries,
         observed_machines,

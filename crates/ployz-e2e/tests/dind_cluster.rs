@@ -317,21 +317,15 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
             .find(|binding| binding.namespace_id == namespace_id("auto_https"))
             .expect("auto hostname binding committed");
         let hostname = binding.target.hostname.as_str().to_owned();
+        let ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } =
+            intent.managed_lease
+        else {
+            panic!("managed lease is ready");
+        };
         assert_eq!(
             hostname,
-            "svc-auto.demo.up.ployz.app".replace(
-                "demo",
-                intent
-                    .managed_lease
-                    .as_ref()
-                    .expect("managed lease")
-                    .name
-                    .as_str()
-            )
+            "svc-auto.demo.up.ployz.app".replace("demo", lease.name.as_str())
         );
-        let bundle = intent
-            .managed_cert_bundle
-            .expect("managed certificate bundle");
 
         let second = core
             .api

@@ -716,6 +716,7 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
         machine_id: self::machine_id(machine_id),
         name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
+        roles: ployz_core::roles::InstallRolePolicy::install_all(),
         endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
     }

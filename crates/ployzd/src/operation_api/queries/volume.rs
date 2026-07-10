@@ -86,8 +86,7 @@ mod tests {
                 },
             ],
             authorized_users: Vec::new(),
-            managed_lease: None,
-            managed_cert_bundle: None,
+            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         };
 
         let projected = volume_snapshots(&intent);

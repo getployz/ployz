@@ -196,6 +196,8 @@ pub enum PingoraRouteRegistryError {
     InvalidCertificateChain { message: String },
     #[error("invalid managed gateway private key: {message}")]
     InvalidPrivateKey { message: String },
+    #[error("managed gateway certificate does not match its private key")]
+    CertificateKeyMismatch,
 }
 
 #[derive(Clone)]
@@ -455,6 +457,19 @@ fn prepare_gateway_tls(
     .map_err(|error| PingoraRouteRegistryError::InvalidPrivateKey {
         message: error.to_string(),
     })?;
+    let Some(leaf) = certificates.first() else {
+        return Err(PingoraRouteRegistryError::InvalidCertificateChain {
+            message: "certificate chain is empty".to_owned(),
+        });
+    };
+    let leaf_public_key =
+        leaf.public_key()
+            .map_err(|error| PingoraRouteRegistryError::InvalidCertificateChain {
+                message: error.to_string(),
+            })?;
+    if !leaf_public_key.public_eq(&private_key) {
+        return Err(PingoraRouteRegistryError::CertificateKeyMismatch);
+    }
     let routed_hostnames = projection
         .routes
         .iter()

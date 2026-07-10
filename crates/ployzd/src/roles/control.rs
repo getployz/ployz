@@ -244,6 +244,7 @@ pub async fn start_control_process_with_client_and_reload(
         controllers.repository().clone(),
         LeaseClient::new(config.lease_worker_url.clone()),
         facts.clone(),
+        machine_roster.clone(),
     );
     let intent = start_intent_service(
         client.clone(),
@@ -491,8 +492,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
-            managed_lease: None,
-            managed_cert_bundle: None,
+            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         }
     }
 
@@ -516,6 +516,7 @@ mod tests {
             name: MachineName::try_new(machine_id_value).expect("valid machine name"),
             activated_by: OperationId::try_new(format!("op_add_{machine_id_value}"))
                 .expect("valid operation id"),
+            roles: InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Active,
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),

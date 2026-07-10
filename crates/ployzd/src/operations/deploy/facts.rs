@@ -46,10 +46,11 @@ pub async fn load_deploy_execution_facts_from_nats(
                 message: source.to_string(),
             })?;
     let active_machines = intent.active_machines.clone();
-    let managed_lease = intent
-        .managed_cert_bundle
-        .as_ref()
-        .map(|bundle| bundle.lease.clone());
+    let managed_lease = match &intent.managed_lease {
+        ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => Some(lease.name.clone()),
+        ployz_core::state::ManagedLeaseProjection::Unacquired
+        | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
+    };
     let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates.clone());
     // Hostnames share one managed DNS lease across the cluster, so minting
     // must see bindings in every namespace. Namespace-scoped removal still
