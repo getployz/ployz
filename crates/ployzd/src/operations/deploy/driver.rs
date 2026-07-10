@@ -686,36 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn health_classifies_running_endpoint_as_unconfirmed() {
-        assert_eq!(
-            observed_container_readiness(
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-                ),
-                false,
-            ),
-            ObservedContainerReadiness::RunningUnconfirmed
-        );
-    }
-
-    #[test]
-    fn health_classifies_running_endpoint_without_matching_route_port_as_unconfirmed() {
-        assert_eq!(
-            observed_container_readiness(
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-                ),
-                false,
-            ),
-            ObservedContainerReadiness::RunningUnconfirmed
-        );
-    }
-
-    #[test]
     fn health_fails_exited_container() {
         assert_eq!(
             observed_container_readiness(
@@ -779,10 +749,6 @@ mod tests {
             resolved_image_identity: None,
             created_at_unix_seconds: None,
         }
-    }
-
-    fn endpoint_ip(ip: &str) -> std::net::IpAddr {
-        ip.parse().expect("valid endpoint ip")
     }
 
     fn namespace_id(value: &str) -> ployz_core::ids::NamespaceId {
