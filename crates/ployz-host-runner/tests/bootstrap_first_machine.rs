@@ -1,5 +1,6 @@
 mod support;
 
+use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::NatsUserPublicKey;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
@@ -266,6 +267,54 @@ fn first_machine_default_install_includes_gateway_and_dns_roles() {
                 .contains(&HostRunnerStep::StartSupervisorUnit(unit))
         );
     }
+}
+
+#[test]
+fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
+    let supernet = MachineEndpointSupernet::try_new("10.77.0.0/16").expect("valid supernet");
+    let plan = first_machine_install_plan(
+        FirstMachineInstallTarget::new(
+            machine_id("machine_1"),
+            ployzd_artifact(),
+            dataplane_artifacts(),
+            nats_server_artifact(),
+            InstallRolePolicy::install_all(),
+            test_identity().clone(),
+            WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
+            WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
+        )
+        .with_dataplane_endpoint_supernet(supernet)
+        .with_role_environment(role_environment()),
+    );
+
+    let rendered = plan
+        .steps()
+        .iter()
+        .find_map(|step| match step {
+            HostRunnerStep::WritePloyzdRoleEnvironment(environment)
+                if matches!(environment.role, DaemonProcessRole::Control) =>
+            {
+                Some(environment.render())
+            }
+            HostRunnerStep::VerifyHost(_)
+            | HostRunnerStep::PrepareDataplaneHost
+            | HostRunnerStep::PrepareContainerRuntime(_, _)
+            | HostRunnerStep::VerifyContainerRuntime(_)
+            | HostRunnerStep::InstallArtifact(_)
+            | HostRunnerStep::WritePloyzdRoleEnvironment(_)
+            | HostRunnerStep::WriteNatsTlsMaterial(_)
+            | HostRunnerStep::WriteNatsAuthorizedUsers(_)
+            | HostRunnerStep::WriteNatsClientCredentials(_)
+            | HostRunnerStep::WriteNatsServerConfig(_)
+            | HostRunnerStep::WriteMachineJoinTemplate(_)
+            | HostRunnerStep::WriteSupervisorUnit(_)
+            | HostRunnerStep::StartSupervisorUnit(_)
+            | HostRunnerStep::RestartSupervisorUnit(_)
+            | HostRunnerStep::StoreJoinMaterial(_) => None,
+        })
+        .expect("first-machine plan writes the control environment");
+
+    assert!(rendered.contains("PLOYZ_DATAPLANE_ENDPOINT_SUPERNET=10.77.0.0/16\n"));
 }
 
 #[test]

@@ -216,43 +216,7 @@ pub async fn execute_command(
         }
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
-        PloyzctlCommand::Deploy(command) => {
-            let mut command = command;
-            let detach = command.detach;
-            let warnings = command.warnings.join("\n");
-            if !warnings.is_empty() {
-                eprintln!("{warnings}");
-            }
-            let api = operation_api_client(config).await?;
-            let receipts = crate::image_push::prepare_deploy_images(
-                &api,
-                &mut command.services,
-                command.from_registry,
-            )
-            .await
-            .map_err(|source| PloyzctlExecutionError::ImagePush { source })?;
-            let receipt_output = receipts
-                .iter()
-                .map(crate::image_push::ImagePushReceipt::render)
-                .collect::<String>();
-            let accepted = api
-                .deploy_submit(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput {
-                    stdout: format!(
-                        "{receipt_output}{}",
-                        crate::commands::deploy::DeployOutput::from_accepted(accepted).render()
-                    ),
-                    stderr: String::new(),
-                });
-            }
-            let mut output =
-                deploy_follow::watch_deploy_operation(&api, accepted.operation_id, config).await?;
-            output.stdout.insert_str(0, &receipt_output);
-            Ok(output)
-        }
+        PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
                 host_runner_install,

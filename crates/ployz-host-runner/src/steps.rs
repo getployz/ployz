@@ -1103,6 +1103,10 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
 #[must_use]
 pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunnerStepPlan {
     let process_set = plan_first_machine_process_set(&target.machine_id, target.roles);
+    let role_environment = target
+        .role_environment
+        .clone()
+        .with_dataplane_endpoint_supernet(target.dataplane_endpoint_supernet.clone());
     let nats_server_config = NatsServerConfigTarget::for_first_machine(
         target.machine_id.clone(),
         &target.nats_server_unit,
@@ -1173,14 +1177,14 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         steps.push(HostRunnerStep::WritePloyzdRoleEnvironment(
             PloyzdRoleEnvironmentStep {
                 role: role.clone(),
-                target: target.role_environment.clone(),
+                target: role_environment.clone(),
             },
         ));
         steps.push(HostRunnerStep::WriteSupervisorUnit(
             SupervisorUnitSpec::PloyzdRole {
                 role: role.clone(),
                 artifact: target.ployzd_artifact.clone(),
-                environment_file: target.role_environment.file_for_role(role),
+                environment_file: role_environment.file_for_role(role),
             },
         ));
         steps.push(HostRunnerStep::StartSupervisorUnit(unit));

@@ -61,7 +61,7 @@ use ployzd::adapters::docker::labels::{
     CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
     SERVICE_ID_LABEL,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use support::dind::assert::{
@@ -657,6 +657,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
         )));
 
         let mut running = 0_usize;
+        let mut running_machines = BTreeSet::new();
         for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
             for container in managed_workload_containers(&core, machine)
                 .await
@@ -684,9 +685,22 @@ async fn scenario_direct_push_multi_machine_deploy() {
                     machine.name
                 );
                 running += 1;
+                running_machines.insert(machine.name.clone());
             }
         }
         assert_eq!(running, 2, "two pushed-image replicas must be running");
+        assert_eq!(
+            running_machines.len(),
+            2,
+            "pushed-image replicas must run on two distinct machines: {running_machines:?}"
+        );
+        assert!(
+            running_machines
+                .iter()
+                .any(|machine| machine != receipt.seed.as_str()),
+            "at least one pushed-image replica must run away from seed {}: {running_machines:?}",
+            receipt.seed.as_str()
+        );
     })
     .await;
     finish(core).await;
