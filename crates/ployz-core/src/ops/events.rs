@@ -88,6 +88,9 @@ pub enum OperationEvent {
     DeployPlanningStarted {
         operation_id: OperationId,
     },
+    DeployWaitingForManagedCertificate {
+        operation_id: OperationId,
+    },
     DeployImageResolved {
         operation_id: OperationId,
         service_id: ServiceId,
@@ -316,6 +319,7 @@ impl OperationEvent {
         match self {
             Self::DeploySubmitted { operation_id, .. }
             | Self::DeployPlanningStarted { operation_id }
+            | Self::DeployWaitingForManagedCertificate { operation_id }
             | Self::DeployImageResolved { operation_id, .. }
             | Self::DeployPlanCreated { operation_id, .. }
             | Self::DeployRunning { operation_id, .. }
@@ -375,6 +379,9 @@ impl OperationEvent {
     #[must_use]
     pub fn singleton_subject(&self) -> Option<&'static str> {
         match self {
+            Self::DeployWaitingForManagedCertificate { .. } => {
+                Some("deploy.managed_certificate.waiting")
+            }
             Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
             Self::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
             Self::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
@@ -434,6 +441,9 @@ impl OperationEvent {
     #[must_use]
     pub fn deploy_evidence(&self) -> Option<DeployEvidence> {
         match self {
+            Self::DeployWaitingForManagedCertificate { .. } => {
+                Some(DeployEvidence::WaitingForManagedCertificate)
+            }
             Self::DeployImageResolved {
                 service_id,
                 machine_id,
@@ -612,6 +622,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployPlanningStarted { operation_id } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Planning),
+            },
+            OperationEvent::DeployWaitingForManagedCertificate { operation_id } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::WaitingForManagedCertificate),
             },
             OperationEvent::DeployImageResolved {
                 operation_id,

@@ -156,15 +156,17 @@ fn sdk_exports_cert_wire_types() {
     .expect("valid lease record");
     let managed = ManagedLeaseAcquired {
         lease: lease_record.clone(),
-        bundle: ManagedCertBundle::try_new(
-            lease_record.name.clone(),
-            lease_record.name.wildcard_and_apex(),
-            "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
-            "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
-            lease_record.issued_at,
-            lease_record.expires_at,
-        )
-        .expect("valid bundle"),
+        bundle: Some(
+            ManagedCertBundle::try_new(
+                lease_record.name.clone(),
+                lease_record.name.wildcard_and_apex(),
+                "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
+                "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
+                lease_record.issued_at,
+                lease_record.expires_at,
+            )
+            .expect("valid bundle"),
+        ),
     };
     assert!(
         serde_json::to_string(&managed)

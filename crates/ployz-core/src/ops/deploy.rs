@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cert::ManagedCertificateIssuanceFailureKind;
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
@@ -162,6 +163,9 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
+    CertificatePending {
+        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    },
     ArtifactUnavailable {
         service_id: ServiceId,
         namespace_revision_entry_id: NamespaceRevisionEntryId,
@@ -297,6 +301,7 @@ impl DeployOperationFailure {
             Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
                 DeployFailureClass::PreconditionRejected
             }
+            Self::CertificatePending { .. } => DeployFailureClass::Timeout,
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -363,6 +368,7 @@ impl DeployOperationFailure {
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
             | Self::AutoDnsWithoutLease { .. }
+            | Self::CertificatePending { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -531,6 +537,7 @@ impl DeployTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
+    WaitingForManagedCertificate,
     ImageResolved {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -564,6 +571,11 @@ impl DeployEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
+            Self::WaitingForManagedCertificate => {
+                OperationEvent::DeployWaitingForManagedCertificate {
+                    operation_id: operation_id.clone(),
+                }
+            }
             Self::ImageResolved {
                 service_id,
                 machine_id,
@@ -628,6 +640,7 @@ pub(super) enum DeployEvent {
 /// as fresh. This is the single source of the evidence→stage mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidenceRequirement {
+    AcceptedOrPlanning,
     Planning,
     RunningStage(DeployRunningStage),
     Cleanup,
@@ -635,6 +648,7 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
+        DeployEvidence::WaitingForManagedCertificate => EvidenceRequirement::AcceptedOrPlanning,
         DeployEvidence::ImageResolved { .. } | DeployEvidence::PlanCreated { .. } => {
             EvidenceRequirement::Planning
         }
@@ -662,6 +676,10 @@ pub fn validate_fresh_deploy_evidence(
         return Err(kind_mismatch(current, OperationKind::Deploy));
     };
     let valid = match evidence_requirement(evidence) {
+        EvidenceRequirement::AcceptedOrPlanning => matches!(
+            state,
+            DeployOperationState::Accepted | DeployOperationState::Planning
+        ),
         EvidenceRequirement::Planning => matches!(state, DeployOperationState::Planning),
         EvidenceRequirement::RunningStage(stage) => {
             evidence_is_current_or_past_running_stage(state, stage)
@@ -704,6 +722,7 @@ fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
 
 fn evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence_requirement(evidence) {
+        EvidenceRequirement::AcceptedOrPlanning => DeployOperationState::Accepted,
         EvidenceRequirement::Planning => DeployOperationState::Planning,
         EvidenceRequirement::RunningStage(stage) => DeployOperationState::Running { stage },
         EvidenceRequirement::Cleanup => DeployOperationState::Running {
@@ -779,6 +798,10 @@ pub(super) fn project_event(
             // Evidence from a phase not yet reached is a stale duplicate and
             // is already satisfied.
             let records = match evidence_requirement(&evidence) {
+                EvidenceRequirement::AcceptedOrPlanning => matches!(
+                    state,
+                    DeployOperationState::Accepted | DeployOperationState::Planning
+                ),
                 EvidenceRequirement::Planning => !matches!(state, DeployOperationState::Accepted),
                 EvidenceRequirement::RunningStage(required) => {
                     evidence_is_current_or_past_running_stage(state, required)

@@ -1,9 +1,9 @@
 use ployz_core::cert::{
-    LeaseBearerToken, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquired,
-    ManagedLeaseName, ManagedLeaseRenewed,
+    LeaseBearerToken, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRenewed,
 };
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +50,26 @@ pub struct LeaseClient {
     agent: ureq::Agent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleDownloadOutcome {
+    Ready(ManagedCertBundle),
+    Pending(BundlePending),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundlePending {
+    pub last_error: Option<ManagedCertificateIssuanceFailureKind>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+enum BundlePendingResponse {
+    Pending {
+        #[serde(default)]
+        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    },
+}
+
 impl LeaseClient {
     #[must_use]
     pub fn new(base_url: LeaseWorkerUrl) -> Self {
@@ -81,18 +101,27 @@ impl LeaseClient {
         &self,
         name: ManagedLeaseName,
         token: LeaseBearerToken,
-    ) -> Result<ManagedCertBundle, LeaseClientError> {
-        self.blocking_request(
-            &format!("/v1/leases/{}/cert-bundle", name.as_str()),
-            move |agent, url| {
-                agent
-                    .get(&url)
-                    .header("Authorization", format!("Bearer {}", token.as_str()))
-                    .call()
-                    .map_err(LeaseClientError::from_ureq)
-            },
-        )
+    ) -> Result<BundleDownloadOutcome, LeaseClientError> {
+        let agent = self.agent.clone();
+        let url = self
+            .base_url
+            .endpoint(&format!("/v1/leases/{}/cert-bundle", name.as_str()));
+        tokio::task::spawn_blocking(move || {
+            let mut response = agent
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", token.as_str()))
+                .call()
+                .map_err(LeaseClientError::from_ureq)?;
+            if response.status() == ureq::http::StatusCode::ACCEPTED {
+                let BundlePendingResponse::Pending { last_error } = decode_response(&mut response)?;
+                return Ok(BundleDownloadOutcome::Pending(BundlePending { last_error }));
+            }
+            decode_response(&mut response).map(BundleDownloadOutcome::Ready)
+        })
         .await
+        .map_err(|error| LeaseClientError::Transport {
+            message: error.to_string(),
+        })?
     }
 
     async fn post_json<T, R>(
@@ -193,6 +222,7 @@ mod tests {
     use super::*;
     use ployz_lease_worker::{StubLeaseWorker, serve};
     use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
 
@@ -227,15 +257,27 @@ mod tests {
             })
             .await
             .expect("lease acquired");
-        let bundle = client
+        let pending = client
             .download_bundle(acquired.lease.name.clone(), acquired.lease.token.clone())
             .await
-            .expect("bundle downloaded");
+            .expect("bundle pending");
+        let BundleDownloadOutcome::Ready(bundle) = client
+            .download_bundle(acquired.lease.name.clone(), acquired.lease.token.clone())
+            .await
+            .expect("bundle downloaded")
+        else {
+            panic!("bundle ready");
+        };
         let renewed = client
             .renew(acquired.lease.name.clone(), acquired.lease.token.clone())
             .await
             .expect("lease renewed");
 
+        assert_eq!(
+            pending,
+            BundleDownloadOutcome::Pending(BundlePending { last_error: None })
+        );
+        assert!(acquired.bundle.is_none());
         assert_eq!(bundle.dns_names, acquired.lease.name.wildcard_and_apex());
         assert_eq!(renewed.lease.name, acquired.lease.name);
         assert!(
@@ -275,5 +317,47 @@ mod tests {
 
         assert_eq!(error, LeaseClientError::Unauthorized);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn client_maps_accepted_response_to_typed_bundle_pending() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind pending worker");
+        let address = listener.local_addr().expect("pending worker address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).await.expect("read request");
+            assert!(read > 0, "request is not empty");
+            let body = r#"{"status":"pending","last_error":"validation_timeout"}"#;
+            let response = format!(
+                "HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+        let client = LeaseClient::new(
+            LeaseWorkerUrl::try_new(format!("http://{address}")).expect("worker URL"),
+        );
+
+        let outcome = client
+            .download_bundle(
+                ManagedLeaseName::try_new("cluster-one").expect("lease name"),
+                LeaseBearerToken::try_new("lease-token").expect("token"),
+            )
+            .await
+            .expect("pending is a successful client outcome");
+
+        assert_eq!(
+            outcome,
+            BundleDownloadOutcome::Pending(BundlePending {
+                last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
+            })
+        );
+        server.await.expect("pending worker");
     }
 }

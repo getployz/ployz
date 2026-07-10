@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-pub const STUB_LEASE_TTL_SECONDS: u64 = 365 * 24 * 60 * 60;
+pub const STUB_LEASE_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
 
 pub trait Clock {
     fn now_seconds(&self) -> Result<u64, ClockError>;
@@ -54,6 +54,7 @@ pub enum LeaseWorkerRequest {
 pub enum LeaseWorkerResponse {
     LeaseAcquired(ManagedLeaseAcquired),
     LeaseRenewed(ManagedLeaseRenewed),
+    BundlePending,
     Bundle(ManagedCertBundle),
 }
 
@@ -76,6 +77,7 @@ pub enum LeaseWorkerError {
 pub struct StubLeaseWorker<C = SystemClock> {
     records: BTreeMap<ManagedLeaseName, ManagedLeaseRecord>,
     bundles: BTreeMap<ManagedLeaseName, ManagedCertBundle>,
+    pending_bundles: BTreeSet<ManagedLeaseName>,
     clock: C,
 }
 
@@ -92,6 +94,7 @@ impl<C: Clock> StubLeaseWorker<C> {
         Self {
             records: BTreeMap::new(),
             bundles: BTreeMap::new(),
+            pending_bundles: BTreeSet::new(),
             clock,
         }
     }
@@ -118,11 +121,12 @@ impl<C: Clock> StubLeaseWorker<C> {
         let record = self.issue_record(lease.clone(), self.next_token()?)?;
         let bundle = self.issue_bundle(&record)?;
         self.records.insert(lease.clone(), record.clone());
-        self.bundles.insert(lease, bundle.clone());
+        self.bundles.insert(lease.clone(), bundle);
+        self.pending_bundles.insert(lease);
 
         Ok(LeaseWorkerResponse::LeaseAcquired(ManagedLeaseAcquired {
             lease: record,
-            bundle,
+            bundle: None,
         }))
     }
 
@@ -135,21 +139,29 @@ impl<C: Clock> StubLeaseWorker<C> {
         verify_token(&current, token)?;
         let renewed = self.issue_record(lease.clone(), current.token.clone())?;
         let bundle = self.issue_bundle(&renewed)?;
+        let response_bundle = if self.pending_bundles.contains(&lease) {
+            None
+        } else {
+            Some(bundle.clone())
+        };
         self.records.insert(lease.clone(), renewed.clone());
-        self.bundles.insert(lease, bundle.clone());
+        self.bundles.insert(lease, bundle);
 
         Ok(LeaseWorkerResponse::LeaseRenewed(ManagedLeaseRenewed {
             lease: renewed,
-            bundle,
+            bundle: response_bundle,
         }))
     }
 
     fn download_bundle(
-        &self,
+        &mut self,
         lease: &ManagedLeaseName,
         token: &LeaseBearerToken,
     ) -> Result<LeaseWorkerResponse, LeaseWorkerError> {
         verify_token(self.record(lease)?, token)?;
+        if self.pending_bundles.remove(lease) {
+            return Ok(LeaseWorkerResponse::BundlePending);
+        }
 
         Ok(LeaseWorkerResponse::Bundle(self.bundle(lease)?.clone()))
     }
@@ -316,8 +328,11 @@ fn request_to_worker(request: &HttpRequest) -> Result<LeaseWorkerRequest, LeaseW
 
 fn response_from_worker(result: Result<LeaseWorkerResponse, LeaseWorkerError>) -> String {
     match result {
-        Ok(LeaseWorkerResponse::LeaseAcquired(response)) => json_response(200, &response),
+        Ok(LeaseWorkerResponse::LeaseAcquired(response)) => json_response(201, &response),
         Ok(LeaseWorkerResponse::LeaseRenewed(response)) => json_response(200, &response),
+        Ok(LeaseWorkerResponse::BundlePending) => {
+            json_response(202, &BundlePendingResponse::Pending)
+        }
         Ok(LeaseWorkerResponse::Bundle(response)) => json_response(200, &response),
         Err(LeaseWorkerError::InvalidBearerToken) => {
             json_response(401, "lease bearer token does not match")
@@ -325,6 +340,12 @@ fn response_from_worker(result: Result<LeaseWorkerResponse, LeaseWorkerError>) -
         Err(LeaseWorkerError::LeaseNotFound) => json_response(404, "managed lease not found"),
         Err(error) => json_response(400, &error.to_string()),
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum BundlePendingResponse {
+    Pending,
 }
 
 fn bearer_token(request: &HttpRequest) -> Result<LeaseBearerToken, LeaseWorkerHttpError> {
@@ -343,6 +364,8 @@ fn json_response(status: u16, value: &(impl serde::Serialize + ?Sized)) -> Strin
         serde_json::to_string(value).unwrap_or_else(|_| "\"serialization failed\"".to_owned());
     let reason = match status {
         200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",

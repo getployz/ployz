@@ -28,6 +28,10 @@ fn operation_event_subjects_are_pinned() {
         "plz.v1.progress.namespace.default.operation.op_123.deploy.planning.started"
     );
     assert_eq!(
+        waiting_for_managed_certificate(&op_id).subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.managed_certificate.waiting"
+    );
+    assert_eq!(
         deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.running.serving_target_commit"
     );
@@ -168,6 +172,12 @@ fn ids_use_positive_ascii_token_grammar() {
 
 fn planning_started(operation_id: &OperationId) -> OperationEvent {
     OperationEvent::DeployPlanningStarted {
+        operation_id: operation_id.clone(),
+    }
+}
+
+fn waiting_for_managed_certificate(operation_id: &OperationId) -> OperationEvent {
+    OperationEvent::DeployWaitingForManagedCertificate {
         operation_id: operation_id.clone(),
     }
 }

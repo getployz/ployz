@@ -11,6 +11,9 @@ impl OperationEvent {
         match self {
             Self::DeploySubmitted { .. } => "deploy.submitted".to_owned(),
             Self::DeployPlanningStarted { .. } => "deploy.planning.started".to_owned(),
+            Self::DeployWaitingForManagedCertificate { .. } => {
+                "deploy.managed_certificate.waiting".to_owned()
+            }
             Self::DeployImageResolved { service_id, .. } => {
                 format!("deploy.image.resolved.{}", service_id.as_str())
             }

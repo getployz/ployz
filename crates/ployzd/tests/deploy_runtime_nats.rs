@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 #[path = "deploy_operation/fixtures.rs"]
 mod fixtures;
+#[path = "deploy_runtime_nats/managed_certificate.rs"]
+mod managed_certificate;
 
 use fixtures::*;
 use futures_util::StreamExt;
@@ -15,16 +17,18 @@ use ployz_core::ops::{
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
+use ployzd::intent::lease_intent::LeaseIntentStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::lease::{LeaseClient, LeaseWorkerUrl};
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
-use ployzd::operations::deploy::DeployMachineCandidates;
 use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
+use ployzd::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
@@ -67,6 +71,9 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -145,6 +152,9 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -206,6 +216,9 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -280,6 +293,9 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -338,6 +354,9 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -412,6 +431,9 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
+            lease_intent: nats.lease_intent.clone(),
+            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -585,6 +607,7 @@ struct TestNats {
     _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
+    lease_intent: LeaseIntentStore,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -613,14 +636,16 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
+    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("open intent core store");
+    let lease_intent = LeaseIntentStore::new(intent_core_store.clone());
     let intent = start_intent_service(
         client.clone(),
         machine_id("machine_a"),
         machine_roster,
         namespace_intent.clone(),
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        intent_core_store,
         Duration::from_secs(30),
     )
     .await
@@ -631,6 +656,7 @@ async fn test_nats() -> TestNats {
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
+        lease_intent,
         client,
         machine_a,
         machine_slow,

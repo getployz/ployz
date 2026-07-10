@@ -47,6 +47,15 @@ fn stub_worker_issues_lease_and_downloads_bundle_with_bearer_token() {
         acquired.lease.expires_at.unix_seconds() - acquired.lease.issued_at.unix_seconds(),
         STUB_LEASE_TTL_SECONDS
     );
+    assert!(acquired.bundle.is_none());
+
+    let pending = worker
+        .handle(LeaseWorkerRequest::DownloadBundle {
+            lease: acquired.lease.name.clone(),
+            token: acquired.lease.token.clone(),
+        })
+        .expect("bundle pending");
+    assert!(matches!(pending, LeaseWorkerResponse::BundlePending));
 
     let downloaded = worker
         .handle(LeaseWorkerRequest::DownloadBundle {
@@ -54,7 +63,6 @@ fn stub_worker_issues_lease_and_downloads_bundle_with_bearer_token() {
             token: acquired.lease.token.clone(),
         })
         .expect("bundle downloaded");
-
     let LeaseWorkerResponse::Bundle(bundle) = downloaded else {
         panic!("expected bundle response");
     };
@@ -130,6 +138,22 @@ fn stub_worker_renewal_returns_fresh_bundle_for_existing_lease() {
     let LeaseWorkerResponse::LeaseAcquired(acquired) = acquired else {
         panic!("expected lease acquisition response");
     };
+    let pending = worker
+        .handle(LeaseWorkerRequest::DownloadBundle {
+            lease: acquired.lease.name.clone(),
+            token: acquired.lease.token.clone(),
+        })
+        .expect("bundle pending");
+    assert!(matches!(pending, LeaseWorkerResponse::BundlePending));
+    let downloaded = worker
+        .handle(LeaseWorkerRequest::DownloadBundle {
+            lease: acquired.lease.name.clone(),
+            token: acquired.lease.token.clone(),
+        })
+        .expect("bundle downloaded");
+    let LeaseWorkerResponse::Bundle(bundle) = downloaded else {
+        panic!("expected bundle response");
+    };
     clock.advance(60);
 
     let renewed = worker
@@ -142,7 +166,8 @@ fn stub_worker_renewal_returns_fresh_bundle_for_existing_lease() {
     let LeaseWorkerResponse::LeaseRenewed(renewed) = renewed else {
         panic!("expected renewal response");
     };
-    assert_ne!(renewed.bundle.digest, acquired.bundle.digest);
+    let renewed_bundle = renewed.bundle.expect("ready renewal returns a bundle");
+    assert_ne!(renewed_bundle.digest, bundle.digest);
     assert!(renewed.lease.issued_at > acquired.lease.issued_at);
     assert!(renewed.lease.expires_at > acquired.lease.expires_at);
 }

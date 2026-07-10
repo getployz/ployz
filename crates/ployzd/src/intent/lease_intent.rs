@@ -45,19 +45,39 @@ impl LeaseIntentStore {
     pub async fn store_lease(
         &self,
         record: ManagedLeaseRecord,
-        bundle: ManagedCertBundle,
+        bundle: Option<ManagedCertBundle>,
     ) -> Result<StoreLeaseOutcome, LeaseIntentStoreError> {
         self.store
             .call(move |conn| {
                 let intent = load_intent(conn)?;
-                if !matches!(intent, ManagedLeaseIntent::Auto { .. }) {
+                let ManagedLeaseIntent::Auto { state } = intent else {
                     return Ok(StoreLeaseOutcome::Superseded);
-                }
-                let intent = ManagedLeaseIntent::Auto {
-                    state: Box::new(AutoLeaseState::Ready {
+                };
+                let state = match (bundle, *state) {
+                    (
+                        Some(bundle),
+                        AutoLeaseState::Unacquired
+                        | AutoLeaseState::RecordOnly { .. }
+                        | AutoLeaseState::Ready { .. },
+                    ) => AutoLeaseState::Ready {
                         lease: record,
                         bundle,
-                    }),
+                    },
+                    (None, AutoLeaseState::Ready { bundle, .. }) if bundle.lease == record.name => {
+                        AutoLeaseState::Ready {
+                            lease: record,
+                            bundle,
+                        }
+                    }
+                    (
+                        None,
+                        AutoLeaseState::Unacquired
+                        | AutoLeaseState::RecordOnly { .. }
+                        | AutoLeaseState::Ready { .. },
+                    ) => AutoLeaseState::RecordOnly { lease: record },
+                };
+                let intent = ManagedLeaseIntent::Auto {
+                    state: Box::new(state),
                 };
                 replace(conn, &intent)?;
                 Ok(StoreLeaseOutcome::Stored)
@@ -182,7 +202,7 @@ mod tests {
         )
         .expect("bundle");
         store
-            .store_lease(record.clone(), bundle.clone())
+            .store_lease(record.clone(), Some(bundle.clone()))
             .await
             .expect("store lease");
 
@@ -193,7 +213,7 @@ mod tests {
 
         assert_eq!(
             store
-                .store_lease(record, bundle)
+                .store_lease(record, Some(bundle))
                 .await
                 .expect("superseded lease result"),
             StoreLeaseOutcome::Superseded
@@ -201,6 +221,128 @@ mod tests {
         assert_eq!(
             store.load().await.expect("load cleared intent"),
             ManagedLeaseIntent::empty(PublicUrlMode::None)
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_bundle_stores_record_only() {
+        let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        let record = ManagedLeaseRecord::try_new(
+            ManagedLeaseName::try_new("cluster-one").expect("lease name"),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            LeaseIssuedAt::try_new(1_700_000_000).expect("issued at"),
+            LeaseExpiresAt::try_new(1_700_000_060).expect("expires at"),
+        )
+        .expect("record");
+
+        store
+            .store_lease(record.clone(), None)
+            .await
+            .expect("store lease");
+
+        assert_eq!(
+            store.load().await.expect("load intent"),
+            ManagedLeaseIntent::Auto {
+                state: Box::new(AutoLeaseState::RecordOnly { lease: record })
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_renewal_preserves_ready_bundle() {
+        let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
+        let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
+        let expires_at = LeaseExpiresAt::try_new(1_700_000_060).expect("expires at");
+        let record = ManagedLeaseRecord::try_new(
+            name.clone(),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            issued_at,
+            expires_at,
+        )
+        .expect("record");
+        let bundle = ManagedCertBundle::try_new(
+            name.clone(),
+            name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            issued_at,
+            expires_at,
+        )
+        .expect("bundle");
+        store
+            .store_lease(record, Some(bundle.clone()))
+            .await
+            .expect("store ready lease");
+        let renewed = ManagedLeaseRecord::try_new(
+            name,
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            LeaseIssuedAt::try_new(1_700_000_030).expect("renewed issued at"),
+            LeaseExpiresAt::try_new(1_700_000_090).expect("renewed expires at"),
+        )
+        .expect("renewed record");
+
+        store
+            .store_lease(renewed.clone(), None)
+            .await
+            .expect("store pending renewal");
+
+        assert_eq!(
+            store.load().await.expect("load intent"),
+            ManagedLeaseIntent::Auto {
+                state: Box::new(AutoLeaseState::Ready {
+                    lease: renewed,
+                    bundle,
+                })
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_renewal_does_not_preserve_bundle_for_different_lease() {
+        let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
+        let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
+        let expires_at = LeaseExpiresAt::try_new(1_700_000_060).expect("expires at");
+        let record = ManagedLeaseRecord::try_new(
+            name.clone(),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            issued_at,
+            expires_at,
+        )
+        .expect("record");
+        let bundle_name = ManagedLeaseName::try_new("cluster-two").expect("bundle lease name");
+        let bundle = ManagedCertBundle::try_new(
+            bundle_name.clone(),
+            bundle_name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            issued_at,
+            expires_at,
+        )
+        .expect("bundle");
+        store
+            .store_lease(record, Some(bundle))
+            .await
+            .expect("store ready lease");
+        let renewed = ManagedLeaseRecord::try_new(
+            name,
+            LeaseBearerToken::try_new("lease-token").expect("renewed token"),
+            LeaseIssuedAt::try_new(1_700_000_030).expect("renewed issued at"),
+            LeaseExpiresAt::try_new(1_700_000_090).expect("renewed expires at"),
+        )
+        .expect("renewed record");
+
+        store
+            .store_lease(renewed.clone(), None)
+            .await
+            .expect("store pending renewal");
+
+        assert_eq!(
+            store.load().await.expect("load intent"),
+            ManagedLeaseIntent::Auto {
+                state: Box::new(AutoLeaseState::RecordOnly { lease: renewed })
+            }
         );
     }
 }

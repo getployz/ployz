@@ -1,3 +1,4 @@
+use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
 use ployz_core::dataplane::{
     DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
@@ -79,6 +80,31 @@ fn dataplane_prepared_event_has_stable_wire_shape() {
             r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}"#
         )
     );
+}
+
+#[test]
+fn waiting_for_managed_certificate_event_has_stable_wire_shape() {
+    let event = OperationEvent::DeployWaitingForManagedCertificate {
+        operation_id: operation_id("op_123"),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&event).expect("event serializes"),
+        r#"{"event":"deploy_waiting_for_managed_certificate","operation_id":"op_123"}"#
+    );
+}
+
+#[test]
+fn certificate_pending_failure_carries_the_latest_worker_error() {
+    let failure = DeployOperationFailure::CertificatePending {
+        last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"certificate_pending","last_error":"validation_timeout"}"#
+    );
+    assert_eq!(failure.failure_class(), DeployFailureClass::Timeout);
 }
 
 #[test]

@@ -121,7 +121,8 @@ pub struct ManagedLeaseAcquireRequest {
 }
 
 fn renewal_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
-    now_seconds >= issued_at.saturating_add(expires_at.saturating_sub(issued_at) / 2)
+    now_seconds
+        >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
 }
 
 fn refresh_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
@@ -129,12 +130,45 @@ fn refresh_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
         >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedCertificateIssuanceFailureKind {
+    RateLimit,
+    #[serde(rename = "provider_5xx")]
+    Provider5xx,
+    ValidationTimeout,
+    Caa,
+    DnsTxtMissing,
+    ProviderError,
+}
+
+impl ManagedCertificateIssuanceFailureKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate_limit",
+            Self::Provider5xx => "provider_5xx",
+            Self::ValidationTimeout => "validation_timeout",
+            Self::Caa => "caa",
+            Self::DnsTxtMissing => "dns_txt_missing",
+            Self::ProviderError => "provider_error",
+        }
+    }
+}
+
+impl std::fmt::Display for ManagedCertificateIssuanceFailureKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquired {
     pub lease: ManagedLeaseRecord,
-    pub bundle: ManagedCertBundle,
+    pub bundle: Option<ManagedCertBundle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +176,7 @@ pub struct ManagedLeaseAcquired {
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseRenewed {
     pub lease: ManagedLeaseRecord,
-    pub bundle: ManagedCertBundle,
+    pub bundle: Option<ManagedCertBundle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -916,7 +950,7 @@ mod managed_lease_intent_tests {
             state: Box::new(AutoLeaseState::Ready { lease, bundle }),
         };
 
-        assert!(!intent.needs_lease_renewal(1_049));
-        assert!(intent.needs_lease_renewal(1_050));
+        assert!(!intent.needs_lease_renewal(1_065));
+        assert!(intent.needs_lease_renewal(1_066));
     }
 }
