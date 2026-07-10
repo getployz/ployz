@@ -1,4 +1,4 @@
-//! Machine-local image push and inspection handlers.
+//! Machine-local image push and ensure handlers.
 
 use super::protocol::MachineImagePull;
 use super::response::{failure_message, machine_domain_error, machine_success};
@@ -10,10 +10,9 @@ use ployz_core::image::{
     IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckOk,
     ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
     ImageBlobPushRequest, ImageBlobPushResponse, ImageEnsureOk, ImageEnsureRequest,
-    ImageEnsureResponse, ImageInspectOk, ImageInspectRequest, ImageInspectResponse,
-    ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse, ImageRpcDomainError,
-    ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest,
-    OciPlatform,
+    ImageEnsureResponse, ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse,
+    ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OciDigest, OciPlatform,
 };
 use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
@@ -26,6 +25,8 @@ use tokio::sync::Mutex;
 
 const UPLOAD_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_UPLOAD_SESSIONS: usize = 16;
+const SELF_PULL_ATTEMPTS: u8 = 10;
+const SELF_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub(crate) struct AvailableImageService {
@@ -428,29 +429,6 @@ pub(crate) async fn handle_image_manifest_push(
     }))
 }
 
-pub(crate) async fn handle_image_inspect(
-    machine_id: MachineId,
-    state: Option<AvailableImageService>,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    let Some(state) = state else {
-        return unavailable(machine_id);
-    };
-    let request = match serde_json::from_slice::<ImageInspectRequest>(&request.payload) {
-        Ok(request) => request,
-        Err(error) => return invalid_request(machine_id, error),
-    };
-    let inspected = match inspect_content(&state, &request.manifest_digest, &request.image_id).await
-    {
-        Ok(inspected) => inspected,
-        Err(error) => return image_error(machine_id, error),
-    };
-    machine_success(ImageInspectResponse::Ok(ImageInspectOk {
-        machine_id,
-        platform: inspected.platform,
-    }))
-}
-
 pub(crate) async fn handle_image_ensure(
     machine_id: MachineId,
     state: Option<AvailableImageService>,
@@ -474,13 +452,19 @@ pub(crate) async fn handle_image_ensure(
         manifest_digest: request.manifest_digest.clone(),
     }
     .reference();
-    if let Err(error) = state.docker.pull_image(&reference).await {
-        return image_error(
-            machine_id,
-            ImageRpcDomainError::SelfPullFailed {
-                message: failure_message(runner_error_message(error)),
-            },
-        );
+    for attempt in 1..=SELF_PULL_ATTEMPTS {
+        match state.docker.pull_image(&reference).await {
+            Ok(()) => break,
+            Err(error) if attempt == SELF_PULL_ATTEMPTS => {
+                return image_error(
+                    machine_id,
+                    ImageRpcDomainError::SelfPullFailed {
+                        message: failure_message(runner_error_message(error)),
+                    },
+                );
+            }
+            Err(_) => tokio::time::sleep(SELF_PULL_RETRY_DELAY).await,
+        }
     }
     if let Err(error) =
         release_manifest_leases(&state, &inspected.manifest, &request.manifest_digest).await

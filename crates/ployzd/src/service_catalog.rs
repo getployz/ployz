@@ -163,7 +163,6 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageBlobCheck),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageBlobPush),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageManifestPush),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageInspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
         ],
     )
@@ -207,7 +206,6 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageBlobCheck => "machine.image.blob.check",
         MachineServiceEndpoint::ImageBlobPush => "machine.image.blob.push",
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
-        MachineServiceEndpoint::ImageInspect => "machine.image.inspect",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
     }
 }

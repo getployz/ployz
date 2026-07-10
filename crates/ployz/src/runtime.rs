@@ -224,7 +224,6 @@ pub async fn execute_command(
             let api = operation_api_client(config).await?;
             let receipts = crate::image_push::prepare_deploy_images(
                 &api,
-                &command.namespace_id,
                 &mut command.services,
                 command.from_registry,
             )

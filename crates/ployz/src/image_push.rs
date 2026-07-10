@@ -7,15 +7,14 @@ use flate2::{Compression, GzBuilder};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ployz_core::deploy::DeployServiceSpec;
 use ployz_core::deploy::{ImageReference, ImageSource};
-use ployz_core::ids::{MachineId, NamespaceId};
+use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
     IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckRequest,
     ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome, ImageBlobPushRequest,
     ImageBlobPushResponse, ImageManifestPushOk, ImageManifestPushRequest,
-    ImageManifestPushResponse, ImageRepository, ImageRpcDomainError, ImageUploadId,
-    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-    OciDigest, OciPlatform,
+    ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE,
+    OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
 };
 use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::state::MachineLifecycle;
@@ -156,7 +155,6 @@ pub async fn push_local_image(
     client: &async_nats::Client,
     docker: &Docker,
     seed: &MachineId,
-    _repository: ImageRepository,
     requested_reference: ImageReference,
 ) -> Result<ImagePushReceipt, ImagePushError> {
     let chunks = docker
@@ -236,7 +234,6 @@ pub async fn push_local_image(
 
 pub async fn prepare_deploy_images(
     api: &OperationApiClient,
-    namespace_id: &NamespaceId,
     services: &mut [DeployServiceSpec],
     from_registry: bool,
 ) -> Result<Vec<ImagePushReceipt>, ImagePushError> {
@@ -264,15 +261,8 @@ pub async fn prepare_deploy_images(
                 seed
             }
         };
-        let repository = ImageRepository::for_service(namespace_id, &service.service_id);
-        let receipt = push_local_image(
-            &api.nats_client(),
-            &docker,
-            seed,
-            repository,
-            service.image.clone(),
-        )
-        .await?;
+        let receipt =
+            push_local_image(&api.nats_client(), &docker, seed, service.image.clone()).await?;
         service.image_source = receipt.image_source();
         receipts.push(receipt);
     }
@@ -637,8 +627,6 @@ pub enum ImagePushError {
     MachineList { message: String },
     #[error("no active machine is available as an image seed")]
     NoActiveMachines,
-    #[error("invalid mesh image repository: {message}")]
-    InvalidRepository { message: String },
     #[error("invalid Docker image export: {message}")]
     InvalidDockerExport { message: String },
     #[error("failed to gzip image layer: {message}")]

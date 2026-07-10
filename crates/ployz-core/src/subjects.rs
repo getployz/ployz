@@ -324,7 +324,6 @@ pub enum MachineServiceEndpoint {
     ImageBlobCheck,
     ImageBlobPush,
     ImageManifestPush,
-    ImageInspect,
     ImageEnsure,
 }
 
@@ -354,7 +353,6 @@ impl MachineServiceEndpoint {
             Self::ImageBlobCheck => "image.blob.check",
             Self::ImageBlobPush => "image.blob.push",
             Self::ImageManifestPush => "image.manifest.push",
-            Self::ImageInspect => "image.inspect",
             Self::ImageEnsure => "container.ensure_image",
         }
     }
@@ -367,8 +365,7 @@ impl MachineServiceEndpoint {
             | Self::ContainerInspect
             | Self::SubstrateReport
             | Self::LogsTail
-            | Self::ImageBlobCheck
-            | Self::ImageInspect => MachineServiceEndpointExecution::Query,
+            | Self::ImageBlobCheck => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::ContainerRun
             | Self::ContainerRestart

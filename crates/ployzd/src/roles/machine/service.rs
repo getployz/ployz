@@ -9,7 +9,7 @@ use super::dataplane::handle_dataplane_prepare;
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
-    handle_image_inspect, handle_image_manifest_push,
+    handle_image_manifest_push,
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
@@ -221,14 +221,6 @@ where
         MachineServiceEndpoint::ImageManifestPush,
         image_state.clone(),
         handle_image_manifest_push,
-    )
-    .await?;
-    bind_machine_endpoint(
-        &mut runtime,
-        &machine_id,
-        MachineServiceEndpoint::ImageInspect,
-        image_state.clone(),
-        handle_image_inspect,
     )
     .await?;
     bind_machine_endpoint(

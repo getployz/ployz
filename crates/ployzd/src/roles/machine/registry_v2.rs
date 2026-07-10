@@ -157,14 +157,10 @@ impl RegistryV2 {
                 return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
-        let media_type = match kind {
-            RegistryObjectKind::Blob => RegistryObjectKind::Blob.default_media_type(),
-            RegistryObjectKind::Manifest => OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-        };
         registry_response(
             StatusCode::OK,
             Some(u64::try_from(bytes.len()).unwrap_or(info.size)),
-            Some(media_type),
+            Some(kind.default_media_type()),
             Some(digest),
         )
         .map(|_| Full::new(Bytes::from(bytes)))

@@ -112,9 +112,9 @@ impl ImageRepository {
     #[must_use]
     pub fn for_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
         Self(format!(
-            "ployz/{}/{}",
-            namespace_id.as_str(),
-            service_id.as_str()
+            "ployz/{:x}/{:x}",
+            Sha256::digest(namespace_id.as_str().as_bytes()),
+            Sha256::digest(service_id.as_str().as_bytes())
         ))
     }
 }
@@ -290,29 +290,6 @@ pub type ImageManifestPushResponse = MachineRpcResponse<ImageManifestPushOk, Ima
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ImageInspectRequest {
-    pub manifest_digest: OciDigest,
-    pub image_id: OciDigest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageInspectOk {
-    pub machine_id: MachineId,
-    pub platform: OciPlatform,
-}
-
-impl MachineRpcResponder for ImageInspectOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
-        machine_id
-    }
-}
-
-pub type ImageInspectResponse = MachineRpcResponse<ImageInspectOk, ImageRpcDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ImageEnsureRequest {
     pub repository: ImageRepository,
     pub manifest_digest: OciDigest,
@@ -385,6 +362,7 @@ pub enum ImageRpcDomainError {
 #[cfg(test)]
 mod tests {
     use super::{ImageRepository, OciDigest};
+    use crate::ids::{NamespaceId, ServiceId};
 
     #[test]
     fn oci_digest_accepts_a_canonical_sha256_digest() {
@@ -413,5 +391,18 @@ mod tests {
     #[test]
     fn repository_rejects_path_traversal() {
         assert!(ImageRepository::try_new("team/../api").is_err());
+    }
+
+    #[test]
+    fn service_repository_is_valid_and_case_sensitive_for_all_valid_ids() {
+        let namespace = NamespaceId::try_new("Prod-East").expect("valid namespace id");
+        let uppercase = ServiceId::try_new("API_v2").expect("valid service id");
+        let lowercase = ServiceId::try_new("api_v2").expect("valid service id");
+
+        let uppercase = ImageRepository::for_service(&namespace, &uppercase);
+        let lowercase = ImageRepository::for_service(&namespace, &lowercase);
+
+        assert!(ImageRepository::try_new(uppercase.as_str()).is_ok());
+        assert_ne!(uppercase, lowercase);
     }
 }

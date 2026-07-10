@@ -28,7 +28,6 @@ use ployz_core::deploy::{
     ReplicaCount, ServiceEnvironment, VolumeName,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::image::ImageRepository;
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, NamespaceRemoveOperationState, OperationEvent,
@@ -613,7 +612,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
             runtime: ContainerRuntimeSpec::image_defaults(),
             routes: Vec::new(),
         }];
-        let receipts = prepare_deploy_images(&core.api, &namespace, &mut services, false)
+        let receipts = prepare_deploy_images(&core.api, &mut services, false)
             .await
             .expect("local image pushes before deploy submit");
         let [receipt] = receipts.as_slice() else {
@@ -709,13 +708,10 @@ async fn scenario_repush_transfers_only_new_layers() {
         let tag_b = format!("ployz-e2e-repush-b:{suffix}");
         build_derived_image(&docker, &tag_a, WORKLOAD_IMAGE, "layer-a", suffix).await;
         build_derived_image(&docker, &tag_b, &tag_a, "layer-b", suffix).await;
-        let repository =
-            ImageRepository::try_new("ployz/repush/svc_repush").expect("valid repush repository");
         let first = push_local_image(
             &core.api.nats_client(),
             &docker,
             &machine_id("core_1"),
-            repository.clone(),
             ImageReference::try_new(&tag_a).expect("valid first image reference"),
         )
         .await
@@ -724,7 +720,6 @@ async fn scenario_repush_transfers_only_new_layers() {
             &core.api.nats_client(),
             &docker,
             &machine_id("core_1"),
-            repository,
             ImageReference::try_new(&tag_b).expect("valid second image reference"),
         )
         .await
