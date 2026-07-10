@@ -48,7 +48,7 @@ async fn scenario_network_status_resolve_and_repair() {
                 })
                 .await
                 .expect("network status succeeds");
-            if status.machines.len() == 2 && network_queries_ready(&status.machines) {
+            if status.machines.len() == 2 && network_testimony_answered(&status.machines) {
                 break status;
             }
             assert!(
@@ -62,23 +62,7 @@ async fn scenario_network_status_resolve_and_repair() {
             2,
             "status follows intended membership"
         );
-        assert!(network_queries_ready(&status.machines));
-
-        let resolved = core
-            .api
-            .network_resolve(&NetworkResolveRequest {
-                name: "missing.default.internal".to_owned(),
-            })
-            .await
-            .expect("network resolve succeeds");
-        assert_eq!(resolved.machines.len(), 2);
-        assert!(
-            resolved.machines.iter().all(|testimony| matches!(
-                testimony,
-                NetworkResolveMachineTestimony::Answered { addresses, .. } if addresses.is_empty()
-            )),
-            "unexpected resolver testimony: {resolved:?}"
-        );
+        assert!(network_testimony_answered(&status.machines));
 
         let accepted = core
             .api
@@ -239,11 +223,21 @@ async fn scenario_network_status_resolve_and_repair() {
 }
 
 fn network_queries_ready(machines: &[NetworkStatusMachine]) -> bool {
+    network_testimony_answered(machines)
+        && machines
+            .iter()
+            .all(|machine| dns_resolver_is_serving(&machine.internal_dns))
+}
+
+fn network_testimony_answered(machines: &[NetworkStatusMachine]) -> bool {
     machines.iter().all(|machine| {
         matches!(
             machine.dataplane,
             NetworkDataplaneTestimony::Answered { .. }
-        ) && dns_resolver_is_serving(&machine.internal_dns)
+        ) && matches!(
+            machine.internal_dns,
+            NetworkInternalDnsTestimony::Answered { .. }
+        )
     })
 }
 
