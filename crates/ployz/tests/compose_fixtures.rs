@@ -103,6 +103,7 @@ fn run_case(case_dir: &Path) -> Result<ActualOutput, String> {
         Ok((parsed, warnings)) => {
             let request = DeployRequest {
                 namespace_id: parsed.namespace_id,
+                origin: None,
                 services: parsed.services,
             };
             let request_json = serde_json::to_string_pretty(&request)

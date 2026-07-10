@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{Args, Subcommand};
 use ployz_core::deploy::{
-    DeployRequest, DeployReservationId, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    ImageReference, ReplicaCount,
+    DeployOrigin, DeployRequest, DeployReservationId, DeployRoute, DeployRouteTarget,
+    DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort};
@@ -24,6 +24,7 @@ const DEFAULT_REPLICA_COUNT: u16 = 1;
 pub struct DeployCommand {
     pub idempotency_key: OperationIdempotencyKey,
     pub namespace_id: NamespaceId,
+    pub origin: Option<DeployOrigin>,
     pub services: Vec<DeployServiceSpec>,
     pub warnings: Vec<String>,
     pub detach: bool,
@@ -39,6 +40,7 @@ impl DeployCommand {
             reservation_id,
             target: DeployRequest {
                 namespace_id: self.namespace_id,
+                origin: self.origin,
                 services: self.services,
             },
         }
@@ -48,6 +50,36 @@ impl DeployCommand {
     pub fn first_service(&self) -> Option<&DeployServiceSpec> {
         self.services.first()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployHistoryCommand {
+    pub namespace_id: NamespaceId,
+}
+
+pub(crate) enum ParsedDeployCommand {
+    Deploy(DeployCommand),
+    History(DeployHistoryCommand),
+}
+
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub(crate) struct DeployRootCli {
+    #[command(flatten)]
+    deploy: DeployCli,
+    #[command(subcommand)]
+    command: Option<DeploySubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum DeploySubcommand {
+    History(DeployHistoryCli),
+}
+
+#[derive(Debug, Args)]
+struct DeployHistoryCli {
+    #[arg(short = 'n', long = "namespace")]
+    namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +107,28 @@ impl DeployOutput {
 /// `deploy --image IMAGE --route HOST:PORT` (R10): every internal field the
 /// expert flags expose is derived from the image reference and command
 /// intent (R11), and explicit flags override the derived values (R12).
-pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCliError> {
+pub(crate) fn deploy_command(
+    parsed: DeployRootCli,
+) -> Result<ParsedDeployCommand, PloyzctlCliError> {
+    if let Some(DeploySubcommand::History(history)) = parsed.command {
+        return deploy_history_command(history).map(ParsedDeployCommand::History);
+    }
+    deploy_submit_command(parsed.deploy).map(ParsedDeployCommand::Deploy)
+}
+
+fn deploy_history_command(
+    parsed: DeployHistoryCli,
+) -> Result<DeployHistoryCommand, PloyzctlCliError> {
+    let namespace_id = parsed
+        .namespace
+        .map(NamespaceId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--namespace", error))?
+        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
+    Ok(DeployHistoryCommand { namespace_id })
+}
+
+fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCliError> {
     let DeployCli {
         file,
         namespace,
@@ -89,7 +142,12 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         allow_unsupported,
         detach,
         from_registry,
+        origin,
     } = parsed;
+    let origin = origin
+        .map(DeployOrigin::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--origin", error))?;
 
     if let Some(file) = file {
         if image.is_some()
@@ -133,6 +191,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         return Ok(DeployCommand {
             idempotency_key: generated_ids.idempotency_key,
             namespace_id: parsed.namespace_id,
+            origin,
             services: parsed.services,
             warnings: warnings.into_iter().map(|warning| warning.0).collect(),
             detach,
@@ -188,6 +247,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
     Ok(DeployCommand {
         idempotency_key: generated_ids.idempotency_key,
         namespace_id,
+        origin,
         services: vec![DeployServiceSpec {
             service_id,
             image,
@@ -237,6 +297,8 @@ pub(crate) struct DeployCli {
     allow_unsupported: bool,
     #[arg(long)]
     detach: bool,
+    #[arg(long, value_name = "CAPTION")]
+    origin: Option<String>,
 }
 
 /// Repository leaf and tag of an image reference, with any `@digest`

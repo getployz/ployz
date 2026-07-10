@@ -561,6 +561,7 @@ const fn operation_api_execution_name(execution: OperationApiEndpointExecution) 
 pub fn operation_contract_fixture() -> Value {
     let deploy_target = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
@@ -578,6 +579,7 @@ pub fn operation_contract_fixture() -> Value {
         operation_id("op_123"),
         deploy_target.namespace_id.clone(),
         service_id("svc_api"),
+        None,
         event_sequence(1),
     ));
     let replay_page = OperationEventReplayPage {

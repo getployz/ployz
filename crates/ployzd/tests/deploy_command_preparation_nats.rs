@@ -644,6 +644,7 @@ async fn test_nats() -> TestNats {
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")

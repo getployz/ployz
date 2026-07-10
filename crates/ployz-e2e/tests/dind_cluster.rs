@@ -1095,6 +1095,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
                 reservation_id: reservation.reservation_id,
                 target: DeployRequest {
                     namespace_id: namespace,
+                    origin: None,
                     services,
                 },
             })
@@ -1238,6 +1239,7 @@ exit 1",
                 reservation_id: reservation.reservation_id,
                 target: DeployRequest {
                     namespace_id: namespace.clone(),
+                    origin: None,
                     services: vec![DeployServiceSpec {
                         service_id: service.clone(),
                         image: requested.clone(),
@@ -2220,6 +2222,7 @@ fn append_build_file(context: &mut tar::Builder<Vec<u8>>, path: &str, contents: 
 fn smoke_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("smoke"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
@@ -2242,6 +2245,7 @@ fn smoke_deploy_target() -> DeployRequest {
 fn auto_hostname_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("auto_https"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_auto"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
@@ -2263,6 +2267,7 @@ fn auto_hostname_deploy_target() -> DeployRequest {
 fn internal_dns_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("internal_dns"),
+        origin: None,
         services: vec![
             DeployServiceSpec {
                 service_id: service_id("server"),
@@ -2293,6 +2298,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
 fn runtime_fields_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("runtime"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_runtime"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
@@ -2330,6 +2336,7 @@ volumes:
     assert!(warnings.is_empty(), "volume compose emitted warnings");
     DeployRequest {
         namespace_id: parsed.namespace_id,
+        origin: None,
         services: parsed.services,
     }
 }
@@ -2364,6 +2371,7 @@ fn failing_healthcheck_deploy_target() -> DeployRequest {
     });
     DeployRequest {
         namespace_id: namespace_id("bad_health"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_bad_health"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
@@ -2393,6 +2401,7 @@ fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest
     }];
     DeployRequest {
         namespace_id: namespace_id(namespace),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_hooked"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
@@ -2428,6 +2437,7 @@ fn depends_on_deploy_target() -> DeployRequest {
     };
     DeployRequest {
         namespace_id: namespace_id("depends_on_order"),
+        origin: None,
         services: vec![
             DeployServiceSpec {
                 service_id: service_id("b"),
@@ -2497,6 +2507,7 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
 
     DeployRequest {
         namespace_id: namespace_id("converge"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_converge"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),

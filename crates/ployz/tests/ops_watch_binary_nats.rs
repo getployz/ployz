@@ -93,6 +93,7 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
                     id: operation_id("op_deploy"),
                     namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
                     service_id: service_id("svc_api"),
+                    origin: None,
                     state: DeployOperationState::Running {
                         stage: DeployRunningStage::WaitingForHealth,
                     },
@@ -195,6 +196,7 @@ fn replayed(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
 fn deploy_request() -> ployz_core::deploy::DeployRequest {
     ployz_core::deploy::DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),

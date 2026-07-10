@@ -12,6 +12,9 @@ use crate::commands::init::{
 };
 use crate::config::{ClusterContext, ClusterContextError, load_cluster_context};
 use crate::confirmation::{confirm_namespace_remove, confirm_volume_remove};
+use crate::deploy_history::{
+    ClusterFingerprint, DeployHistory, default_deploy_history_root, render_history,
+};
 use crate::host_runner_install::{
     LocalHostRunnerInstallError, run_host_runner_first_machine_install,
 };
@@ -66,6 +69,8 @@ pub struct PloyzctlRuntimeConfig {
     /// Where `machine init` records the local cluster context (test seam;
     /// defaults to the user config directory).
     pub cluster_context_path: Option<PathBuf>,
+    #[cfg(test)]
+    pub(crate) deploy_history_root: Option<PathBuf>,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -97,6 +102,8 @@ impl PloyzctlRuntimeConfig {
                 .map(PathBuf::from),
             ssh_install_timeout: None,
             cluster_context_path: None,
+            #[cfg(test)]
+            deploy_history_root: None,
         }
     }
 
@@ -204,6 +211,14 @@ impl PloyzctlRuntimeConfig {
         self.ops_watch_poll_interval
             .unwrap_or(DEFAULT_OPS_WATCH_POLL_INTERVAL)
     }
+
+    fn deploy_history_root(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        if self.deploy_history_root.is_some() {
+            return self.deploy_history_root.clone();
+        }
+        default_deploy_history_root()
+    }
 }
 
 pub async fn execute_command(
@@ -217,6 +232,12 @@ pub async fn execute_command(
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
+        PloyzctlCommand::DeployHistory(command) => {
+            let config = config.clone().with_cluster_context_from_disk()?;
+            let history = deploy_history(&config, command.namespace_id)?;
+            let entries = history.load().map_err(deploy_history_error)?;
+            Ok(PloyzctlExecutionOutput::stdout(render_history(&entries)))
+        }
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
                 host_runner_install,
@@ -739,6 +760,32 @@ fn nats_connect_config(
     })
 }
 
+fn deploy_history(
+    config: &PloyzctlRuntimeConfig,
+    namespace_id: ployz_core::ids::NamespaceId,
+) -> Result<DeployHistory, PloyzctlExecutionError> {
+    let Some(nats_url) = config.nats_url.as_deref() else {
+        return Err(PloyzctlExecutionError::MissingNatsUrl);
+    };
+    let Some(ca_file) = config.nats_ca_file.as_deref() else {
+        return Err(PloyzctlExecutionError::MissingNatsCaFile);
+    };
+    let Some(root) = config.deploy_history_root() else {
+        return Err(PloyzctlExecutionError::MissingDeployHistoryRoot);
+    };
+    let cluster =
+        ClusterFingerprint::from_connection(nats_url, ca_file).map_err(deploy_history_error)?;
+    Ok(DeployHistory::new(root, cluster, namespace_id))
+}
+
+fn deploy_history_error(
+    source: crate::deploy_history::DeployHistoryError,
+) -> PloyzctlExecutionError {
+    PloyzctlExecutionError::DeployHistory {
+        message: source.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PloyzctlExecutionError {
     #[error(
@@ -830,6 +877,15 @@ pub enum PloyzctlExecutionError {
     },
     #[error("failed to write deploy progress: {message}")]
     WriteDeployProgress { message: String },
+    #[error("cannot determine deploy history directory (set XDG_STATE_HOME or HOME)")]
+    MissingDeployHistoryRoot,
+    #[error("{message}")]
+    DeployHistory { message: String },
+    #[error("completed deploy {} cannot be recorded: {message}", operation_id.as_str())]
+    CompletedDeployHistoryEvidence {
+        operation_id: OperationId,
+        message: String,
+    },
 }
 
 impl PloyzctlExecutionError {
@@ -925,6 +981,7 @@ mod tests {
             ssh_program: None,
             ssh_install_timeout: None,
             cluster_context_path: None,
+            deploy_history_root: None,
         };
 
         let config = env_config.with_cluster_context(Some(cluster_context()));

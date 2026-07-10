@@ -55,6 +55,7 @@ fn service(name: &str, image: &str, replicas: u16, routes: Vec<DeployRoute>) -> 
 fn target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id(),
+        origin: None,
         services: vec![
             service(
                 "web",

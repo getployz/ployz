@@ -30,6 +30,7 @@ pub enum PloyzctlCommand {
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
     Deploy(deploy::DeployCommand),
+    DeployHistory(deploy::DeployHistoryCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
@@ -95,7 +96,7 @@ pub fn parse_command(
 enum CommandCli {
     Login(service::EmptyCli),
     Init(machine::MachineInitCli),
-    Deploy(deploy::DeployCli),
+    Deploy(deploy::DeployRootCli),
     Core {
         #[command(subcommand)]
         command: CoreCli,
@@ -212,7 +213,14 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
             }
         },
-        CommandCli::Deploy(command) => deploy::deploy_command(command).map(PloyzctlCommand::Deploy),
+        CommandCli::Deploy(command) => {
+            deploy::deploy_command(command).map(|command| match command {
+                deploy::ParsedDeployCommand::Deploy(command) => PloyzctlCommand::Deploy(command),
+                deploy::ParsedDeployCommand::History(command) => {
+                    PloyzctlCommand::DeployHistory(command)
+                }
+            })
+        }
         CommandCli::List(command) => Ok(PloyzctlCommand::ServiceList(
             service::service_list_command(command),
         )),

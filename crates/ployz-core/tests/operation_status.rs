@@ -7,6 +7,7 @@ fn next_event_sequence_reports_overflow() {
         operation_id("op_123"),
         namespace_id("default"),
         service_id("svc_api"),
+        None,
         event_sequence(u64::MAX),
     );
 
@@ -24,6 +25,7 @@ fn next_event_sequence_increments_normal_sequence() {
         operation_id("op_123"),
         namespace_id("default"),
         service_id("svc_api"),
+        None,
         event_sequence(41),
     );
 

@@ -3,7 +3,7 @@ use std::process::{Command, Output};
 use ployz::commands::deploy::{DeployCommand, DeployOutput};
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::deploy::{
-    DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployOrigin, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::ops::{RouteHostname, RoutePort};
@@ -18,6 +18,47 @@ fn cli_dispatches_deploy_request() {
         panic!("expected deploy command");
     };
     assert_deploy_fixture(&command);
+}
+
+#[test]
+fn cli_deploy_accepts_origin_caption() {
+    let command = shorthand_deploy_command(
+        quick_start_deploy_args().chain(["--origin", "release 2026-07-10"].map(str::to_owned)),
+    );
+
+    assert_eq!(
+        command.origin,
+        Some(DeployOrigin::try_new("release 2026-07-10").expect("valid origin"))
+    );
+}
+
+#[test]
+fn cli_deploy_history_defaults_to_default_namespace() {
+    let command =
+        parse_command(["deploy", "history"].map(str::to_owned)).expect("deploy history parses");
+
+    let PloyzctlCommand::DeployHistory(command) = command else {
+        panic!("expected deploy history command");
+    };
+    assert_eq!(
+        command.namespace_id,
+        NamespaceId::try_new("default").expect("valid namespace")
+    );
+}
+
+#[test]
+fn cli_deploy_history_accepts_namespace() {
+    let command =
+        parse_command(["deploy", "history", "--namespace", "production"].map(str::to_owned))
+            .expect("deploy history parses");
+
+    let PloyzctlCommand::DeployHistory(command) = command else {
+        panic!("expected deploy history command");
+    };
+    assert_eq!(
+        command.namespace_id,
+        NamespaceId::try_new("production").expect("valid namespace")
+    );
 }
 
 #[test]
@@ -449,6 +490,7 @@ fn assert_deploy_fixture(command: &DeployCommand) {
         command.namespace_id,
         NamespaceId::try_new("default").expect("valid namespace id")
     );
+    assert_eq!(command.origin, None);
     assert_eq!(
         command.services,
         vec![DeployServiceSpec {

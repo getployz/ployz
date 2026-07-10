@@ -19,6 +19,58 @@ use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub const DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS: u64 = 60 * 60;
+const MAX_DEPLOY_ORIGIN_BYTES: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"DeployOrigin\">"))]
+#[serde(try_from = "String", into = "String")]
+pub struct DeployOrigin(String);
+
+impl DeployOrigin {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, DeployOriginError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DeployOriginError::Empty);
+        }
+        if value.len() > MAX_DEPLOY_ORIGIN_BYTES {
+            return Err(DeployOriginError::TooLong { bytes: value.len() });
+        }
+        if value.chars().any(char::is_control) {
+            return Err(DeployOriginError::ControlCharacter);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DeployOrigin {
+    type Error = DeployOriginError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<DeployOrigin> for String {
+    fn from(value: DeployOrigin) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployOriginError {
+    #[error("deploy origin must not be empty")]
+    Empty,
+    #[error("deploy origin is {bytes} bytes; maximum is 128")]
+    TooLong { bytes: usize },
+    #[error("deploy origin must not contain control characters")]
+    ControlCharacter,
+}
 
 positive_u64_wire_newtype! {
     pub struct DeployReservationId;
@@ -44,6 +96,8 @@ positive_u64_wire_error! {
 #[serde(deny_unknown_fields)]
 pub struct DeployRequest {
     pub namespace_id: NamespaceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<DeployOrigin>,
     pub services: Vec<DeployServiceSpec>,
 }
 
