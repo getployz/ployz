@@ -102,6 +102,7 @@
   },
   "init_first_machine_activate_request": {
     "machine_id": "core_1",
+    "public_url_mode": "auto",
     "roles": {
       "dns": "install",
       "gateway": "skip"

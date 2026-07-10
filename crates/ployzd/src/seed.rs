@@ -9,6 +9,7 @@
 //! intent back.
 
 use crate::core_store::{CoreStore, CoreStoreError};
+use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
@@ -22,6 +23,8 @@ pub enum SeedCoreError {
     Namespace(#[from] NamespaceIntentStoreError),
     #[error("seeding authorization grants: {0}")]
     Authorizations(#[from] NatsAuthorizationStoreError),
+    #[error("seeding managed lease intent: {0}")]
+    ManagedLease(#[from] LeaseIntentStoreError),
     #[error("seeding control-plane epoch: {0}")]
     Epoch(#[from] CoreStoreError),
 }
@@ -68,6 +71,11 @@ pub async fn seed_core_from_snapshot(
     }
     for pin in &snapshot.volume_pins {
         namespace.replace_volume_pin(pin.clone()).await?;
+    }
+    if let Some(record) = &snapshot.managed_lease {
+        LeaseIntentStore::new(core_store.clone())
+            .restore_lease_record(record.clone())
+            .await?;
     }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
@@ -117,6 +125,7 @@ mod tests {
                 principal: NatsPrincipal::Operator,
                 nkey_public: MintedNatsUser::generate().expect("mint").public,
             }],
+            managed_lease: None,
         }
     }
 
