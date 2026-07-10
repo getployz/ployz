@@ -18,9 +18,9 @@ use ployz_sdk_types::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -163,6 +163,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { handlers.network_query().resolve(request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::NetworkStatus => {
+            bind_operation_contract::<NetworkStatusApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { handlers.network_query().status(request).await },
             )
             .await
         }

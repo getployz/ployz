@@ -28,6 +28,7 @@ pub const OPERATOR_MACHINE_ADD: &str = "plz.v1.rpc.operator.command.machine.add"
 pub const OPERATOR_MACHINE_UPDATE: &str = "plz.v1.rpc.operator.command.machine.update";
 pub const OPERATOR_MACHINE_LIST: &str = "plz.v1.rpc.operator.query.machine.list";
 pub const OPERATOR_MACHINE_INSPECT: &str = "plz.v1.rpc.operator.query.machine.inspect";
+pub const OPERATOR_NETWORK_STATUS: &str = "plz.v1.rpc.operator.query.network.status";
 pub const OPERATOR_NETWORK_RESOLVE: &str = "plz.v1.rpc.operator.query.network.resolve";
 pub const OPERATOR_NETWORK_REPAIR: &str = "plz.v1.rpc.operator.command.network.repair";
 pub const JOIN_MACHINE_REDEEM: &str = "plz.v1.rpc.join.command.machine.redeem";
@@ -54,6 +55,7 @@ pub enum OperationApiEndpoint {
     MachineResume,
     MachineList,
     MachineInspect,
+    NetworkStatus,
     NetworkResolve,
     NetworkRepair,
     MachineJoinRedeem,
@@ -92,6 +94,7 @@ impl OperationApiEndpoint {
             Self::MachineResume => "machine.resume",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
+            Self::NetworkStatus => "network.status",
             Self::NetworkResolve => "network.resolve",
             Self::NetworkRepair => "network.repair",
             Self::MachineJoinRedeem => "machine.redeem",
@@ -123,6 +126,7 @@ impl OperationApiEndpoint {
             Self::MachineResume => OPERATOR_MACHINE_RESUME,
             Self::MachineList => OPERATOR_MACHINE_LIST,
             Self::MachineInspect => OPERATOR_MACHINE_INSPECT,
+            Self::NetworkStatus => OPERATOR_NETWORK_STATUS,
             Self::NetworkResolve => OPERATOR_NETWORK_RESOLVE,
             Self::NetworkRepair => OPERATOR_NETWORK_REPAIR,
             Self::MachineJoinRedeem => JOIN_MACHINE_REDEEM,
@@ -162,6 +166,7 @@ impl OperationApiEndpoint {
             | Self::CoreReplaceReport => OperationApiEndpointExecution::MutatesOperation,
             Self::MachineList
             | Self::MachineInspect
+            | Self::NetworkStatus
             | Self::NetworkResolve
             | Self::ServiceList
             | Self::VolumeList
@@ -327,6 +332,7 @@ pub enum MachineServiceEndpoint {
     Inspect,
     FactsGet,
     DnsResolve,
+    DnsStatus,
     ContainerEnsureEndpointNetwork,
     ContainerInspect,
     ContainerRun,
@@ -335,6 +341,7 @@ pub enum MachineServiceEndpoint {
     ContainerRemove,
     VolumeRemove,
     DataplanePrepare,
+    DataplaneStatus,
     SubstrateUpdate,
     SubstrateReport,
     LogsTail,
@@ -353,6 +360,7 @@ impl MachineServiceEndpoint {
             Self::Inspect => "inspect",
             Self::FactsGet => "facts.get",
             Self::DnsResolve => "dns.resolve",
+            Self::DnsStatus => "dns.status",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
             Self::ContainerRun => "container.run",
@@ -361,6 +369,7 @@ impl MachineServiceEndpoint {
             Self::ContainerRemove => "container.remove",
             Self::VolumeRemove => "volume.remove",
             Self::DataplanePrepare => "dataplane.prepare",
+            Self::DataplaneStatus => "dataplane.status",
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
@@ -373,8 +382,10 @@ impl MachineServiceEndpoint {
             Self::Inspect
             | Self::FactsGet
             | Self::DnsResolve
+            | Self::DnsStatus
             | Self::ContainerInspect
             | Self::SubstrateReport
+            | Self::DataplaneStatus
             | Self::LogsTail => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::ContainerRun

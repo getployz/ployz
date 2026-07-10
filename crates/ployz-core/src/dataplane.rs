@@ -15,6 +15,90 @@ pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 
+/// Live, machine-owned testimony about the configured Ployz native mesh.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineDataplaneStatus {
+    pub wireguard: WireGuardStatus,
+    pub ebpf_attachment: EbpfAttachmentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct WireGuardStatus {
+    pub interface: String,
+    pub configured_mtu: WireGuardConfiguredMtu,
+    pub detected_mtu: WireGuardDetectedMtu,
+    pub interface_mtu: Option<u32>,
+    pub peers: Vec<WireGuardPeerStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardConfiguredMtu {
+    Auto,
+    Fixed { mtu: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardDetectedMtu {
+    Detected { mtu: u32 },
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct WireGuardPeerStatus {
+    pub public_key: WireGuardPublicKey,
+    pub endpoint_subnet: Option<String>,
+    pub endpoint: Option<SocketAddr>,
+    pub handshake: WireGuardHandshakeStatus,
+    pub rtt: WireGuardRttStatus,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub mtu_probe: WireGuardMtuProbe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardHandshakeStatus {
+    Never,
+    Ago { seconds: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardRttStatus {
+    Measured { micros: u64 },
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardMtuProbe {
+    NotRequested,
+    Measured { mtu: u32 },
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EbpfAttachmentStatus {
+    Attached,
+    Detached { message: String },
+    Unknown { message: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataplanePrepareRequest {
     pub operation_id: OperationId,

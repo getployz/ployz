@@ -302,6 +302,30 @@ export type PloyzNativeMeshMachineReady = { machine_id: MachineId, wireguard: Wi
 
 export type PloyzNativeMeshReady = { wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
 
+export type MachineDataplaneStatus = { wireguard: WireGuardStatus, ebpf_attachment: EbpfAttachmentStatus, };
+
+export type WireGuardStatus = { interface: string, configured_mtu: WireGuardConfiguredMtu, detected_mtu: WireGuardDetectedMtu, interface_mtu: number | null, peers: Array<WireGuardPeerStatus>, };
+
+export type WireGuardConfiguredMtu = { "mode": "auto" } | { "mode": "fixed", mtu: number, };
+
+export type WireGuardDetectedMtu = { "status": "detected", mtu: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardPeerStatus = { public_key: WireGuardPublicKey, endpoint_subnet: string | null, endpoint: string | null, handshake: WireGuardHandshakeStatus, rtt: WireGuardRttStatus, rx_bytes: number, tx_bytes: number, mtu_probe: WireGuardMtuProbe, };
+
+export type WireGuardHandshakeStatus = { "status": "never" } | { "status": "ago", seconds: number, };
+
+export type WireGuardRttStatus = { "status": "measured", micros: number, } | { "status": "unavailable", message: string, };
+
+export type WireGuardMtuProbe = { "status": "not_requested" } | { "status": "measured", mtu: number, } | { "status": "unavailable", message: string, };
+
+export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
+
+export type InternalDnsStatus = { resolver: InternalDnsResolverStatus, fact_watermarks: Array<InternalDnsFactWatermark>, };
+
+export type InternalDnsResolverStatus = { "status": "awaiting_bind", attempts: number, } | { "status": "serving", bound: string, } | { "status": "not_configured" };
+
+export type InternalDnsFactWatermark = { machine_id: MachineId, observed_at_unix_ms: number, };
+
 export type WireGuardPublicKey = string;
 
 export type WireGuardReady = { public_key: WireGuardPublicKey, evidence: Array<WireGuardReadyEvidence>, };
@@ -432,6 +456,18 @@ export type MachineInspectRequest = { machine_id: MachineId, };
 export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
 
 export type InternalServiceName = Brand<string, "InternalServiceName">;
+
+export type NetworkStatusRequest = { probe: boolean, };
+
+export type NetworkStatusResult = { machines: Array<NetworkStatusMachine>, };
+
+export type NetworkStatusMachine = { active: ActiveMachineState, dataplane: NetworkDataplaneTestimony, internal_dns: NetworkInternalDnsTestimony, };
+
+export type NetworkDataplaneTestimony = { "status": "answered", value: MachineDataplaneStatus, } | { "status": "no_answer" };
+
+export type NetworkInternalDnsTestimony = { "status": "answered", value: InternalDnsStatus, } | { "status": "no_answer" };
+
+export type NetworkStatusError = { "error": "unavailable", message: string, };
 
 export type NetworkResolveRequest = { name: string, };
 
@@ -668,6 +704,8 @@ export type MachineListResponse = OperationApiResponse<MachineListResult, Machin
 
 export type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
 
+export type NetworkStatusResponse = OperationApiResponse<NetworkStatusResult, NetworkStatusError>;
+
 export type NetworkResolveResponse = OperationApiResponse<NetworkResolveResult, NetworkResolveError>;
 
 export type NetworkRepairResponse = OperationApiResponse<AcceptedOperation, NetworkRepairError>;
@@ -708,6 +746,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "core.replace.report", subject: "plz.v1.rpc.operator.command.core.replace.report", execution: "mutates_operation", request: "CoreReplaceReportRequest", success: "CoreReplaceReported", error: "CoreReplaceReportError", response: "CoreReplaceReportResponse" },
   { name: "machine.list", subject: "plz.v1.rpc.operator.query.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
   { name: "machine.inspect", subject: "plz.v1.rpc.operator.query.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
+  { name: "network.status", subject: "plz.v1.rpc.operator.query.network.status", execution: "query", request: "NetworkStatusRequest", success: "NetworkStatusResult", error: "NetworkStatusError", response: "NetworkStatusResponse" },
   { name: "network.resolve", subject: "plz.v1.rpc.operator.query.network.resolve", execution: "query", request: "NetworkResolveRequest", success: "NetworkResolveResult", error: "NetworkResolveError", response: "NetworkResolveResponse" },
   { name: "network.repair", subject: "plz.v1.rpc.operator.command.network.repair", execution: "accepts_operation", request: "NetworkRepairRequest", success: "AcceptedOperation", error: "NetworkRepairError", response: "NetworkRepairResponse" },
   { name: "machine.redeem", subject: "plz.v1.rpc.join.command.machine.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
@@ -738,6 +777,7 @@ export type OperationApiRequestByEndpoint = {
   "core.replace.report": CoreReplaceReportRequest;
   "machine.list": MachineListRequest;
   "machine.inspect": MachineInspectRequest;
+  "network.status": NetworkStatusRequest;
   "network.resolve": NetworkResolveRequest;
   "network.repair": NetworkRepairRequest;
   "machine.redeem": MachineJoinRedeemRequest;
@@ -766,6 +806,7 @@ export type OperationApiResponseByEndpoint = {
   "core.replace.report": CoreReplaceReportResponse;
   "machine.list": MachineListResponse;
   "machine.inspect": MachineInspectResponse;
+  "network.status": NetworkStatusResponse;
   "network.resolve": NetworkResolveResponse;
   "network.repair": NetworkRepairResponse;
   "machine.redeem": MachineJoinRedeemResponse;

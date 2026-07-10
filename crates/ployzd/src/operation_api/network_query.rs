@@ -6,16 +6,24 @@ use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
 use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::InternalServiceName;
+use ployz_core::state::ActiveMachineState;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
 use ployz_sdk_types::{
-    NetworkResolveError, NetworkResolveMachineTestimony, NetworkResolveRequest,
-    NetworkResolveResult,
+    NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveError,
+    NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkResolveResult,
+    NetworkStatusError, NetworkStatusMachine, NetworkStatusRequest, NetworkStatusResult,
 };
 
 use crate::intent::service::NatsIntentReader;
-use crate::roles::dns::service::{DnsResolveRpcOk, DnsResolveRpcRequest};
+use crate::roles::dns::service::{
+    DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
+};
 use crate::roles::machine::client::DEFAULT_MACHINE_RPC_TIMEOUT;
+use crate::roles::machine::protocol::{
+    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse, MachineRpcResponse,
+};
 
 const MAX_CONCURRENT_DNS_READS: usize = 16;
 
@@ -57,6 +65,82 @@ impl NetworkQueryService {
             gather_dns_answers(&self.client, self.request_timeout, &name, machine_ids).await;
         Ok(NetworkResolveResult { name, machines })
     }
+
+    pub(crate) async fn status(
+        &self,
+        request: NetworkStatusRequest,
+    ) -> Result<NetworkStatusResult, NetworkStatusError> {
+        let intent =
+            self.intent_reader
+                .intent()
+                .await
+                .map_err(|error| NetworkStatusError::Unavailable {
+                    message: error.to_string(),
+                })?;
+        let machines = gather_network_status(
+            &self.client,
+            self.request_timeout,
+            request.probe,
+            intent.active_machines,
+        )
+        .await;
+        Ok(NetworkStatusResult { machines })
+    }
+}
+
+async fn gather_network_status(
+    client: &async_nats::Client,
+    request_timeout: Duration,
+    probe: bool,
+    active_machines: Vec<ActiveMachineState>,
+) -> Vec<NetworkStatusMachine> {
+    let mut reads = stream::iter(active_machines)
+        .map(|active| async move {
+            let machine_id = &active.machine_id;
+            let dataplane_request = MachineDataplaneStatusRpcRequest { probe };
+            let dns_request = DnsStatusRpcRequest {};
+            let dataplane = request_json::<_, MachineDataplaneStatusRpcResponse>(
+                client,
+                machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
+                &dataplane_request,
+                request_timeout,
+            );
+            let dns = request_json::<_, DnsStatusRpcOk>(
+                client,
+                machine_service(machine_id, MachineServiceEndpoint::DnsStatus),
+                &dns_request,
+                request_timeout,
+            );
+            let (dataplane, dns) = tokio::join!(dataplane, dns);
+            let dataplane = match dataplane {
+                Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk {
+                    machine_id: responder,
+                    value,
+                })) if responder == *machine_id => NetworkDataplaneTestimony::Answered { value },
+                Ok(MachineRpcResponse::Ok(_))
+                | Ok(MachineRpcResponse::DomainError { .. })
+                | Err(_) => NetworkDataplaneTestimony::NoAnswer,
+            };
+            let internal_dns = match dns {
+                Ok(DnsStatusRpcOk {
+                    machine_id: responder,
+                    value,
+                }) if responder == *machine_id => NetworkInternalDnsTestimony::Answered { value },
+                Ok(_) | Err(_) => NetworkInternalDnsTestimony::NoAnswer,
+            };
+            NetworkStatusMachine {
+                active,
+                dataplane,
+                internal_dns,
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_DNS_READS);
+    let mut gathered = Vec::new();
+    while let Some(machine) = reads.next().await {
+        gathered.push(machine);
+    }
+    gathered.sort_by(|left, right| left.active.machine_id.cmp(&right.active.machine_id));
+    gathered
 }
 
 fn normalize_internal_name(name: &str) -> Option<InternalServiceName> {
@@ -123,13 +207,29 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
 
+    use futures_util::StreamExt;
+    use ployz_core::dataplane::{
+        EbpfAttachmentStatus, MachineDataplaneStatus, MachineEndpointSubnet,
+        WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardStatus,
+    };
+    use ployz_core::machine::MachineName;
     use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-    use ployz_sdk_types::NetworkResolveMachineTestimony;
-    use ployz_test_support::{containers, ids::machine_id};
+    use ployz_core::state::{ActiveMachineState, MachineLifecycle};
+    use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+    use ployz_sdk_types::{
+        NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
+    };
+    use ployz_test_support::{
+        containers,
+        ids::{machine_id, operation_id},
+    };
 
-    use super::{gather_dns_answers, normalize_internal_name};
+    use super::{gather_dns_answers, gather_network_status, normalize_internal_name};
     use crate::fact_cache::FactCache;
     use crate::roles::dns::service::start_dns_role_service;
+    use crate::roles::machine::protocol::{
+        MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse,
+    };
 
     #[test]
     fn normalizes_supported_name_forms() {
@@ -184,6 +284,7 @@ mod tests {
             nats.machine_client(&machine_id("dns_a")).await,
             machine_id("dns_a"),
             cache,
+            None,
         )
         .await
         .expect("DNS role service");
@@ -211,5 +312,103 @@ mod tests {
             ]
         );
         service.shutdown().await.expect("shutdown DNS role service");
+    }
+
+    #[tokio::test]
+    async fn status_keeps_independent_dataplane_and_dns_silence() {
+        let machine_a = machine_id("machine_a");
+        let machine_b = machine_id("machine_b");
+        let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+            machine_a.clone(),
+            machine_b.clone(),
+        ])
+        .await;
+        let dns_service = start_dns_role_service(
+            nats.machine_client(&machine_a).await,
+            machine_a.clone(),
+            FactCache::default(),
+            None,
+        )
+        .await
+        .expect("DNS role service");
+
+        let machine_client = nats.machine_client(&machine_b).await;
+        let mut requests = machine_client
+            .subscribe(machine_service(
+                &machine_b,
+                MachineServiceEndpoint::DataplaneStatus,
+            ))
+            .await
+            .expect("subscribe dataplane status");
+        let responder_machine = machine_b.clone();
+        let responder = tokio::spawn(async move {
+            let request = requests.next().await.expect("status request");
+            let reply = request.reply.expect("reply subject");
+            let response = MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
+                machine_id: responder_machine,
+                value: MachineDataplaneStatus {
+                    wireguard: WireGuardStatus {
+                        interface: "ployz-wg0".to_owned(),
+                        configured_mtu: WireGuardConfiguredMtu::Auto,
+                        detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
+                        interface_mtu: Some(1420),
+                        peers: Vec::new(),
+                    },
+                    ebpf_attachment: EbpfAttachmentStatus::Attached,
+                },
+            });
+            machine_client
+                .publish(
+                    reply,
+                    serde_json::to_vec(&response).expect("response").into(),
+                )
+                .await
+                .expect("publish response");
+        });
+
+        let result = gather_network_status(
+            &nats.controller,
+            Duration::from_millis(200),
+            true,
+            vec![
+                active_machine("machine_a", "10.198.1.0/24"),
+                active_machine("machine_b", "10.198.2.0/24"),
+            ],
+        )
+        .await;
+
+        let [machine_a, machine_b] = result.as_slice() else {
+            panic!("expected two intended machines");
+        };
+        assert!(matches!(
+            machine_a.dataplane,
+            NetworkDataplaneTestimony::NoAnswer
+        ));
+        assert!(matches!(
+            machine_a.internal_dns,
+            NetworkInternalDnsTestimony::Answered { .. }
+        ));
+        assert!(matches!(
+            machine_b.dataplane,
+            NetworkDataplaneTestimony::Answered { .. }
+        ));
+        assert!(matches!(
+            machine_b.internal_dns,
+            NetworkInternalDnsTestimony::NoAnswer
+        ));
+        responder.await.expect("dataplane responder");
+        dns_service.shutdown().await.expect("shutdown DNS service");
+    }
+
+    fn active_machine(id: &str, subnet: &str) -> ActiveMachineState {
+        ActiveMachineState {
+            machine_id: machine_id(id),
+            name: MachineName::try_new(id).expect("machine name"),
+            activated_by: operation_id(&format!("op_{id}")),
+            lifecycle: MachineLifecycle::Active,
+            control_endpoints: Vec::new(),
+            mesh_endpoints: Vec::new(),
+            endpoint_subnet: MachineEndpointSubnet::try_new(subnet).expect("endpoint subnet"),
+        }
     }
 }

@@ -3,8 +3,54 @@ use ts_rs::TS;
 
 use std::net::Ipv4Addr;
 
-use crate::core_types::{EventSequence, InternalServiceName, MachineId, OperationId};
+use crate::core_types::{
+    ActiveMachineState, EventSequence, InternalDnsStatus, InternalServiceName,
+    MachineDataplaneStatus, MachineId, OperationId,
+};
 use crate::ops::{AcceptedOperation, OperationApiResponse};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkStatusRequest {
+    pub probe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkStatusResult {
+    pub machines: Vec<NetworkStatusMachine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkStatusMachine {
+    pub active: ActiveMachineState,
+    pub dataplane: NetworkDataplaneTestimony,
+    pub internal_dns: NetworkInternalDnsTestimony,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkDataplaneTestimony {
+    Answered { value: MachineDataplaneStatus },
+    NoAnswer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkInternalDnsTestimony {
+    Answered { value: InternalDnsStatus },
+    NoAnswer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkStatusError {
+    #[error("network status unavailable: {message}")]
+    Unavailable { message: String },
+}
+
+pub type NetworkStatusResponse = OperationApiResponse<NetworkStatusResult, NetworkStatusError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

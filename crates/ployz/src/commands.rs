@@ -180,7 +180,7 @@ enum ServiceCli {
 
 #[derive(Debug, Subcommand)]
 enum NetworkCli {
-    Status(network::EmptyCli),
+    Status(network::NetworkStatusCli),
     Resolve(network::NetworkResolveCli),
     Repair(network::NetworkRepairCli),
 }

@@ -7,10 +7,12 @@ pub use ployz_core::cert::{
     ManagedLeaseError, ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    MachineEndpointSubnet, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
+    DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, MachineDataplaneStatus, MachineEndpointSubnet,
+    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
+    PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
+    WireGuardMtuProbe, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
@@ -34,7 +36,10 @@ pub use ployz_core::install::{
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
-pub use ployz_core::internal_dns::{InternalServiceName, InternalServiceNameError};
+pub use ployz_core::internal_dns::{
+    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName,
+    InternalServiceNameError,
+};
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MachineAddFailure, MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,

@@ -129,14 +129,6 @@ pub async fn start_dns_process_with_client(
     let facts_cache = start_fact_cache(client.clone())
         .await
         .map_err(DnsProcessError::StartFactsCache)?;
-    let role_service =
-        match start_dns_role_service(client.clone(), machine_id, facts_cache.cache()).await {
-            Ok(service) => service,
-            Err(error) => {
-                facts_cache.shutdown().await;
-                return Err(DnsProcessError::StartRoleService(error));
-            }
-        };
     let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
@@ -152,6 +144,24 @@ pub async fn start_dns_process_with_client(
         ));
         health
     });
+    let role_service = match start_dns_role_service(
+        client.clone(),
+        machine_id,
+        facts_cache.cache(),
+        internal_resolver_health.clone(),
+    )
+    .await
+    {
+        Ok(service) => service,
+        Err(error) => {
+            let _ = shutdown.send(());
+            for task in tasks {
+                let _ = task.await;
+            }
+            facts_cache.shutdown().await;
+            return Err(DnsProcessError::StartRoleService(error));
+        }
+    };
     if let Some(failover) = failover {
         tasks.push(spawn_intent_failover_mirror(
             client.clone(),

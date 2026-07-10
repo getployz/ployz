@@ -1,25 +1,33 @@
 use clap::Args;
 use ployz_core::ids::OperationId;
 use ployz_sdk_types::{
-    MachineListRequest, MachineListResult, MachineSnapshot, MachineTestimony, NetworkRepairRequest,
-    NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkResolveResult,
+    EbpfAttachmentStatus, InternalDnsResolverStatus, NetworkDataplaneTestimony,
+    NetworkInternalDnsTestimony, NetworkRepairRequest, NetworkResolveMachineTestimony,
+    NetworkResolveRequest, NetworkResolveResult, NetworkStatusMachine, NetworkStatusRequest,
+    NetworkStatusResult, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
+    WireGuardMtuProbe, WireGuardRttStatus,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::client_ids::generate_client_network_repair_id;
 use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NetworkStatusCommand;
+pub struct NetworkStatusCommand {
+    pub probe: bool,
+}
 
 impl NetworkStatusCommand {
     #[must_use]
-    pub const fn into_request(self) -> MachineListRequest {
-        MachineListRequest {}
+    pub const fn into_request(self) -> NetworkStatusRequest {
+        NetworkStatusRequest { probe: self.probe }
     }
 }
 
-pub(crate) const fn network_status_command(_: EmptyCli) -> NetworkStatusCommand {
-    NetworkStatusCommand
+pub(crate) const fn network_status_command(parsed: NetworkStatusCli) -> NetworkStatusCommand {
+    NetworkStatusCommand {
+        probe: parsed.probe,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +74,10 @@ pub(crate) fn network_repair_command(
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct EmptyCli {}
+pub(crate) struct NetworkStatusCli {
+    #[arg(long)]
+    probe: bool,
+}
 
 #[derive(Debug, Args)]
 pub(crate) struct NetworkResolveCli {
@@ -81,12 +92,12 @@ pub(crate) struct NetworkRepairCli {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkStatusOutput {
-    pub machines: Vec<MachineSnapshot>,
+    pub machines: Vec<NetworkStatusMachine>,
 }
 
 impl NetworkStatusOutput {
     #[must_use]
-    pub fn from_result(result: MachineListResult) -> Self {
+    pub fn from_result(result: NetworkStatusResult) -> Self {
         Self {
             machines: result.machines,
         }
@@ -94,30 +105,112 @@ impl NetworkStatusOutput {
 
     #[must_use]
     pub fn render(&self) -> String {
-        render_rows(self.machines.iter().map(render_status_row))
+        render_rows(self.machines.iter().flat_map(render_status_rows))
     }
 }
 
-fn render_status_row(machine: &MachineSnapshot) -> String {
-    let (live_mesh, live_control) = match &machine.testimony {
-        MachineTestimony::Answered { endpoints, .. } => match endpoints {
-            Some(endpoints) => (
-                render_addresses(&endpoints.mesh_endpoints),
-                render_addresses(&endpoints.control_endpoints),
-            ),
-            None => ("unknown".to_owned(), "unknown".to_owned()),
-        },
-        MachineTestimony::NoAnswer => ("no answer".to_owned(), "no answer".to_owned()),
-    };
-    format!(
-        "{} {} allocation {} intended-mesh-endpoints {} live-mesh-endpoints {} live-control-endpoints {}",
+fn render_status_rows(machine: &NetworkStatusMachine) -> Vec<String> {
+    let mut rows = vec![format!(
+        "machine {} {} endpoint-subnet {}",
         machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
         machine.active.endpoint_subnet.as_string(),
-        render_addresses(&machine.active.mesh_endpoints),
-        live_mesh,
-        live_control,
-    )
+    )];
+    match &machine.dataplane {
+        NetworkDataplaneTestimony::NoAnswer => rows.push("  dataplane no answer".to_owned()),
+        NetworkDataplaneTestimony::Answered { value } => {
+            let configured = match value.wireguard.configured_mtu {
+                WireGuardConfiguredMtu::Auto => "auto".to_owned(),
+                WireGuardConfiguredMtu::Fixed { mtu } => mtu.to_string(),
+            };
+            let detected = match &value.wireguard.detected_mtu {
+                WireGuardDetectedMtu::Detected { mtu } => mtu.to_string(),
+                WireGuardDetectedMtu::Unavailable { message } => {
+                    format!("unavailable({message})")
+                }
+            };
+            let interface_mtu = value
+                .wireguard
+                .interface_mtu
+                .map_or_else(|| "unknown".to_owned(), |mtu| mtu.to_string());
+            let ebpf = match &value.ebpf_attachment {
+                EbpfAttachmentStatus::Attached => "attached".to_owned(),
+                EbpfAttachmentStatus::Detached { message } => format!("detached({message})"),
+                EbpfAttachmentStatus::Unknown { message } => format!("unknown({message})"),
+            };
+            rows.push(format!(
+                "  dataplane wg={} mtu-configured={} mtu-detected={} mtu-interface={} ebpf={}",
+                value.wireguard.interface, configured, detected, interface_mtu, ebpf
+            ));
+            rows.extend(value.wireguard.peers.iter().map(|peer| {
+                let endpoint = peer
+                    .endpoint
+                    .map_or_else(|| "none".to_owned(), |endpoint| endpoint.to_string());
+                let handshake = match peer.handshake {
+                    WireGuardHandshakeStatus::Never => "never".to_owned(),
+                    WireGuardHandshakeStatus::Ago { seconds } => format!("{seconds}s"),
+                };
+                let rtt = match &peer.rtt {
+                    WireGuardRttStatus::Measured { micros } => format!("{micros}us"),
+                    WireGuardRttStatus::Unavailable { message } => {
+                        format!("unavailable({message})")
+                    }
+                };
+                let mtu_probe = match &peer.mtu_probe {
+                    WireGuardMtuProbe::NotRequested => "not-requested".to_owned(),
+                    WireGuardMtuProbe::Measured { mtu } => mtu.to_string(),
+                    WireGuardMtuProbe::Unavailable { message } => {
+                        format!("unavailable({message})")
+                    }
+                };
+                format!(
+                    "  peer key={} subnet={} endpoint={} handshake-age={} rtt={} rx={} tx={} mtu-probe={}",
+                    peer.public_key.as_str(),
+                    peer.endpoint_subnet.as_deref().unwrap_or("unknown"),
+                    endpoint,
+                    handshake,
+                    rtt,
+                    peer.rx_bytes,
+                    peer.tx_bytes,
+                    mtu_probe,
+                )
+            }));
+        }
+    }
+    match &machine.internal_dns {
+        NetworkInternalDnsTestimony::NoAnswer => rows.push("  internal-dns no answer".to_owned()),
+        NetworkInternalDnsTestimony::Answered { value } => {
+            let resolver = match &value.resolver {
+                InternalDnsResolverStatus::AwaitingBind { attempts } => {
+                    format!("awaiting-bind(attempts={attempts})")
+                }
+                InternalDnsResolverStatus::Serving { bound } => format!("serving({bound})"),
+                InternalDnsResolverStatus::NotConfigured => "not-configured".to_owned(),
+            };
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let facts = value
+                .fact_watermarks
+                .iter()
+                .map(|fact| {
+                    format!(
+                        "{}:{}s",
+                        fact.machine_id.as_str(),
+                        now_ms.saturating_sub(fact.observed_at_unix_ms) / 1_000
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            rows.push(format!(
+                "  internal-dns {} fact-ages={}",
+                resolver,
+                if facts.is_empty() { "none" } else { &facts }
+            ));
+        }
+    }
+    rows
 }
 
 fn render_addresses<T: ToString>(addresses: &[T]) -> String {

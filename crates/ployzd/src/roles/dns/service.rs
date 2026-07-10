@@ -1,9 +1,13 @@
 //! Machine-scoped query service owned by the DNS role.
 
 use std::net::Ipv4Addr;
+use std::sync::{Arc, Mutex};
 
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
+use ployz_core::internal_dns::{
+    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName,
+    internal_dns_records,
+};
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
@@ -12,6 +16,7 @@ use ployz_nats::service_runtime::{
 use serde::{Deserialize, Serialize};
 
 use crate::fact_cache::FactCache;
+use crate::roles::dns::InternalResolverHealth;
 use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,21 +33,88 @@ pub(crate) struct DnsResolveRpcOk {
     pub addresses: Vec<Ipv4Addr>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DnsStatusRpcRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DnsStatusRpcOk {
+    pub machine_id: MachineId,
+    pub value: InternalDnsStatus,
+}
+
 pub(crate) async fn start_dns_role_service(
     client: async_nats::Client,
     machine_id: MachineId,
     facts: FactCache,
+    resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
 ) -> Result<RunningNatsService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client, &dns_role_service_base(&machine_id)).await?;
     let endpoint = machine_endpoint_spec(&machine_id, MachineServiceEndpoint::DnsResolve);
+    let resolve_machine_id = machine_id.clone();
+    let resolve_facts = facts.clone();
+    service
+        .bind_endpoint(&endpoint, move |request| {
+            let machine_id = resolve_machine_id.clone();
+            let facts = resolve_facts.clone();
+            async move { resolve_from_local_cache(machine_id, facts, request) }
+        })
+        .await?;
+    let endpoint = machine_endpoint_spec(&machine_id, MachineServiceEndpoint::DnsStatus);
     service
         .bind_endpoint(&endpoint, move |request| {
             let machine_id = machine_id.clone();
             let facts = facts.clone();
-            async move { resolve_from_local_cache(machine_id, facts, request) }
+            let resolver_health = resolver_health.clone();
+            async move { status_from_local_cache(machine_id, facts, resolver_health, request) }
         })
         .await?;
     Ok(service)
+}
+
+fn status_from_local_cache(
+    machine_id: MachineId,
+    facts: FactCache,
+    resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    if let Err(response) = decode_json_request::<DnsStatusRpcRequest>(&request) {
+        return response;
+    }
+    let resolver = resolver_health
+        .map(|health| {
+            health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        })
+        .map_or(
+            InternalDnsResolverStatus::NotConfigured,
+            |health| match health {
+                InternalResolverHealth::AwaitingBind { attempts } => {
+                    InternalDnsResolverStatus::AwaitingBind { attempts }
+                }
+                InternalResolverHealth::Serving { bound } => {
+                    InternalDnsResolverStatus::Serving { bound }
+                }
+            },
+        );
+    let fact_watermarks = facts
+        .machine_facts_all()
+        .into_iter()
+        .map(|facts| InternalDnsFactWatermark {
+            machine_id: facts.machine_id().clone(),
+            observed_at_unix_ms: facts.observed_at_unix_ms(),
+        })
+        .collect();
+    NatsServiceResponse::json_ok(&DnsStatusRpcOk {
+        machine_id,
+        value: InternalDnsStatus {
+            resolver,
+            fact_watermarks,
+        },
+    })
 }
 
 fn resolve_from_local_cache(
@@ -69,12 +141,15 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use ployz_core::ids::{NamespaceId, ServiceId};
-    use ployz_core::internal_dns::InternalServiceName;
+    use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalServiceName};
     use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
     use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
     use ployz_test_support::{containers, ids::machine_id};
 
-    use super::{DnsResolveRpcOk, DnsResolveRpcRequest, resolve_from_local_cache};
+    use super::{
+        DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
+        resolve_from_local_cache, status_from_local_cache,
+    };
     use crate::fact_cache::FactCache;
 
     #[test]
@@ -120,5 +195,45 @@ mod tests {
                 addresses: vec![Ipv4Addr::new(10, 42, 1, 8)],
             }
         );
+    }
+
+    #[test]
+    fn status_reports_resolver_health_and_fact_watermarks() {
+        let dns_machine_id = machine_id("dns_a");
+        let observed_machine_id = machine_id("worker_a");
+        let facts = MachineFactsSnapshot::try_new(
+            observed_machine_id.clone(),
+            MachineContainerObservationSnapshot::try_new(observed_machine_id.clone(), [])
+                .expect("container facts"),
+            None,
+            ployz_test_support::fixtures::test_disk_space(),
+            42,
+        )
+        .expect("machine facts");
+        let cache = FactCache::default();
+        cache.record_machine_facts(facts);
+
+        let response = status_from_local_cache(
+            dns_machine_id.clone(),
+            cache,
+            None,
+            NatsServiceRequest {
+                payload: serde_json::to_vec(&DnsStatusRpcRequest {}).expect("request"),
+            },
+        );
+        let NatsServiceResponse::Ok { payload } = response else {
+            panic!("expected status");
+        };
+        let status = serde_json::from_slice::<DnsStatusRpcOk>(&payload).expect("response");
+        assert_eq!(status.machine_id, dns_machine_id);
+        assert_eq!(
+            status.value.resolver,
+            InternalDnsResolverStatus::NotConfigured
+        );
+        let [watermark] = status.value.fact_watermarks.as_slice() else {
+            panic!("expected one fact watermark");
+        };
+        assert_eq!(watermark.machine_id, observed_machine_id);
+        assert_eq!(watermark.observed_at_unix_ms, 42);
     }
 }

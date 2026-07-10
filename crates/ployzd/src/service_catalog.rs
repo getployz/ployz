@@ -35,6 +35,7 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::CoreReplaceReport,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
+    OperationApiEndpoint::NetworkStatus,
     OperationApiEndpoint::NetworkResolve,
     OperationApiEndpoint::NetworkRepair,
     OperationApiEndpoint::MachineJoinRedeem,
@@ -161,6 +162,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::VolumeRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneStatus),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateReport),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
@@ -206,6 +208,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::Inspect => "machine.inspect",
         MachineServiceEndpoint::FactsGet => "machine.facts.get",
         MachineServiceEndpoint::DnsResolve => "machine.dns.resolve",
+        MachineServiceEndpoint::DnsStatus => "machine.dns.status",
         MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
             "machine.container.ensure_endpoint_network"
         }
@@ -216,6 +219,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::VolumeRemove => "machine.volume.remove",
         MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",
+        MachineServiceEndpoint::DataplaneStatus => "machine.dataplane.status",
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
         MachineServiceEndpoint::SubstrateReport => "machine.substrate.report",
         MachineServiceEndpoint::LogsTail => "machine.logs.tail",

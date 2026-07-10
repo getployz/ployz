@@ -11,12 +11,12 @@ use crate::{
     MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
-    OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceRestartError, ServiceRestartRequest,
-    ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
-    VolumeRemoveRequest,
+    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationStatusSnapshot,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -48,6 +48,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::CoreReplaceReportApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
+            $crate::operation_api::NetworkStatusApi,
             $crate::operation_api::NetworkResolveApi,
             $crate::operation_api::NetworkRepairApi,
             $crate::operation_api::MachineJoinRedeemApi,
@@ -230,6 +231,18 @@ impl OperationApiContract for NetworkResolveApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::NetworkResolve;
     const RESPONSE_ALIAS: &'static str = "NetworkResolveResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkStatusApi;
+
+impl OperationApiContract for NetworkStatusApi {
+    type Request = NetworkStatusRequest;
+    type Success = NetworkStatusResult;
+    type Error = NetworkStatusError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::NetworkStatus;
+    const RESPONSE_ALIAS: &'static str = "NetworkStatusResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

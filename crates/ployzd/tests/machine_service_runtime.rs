@@ -1,9 +1,10 @@
 use futures_util::StreamExt;
 use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshReady, WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
+    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfAttachmentStatus,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineDataplaneStatus,
+    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshReady,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence, WireGuardStatus,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
@@ -28,12 +29,13 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
-    MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
-    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
-    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachineDataplanePrepareRpcResponse, MachineDataplaneStatusRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse,
+    MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailRpcOk, MachineLogsTailRpcRequest,
+    MachineLogsTailRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
+    MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
+    MachineSubstrateReportRpcRequest, MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -1015,6 +1017,41 @@ async fn machine_wireguard_ebpf_service_calls_local_preparer() {
 }
 
 #[tokio::test]
+async fn machine_dataplane_status_service_returns_local_testimony() {
+    let nats = test_nats().await;
+    let expected = machine_dataplane_status();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        idle_runner(),
+        RecordingWireGuardEbpf::new(RecordingWireGuardEbpfState::default()),
+        idle_logs(),
+    )
+    .await
+    .expect("machine dataplane status service starts");
+
+    let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::DataplaneStatus,
+        ),
+        &MachineDataplaneStatusRpcRequest { probe: true },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine dataplane status responds");
+
+    assert_eq!(
+        response,
+        MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
+            machine_id: machine_id("machine_a"),
+            value: expected,
+        })
+    );
+}
+
+#[tokio::test]
 async fn machine_wireguard_ebpf_service_rejects_request_not_targeting_this_machine() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
@@ -1459,6 +1496,13 @@ impl RecordingWireGuardEbpf {
 }
 
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
+    async fn read_ployz_native_mesh_status(
+        &self,
+        _probe: bool,
+    ) -> Result<MachineDataplaneStatus, String> {
+        Ok(machine_dataplane_status())
+    }
+
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
@@ -1484,6 +1528,19 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
             Some(error) => Err(error.clone()),
             None => Ok(ready_components()),
         }
+    }
+}
+
+fn machine_dataplane_status() -> MachineDataplaneStatus {
+    MachineDataplaneStatus {
+        wireguard: WireGuardStatus {
+            interface: "ployz-wg0".to_owned(),
+            configured_mtu: WireGuardConfiguredMtu::Auto,
+            detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
+            interface_mtu: Some(1420),
+            peers: Vec::new(),
+        },
+        ebpf_attachment: EbpfAttachmentStatus::Attached,
     }
 }
 

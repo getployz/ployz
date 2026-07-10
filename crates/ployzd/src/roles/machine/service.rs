@@ -5,7 +5,7 @@ use super::containers::{
     handle_container_restart, handle_container_run, handle_container_stop,
     handle_ensure_endpoint_network, handle_volume_remove,
 };
-use super::dataplane::handle_dataplane_prepare;
+use super::dataplane::{handle_dataplane_prepare, handle_dataplane_status};
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
@@ -141,8 +141,16 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::DataplanePrepare,
-        preparer,
+        preparer.clone(),
         handle_dataplane_prepare,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::DataplaneStatus,
+        preparer,
+        handle_dataplane_status,
     )
     .await?;
     bind_machine_endpoint(
@@ -207,6 +215,14 @@ pub trait MachinePloyzNativeMeshPreparer {
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
     ) -> impl Future<Output = Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError>> + Send;
+
+    fn read_ployz_native_mesh_status(
+        &self,
+        _probe: bool,
+    ) -> impl Future<Output = Result<ployz_core::dataplane::MachineDataplaneStatus, String>> + Send
+    {
+        async { Err("dataplane status is unavailable".to_owned()) }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

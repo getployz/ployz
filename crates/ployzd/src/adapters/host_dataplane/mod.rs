@@ -1,9 +1,10 @@
 //! Host WireGuard/eBPF readiness for machine-local dataplane preparation.
 
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, PloyzNativeMeshComponent,
-    PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfAttachmentStatus, EbpfForwardingReady,
+    MachineDataplaneStatus, PloyzNativeMeshComponent, PloyzNativeMeshReady,
+    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
 use std::path::{Path, PathBuf};
@@ -161,6 +162,24 @@ impl PloyzNativeMeshPreparer {
 }
 
 impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
+    async fn read_ployz_native_mesh_status(
+        &self,
+        probe: bool,
+    ) -> Result<MachineDataplaneStatus, String> {
+        let wireguard =
+            host_network::read_wireguard_status(&self.wg_ifname, self.mtu_policy, probe).await?;
+        let ebpf_attachment = match &self.route_programming {
+            Some(routes) => routes.attachment_status(self.command_timeout).await,
+            None => EbpfAttachmentStatus::Unknown {
+                message: "eBPF route programming is not configured".to_owned(),
+            },
+        };
+        Ok(MachineDataplaneStatus {
+            wireguard,
+            ebpf_attachment,
+        })
+    }
+
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {

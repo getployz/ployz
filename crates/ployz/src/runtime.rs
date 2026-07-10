@@ -337,7 +337,7 @@ pub async fn execute_command(
         PloyzctlCommand::NetworkStatus(command) => {
             render_api_call(
                 config,
-                async |api| api.machine_list(&command.into_request()).await,
+                async |api| api.network_status(&command.into_request()).await,
                 |result| {
                     crate::commands::network::NetworkStatusOutput::from_result(result).render()
                 },

@@ -1,8 +1,9 @@
 //! Machine-local NATS RPC protocol types.
 
 use ployz_core::dataplane::{
-    PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareRequest,
-    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
+    MachineDataplaneStatus, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareRequest, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
+    WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
@@ -397,6 +398,34 @@ impl MachineRpcResponder for MachineSubstrateReportRpcOk {
 
 pub type MachineSubstrateReportRpcResponse =
     MachineRpcResponse<MachineSubstrateReportRpcOk, MachineSubstrateUpdateDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineDataplaneStatusRpcRequest {
+    pub probe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineDataplaneStatusRpcOk {
+    pub machine_id: MachineId,
+    pub value: MachineDataplaneStatus,
+}
+
+impl MachineRpcResponder for MachineDataplaneStatusRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineDataplaneStatusDomainError {
+    ReadFailed { message: FailureMessage },
+}
+
+pub type MachineDataplaneStatusRpcResponse =
+    MachineRpcResponse<MachineDataplaneStatusRpcOk, MachineDataplaneStatusDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

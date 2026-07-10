@@ -644,6 +644,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineInspectResponse",
     },
     {
+      name: "network.status",
+      subject: "plz.v1.rpc.operator.query.network.status",
+      execution: "query",
+      request: "NetworkStatusRequest",
+      success: "NetworkStatusResult",
+      error: "NetworkStatusError",
+      response: "NetworkStatusResponse",
+    },
+    {
       name: "network.resolve",
       subject: "plz.v1.rpc.operator.query.network.resolve",
       execution: "query",

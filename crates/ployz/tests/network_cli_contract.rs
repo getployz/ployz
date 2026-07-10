@@ -7,20 +7,22 @@ use ployz_core::dataplane::{
 };
 use ployz_core::machine::MachineName;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
-use ployz_sdk_types::{MachineSnapshot, MachineTestimony};
+use ployz_sdk_types::{
+    NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkStatusMachine,
+};
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 
 #[test]
-fn cli_parses_network_status() {
-    let command =
-        parse_command(["network", "status"].map(str::to_owned)).expect("network status parses");
+fn cli_parses_network_status_probe() {
+    let command = parse_command(["network", "status", "--probe"].map(str::to_owned))
+        .expect("network status parses");
     let PloyzctlCommand::NetworkStatus(command) = command else {
         panic!("expected network status command");
     };
 
     assert_eq!(
         command.into_request(),
-        ployz_sdk_types::MachineListRequest {}
+        ployz_sdk_types::NetworkStatusRequest { probe: true }
     );
 }
 
@@ -56,7 +58,7 @@ fn cli_parses_detached_network_repair() {
 #[test]
 fn network_status_keeps_no_answer_machine_row() {
     let output = NetworkStatusOutput {
-        machines: vec![MachineSnapshot {
+        machines: vec![NetworkStatusMachine {
             active: ActiveMachineState {
                 machine_id: machine_id("machine_a"),
                 name: MachineName::try_new("edge-a").expect("valid machine name"),
@@ -67,14 +69,15 @@ fn network_status_keeps_no_answer_machine_row() {
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                     .expect("valid endpoint subnet"),
             },
-            testimony: MachineTestimony::NoAnswer,
+            dataplane: NetworkDataplaneTestimony::NoAnswer,
+            internal_dns: NetworkInternalDnsTestimony::NoAnswer,
         }],
     }
     .render();
 
     assert_eq!(
         output,
-        "machine_a edge-a allocation 10.198.1.0/24 intended-mesh-endpoints 203.0.113.10:51820 live-mesh-endpoints no answer live-control-endpoints no answer\n"
+        "machine machine_a edge-a endpoint-subnet 10.198.1.0/24\n  dataplane no answer\n  internal-dns no answer\n"
     );
 }
 

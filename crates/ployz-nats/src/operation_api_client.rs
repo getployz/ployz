@@ -17,19 +17,19 @@ use ployz_sdk_types::{
     MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
-    OperationApiResponse, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
-    ServiceListRequest, ServiceListResult, ServiceRestartError, ServiceRestartRequest,
-    ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
-    VolumeRemoveRequest,
+    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationApiResponse,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -149,6 +149,13 @@ impl OperationApiClient {
         request: &NetworkResolveRequest,
     ) -> Result<NetworkResolveResult, OperationApiClientError<NetworkResolveError>> {
         self.request_api::<NetworkResolveApi>(request).await
+    }
+
+    pub async fn network_status(
+        &self,
+        request: &NetworkStatusRequest,
+    ) -> Result<NetworkStatusResult, OperationApiClientError<NetworkStatusError>> {
+        self.request_api::<NetworkStatusApi>(request).await
     }
 
     pub async fn network_repair(

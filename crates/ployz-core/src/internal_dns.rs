@@ -1,13 +1,38 @@
 //! Internal DNS names and their projection from machine facts.
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
 use crate::dataplane::INTERNAL_DNS_SUFFIX;
-use crate::ids::{NamespaceId, ServiceId};
+use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct InternalDnsStatus {
+    pub resolver: InternalDnsResolverStatus,
+    pub fact_watermarks: Vec<InternalDnsFactWatermark>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InternalDnsResolverStatus {
+    AwaitingBind { attempts: u64 },
+    Serving { bound: SocketAddr },
+    NotConfigured,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct InternalDnsFactWatermark {
+    pub machine_id: MachineId,
+    pub observed_at_unix_ms: u64,
+}
 
 /// A validated, lower-case `<service>.<namespace>.internal` wire name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
