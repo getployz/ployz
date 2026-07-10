@@ -30,8 +30,8 @@ use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
-    NamespaceRemoveOperationState, OperationEvent, OperationStatus, PreStartHookFailure,
-    VolumeRemoveOperationState,
+    NamespaceRemoveOperationState, NetworkRepairOperationState, OperationEvent, OperationStatus,
+    PreStartHookFailure, VolumeRemoveOperationState,
 };
 use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
@@ -48,7 +48,9 @@ use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
-    MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest, VolumeListRequest,
+    MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, NetworkDataplaneTestimony,
+    NetworkInternalDnsTestimony, NetworkRepairRequest, NetworkResolveMachineTestimony,
+    NetworkResolveRequest, NetworkStatusRequest, OpsListRequest, VolumeListRequest,
     VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
@@ -937,6 +939,155 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         assert!(
             matches!(&last, Ok(outcome) if outcome.stderr.contains("bad address")),
             "plain service DNS kept resolving the stopped workload before deadline: {last:?}"
+        );
+    })
+    .await;
+
+    finish(core).await;
+}
+
+/// Network observability is driven by intended membership, resolver answers
+/// come from each bound resolver, and repair converges through a terminal
+/// operation after a silent machine returns.
+#[tokio::test]
+async fn scenario_network_status_resolve_and_repair() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 1).await;
+    with_evidence(&core.cluster, async {
+        let [edge] = core.cluster.edges() else {
+            panic!("scenario requires exactly one edge machine");
+        };
+        add_and_join_edge(&core, edge).await;
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(&core, &machine_id("edge_2")).await;
+        for machine in [core.cluster.core(), edge] {
+            assert_unit_active(&core, machine, "ployzd-dns").await;
+        }
+
+        let status = core
+            .api
+            .network_status(&NetworkStatusRequest { probe: false })
+            .await
+            .expect("network status succeeds");
+        assert_eq!(
+            status.machines.len(),
+            2,
+            "status follows intended membership"
+        );
+        assert!(status.machines.iter().all(|machine| {
+            matches!(
+                machine.dataplane,
+                NetworkDataplaneTestimony::Answered { .. }
+            ) && matches!(
+                machine.internal_dns,
+                NetworkInternalDnsTestimony::Answered { .. }
+            )
+        }));
+
+        let resolved = core
+            .api
+            .network_resolve(&NetworkResolveRequest {
+                name: "missing.default.internal".to_owned(),
+            })
+            .await
+            .expect("network resolve succeeds");
+        assert_eq!(resolved.machines.len(), 2);
+        assert!(resolved.machines.iter().all(|testimony| matches!(
+            testimony,
+            NetworkResolveMachineTestimony::Answered { addresses, .. } if addresses.is_empty()
+        )));
+
+        let stopped = exec_in_container(
+            &docker,
+            &edge.container_id,
+            &["systemctl", "stop", "ployzd-machine-edge_2", "ployzd-dns"],
+        )
+        .await;
+        assert!(
+            matches!(&stopped, Ok(outcome) if outcome.success()),
+            "stopping edge testimony failed: {stopped:?}"
+        );
+        let silent_status = core
+            .api
+            .network_status(&NetworkStatusRequest { probe: false })
+            .await
+            .expect("network status retains silent intended machine");
+        let Some(silent_edge) = silent_status
+            .machines
+            .iter()
+            .find(|machine| machine.active.machine_id == machine_id("edge_2"))
+        else {
+            panic!("silent intended edge was omitted: {silent_status:?}");
+        };
+        assert!(matches!(
+            silent_edge.dataplane,
+            NetworkDataplaneTestimony::NoAnswer
+        ));
+        assert!(matches!(
+            silent_edge.internal_dns,
+            NetworkInternalDnsTestimony::NoAnswer
+        ));
+
+        let restarted = exec_in_container(
+            &docker,
+            &edge.container_id,
+            &["systemctl", "start", "ployzd-machine-edge_2", "ployzd-dns"],
+        )
+        .await;
+        assert!(
+            matches!(&restarted, Ok(outcome) if outcome.success()),
+            "restarting edge testimony failed: {restarted:?}"
+        );
+        assert_unit_active(&core, edge, "ployzd-machine-edge_2").await;
+        assert_unit_active(&core, edge, "ployzd-dns").await;
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let status = core
+                .api
+                .network_status(&NetworkStatusRequest { probe: false })
+                .await
+                .expect("network status after restart");
+            if status.machines.iter().all(|machine| {
+                matches!(
+                    machine.dataplane,
+                    NetworkDataplaneTestimony::Answered { .. }
+                ) && matches!(
+                    machine.internal_dns,
+                    NetworkInternalDnsTestimony::Answered { .. }
+                )
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "edge testimony did not recover: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        let repair_id = operation_id("op_dind_network_repair");
+        core.api
+            .network_repair(&NetworkRepairRequest {
+                operation_id: repair_id.clone(),
+                machine_id: None,
+            })
+            .await
+            .expect("network repair submits");
+        let repaired =
+            wait_for_terminal_status(&core.api, &repair_id, DEPLOY_TERMINAL_BUDGET).await;
+        assert!(
+            matches!(
+                repaired,
+                OperationStatus::NetworkRepair {
+                    state: NetworkRepairOperationState::Completed,
+                    ..
+                }
+            ),
+            "network repair did not complete: {repaired:?}"
         );
     })
     .await;

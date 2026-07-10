@@ -28,7 +28,7 @@ use crate::roles::machine::protocol::{
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
 };
 
-const MAX_CONCURRENT_DNS_READS: usize = 16;
+const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
 #[derive(Clone)]
 pub struct NetworkQueryService {
@@ -123,7 +123,7 @@ async fn gather_network_status(
                 internal_dns,
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_DNS_READS);
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
     let mut gathered = reads.collect::<Vec<_>>().await;
     gathered.sort_by(|left, right| left.active.machine_id.cmp(&right.active.machine_id));
     gathered
@@ -162,7 +162,7 @@ async fn gather_dns_answers(
             .await;
             dns_resolve_testimony(machine_id, name, response)
         })
-        .buffer_unordered(MAX_CONCURRENT_DNS_READS);
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
 
     let mut gathered = answers.collect::<Vec<_>>().await;
     gathered.sort_by(|left, right| testimony_machine_id(left).cmp(testimony_machine_id(right)));
@@ -267,7 +267,24 @@ fn dns_resolve_error_testimony(
                 message,
             }
         }
-        error => NetworkResolveMachineTestimony::RequestFailed {
+        error @ NatsJsonServiceRequestError::EncodeRequest { .. }
+        | error @ NatsJsonServiceRequestError::Request {
+            failure:
+                NatsServiceRequestFailure::InvalidSubject
+                | NatsServiceRequestFailure::MaxPayloadExceeded
+                | NatsServiceRequestFailure::Other { .. },
+        }
+        | error @ NatsJsonServiceRequestError::Service {
+            failure:
+                ployz_nats::service_protocol::NatsServiceError {
+                    code:
+                        NatsServiceErrorCode::BadRequest
+                        | NatsServiceErrorCode::Conflict
+                        | NatsServiceErrorCode::Unavailable
+                        | NatsServiceErrorCode::Internal,
+                    ..
+                },
+        } => NetworkResolveMachineTestimony::RequestFailed {
             machine_id,
             message: error.to_string(),
         },

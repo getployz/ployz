@@ -184,10 +184,7 @@ impl NetworkRepairOperation {
         {
             return;
         }
-        let watermarks = match self
-            .refresh_machine_facts(&machine_ids)
-            .await
-        {
+        let watermarks = match self.refresh_machine_facts(&machine_ids).await {
             Ok(watermarks) => watermarks,
             Err(failure) => {
                 self.record_terminal(&operation_id, NetworkRepairTransition::Failed { failure })
@@ -290,11 +287,7 @@ impl NetworkRepairOperation {
         machine_ids: &[MachineId],
     ) -> Result<Vec<InternalDnsFactWatermark>, NetworkRepairFailure> {
         let outcomes = join_all(machine_ids.iter().map(|machine_id| async move {
-            match self
-                .facts_reader
-                .refresh_machine_facts(machine_id)
-                .await
-            {
+            match self.facts_reader.refresh_machine_facts(machine_id).await {
                 Ok(observed_at_unix_ms) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
                     machine_id: machine_id.clone(),
                     observed_at_unix_ms,

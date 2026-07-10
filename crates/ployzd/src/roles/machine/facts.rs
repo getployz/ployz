@@ -39,11 +39,9 @@ pub(crate) async fn handle_facts_refresh<R>(
 where
     R: MachineContainerRunner,
 {
-    let MachineFactsRefreshRpcRequest { operation_id } =
-        match decode_json_request::<MachineFactsRefreshRpcRequest>(&request) {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
+    if let Err(response) = decode_json_request::<MachineFactsRefreshRpcRequest>(&request) {
+        return response;
+    }
     let refreshed = tokio::time::timeout(
         MACHINE_FACTS_REFRESH_TIMEOUT,
         publish_machine_facts(
@@ -64,15 +62,14 @@ where
         Ok(Err(error)) => machine_domain_error(MachineFactsRefreshRpcResponse::DomainError {
             machine_id,
             error: MachineFactsRefreshDomainError::RefreshFailed {
-                message: failure_message(format!("operation {}: {error}", operation_id.as_str())),
+                message: failure_message(error.to_string()),
             },
         }),
         Err(_) => machine_domain_error(MachineFactsRefreshRpcResponse::DomainError {
             machine_id,
             error: MachineFactsRefreshDomainError::RefreshFailed {
                 message: failure_message(format!(
-                    "operation {}: machine facts refresh timed out after {}s",
-                    operation_id.as_str(),
+                    "machine facts refresh timed out after {}s",
                     MACHINE_FACTS_REFRESH_TIMEOUT.as_secs()
                 )),
             },
