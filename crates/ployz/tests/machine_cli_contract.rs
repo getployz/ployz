@@ -18,7 +18,7 @@ use ployz_core::install::{
     MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
@@ -647,38 +647,22 @@ fn machine_init_rejects_unknown_public_url_mode() {
 }
 
 #[test]
-fn machine_init_role_opt_outs_skip_only_the_requested_roles() {
+fn machine_init_gateway_opt_out_keeps_dns_required() {
     let PloyzctlCommand::MachineInit(command) =
         parse(&["machine", "init", "root@203.0.113.10", "--no-gateway"])
     else {
         panic!("expected machine init command");
     };
     assert_eq!(command.roles.gateway, GatewayRole::Skip);
-    assert_eq!(command.roles.dns, DnsRole::Install);
+}
 
-    let PloyzctlCommand::MachineInit(command) =
-        parse(&["machine", "init", "root@203.0.113.10", "--no-dns"])
-    else {
-        panic!("expected machine init command");
-    };
-    assert_eq!(command.roles.gateway, GatewayRole::Install);
-    assert_eq!(command.roles.dns, DnsRole::Skip);
+#[test]
+fn machine_init_rejects_dns_opt_out() {
+    let error =
+        parse_command(["machine", "init", "root@203.0.113.10", "--no-dns"].map(str::to_owned))
+            .expect_err("DNS is required on every workload-eligible machine");
 
-    let PloyzctlCommand::MachineInit(command) = parse(&[
-        "machine",
-        "init",
-        "root@203.0.113.10",
-        "--no-gateway",
-        "--no-dns",
-    ]) else {
-        panic!("expected machine init command");
-    };
-    assert_eq!(
-        command.roles,
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns()
-    );
+    assert!(error.to_string().contains("unexpected argument '--no-dns'"));
 }
 
 #[test]
@@ -833,39 +817,12 @@ fn machine_add_remote_accepts_name_and_gateway_opt_out() {
 }
 
 #[test]
-fn machine_add_accepts_dns_and_combined_role_opt_outs() {
-    let PloyzctlCommand::MachineAddRemote(command) =
-        parse(&["machine", "add", "root@203.0.113.11", "--no-dns"])
-    else {
-        panic!("expected remote machine add command");
-    };
-    assert_eq!(
-        command.roles,
-        InstallRolePolicy::install_all().without_dns()
-    );
+fn machine_add_rejects_dns_opt_out() {
+    let error =
+        parse_command(["machine", "add", "root@203.0.113.11", "--no-dns"].map(str::to_owned))
+            .expect_err("DNS is required on every workload-eligible machine");
 
-    let PloyzctlCommand::MachineAdd(command) = parse(&[
-        "internal",
-        "machine-add",
-        "--machine",
-        "edge_2",
-        "--name",
-        "edge_2",
-        "--operation",
-        "op_machine",
-        "--idempotency-key",
-        "idem_machine",
-        "--no-gateway",
-        "--no-dns",
-    ]) else {
-        panic!("expected explicit machine add command");
-    };
-    assert_eq!(
-        command.roles,
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns()
-    );
+    assert!(error.to_string().contains("unexpected argument '--no-dns'"));
 }
 
 #[test]
@@ -971,9 +928,7 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         release: BootstrapRelease::Version("v0.0.1-alpha.1".to_owned()),
         release_manifest_url: Some("file:///tmp/manifest.env".to_owned()),
         machine_id: machine_id("sg-core-1"),
-        roles: InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns(),
+        roles: InstallRolePolicy::install_all().without_gateway(),
         bootstrap_url: MachineBootstrapUrl::try_new("https://ployz.sh")
             .expect("valid bootstrap url"),
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
@@ -990,7 +945,6 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         "PLOYZ_RELEASE_MANIFEST_URL='file:///tmp/manifest.env'",
         "PLOYZ_MACHINE_ID='sg-core-1'",
         "PLOYZ_GATEWAY='skip'",
-        "PLOYZ_DNS='skip'",
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
@@ -1002,6 +956,7 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         );
     }
     assert!(!rendered.contains("PLOYZ_MACHINE_PUBLIC_IP="));
+    assert!(!rendered.contains("PLOYZ_DNS="));
     assert!(!rendered.contains("first-machine-spec"));
 }
 

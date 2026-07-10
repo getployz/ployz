@@ -367,7 +367,7 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     machine_id: machineId(input.machineId),
     name: machineName(input.name),
-    roles: input.roles,
+    roles: { gateway: input.roles.gateway },
   };
 }
 
@@ -384,7 +384,7 @@ export function initFirstMachineActivateRequest(
 ): InitFirstMachineActivateRequest {
   return {
     machine_id: machineId(input.machineId),
-    roles: input.roles,
+    roles: { gateway: input.roles.gateway },
     public_url_mode: input.publicUrlMode ?? "auto",
   };
 }

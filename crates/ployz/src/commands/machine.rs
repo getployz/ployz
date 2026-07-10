@@ -101,8 +101,7 @@ pub struct MachineInitCommand {
     /// `--name` override, validated at parse time (R6). `None` derives the
     /// identity from the remote hostname at runtime.
     pub identity_override: Option<MachineIdentity>,
-    /// Gateway and DNS default to install (R8); `--no-gateway`/`--no-dns`
-    /// are the explicit opt-outs.
+    /// DNS is required; `--no-gateway` is the explicit optional-role opt-out.
     pub roles: InstallRolePolicy,
     /// Release selection used by bootstrap delivery. Defaults to the alpha
     /// channel; exact versions are explicit.

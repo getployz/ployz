@@ -7,11 +7,11 @@ use ployz_core::install::{
     NatsServerInstallSpec,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 
 #[test]
 fn first_machine_install_spec_wire_shape_is_grouped_json() {
-    let mut install = first_machine_install_spec(GatewayRole::Install, DnsRole::Install);
+    let mut install = first_machine_install_spec(GatewayRole::Install);
     install.machine_bootstrap_url = Some(
         MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
     );
@@ -29,7 +29,6 @@ fn first_machine_install_spec_wire_shape_is_grouped_json() {
             "machine_id": "machine_1",
             "dataplane_endpoint_supernet": "10.198.0.0/16",
             "gateway": "install",
-            "dns": "install",
             "machine_public_ip": "203.0.113.10",
             "machine_bootstrap_url": "https://example.test/ployz.sh",
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
@@ -71,7 +70,6 @@ fn first_machine_install_spec_parses_from_grouped_json() {
     let spec = serde_json::from_value::<FirstMachineInstallSpec>(serde_json::json!({
         "machine_id": "machine_1",
         "gateway": "skip",
-        "dns": "install",
         "machine_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
@@ -107,10 +105,7 @@ fn first_machine_install_spec_parses_from_grouped_json() {
     }))
     .expect("spec parses");
 
-    assert_eq!(
-        spec,
-        first_machine_install_spec(GatewayRole::Skip, DnsRole::Install)
-    );
+    assert_eq!(spec, first_machine_install_spec(GatewayRole::Skip));
     assert_eq!(
         spec.role_policy(),
         InstallRolePolicy::install_all().without_gateway()
@@ -118,18 +113,25 @@ fn first_machine_install_spec_parses_from_grouped_json() {
 }
 
 #[test]
-fn first_machine_install_spec_parses_explicit_dns_opt_out() {
-    let with_dns_skip = serde_json::to_value(first_machine_install_spec(
-        GatewayRole::Install,
-        DnsRole::Skip,
-    ))
-    .expect("spec serializes");
-    let spec =
-        serde_json::from_value::<FirstMachineInstallSpec>(with_dns_skip).expect("spec parses back");
+fn first_machine_install_spec_rejects_explicit_dns_opt_out() {
+    let mut with_dns_skip = serde_json::to_value(first_machine_install_spec(GatewayRole::Install))
+        .expect("spec serializes");
+    with_dns_skip
+        .as_object_mut()
+        .expect("spec is an object")
+        .insert("dns".to_owned(), serde_json::json!("skip"));
 
-    assert_eq!(
-        spec.role_policy(),
-        InstallRolePolicy::install_all().without_dns()
+    assert!(serde_json::from_value::<FirstMachineInstallSpec>(with_dns_skip).is_err());
+}
+
+#[test]
+fn install_role_policy_rejects_dns_choice() {
+    assert!(
+        serde_json::from_value::<InstallRolePolicy>(serde_json::json!({
+            "gateway": "install",
+            "dns": "skip"
+        }))
+        .is_err()
     );
 }
 
@@ -251,12 +253,11 @@ fn machine_join_bundle_debug_redacts_secrets() {
     assert!(!rendered.contains("SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"));
 }
 
-fn first_machine_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstMachineInstallSpec {
+fn first_machine_install_spec(gateway: GatewayRole) -> FirstMachineInstallSpec {
     FirstMachineInstallSpec {
         machine_id: MachineId::try_new("machine_1").expect("valid machine id"),
         dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway,
-        dns,
         machine_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,

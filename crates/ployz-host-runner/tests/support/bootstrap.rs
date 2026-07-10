@@ -252,9 +252,7 @@ pub fn first_machine_plan() -> ployz_host_runner::steps::HostRunnerStepPlan {
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns(),
+        InstallRolePolicy::install_all().without_gateway(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),

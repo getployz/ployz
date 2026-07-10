@@ -22,9 +22,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns(),
+        InstallRolePolicy::install_all().without_gateway(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -105,9 +103,7 @@ fn first_machine_can_authorize_cloud_user_public_key() {
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns(),
+        InstallRolePolicy::install_all().without_gateway(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -206,9 +202,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns(),
+        InstallRolePolicy::install_all().without_gateway(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -315,29 +309,6 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
         .expect("first-machine plan writes the control environment");
 
     assert!(rendered.contains("PLOYZ_DATAPLANE_ENDPOINT_SUPERNET=10.77.0.0/16\n"));
-}
-
-#[test]
-fn first_machine_dns_opt_out_skips_only_the_dns_role() {
-    let plan = first_machine_install_plan(FirstMachineInstallTarget::new(
-        machine_id("machine_1"),
-        ployzd_artifact(),
-        dataplane_artifacts(),
-        nats_server_artifact(),
-        InstallRolePolicy::install_all().without_dns(),
-        test_identity().clone(),
-        WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
-        WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
-    ));
-
-    assert!(plan_writes_unit(
-        &plan,
-        &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
-    ));
-    assert!(!plan_writes_unit(
-        &plan,
-        &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
-    ));
 }
 
 #[test]
