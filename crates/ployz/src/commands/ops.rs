@@ -1,5 +1,5 @@
 use clap::Args;
-use ployz_core::ids::{OperationId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, ServiceId};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
     CertOperationState, CertRunningStage, ControlPlaneCommitScope, DeployOperationFailure,
@@ -693,18 +693,28 @@ fn render_deploy_failure_detail(
     format!(
         "class {} service {} {} {}",
         failure.failure_class().as_str(),
-        deploy_failure_service(failure, service_id),
-        deploy_failure_machines(failure),
+        deploy_status_failure_service(failure, service_id),
+        render_deploy_failure_machines(&deploy_failure_machines(failure)),
         deploy_failure_evidence(failure),
     )
 }
 
-fn deploy_failure_service(
+fn deploy_status_failure_service(
     failure: &DeployOperationFailure,
     service_id: Option<&ServiceId>,
 ) -> String {
     service_id
         .or_else(|| deploy_failure_service_id(failure))
+        .map(|service_id| service_id.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+pub(crate) fn deploy_failure_service(
+    failure: &DeployOperationFailure,
+    service_id: Option<&ServiceId>,
+) -> String {
+    deploy_failure_service_id(failure)
+        .or(service_id)
         .map(|service_id| service_id.as_str().to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
 }
@@ -729,7 +739,7 @@ fn deploy_failure_service_id(failure: &DeployOperationFailure) -> Option<&Servic
     }
 }
 
-fn deploy_failure_machines(failure: &DeployOperationFailure) -> String {
+pub(crate) fn deploy_failure_machines(failure: &DeployOperationFailure) -> Vec<&MachineId> {
     let mut machines = Vec::new();
     match failure {
         DeployOperationFailure::NoUsableMachines { reasons } => {
@@ -792,7 +802,11 @@ fn deploy_failure_machines(failure: &DeployOperationFailure) -> String {
         }
     }
 
-    match machines.as_slice() {
+    machines
+}
+
+fn render_deploy_failure_machines(machines: &[&MachineId]) -> String {
+    match machines {
         [] => "machine unknown".to_owned(),
         [machine_id] => format!("machine {}", machine_id.as_str()),
         many => format!(
@@ -805,39 +819,68 @@ fn deploy_failure_machines(failure: &DeployOperationFailure) -> String {
     }
 }
 
-fn deploy_failure_evidence(failure: &DeployOperationFailure) -> String {
-    let mut container_ids = Vec::new();
-    let mut log_commands = Vec::new();
-    if let DeployOperationFailure::ContainerStartFailed { container_id, .. } = failure {
-        container_ids.push(container_id);
-        log_commands.push(format!("ployzctl logs {}", container_id.as_str()));
+pub(crate) struct DeployFailureContainerEvidence<'a> {
+    pub machine_id: &'a MachineId,
+    pub container_id: &'a ContainerId,
+    pub log_command: String,
+}
+
+pub(crate) fn deploy_failure_containers(
+    failure: &DeployOperationFailure,
+) -> Vec<DeployFailureContainerEvidence<'_>> {
+    let mut containers = Vec::new();
+    if let DeployOperationFailure::ContainerStartFailed {
+        machine_id,
+        container_id,
+        ..
+    } = failure
+    {
+        containers.push(DeployFailureContainerEvidence {
+            machine_id,
+            container_id,
+            log_command: format!("ployzctl logs {}", container_id.as_str()),
+        });
     }
 
     for artifact in failure.retained_artifacts() {
         match artifact {
-            RetainedArtifact::CreatedContainer { container_id, .. }
-            | RetainedArtifact::ContainerStopFailed { container_id, .. } => {
-                if !container_ids.contains(&container_id) {
-                    container_ids.push(container_id);
-                }
-                let command = format!("ployzctl logs {}", container_id.as_str());
-                if !log_commands.contains(&command) {
-                    log_commands.push(command);
-                }
+            RetainedArtifact::CreatedContainer {
+                machine_id,
+                container_id,
+                ..
             }
+            | RetainedArtifact::ContainerStopFailed {
+                machine_id,
+                container_id,
+                ..
+            } => containers.push(DeployFailureContainerEvidence {
+                machine_id,
+                container_id,
+                log_command: format!("ployzctl logs {}", container_id.as_str()),
+            }),
             RetainedArtifact::StartedContainer {
+                machine_id,
                 container_id,
                 log_hint,
-                ..
-            } => {
-                if !container_ids.contains(&container_id) {
-                    container_ids.push(container_id);
-                }
-                let command = log_hint.as_str().to_owned();
-                if !log_commands.contains(&command) {
-                    log_commands.push(command);
-                }
-            }
+            } => containers.push(DeployFailureContainerEvidence {
+                machine_id,
+                container_id,
+                log_command: log_hint.as_str().to_owned(),
+            }),
+        }
+    }
+    containers
+}
+
+fn deploy_failure_evidence(failure: &DeployOperationFailure) -> String {
+    let mut container_ids = Vec::new();
+    let mut log_commands = Vec::new();
+    for container in deploy_failure_containers(failure) {
+        if !container_ids.contains(&container.container_id) {
+            container_ids.push(container.container_id);
+        }
+        if !log_commands.contains(&container.log_command) {
+            log_commands.push(container.log_command);
         }
     }
 

@@ -32,6 +32,8 @@ use ployz_nats::connect::{
 use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
+mod deploy_follow;
+
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
@@ -231,7 +233,7 @@ pub async fn execute_command(
                     stderr: String::new(),
                 });
             }
-            watch_accepted_operation(&api, accepted.operation_id, config).await
+            deploy_follow::watch_deploy_operation(&api, accepted.operation_id, config).await
         }
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
@@ -486,14 +488,7 @@ async fn watch_accepted_operation(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let events = watch_operation_until_terminal(
         api,
-        OperationEventReplayRequest {
-            operation_id,
-            start_sequence: EventSequence::first(),
-            limit: ployz_core::ops::OperationEventReplayLimit::try_new(
-                ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
-            )
-            .expect("max replay limit is valid"),
-        },
+        operation_replay_request(operation_id),
         config.ops_watch_timeout(),
         config.ops_watch_poll_interval(),
     )
@@ -535,9 +530,19 @@ where
 
 pub(crate) async fn watch_operation_until_terminal(
     api: &OperationApiClient,
+    request: OperationEventReplayRequest,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+    watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
+}
+
+async fn watch_operation_until_terminal_with(
+    api: &OperationApiClient,
     mut request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
+    mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), PloyzctlExecutionError>,
 ) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
     let operation_id = request.operation_id.clone();
     let started_at = Instant::now();
@@ -547,6 +552,7 @@ pub(crate) async fn watch_operation_until_terminal(
         let page = api.ops_watch(&request).await.map_err(api_error)?;
 
         let cursor = page.cursor;
+        observe_page(&page.events)?;
         if let Some(last_event) = page.events.last()
             && let Some(next_sequence) = next_event_sequence(last_event.sequence)
         {
@@ -584,6 +590,17 @@ pub(crate) async fn watch_operation_until_terminal(
         }
 
         async_sleep(poll_interval).await;
+    }
+}
+
+fn operation_replay_request(operation_id: OperationId) -> OperationEventReplayRequest {
+    OperationEventReplayRequest {
+        operation_id,
+        start_sequence: EventSequence::first(),
+        limit: ployz_core::ops::OperationEventReplayLimit::try_new(
+            ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
+        )
+        .expect("max replay limit is valid"),
     }
 }
 
@@ -787,6 +804,8 @@ pub enum PloyzctlExecutionError {
         operation_id: OperationId,
         timeout: Duration,
     },
+    #[error("failed to write deploy progress: {message}")]
+    WriteDeployProgress { message: String },
 }
 
 impl PloyzctlExecutionError {
