@@ -709,7 +709,10 @@ mod tests {
             })
         }
 
-        async fn probe_overlay(&self, _targets: &[std::net::Ipv4Addr]) -> Vec<std::net::Ipv4Addr> {
+        async fn probe_overlay(
+            &self,
+            _peers: &[ployz_core::dataplane::WireGuardPublicKey],
+        ) -> Vec<ployz_core::dataplane::WireGuardPublicKey> {
             Vec::new()
         }
     }

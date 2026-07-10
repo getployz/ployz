@@ -1,6 +1,5 @@
 //! Host WireGuard/eBPF readiness for machine-local dataplane preparation.
 
-use futures_util::future::join_all;
 use ployz_core::dataplane::{
     DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
     PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
@@ -8,7 +7,6 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -267,39 +265,41 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
         })
     }
 
-    async fn probe_overlay(&self, targets: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
-        let reached = targets
-            .iter()
-            .map(|_| Arc::new(AtomicBool::new(false)))
-            .collect::<Vec<_>>();
-        let probes = targets
-            .iter()
-            .copied()
-            .zip(&reached)
-            .map(|(target, reached)| {
-                let reached = Arc::clone(reached);
-                async move {
-                    loop {
-                        let mut ping = tokio::process::Command::new("ping");
-                        ping.kill_on_drop(true);
-                        ping.args(["-c1", "-W1"]).arg(target.to_string());
-                        if matches!(
-                            tokio::time::timeout(self.command_timeout, ping.status()).await,
-                            Ok(Ok(status)) if status.success()
-                        ) {
-                            reached.store(true, Ordering::Release);
-                            return;
-                        }
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
+    /// Overlay reachability is proven by the WireGuard handshake: after the
+    /// mesh is prepared, `persistent-keepalive` drives a handshake with every
+    /// reachable peer within seconds, needing no endpoint bridge (that is only
+    /// created at deploy). A peer whose public key never records a non-zero
+    /// latest handshake within the shared budget is unreachable (NAT-to-NAT).
+    async fn probe_overlay(&self, peers: &[WireGuardPublicKey]) -> Vec<WireGuardPublicKey> {
+        if peers.is_empty() {
+            return Vec::new();
+        }
+        let wait = async {
+            loop {
+                if let Some(handshakes) = read_latest_handshakes(&self.wg_ifname).await
+                    && peers.iter().all(|peer| {
+                        handshakes
+                            .get(peer.as_str())
+                            .is_some_and(|&handshake| handshake != 0)
+                    })
+                {
+                    return;
                 }
-            });
-        let _ = tokio::time::timeout(OVERLAY_CONNECTIVITY_PROOF_BUDGET, join_all(probes)).await;
-        targets
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+        let _ = tokio::time::timeout(OVERLAY_CONNECTIVITY_PROOF_BUDGET, wait).await;
+        let Some(handshakes) = read_latest_handshakes(&self.wg_ifname).await else {
+            return peers.to_vec();
+        };
+        peers
             .iter()
-            .copied()
-            .zip(reached)
-            .filter_map(|(target, reached)| (!reached.load(Ordering::Acquire)).then_some(target))
+            .filter(|peer| {
+                handshakes
+                    .get(peer.as_str())
+                    .is_none_or(|&handshake| handshake == 0)
+            })
+            .cloned()
             .collect()
     }
 }

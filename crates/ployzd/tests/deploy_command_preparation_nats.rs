@@ -528,8 +528,11 @@ impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
         )
     }
 
-    async fn probe_overlay(&self, targets: &[std::net::Ipv4Addr]) -> Vec<std::net::Ipv4Addr> {
-        targets.to_vec()
+    async fn probe_overlay(
+        &self,
+        peers: &[ployz_core::dataplane::WireGuardPublicKey],
+    ) -> Vec<ployz_core::dataplane::WireGuardPublicKey> {
+        peers.to_vec()
     }
 }
 

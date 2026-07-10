@@ -401,7 +401,7 @@ pub enum MachinePloyzNativeMeshPrepareRpcRequest {
         peers: Vec<WireGuardPeer>,
     },
     ProbeOverlay {
-        targets: Vec<std::net::Ipv4Addr>,
+        public_keys: Vec<WireGuardPublicKey>,
     },
 }
 
@@ -442,7 +442,7 @@ pub enum MachinePloyzNativeMeshPrepareRpcOk {
     },
     OverlayProbe {
         machine_id: MachineId,
-        unreachable: Vec<std::net::Ipv4Addr>,
+        unreachable: Vec<WireGuardPublicKey>,
     },
 }
 

@@ -3,7 +3,7 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
+use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest, WireGuardPublicKey};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
     ConnectivityProofEvidence, ConnectivityProofEvidenceError, ConnectivityProofUnreachablePeer,
@@ -104,25 +104,36 @@ async fn prove_overlay_connectivity(
     let prepare_request = DataplanePrepareRequest::for_members(operation_id.clone(), members);
     let mut preparer = NatsMachineDataplanePreparer::new(handlers.intent_change_client.clone())
         .with_request_timeout(CONNECTIVITY_PROOF_PREPARE_REQUEST_TIMEOUT);
-    preparer
+    let report = preparer
         .prepare_dataplane(prepare_request)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: format!("dataplane prepare failed: {error:?}"),
         })?;
 
-    let peers = existing_machines
-        .into_iter()
-        .map(|machine| {
-            (
-                machine.machine_id,
-                machine.endpoint_subnet.bridge_gateway_ipv4(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let targets = peers.iter().map(|(_, gateway)| *gateway).collect();
+    // Each existing peer's WireGuard public key (reported by the prepare) is the
+    // probe subject; its bridge gateway is retained only for operator-facing
+    // evidence, not for reachability, which is decided by the handshake.
+    let mut peers = Vec::with_capacity(existing_machines.len());
+    for machine in &existing_machines {
+        let Some(ready) = report
+            .machines
+            .iter()
+            .find(|ready| ready.machine_id == machine.machine_id)
+        else {
+            return Err(MachineJoinReportError::Unavailable {
+                message: corrupt("dataplane prepare report is missing an active machine"),
+            });
+        };
+        peers.push((
+            machine.machine_id.clone(),
+            ready.ready.wireguard.public_key.clone(),
+            machine.endpoint_subnet.bridge_gateway_ipv4(),
+        ));
+    }
+    let public_keys = peers.iter().map(|(_, key, _)| key.clone()).collect();
     let unreachable = preparer
-        .probe_overlay(operation_id, &joining_machine_id, machine_ids, targets)
+        .probe_overlay(operation_id, &joining_machine_id, machine_ids, public_keys)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: format!("overlay connectivity probe failed: {error:?}"),
@@ -131,16 +142,18 @@ async fn prove_overlay_connectivity(
 }
 
 fn connectivity_proof_evidence(
-    peers: &[(MachineId, Ipv4Addr)],
-    unreachable: &[Ipv4Addr],
+    peers: &[(MachineId, WireGuardPublicKey, Ipv4Addr)],
+    unreachable: &[WireGuardPublicKey],
 ) -> Option<ConnectivityProofEvidence> {
     let unreachable_peers = peers
         .iter()
-        .filter(|(_, gateway)| unreachable.contains(gateway))
-        .map(|(machine_id, gateway)| ConnectivityProofUnreachablePeer {
-            machine_id: machine_id.clone(),
-            gateway: *gateway,
-        })
+        .filter(|(_, key, _)| unreachable.contains(key))
+        .map(
+            |(machine_id, _, gateway)| ConnectivityProofUnreachablePeer {
+                machine_id: machine_id.clone(),
+                gateway: *gateway,
+            },
+        )
         .collect::<Vec<_>>();
     if unreachable_peers.is_empty() {
         return None;
@@ -159,10 +172,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_empty_probe_result_becomes_connectivity_evidence() {
+    fn unreachable_public_key_becomes_connectivity_evidence() {
         let gateway = "10.198.1.1".parse().expect("valid gateway");
+        let key = public_key("core-1-public-key");
 
-        let evidence = connectivity_proof_evidence(&[(machine_id("core_1"), gateway)], &[gateway]);
+        let evidence =
+            connectivity_proof_evidence(&[(machine_id("core_1"), key.clone(), gateway)], &[key]);
 
         assert_eq!(
             evidence,
@@ -176,7 +191,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reachable_public_key_yields_no_evidence() {
+        let gateway = "10.198.1.1".parse().expect("valid gateway");
+        let key = public_key("core-1-public-key");
+
+        assert_eq!(
+            connectivity_proof_evidence(&[(machine_id("core_1"), key, gateway)], &[]),
+            None
+        );
+    }
+
     fn machine_id(value: &str) -> MachineId {
         MachineId::try_new(value).expect("valid machine id")
+    }
+
+    fn public_key(value: &str) -> WireGuardPublicKey {
+        WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
     }
 }

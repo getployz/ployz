@@ -18,7 +18,6 @@ use ployz_core::dataplane::{
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 const OVERLAY_CONNECTIVITY_PROBE_RPC_TIMEOUT: Duration =
@@ -47,13 +46,13 @@ impl NatsMachineDataplanePreparer {
         operation_id: ployz_core::ids::OperationId,
         machine_id: &MachineId,
         machines: Vec<MachineId>,
-        targets: Vec<Ipv4Addr>,
-    ) -> Result<Vec<Ipv4Addr>, WireGuardEbpfPrepareError> {
+        public_keys: Vec<WireGuardPublicKey>,
+    ) -> Result<Vec<WireGuardPublicKey>, WireGuardEbpfPrepareError> {
         let request = MachineDataplanePrepareRpcRequest::ployz_native_mesh(
             operation_id,
             machines,
             MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay {
-                targets: targets.clone(),
+                public_keys: public_keys.clone(),
             },
         );
         let response = request_machine_dataplane_with_timeout(
@@ -65,11 +64,11 @@ impl NatsMachineDataplanePreparer {
         .await?;
         match response {
             MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { unreachable, .. } => {
-                if unreachable.iter().all(|target| targets.contains(target)) {
+                if unreachable.iter().all(|key| public_keys.contains(key)) {
                     Ok(unreachable)
                 } else {
                     Err(invalid_ployz_native_mesh_report(format!(
-                        "machine {} returned an overlay probe target that was not requested",
+                        "machine {} returned an overlay probe peer that was not requested",
                         machine_id.as_str()
                     )))
                 }

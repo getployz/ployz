@@ -76,19 +76,19 @@ async fn nats_machine_preparer_returns_unreachable_overlay_targets() {
         })
         .await;
     let preparer = NatsMachineDataplanePreparer::new(nats.client);
-    let target = Ipv4Addr::new(10, 198, 1, 1);
+    let peer = wireguard_public_key("peer-public-key");
 
     let unreachable = preparer
         .probe_overlay(
             operation_id("op_123"),
             &machine_id("machine_a"),
             vec![machine_id("machine_a")],
-            vec![target],
+            vec![peer.clone()],
         )
         .await
         .expect("overlay probe succeeds");
 
-    assert_eq!(unreachable, vec![target]);
+    assert_eq!(unreachable, vec![peer.clone()]);
     assert_eq!(
         received
             .lock()
@@ -97,7 +97,7 @@ async fn nats_machine_preparer_returns_unreachable_overlay_targets() {
         [native_mesh_rpc_request(
             &["machine_a"],
             MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay {
-                targets: vec![target],
+                public_keys: vec![peer],
             },
         )]
     );
@@ -499,12 +499,12 @@ fn wireguard_ebpf_prepare_ok_response(
                 }),
             ))
         }
-        MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay { targets } => {
+        MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay { public_keys } => {
             NatsServiceResponse::ok(encode_wireguard_ebpf_response(
                 MachineDataplanePrepareRpcResponse::Ok(
                     MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe {
                         machine_id,
-                        unreachable: targets,
+                        unreachable: public_keys,
                     },
                 ),
             ))

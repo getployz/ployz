@@ -202,8 +202,8 @@ pub trait MachinePloyzNativeMeshPreparer {
 
     fn probe_overlay(
         &self,
-        targets: &[std::net::Ipv4Addr],
-    ) -> impl Future<Output = Vec<std::net::Ipv4Addr>> + Send;
+        peers: &[WireGuardPublicKey],
+    ) -> impl Future<Output = Vec<WireGuardPublicKey>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

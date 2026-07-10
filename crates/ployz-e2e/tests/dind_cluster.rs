@@ -567,15 +567,26 @@ async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
             "unreachable edge join unexpectedly succeeded: {join:?}"
         );
 
-        let status = operation_status(&core, &operation_id).await;
-        let OperationStatus::MachineAdd { state, .. } = status else {
-            panic!("machine add is not a machine add: {status:?}");
-        };
-        let MachineAddOperationState::Failed {
-            failure: MachineAddFailure::ConnectivityProofFailed { evidence },
-        } = state
-        else {
-            panic!("unreachable machine add did not fail connectivity proof: {state:?}");
+        // The proof waits the full handshake budget before the join reports its
+        // failure, so poll the operation until it records the terminal
+        // connectivity-proof failure rather than reading once.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let evidence = loop {
+            let status = operation_status(&core, &operation_id).await;
+            let OperationStatus::MachineAdd { state, .. } = status else {
+                panic!("machine add is not a machine add: {status:?}");
+            };
+            if let MachineAddOperationState::Failed {
+                failure: MachineAddFailure::ConnectivityProofFailed { evidence },
+            } = &state
+            {
+                break evidence.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "unreachable machine add did not fail connectivity proof: {state:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
         };
         let core_member = DataplaneMember::default_for_machine(machine_id("core_1"));
         assert_eq!(
