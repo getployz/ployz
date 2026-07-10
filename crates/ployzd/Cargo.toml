@@ -34,11 +34,13 @@ sysctl.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink.workspace = true
 
 [dev-dependencies]
+ployz-lease-worker = { path = "../ployz-lease-worker" }
 ployz-test-support.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 

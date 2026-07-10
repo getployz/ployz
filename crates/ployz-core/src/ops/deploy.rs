@@ -149,6 +149,11 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
+    AutoDnsWithoutLease {
+        service_id: ServiceId,
+        namespace_revision_id: NamespaceRevisionId,
+        message: FailureMessage,
+    },
     ArtifactUnavailable {
         service_id: ServiceId,
         namespace_revision_entry_id: NamespaceRevisionEntryId,
@@ -210,7 +215,9 @@ impl DeployOperationFailure {
                     DeployFailureClass::PreconditionRejected
                 }
             }
-            Self::PlanningFailed { .. } => DeployFailureClass::PreconditionRejected,
+            Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
+                DeployFailureClass::PreconditionRejected
+            }
             Self::ArtifactUnavailable { .. } => DeployFailureClass::ImageResolvePullFailed,
             Self::DataplaneUnavailable { .. } | Self::DataplanePrepareInvalidReport { .. } => {
                 DeployFailureClass::DataplanePrepareFailed
@@ -267,6 +274,7 @@ impl DeployOperationFailure {
             } => retained_artifacts,
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
+            | Self::AutoDnsWithoutLease { .. }
             | Self::ArtifactUnavailable { .. } => &[],
         }
     }
