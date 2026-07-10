@@ -332,7 +332,7 @@ pub(crate) fn parse_public_url_mode(value: &str) -> Result<PublicUrlMode, Ployzc
 fn reject_host_runner_mode_role_flags(roles: RolePolicyCli) -> Result<(), PloyzctlCliError> {
     if roles.has_explicit_flags() {
         return Err(PloyzctlCliError::InvalidValue {
-            flag: "--no-gateway/--no-dns",
+            flag: "--no-gateway",
             message:
                 "role opt-outs belong in the first-machine install spec for Host Runner install modes"
                     .to_owned(),
