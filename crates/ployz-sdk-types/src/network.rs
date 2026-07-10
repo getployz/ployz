@@ -10,15 +10,16 @@ use crate::core_types::{
 use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct NetworkStatusRequest {
-    pub mode: NetworkStatusMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub snapshot: Option<NetworkStatusIntentFingerprint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub cursor: Option<MachineId>,
+#[serde(tag = "page", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkStatusRequest {
+    First {
+        mode: NetworkStatusMode,
+    },
+    Continuation {
+        mode: NetworkStatusMode,
+        snapshot: NetworkStatusIntentFingerprint,
+        after: MachineId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -123,8 +124,6 @@ pub enum NetworkStatusError {
         requested: NetworkStatusIntentFingerprint,
         current: NetworkStatusIntentFingerprint,
     },
-    #[error("network status cursor {} requires a snapshot fingerprint", .cursor.as_str())]
-    MissingSnapshotForCursor { cursor: MachineId },
 }
 
 pub type NetworkStatusResponse = OperationApiResponse<NetworkStatusResult, NetworkStatusError>;

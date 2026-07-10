@@ -29,10 +29,8 @@ fn cli_parses_network_status_probe() {
 
     assert_eq!(
         command.into_request(),
-        ployz_sdk_types::NetworkStatusRequest {
+        ployz_sdk_types::NetworkStatusRequest::First {
             mode: ployz_sdk_types::NetworkStatusMode::ProbePathMtu,
-            snapshot: None,
-            cursor: None,
         }
     );
 }

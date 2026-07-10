@@ -86,17 +86,26 @@ impl NetworkQueryService {
                 .map_err(|error| NetworkStatusError::Unavailable {
                     message: error.to_string(),
                 })?;
-        let NetworkStatusRequest {
-            mode,
-            snapshot,
-            cursor,
-        } = request;
+        let (mode, continuation) = match request {
+            NetworkStatusRequest::First { mode } => (mode, None),
+            NetworkStatusRequest::Continuation {
+                mode,
+                snapshot,
+                after,
+            } => (mode, Some((snapshot, after))),
+        };
         let gather_timeout = match mode {
             NetworkStatusMode::Snapshot => DEFAULT_MACHINE_RPC_TIMEOUT,
             NetworkStatusMode::ProbePathMtu => NETWORK_PROBE_GATHER_TIMEOUT,
         };
         let (current, active_machines) = network_status_intent(intent.active_machines)?;
-        validate_network_status_page(snapshot.as_ref(), cursor.as_ref(), &current)?;
+        let cursor = match continuation {
+            Some((requested, after)) => {
+                validate_network_status_snapshot(&requested, &current)?;
+                Some(after)
+            }
+            None => None,
+        };
         let (page, next_cursor) = network_status_page(active_machines, cursor.as_ref());
         let machines = gather_network_status(&self.client, gather_timeout, mode, page).await;
         Ok(NetworkStatusResult {
@@ -145,21 +154,11 @@ fn network_status_intent(
     Ok((fingerprint, active_machines))
 }
 
-fn validate_network_status_page(
-    requested: Option<&NetworkStatusIntentFingerprint>,
-    cursor: Option<&MachineId>,
+fn validate_network_status_snapshot(
+    requested: &NetworkStatusIntentFingerprint,
     current: &NetworkStatusIntentFingerprint,
 ) -> Result<(), NetworkStatusError> {
-    if requested.is_none()
-        && let Some(cursor) = cursor
-    {
-        return Err(NetworkStatusError::MissingSnapshotForCursor {
-            cursor: cursor.clone(),
-        });
-    }
-    if let Some(requested) = requested
-        && requested != current
-    {
+    if requested != current {
         return Err(NetworkStatusError::SnapshotChanged {
             requested: requested.clone(),
             current: current.clone(),
@@ -445,7 +444,7 @@ mod tests {
     use super::{
         dataplane_testimony, dns_resolve_error_testimony, dns_resolve_testimony,
         dns_status_testimony, gather_dns_answers, gather_network_status, network_status_intent,
-        network_status_page, normalize_internal_name, validate_network_status_page,
+        network_status_page, normalize_internal_name, validate_network_status_snapshot,
     };
     use crate::fact_cache::FactCache;
     use crate::roles::dns::InternalResolverHealth;
@@ -536,32 +535,12 @@ mod tests {
         ])
         .expect("changed network status intent");
 
-        let error = validate_network_status_page(
-            Some(&requested),
-            Some(&machine_id("machine_a")),
-            &current,
-        )
-        .expect_err("changed intent must reject the continuation");
+        let error = validate_network_status_snapshot(&requested, &current)
+            .expect_err("changed intent must reject the continuation");
 
         assert_eq!(
             error,
             NetworkStatusError::SnapshotChanged { requested, current }
-        );
-    }
-
-    #[test]
-    fn cursor_without_intent_snapshot_is_rejected() {
-        let (current, _) =
-            network_status_intent(vec![active_machine("machine_a", "10.198.1.0/24")])
-                .expect("network status intent");
-        let cursor = machine_id("machine_a");
-
-        let error = validate_network_status_page(None, Some(&cursor), &current)
-            .expect_err("cursor without snapshot must be rejected");
-
-        assert_eq!(
-            error,
-            NetworkStatusError::MissingSnapshotForCursor { cursor }
         );
     }
 

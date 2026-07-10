@@ -4,9 +4,8 @@ use ployz_sdk_types::{
     EbpfAttachmentStatus, InternalDnsResolverStatus, NetworkDataplaneTestimony,
     NetworkInternalDnsTestimony, NetworkRepairRequest, NetworkResolveMachineTestimony,
     NetworkResolveRequest, NetworkResolveResult, NetworkStatusMachine, NetworkStatusMode,
-    NetworkStatusRequest, NetworkStatusResult, WireGuardConfiguredMtu, WireGuardDetectedMtu,
-    WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
-    WireGuardPeerEndpointSubnet, WireGuardRttStatus,
+    NetworkStatusRequest, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
+    WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardRttStatus,
 };
 use std::net::Ipv4Addr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,11 +21,7 @@ pub struct NetworkStatusCommand {
 impl NetworkStatusCommand {
     #[must_use]
     pub const fn into_request(self) -> NetworkStatusRequest {
-        NetworkStatusRequest {
-            mode: self.mode,
-            snapshot: None,
-            cursor: None,
-        }
+        NetworkStatusRequest::First { mode: self.mode }
     }
 }
 
@@ -116,16 +111,6 @@ pub struct NetworkStatusOutput {
 }
 
 impl NetworkStatusOutput {
-    #[must_use]
-    pub fn from_result(result: NetworkStatusResult) -> Self {
-        let NetworkStatusResult {
-            snapshot: _,
-            machines,
-            next_cursor: _,
-        } = result;
-        Self { machines }
-    }
-
     #[must_use]
     pub fn render(&self) -> String {
         render_rows(self.machines.iter().flat_map(render_status_rows))

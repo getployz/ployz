@@ -20,6 +20,7 @@ pub(super) async fn status(
     command: NetworkStatusCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let mode = command.mode;
     let timeout = if command.mode.probes_path_mtu() {
         NETWORK_PROBE_TIMEOUT
     } else {
@@ -41,8 +42,11 @@ pub(super) async fn status(
         let Some(next_cursor) = next_cursor else {
             break;
         };
-        request.snapshot = Some(snapshot);
-        request.cursor = Some(next_cursor);
+        request = ployz_sdk_types::NetworkStatusRequest::Continuation {
+            mode,
+            snapshot,
+            after: next_cursor,
+        };
     }
     Ok(PloyzctlExecutionOutput::stdout(
         NetworkStatusOutput { machines }.render(),

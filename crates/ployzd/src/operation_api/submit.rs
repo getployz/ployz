@@ -240,23 +240,34 @@ pub async fn network_repair(
     handlers: &OperationApiHandlers,
     request: NetworkRepairRequest,
 ) -> Result<AcceptedOperation, NetworkRepairError> {
-    let active_machine_ids = handlers
-        .intent_reader()
-        .intent()
+    let existing = handlers
+        .controllers()
+        .repository()
+        .get(&request.operation_id)
         .await
         .map_err(|error| NetworkRepairError::Unavailable {
             operation_id: request.operation_id.clone(),
             message: error.to_string(),
-        })?
-        .active_machines
-        .into_iter()
-        .map(|machine| machine.machine_id)
-        .collect::<Vec<_>>();
-    validate_network_repair_preconditions(
-        &request.operation_id,
-        request.machine_id.as_ref(),
-        &active_machine_ids,
-    )?;
+        })?;
+    if existing.is_none() {
+        let active_machine_ids = handlers
+            .intent_reader()
+            .intent()
+            .await
+            .map_err(|error| NetworkRepairError::Unavailable {
+                operation_id: request.operation_id.clone(),
+                message: error.to_string(),
+            })?
+            .active_machines
+            .into_iter()
+            .map(|machine| machine.machine_id)
+            .collect::<Vec<_>>();
+        validate_network_repair_preconditions(
+            &request.operation_id,
+            request.machine_id.as_ref(),
+            &active_machine_ids,
+        )?;
+    }
     let operation_id = request.operation_id.clone();
     let accepted = handlers
         .controllers()

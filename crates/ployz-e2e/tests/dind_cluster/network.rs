@@ -43,10 +43,8 @@ async fn scenario_network_status_resolve_and_repair() {
         let status = loop {
             let status = core
                 .api
-                .network_status(&NetworkStatusRequest {
+                .network_status(&NetworkStatusRequest::First {
                     mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
-                    snapshot: None,
-                    cursor: None,
                 })
                 .await
                 .expect("network status succeeds");
@@ -161,10 +159,8 @@ async fn scenario_network_status_resolve_and_repair() {
         );
         let silent_status = core
             .api
-            .network_status(&NetworkStatusRequest {
+            .network_status(&NetworkStatusRequest::First {
                 mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
-                snapshot: None,
-                cursor: None,
             })
             .await
             .expect("network status retains silent intended machine");
@@ -201,10 +197,8 @@ async fn scenario_network_status_resolve_and_repair() {
         loop {
             let status = core
                 .api
-                .network_status(&NetworkStatusRequest {
+                .network_status(&NetworkStatusRequest::First {
                     mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
-                    snapshot: None,
-                    cursor: None,
                 })
                 .await
                 .expect("network status after restart");

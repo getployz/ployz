@@ -501,7 +501,7 @@ export type InternalServiceName = Brand<string, "InternalServiceName">;
 
 export type NetworkStatusIntentFingerprint = Brand<string, "NetworkStatusIntentFingerprint">;
 
-export type NetworkStatusRequest = { mode: NetworkStatusMode, snapshot?: NetworkStatusIntentFingerprint, cursor?: MachineId, };
+export type NetworkStatusRequest = { "page": "first", mode: NetworkStatusMode, } | { "page": "continuation", mode: NetworkStatusMode, snapshot: NetworkStatusIntentFingerprint, after: MachineId, };
 
 export type NetworkStatusResult = { snapshot: NetworkStatusIntentFingerprint, machines: Array<NetworkStatusMachine>, next_cursor?: MachineId, };
 
@@ -511,7 +511,7 @@ export type NetworkDataplaneTestimony = { "status": "answered", value: MachineDa
 
 export type NetworkInternalDnsTestimony = { "status": "answered", value: InternalDnsStatus, } | { "status": "no_answer" } | { "status": "wrong_responder", actual_machine_id: MachineId, } | { "status": "timed_out" } | { "status": "request_failed", message: string, } | { "status": "protocol_failed", message: string, } | { "status": "decode_failed", message: string, };
 
-export type NetworkStatusError = { "error": "unavailable", message: string, } | { "error": "snapshot_changed", requested: NetworkStatusIntentFingerprint, current: NetworkStatusIntentFingerprint, } | { "error": "missing_snapshot_for_cursor", cursor: MachineId, };
+export type NetworkStatusError = { "error": "unavailable", message: string, } | { "error": "snapshot_changed", requested: NetworkStatusIntentFingerprint, current: NetworkStatusIntentFingerprint, };
 
 export type NetworkResolveRequest = { name: string, };
 
