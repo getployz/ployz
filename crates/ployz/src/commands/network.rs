@@ -297,6 +297,12 @@ impl NetworkResolveOutput {
 
     #[must_use]
     pub fn render(&self) -> String {
+        let answered_count = self
+            .result
+            .machines
+            .iter()
+            .filter(|machine| matches!(machine, NetworkResolveMachineTestimony::Answered { .. }))
+            .count();
         let mut answer_sets = self
             .result
             .machines
@@ -314,14 +320,19 @@ impl NetworkResolveOutput {
         let consistent = answer_sets
             .next()
             .is_none_or(|first| answer_sets.all(|addresses| addresses == first));
-        let summary = if consistent {
-            "answer-sets consistent"
+        let summary = if answered_count != self.result.machines.len() || answered_count == 0 {
+            format!(
+                "answer-sets unconfirmed answered={answered_count}/{}",
+                self.result.machines.len()
+            )
+        } else if consistent {
+            "answer-sets consistent".to_owned()
         } else {
-            "answer-sets divergent"
+            "answer-sets divergent".to_owned()
         };
         render_rows(
-            std::iter::once(summary.to_owned()).chain(self.result.machines.iter().map(|machine| {
-                match machine {
+            std::iter::once(summary).chain(self.result.machines.iter().map(
+                |machine| match machine {
                     NetworkResolveMachineTestimony::Answered {
                         machine_id,
                         addresses,
@@ -378,8 +389,8 @@ impl NetworkResolveOutput {
                         machine_id.as_str(),
                         self.result.name.as_str()
                     ),
-                }
-            })),
+                },
+            )),
         )
     }
 }

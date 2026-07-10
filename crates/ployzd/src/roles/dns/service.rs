@@ -4,9 +4,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::{
-    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName,
-};
+use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName};
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
@@ -17,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::fact_cache::FactCache;
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::query_bound_resolver;
+use crate::roles::machine::machine_facts_watermark;
 use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,14 +99,21 @@ fn status_from_local_cache(
                 }
             },
         );
-    let fact_watermarks = facts
+    let fact_watermarks = match facts
         .machine_facts_all()
         .into_iter()
-        .map(|facts| InternalDnsFactWatermark {
-            machine_id: facts.machine_id().clone(),
-            observed_at_unix_ms: facts.observed_at_unix_ms(),
-        })
-        .collect();
+        .map(|facts| machine_facts_watermark(&facts))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(watermarks) => watermarks,
+        Err(error) => {
+            return NatsServiceResponse::transport_error(
+                ployz_nats::service_protocol::NatsServiceError::unavailable(format!(
+                    "encode machine facts fingerprint: {error}"
+                )),
+            );
+        }
+    };
     NatsServiceResponse::json_ok(&DnsStatusRpcOk {
         machine_id,
         value: InternalDnsStatus {

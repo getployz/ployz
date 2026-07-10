@@ -125,9 +125,20 @@ fn validate_bytecode(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn tc_filter_has_program(output: &[u8], program: &str) -> bool {
-    let output = String::from_utf8_lossy(output);
-    output.contains("bpf") && output.contains(program)
+fn tc_filter_has_program(output: &[u8], program: &str) -> Result<bool, String> {
+    let filters = serde_json::from_slice::<serde_json::Value>(output)
+        .map_err(|error| format!("invalid tc JSON: {error}"))?;
+    let Some(filters) = filters.as_array() else {
+        return Err("tc JSON response is not an array".to_owned());
+    };
+    Ok(filters.iter().any(|filter| {
+        filter.get("kind").and_then(serde_json::Value::as_str) == Some("bpf")
+            && filter
+                .get("options")
+                .and_then(|options| options.get("bpf_name"))
+                .and_then(serde_json::Value::as_str)
+                == Some(program)
+    }))
 }
 
 fn parse_ipv4_subnet(value: &str) -> Result<ipnet::Ipv4Net, String> {
@@ -372,7 +383,7 @@ mod linux {
         }
         for (direction, program) in [("ingress", "ployz_ingress"), ("egress", "ployz_egress")] {
             let output = Command::new("tc")
-                .args(["filter", "show", "dev", bridge, direction])
+                .args(["-j", "filter", "show", "dev", bridge, direction])
                 .output()
                 .map_err(|error| format!("inspect tc {direction} attachment: {error}"))?;
             if !output.status.success() {
@@ -381,7 +392,9 @@ mod linux {
                     String::from_utf8_lossy(&output.stderr).trim()
                 ));
             }
-            if !tc_filter_has_program(&output.stdout, program) {
+            let attached = tc_filter_has_program(&output.stdout, program)
+                .map_err(|error| format!("inspect tc {direction} attachment: {error}"))?;
+            if !attached {
                 return Ok(EbpfCtlOutcome::Detached {
                     message: format!("{program} is not attached to {bridge} {direction}"),
                 });
@@ -535,10 +548,17 @@ mod tests {
 
     #[test]
     fn tc_filter_status_requires_the_owned_program_name() {
-        let output =
-            b"filter protocol all pref 49152 bpf chain 0 handle 0x1 ployz_ingress direct-action";
+        let output = br#"[
+            {"kind":"bpf","options":{"bpf_name":"ployz_ingress"}},
+            {"kind":"flower","options":{"bpf_name":"ployz_egress"}}
+        ]"#;
 
-        assert!(tc_filter_has_program(output, "ployz_ingress"));
-        assert!(!tc_filter_has_program(output, "ployz_egress"));
+        assert_eq!(tc_filter_has_program(output, "ployz_ingress"), Ok(true));
+        assert_eq!(tc_filter_has_program(output, "ployz_egress"), Ok(false));
+    }
+
+    #[test]
+    fn tc_filter_status_rejects_malformed_json() {
+        assert!(tc_filter_has_program(b"not-json", "ployz_ingress").is_err());
     }
 }

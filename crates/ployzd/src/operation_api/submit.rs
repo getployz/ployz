@@ -9,7 +9,8 @@ use crate::operation_api::admission::{
     OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::ops::EventSequence;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
@@ -89,6 +90,14 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
+    for service in &command.target.services {
+        validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
+            |message| DeploySubmitError::InvalidTarget {
+                operation_id: operation_id.clone(),
+                message,
+            },
+        )?;
+    }
     validate_pushed_image_seeds(handlers, &command).await?;
     let accepted = handlers
         .controllers
@@ -106,6 +115,22 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted);
 
     Ok(operation)
+}
+
+fn validate_internal_dns_name(
+    namespace_id: &NamespaceId,
+    service_id: &ServiceId,
+) -> Result<(), ployz_core::ops::FailureMessage> {
+    InternalServiceName::try_from_ids(service_id, namespace_id)
+        .map(|_| ())
+        .map_err(|_| {
+            ployz_core::ops::FailureMessage::try_new(format!(
+                "service {} in namespace {} cannot form internal DNS name because each label is limited to 63 bytes",
+                service_id.as_str(),
+                namespace_id.as_str()
+            ))
+            .expect("generated internal DNS validation message is non-empty")
+        })
 }
 
 async fn validate_pushed_image_seeds(
@@ -663,10 +688,10 @@ async fn machine_add_bootstrap_material(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::ids::{MachineId, OperationId};
+    use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
     use ployz_sdk_types::NetworkRepairError;
 
-    use super::validate_network_repair_preconditions;
+    use super::{validate_internal_dns_name, validate_network_repair_preconditions};
 
     fn operation_id() -> OperationId {
         OperationId::try_new("op_network_repair").expect("operation id")
@@ -697,5 +722,16 @@ mod tests {
             error,
             NetworkRepairError::TargetMachineNotFound { .. }
         ));
+    }
+
+    #[test]
+    fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
+        let namespace_id = NamespaceId::try_new("default").expect("namespace id");
+        let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
+
+        let failure = validate_internal_dns_name(&namespace_id, &service_id)
+            .expect_err("oversized DNS label must be rejected");
+
+        assert!(failure.as_str().contains("limited to 63 bytes"));
     }
 }

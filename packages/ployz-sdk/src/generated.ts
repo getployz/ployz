@@ -260,9 +260,9 @@ export type NetworkRepairOperationState = { "state": "accepted" } | { "state": "
 
 export type NetworkRepairRunningStage = "preparing_dataplane" | "refreshing_machine_facts" | "confirming_dns_refresh";
 
-export type NetworkRepairFailure = { "kind": "no_active_machines" } | { "kind": "target_machine_not_found", machine_id: MachineId, } | { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "dataplane_convergence_failed", machine_id: MachineId, component: PloyzNativeMeshComponent, message: FailureMessage, } | { "kind": "dataplane_report_invalid", message: FailureMessage, } | { "kind": "machine_facts_refresh_failed", outcomes: Array<NetworkRepairMachineFactsRefreshOutcome>, } | { "kind": "dns_refresh_failed", confirmed_machine_ids: Array<MachineId>, problems: Array<NetworkRepairDnsRefreshProblem>, } | { "kind": "progress_record_failed", phase: NetworkRepairProgressPhase, message: FailureMessage, };
+export type NetworkRepairFailure = { "kind": "no_active_machines" } | { "kind": "target_machine_not_found", machine_id: MachineId, } | { "kind": "intent_read_failed", message: FailureMessage, } | { "kind": "dataplane_convergence_failed", machine_id: MachineId, component: PloyzNativeMeshComponent, message: FailureMessage, } | { "kind": "dataplane_convergence_timed_out", timeout_seconds: number, } | { "kind": "dataplane_report_invalid", message: FailureMessage, } | { "kind": "machine_facts_refresh_failed", outcomes: Array<NetworkRepairMachineFactsRefreshOutcome>, } | { "kind": "dns_refresh_failed", confirmed_machine_ids: Array<MachineId>, problems: Array<NetworkRepairDnsRefreshProblem>, } | { "kind": "progress_record_failed", phase: NetworkRepairProgressPhase, message: FailureMessage, };
 
-export type NetworkRepairMachineFactsRefreshOutcome = { "outcome": "refreshed", machine_id: MachineId, observed_at_unix_ms: number, } | { "outcome": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "outcome": "failed", machine_id: MachineId, message: FailureMessage, };
+export type NetworkRepairMachineFactsRefreshOutcome = { "outcome": "refreshed", machine_id: MachineId, observed_at_unix_ms: number, snapshot_sha256: string, } | { "outcome": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "outcome": "failed", machine_id: MachineId, message: FailureMessage, };
 
 export type NetworkRepairDnsRefreshProblem = { "problem": "unavailable", machine_id: MachineId, failure: NetworkRepairRequestFailure, } | { "problem": "resolver_not_serving", machine_id: MachineId, } | { "problem": "stale", machine_id: MachineId, stale_machine_ids: Array<MachineId>, };
 
@@ -356,7 +356,7 @@ export type InternalDnsStatus = { resolver: InternalDnsResolverStatus, fact_wate
 
 export type InternalDnsResolverStatus = { "status": "awaiting_bind", attempts: number, } | { "status": "serving", bound: string, } | { "status": "not_configured" };
 
-export type InternalDnsFactWatermark = { machine_id: MachineId, observed_at_unix_ms: number, };
+export type InternalDnsFactWatermark = { machine_id: MachineId, observed_at_unix_ms: number, snapshot_sha256: string, };
 
 export type WireGuardPublicKey = string;
 

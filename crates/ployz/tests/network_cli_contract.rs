@@ -249,6 +249,31 @@ fn network_resolve_renders_typed_failures() {
     ] {
         assert!(output.contains(expected));
     }
+    assert!(output.starts_with("answer-sets unconfirmed answered=0/5\n"));
+}
+
+#[test]
+fn network_resolve_marks_partial_testimony_unconfirmed() {
+    let name = InternalServiceName::try_from_ids(
+        &ServiceId::try_new("web").expect("service id"),
+        &NamespaceId::try_new("team-a").expect("namespace id"),
+    )
+    .expect("internal service name");
+    let output = NetworkResolveOutput::new(NetworkResolveResult {
+        name,
+        machines: vec![
+            NetworkResolveMachineTestimony::Answered {
+                machine_id: machine_id("machine_a"),
+                addresses: vec![Ipv4Addr::new(10, 42, 1, 8)],
+            },
+            NetworkResolveMachineTestimony::NoAnswer {
+                machine_id: machine_id("machine_b"),
+            },
+        ],
+    })
+    .render();
+
+    assert!(output.starts_with("answer-sets unconfirmed answered=1/2\n"));
 }
 
 fn status_machine(dataplane: NetworkDataplaneTestimony) -> NetworkStatusMachine {

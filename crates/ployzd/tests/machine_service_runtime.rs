@@ -195,7 +195,7 @@ async fn machine_role_service_refreshes_and_publishes_full_facts() {
     let facts = serde_json::from_slice::<MachineFactsSnapshot>(&message.payload)
         .expect("snapshot payload decodes");
 
-    assert_eq!(facts.observed_at_unix_ms(), watermark);
+    assert_eq!(facts.observed_at_unix_ms(), watermark.observed_at_unix_ms);
     assert!(
         facts
             .containers()

@@ -44,6 +44,9 @@ pub(super) fn render_network_repair_failure(
             },
             message.as_str(),
         ),
+        ployz_sdk_types::NetworkRepairFailure::DataplaneConvergenceTimedOut { timeout_seconds } => {
+            format!("dataplane-convergence-timed-out timeout-seconds={timeout_seconds}")
+        }
         ployz_sdk_types::NetworkRepairFailure::DataplaneReportInvalid { message } => {
             format!("dataplane-report-invalid message={}", message.as_str())
         }
@@ -88,9 +91,10 @@ fn render_machine_facts_outcome(
         ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Refreshed {
             machine_id,
             observed_at_unix_ms,
+            snapshot_sha256,
         } => format!(
-            "machine={}:refreshed@{observed_at_unix_ms}",
-            machine_id.as_str()
+            "machine={}:refreshed@{observed_at_unix_ms}:sha256={snapshot_sha256}",
+            machine_id.as_str(),
         ),
         ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Unavailable {
             machine_id,

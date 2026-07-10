@@ -348,7 +348,7 @@ impl NatsMachineFactsReader {
     pub async fn refresh_machine_facts(
         &self,
         machine_id: &MachineId,
-    ) -> Result<u64, MachineFactsRefreshError> {
+    ) -> Result<ployz_core::internal_dns::InternalDnsFactWatermark, MachineFactsRefreshError> {
         call_machine::<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>(
             &self.client,
             self.request_timeout,
@@ -357,7 +357,7 @@ impl NatsMachineFactsReader {
             &MachineFactsRefreshRpcRequest {},
         )
         .await
-        .map(|ok| ok.observed_at_unix_ms)
+        .map(|ok| ok.watermark)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => MachineFactsRefreshError::Unavailable {
                 machine_id: machine_id.clone(),

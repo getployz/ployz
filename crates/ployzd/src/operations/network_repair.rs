@@ -15,6 +15,7 @@ use crate::tasks::TaskRegistry;
 use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::{
     DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure,
+    PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::internal_dns::{InternalDnsFactWatermark, InternalDnsResolverStatus};
@@ -25,6 +26,7 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
+use std::future::Future;
 use std::time::Duration;
 
 const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -151,20 +153,17 @@ impl NetworkRepairOperation {
             operation_id: operation_id.clone(),
             membership,
         };
-        let report = match self
-            .dataplane
-            .prepare_dataplane_for_targets(request, &targets)
-            .await
+        let report = match bounded_dataplane_convergence(
+            self.operation_timeout,
+            self.dataplane
+                .prepare_dataplane_for_targets(request, &targets),
+        )
+        .await
         {
             Ok(report) => report,
-            Err(error) => {
-                self.record_terminal(
-                    &operation_id,
-                    NetworkRepairTransition::Failed {
-                        failure: network_repair_failure(error),
-                    },
-                )
-                .await;
+            Err(failure) => {
+                self.record_terminal(&operation_id, NetworkRepairTransition::Failed { failure })
+                    .await;
                 return;
             }
         };
@@ -293,9 +292,14 @@ impl NetworkRepairOperation {
         let outcomes = stream::iter(machine_ids.iter().cloned())
             .map(|machine_id| async move {
                 match self.facts_reader.refresh_machine_facts(&machine_id).await {
-                    Ok(observed_at_unix_ms) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
-                        machine_id: machine_id.clone(),
+                    Ok(InternalDnsFactWatermark {
+                        machine_id,
                         observed_at_unix_ms,
+                        snapshot_sha256,
+                    }) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
+                        machine_id,
+                        observed_at_unix_ms,
+                        snapshot_sha256,
                     },
                     Err(error) => machine_facts_refresh_outcome(error),
                 }
@@ -317,9 +321,11 @@ impl NetworkRepairOperation {
                 NetworkRepairMachineFactsRefreshOutcome::Refreshed {
                     machine_id,
                     observed_at_unix_ms,
+                    snapshot_sha256,
                 } => InternalDnsFactWatermark {
                     machine_id,
                     observed_at_unix_ms,
+                    snapshot_sha256,
                 },
                 NetworkRepairMachineFactsRefreshOutcome::Unavailable { .. }
                 | NetworkRepairMachineFactsRefreshOutcome::Failed { .. } => {
@@ -497,6 +503,18 @@ fn network_repair_failure(error: DataplanePrepareError) -> NetworkRepairFailure 
     }
 }
 
+async fn bounded_dataplane_convergence(
+    timeout: Duration,
+    convergence: impl Future<Output = Result<PloyzNativeMeshPrepareReport, DataplanePrepareError>>,
+) -> Result<PloyzNativeMeshPrepareReport, NetworkRepairFailure> {
+    match tokio::time::timeout(timeout, convergence).await {
+        Ok(result) => result.map_err(network_repair_failure),
+        Err(_) => Err(NetworkRepairFailure::DataplaneConvergenceTimedOut {
+            timeout_seconds: timeout.as_secs(),
+        }),
+    }
+}
+
 fn machine_facts_refresh_outcome(
     error: MachineFactsRefreshError,
 ) -> NetworkRepairMachineFactsRefreshOutcome {
@@ -551,7 +569,7 @@ fn stale_machine_ids(
         .filter(|expected| {
             !observed.iter().any(|observed| {
                 observed.machine_id == expected.machine_id
-                    && observed.observed_at_unix_ms >= expected.observed_at_unix_ms
+                    && observed.snapshot_sha256 == expected.snapshot_sha256
             })
         })
         .map(|expected| expected.machine_id.clone())
@@ -610,6 +628,7 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::future;
     use ployz_core::internal_dns::InternalDnsStatus;
     use ployz_nats::service_runtime::NatsServiceRequestFailure;
 
@@ -630,11 +649,24 @@ mod tests {
         assert!(!retryable_record_failure(&invariant));
     }
 
+    #[tokio::test]
+    async fn dataplane_convergence_timeout_bounds_lock_waits() {
+        let failure = bounded_dataplane_convergence(Duration::ZERO, future::pending())
+            .await
+            .expect_err("pending dataplane convergence times out");
+
+        assert_eq!(
+            failure,
+            NetworkRepairFailure::DataplaneConvergenceTimedOut { timeout_seconds: 0 }
+        );
+    }
+
     #[test]
     fn dns_refresh_check_distinguishes_silence_health_and_stale_cache() {
         let expected = vec![InternalDnsFactWatermark {
             machine_id: machine_id("machine_a"),
             observed_at_unix_ms: 42,
+            snapshot_sha256: "new".to_owned(),
         }];
         let silence = dns_refresh_problem(
             &machine_id("machine_b"),
@@ -653,7 +685,8 @@ mod tests {
                     },
                     fact_watermarks: vec![InternalDnsFactWatermark {
                         machine_id: machine_id("machine_a"),
-                        observed_at_unix_ms: 41,
+                        observed_at_unix_ms: 42,
+                        snapshot_sha256: "old".to_owned(),
                     }],
                 },
             }),
@@ -668,6 +701,7 @@ mod tests {
                     fact_watermarks: vec![InternalDnsFactWatermark {
                         machine_id: machine_id("machine_a"),
                         observed_at_unix_ms: 42,
+                        snapshot_sha256: "new".to_owned(),
                     }],
                 },
             }),

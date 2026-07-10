@@ -34,6 +34,7 @@ pub enum InternalDnsResolverStatus {
 pub struct InternalDnsFactWatermark {
     pub machine_id: MachineId,
     pub observed_at_unix_ms: u64,
+    pub snapshot_sha256: String,
 }
 
 /// A validated, lower-case `<service>.<namespace>.internal` wire name.

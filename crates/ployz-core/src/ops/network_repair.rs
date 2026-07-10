@@ -61,6 +61,9 @@ pub enum NetworkRepairFailure {
         component: PloyzNativeMeshComponent,
         message: FailureMessage,
     },
+    DataplaneConvergenceTimedOut {
+        timeout_seconds: u64,
+    },
     DataplaneReportInvalid {
         message: FailureMessage,
     },
@@ -126,6 +129,7 @@ pub enum NetworkRepairMachineFactsRefreshOutcome {
     Refreshed {
         machine_id: MachineId,
         observed_at_unix_ms: u64,
+        snapshot_sha256: String,
     },
     Unavailable {
         machine_id: MachineId,
