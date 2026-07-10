@@ -538,8 +538,14 @@ async fn scenario_services_start_in_depends_on_order() {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let Some(a_started_at) = started_at.get("a") else {
+            panic!("dependency service is missing: {started_at:?}");
+        };
+        let Some(b_started_at) = started_at.get("b") else {
+            panic!("dependent service is missing: {started_at:?}");
+        };
         assert!(
-            started_at["a"] < started_at["b"],
+            a_started_at < b_started_at,
             "dependency must start first: {started_at:?}"
         );
 

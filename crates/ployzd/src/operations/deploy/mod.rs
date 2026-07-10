@@ -434,10 +434,7 @@ where
 fn hook_execution_timeout(command: &DeployExecutionCommand) -> std::time::Duration {
     let millis = command.step_timeout().as_millis();
     let bounded = millis.saturating_mul(9).div_euclid(10).max(1);
-    let bounded = match u64::try_from(bounded) {
-        Ok(bounded) => bounded,
-        Err(_) => u64::MAX,
-    };
+    let bounded = u64::try_from(bounded).unwrap_or(u64::MAX);
     std::time::Duration::from_millis(bounded)
 }
 

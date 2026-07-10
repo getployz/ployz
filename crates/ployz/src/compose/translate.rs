@@ -1782,9 +1782,11 @@ mod tests {
         let findings = parse_depends_on(Some(value), &ComposePath::root().field("depends_on"))
             .expect_err("non-ordering dependency options are rejected");
 
-        assert_eq!(findings.len(), 2);
-        assert_eq!(findings[0].path.render(), "depends_on.database.condition");
-        assert_eq!(findings[1].path.render(), "depends_on.database.restart");
+        let [condition, restart] = findings.as_slice() else {
+            panic!("expected condition and restart findings");
+        };
+        assert_eq!(condition.path.render(), "depends_on.database.condition");
+        assert_eq!(restart.path.render(), "depends_on.database.restart");
     }
 
     #[test]
