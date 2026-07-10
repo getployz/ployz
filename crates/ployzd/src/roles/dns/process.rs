@@ -17,13 +17,14 @@ use crate::roles::dns::internal::spawn_internal_resolver;
 use crate::roles::dns::projection::{
     DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
 };
+use crate::roles::dns::service::start_dns_role_service;
 use crate::roles::dns::source::load_dns_projection_update_from_nats;
 use crate::roles::machine::intent_mirror::MachineIntentMirror;
 use crate::roles::nats_failover::{
     IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
 };
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
-use ployz_nats::service_runtime::NatsClient;
+use ployz_nats::service_runtime::{NatsClient, NatsServiceRuntimeError, RunningNatsService};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -39,6 +40,7 @@ pub struct RunningDnsProcess {
     health: Arc<Mutex<DnsProcessHealth>>,
     internal_resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
     shutdown: broadcast::Sender<()>,
+    role_service: RunningNatsService,
     facts_cache: RunningFactCache,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -49,6 +51,7 @@ impl RunningDnsProcess {
         for task in self.tasks {
             let _ = task.await;
         }
+        let _ = self.role_service.shutdown().await;
         self.facts_cache.shutdown().await;
     }
 
@@ -100,6 +103,7 @@ pub async fn start_dns_process(
         SocketAddr::new(IpAddr::V4(config.endpoint_subnet.bridge_gateway_ipv4()), 53);
     start_dns_process_with_client(
         client,
+        config.machine_id.clone(),
         DNS_REFRESH_INTERVAL,
         Some(IntentFailover {
             mirror,
@@ -112,6 +116,7 @@ pub async fn start_dns_process(
 
 pub async fn start_dns_process_with_client(
     client: NatsClient,
+    machine_id: ployz_core::ids::MachineId,
     refresh_interval: Duration,
     failover: Option<IntentFailover>,
     internal_resolver_bind: Option<SocketAddr>,
@@ -124,6 +129,14 @@ pub async fn start_dns_process_with_client(
     let facts_cache = start_fact_cache(client.clone())
         .await
         .map_err(DnsProcessError::StartFactsCache)?;
+    let role_service =
+        match start_dns_role_service(client.clone(), machine_id, facts_cache.cache()).await {
+            Ok(service) => service,
+            Err(error) => {
+                facts_cache.shutdown().await;
+                return Err(DnsProcessError::StartRoleService(error));
+            }
+        };
     let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
@@ -171,6 +184,7 @@ pub async fn start_dns_process_with_client(
         health,
         internal_resolver_health,
         shutdown,
+        role_service,
         facts_cache,
         tasks,
     })
@@ -320,6 +334,8 @@ pub enum DnsProcessError {
     ConnectNats(NatsConnectError),
     #[error("failed to start runtime facts cache: {0}")]
     StartFactsCache(FactCacheError),
+    #[error("failed to start DNS role query service: {0}")]
+    StartRoleService(NatsServiceRuntimeError),
     #[error("DNS projection refresh timed out after {}s", timeout.as_secs())]
     RefreshTimedOut { timeout: Duration },
     #[error("failed to wait for shutdown: {0}")]

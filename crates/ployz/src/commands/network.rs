@@ -146,18 +146,27 @@ impl NetworkResolveOutput {
 
     #[must_use]
     pub fn render(&self) -> String {
-        let addresses = render_addresses(&self.result.addresses);
-        let coverage = self.result.machines.iter().map(|machine| match machine {
-            NetworkResolveMachineTestimony::Answered { machine_id } => {
-                format!("machine {} answered", machine_id.as_str())
+        render_rows(self.result.machines.iter().map(|machine| match machine {
+            NetworkResolveMachineTestimony::Answered {
+                machine_id,
+                name,
+                addresses,
+            } => {
+                format!(
+                    "machine {} {} A {}",
+                    machine_id.as_str(),
+                    name.as_str(),
+                    render_addresses(addresses)
+                )
             }
             NetworkResolveMachineTestimony::NoAnswer { machine_id } => {
-                format!("machine {} no answer", machine_id.as_str())
+                format!(
+                    "machine {} {} no answer",
+                    machine_id.as_str(),
+                    self.result.name.as_str()
+                )
             }
-        });
-        let mut rows = vec![format!("{} A {}", self.result.name, addresses)];
-        rows.extend(coverage);
-        render_rows(rows)
+        }))
     }
 }
 

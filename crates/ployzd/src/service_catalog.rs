@@ -15,6 +15,8 @@ pub const API_SERVICE_ID: &str = "plz-api.core";
 pub const API_SERVICE_DESCRIPTION: &str = "Ployz operator-facing command service";
 pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
 pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
+pub const DNS_SERVICE_NAME: &str = "plz-dns";
+pub const DNS_SERVICE_DESCRIPTION: &str = "Ployz machine-local DNS role service";
 pub const INTENT_SERVICE_NAME: &str = "plz-intent";
 pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
@@ -172,6 +174,21 @@ pub fn machine_role_service_base(machine_id: &MachineId) -> NatsServiceSpec {
 }
 
 #[must_use]
+pub fn dns_role_service_base(machine_id: &MachineId) -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        format!("{DNS_SERVICE_NAME}.{}", machine_id.as_str()),
+        DNS_SERVICE_NAME,
+        SERVICE_VERSION,
+        DNS_SERVICE_DESCRIPTION,
+        ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new(
+            "machine_id",
+            machine_id.as_str(),
+        )]),
+        Vec::new(),
+    )
+}
+
+#[must_use]
 pub fn machine_endpoint_spec(
     machine_id: &MachineId,
     endpoint: MachineServiceEndpoint,
@@ -188,6 +205,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
     match endpoint {
         MachineServiceEndpoint::Inspect => "machine.inspect",
         MachineServiceEndpoint::FactsGet => "machine.facts.get",
+        MachineServiceEndpoint::DnsResolve => "machine.dns.resolve",
         MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
             "machine.container.ensure_endpoint_network"
         }

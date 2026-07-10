@@ -326,6 +326,7 @@ impl VolumeRemoveRunningStage {
 pub enum MachineServiceEndpoint {
     Inspect,
     FactsGet,
+    DnsResolve,
     ContainerEnsureEndpointNetwork,
     ContainerInspect,
     ContainerRun,
@@ -351,6 +352,7 @@ impl MachineServiceEndpoint {
         match self {
             Self::Inspect => "inspect",
             Self::FactsGet => "facts.get",
+            Self::DnsResolve => "dns.resolve",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
             Self::ContainerRun => "container.run",
@@ -370,6 +372,7 @@ impl MachineServiceEndpoint {
         match self {
             Self::Inspect
             | Self::FactsGet
+            | Self::DnsResolve
             | Self::ContainerInspect
             | Self::SubstrateReport
             | Self::LogsTail => MachineServiceEndpointExecution::Query,

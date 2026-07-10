@@ -1,33 +1,38 @@
-//! Fresh, intent-driven projection of the internal DNS answer and gather coverage.
+//! Intent-driven gather of each DNS role's actual local resolver answer.
 
-use std::collections::BTreeMap;
+use std::time::Duration;
 
-use crate::intent::service::NatsIntentReader;
-use crate::roles::dns::records::{InternalServiceName, internal_dns_records};
-use crate::roles::machine::client::{NatsMachineFactsReader, read_available_machine_facts_by_id};
+use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
 use ployz_core::ids::MachineId;
-use ployz_core::machine_runtime::MachineFactsSnapshot;
+use ployz_core::internal_dns::InternalServiceName;
+use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_nats::service_runtime::request_json;
 use ployz_sdk_types::{
     NetworkResolveError, NetworkResolveMachineTestimony, NetworkResolveRequest,
     NetworkResolveResult,
 };
 
+use crate::intent::service::NatsIntentReader;
+use crate::roles::dns::service::{DnsResolveRpcOk, DnsResolveRpcRequest};
+use crate::roles::machine::client::DEFAULT_MACHINE_RPC_TIMEOUT;
+
+const MAX_CONCURRENT_DNS_READS: usize = 16;
+
 #[derive(Clone)]
 pub struct NetworkQueryService {
     intent_reader: NatsIntentReader,
-    facts_reader: NatsMachineFactsReader,
+    client: async_nats::Client,
+    request_timeout: Duration,
 }
 
 impl NetworkQueryService {
     #[must_use]
-    pub(crate) const fn new(
-        intent_reader: NatsIntentReader,
-        facts_reader: NatsMachineFactsReader,
-    ) -> Self {
+    pub(crate) const fn new(intent_reader: NatsIntentReader, client: async_nats::Client) -> Self {
         Self {
             intent_reader,
-            facts_reader,
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
     }
 
@@ -45,12 +50,12 @@ impl NetworkQueryService {
         })?;
         let machine_ids = intent
             .active_machines
-            .iter()
-            .map(|machine| machine.machine_id.clone())
+            .into_iter()
+            .map(|machine| machine.machine_id)
             .collect::<Vec<_>>();
-        let facts =
-            read_available_machine_facts_by_id(&self.facts_reader, machine_ids.clone()).await;
-        Ok(network_resolve_result(name, &machine_ids, &facts))
+        let machines =
+            gather_dns_answers(&self.client, self.request_timeout, &name, machine_ids).await;
+        Ok(NetworkResolveResult { name, machines })
     }
 }
 
@@ -58,9 +63,8 @@ fn normalize_internal_name(name: &str) -> Option<InternalServiceName> {
     let labels = name.split('.').collect::<Vec<_>>();
     let normalized = match labels.as_slice() {
         [service] => format!("{service}.default.{INTERNAL_DNS_SUFFIX}"),
-        // A bare `<service>.internal` is ambiguous — a namespace named for the
-        // reserved suffix versus a suffix missing its namespace — so reject it
-        // and let the operator disambiguate with an explicit namespace.
+        // A bare `<service>.internal` is ambiguous: it could be a namespace
+        // named `internal` or a fully qualified name missing its namespace.
         [_, namespace] if namespace.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) => return None,
         [service, namespace] => format!("{service}.{namespace}.{INTERNAL_DNS_SUFFIX}"),
         [service, namespace, suffix] if suffix.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) => {
@@ -68,51 +72,64 @@ fn normalize_internal_name(name: &str) -> Option<InternalServiceName> {
         }
         [] | [_, _, _] | [_, _, _, ..] => return None,
     };
-    InternalServiceName::parse(&normalized)
+    InternalServiceName::try_new(normalized).ok()
 }
 
-fn network_resolve_result(
-    name: InternalServiceName,
-    machine_ids: &[MachineId],
-    facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
-) -> NetworkResolveResult {
-    let snapshots = facts.values().cloned().collect::<Vec<_>>();
-    let addresses = internal_dns_records(&snapshots)
-        .remove(&name)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|address| address.to_string())
-        .collect();
-    let machines = machine_ids
-        .iter()
-        .map(|machine_id| {
-            if facts.contains_key(machine_id) {
-                NetworkResolveMachineTestimony::Answered {
-                    machine_id: machine_id.clone(),
+async fn gather_dns_answers(
+    client: &async_nats::Client,
+    request_timeout: Duration,
+    name: &InternalServiceName,
+    machine_ids: Vec<MachineId>,
+) -> Vec<NetworkResolveMachineTestimony> {
+    let mut answers = stream::iter(machine_ids)
+        .map(|machine_id| async move {
+            let response = request_json::<_, DnsResolveRpcOk>(
+                client,
+                machine_service(&machine_id, MachineServiceEndpoint::DnsResolve),
+                &DnsResolveRpcRequest { name: name.clone() },
+                request_timeout,
+            )
+            .await;
+            match response {
+                Ok(answer) if answer.machine_id == machine_id && answer.name == *name => {
+                    NetworkResolveMachineTestimony::Answered {
+                        machine_id,
+                        name: answer.name,
+                        addresses: answer.addresses,
+                    }
                 }
-            } else {
-                NetworkResolveMachineTestimony::NoAnswer {
-                    machine_id: machine_id.clone(),
-                }
+                Ok(_) | Err(_) => NetworkResolveMachineTestimony::NoAnswer { machine_id },
             }
         })
-        .collect();
-    NetworkResolveResult {
-        name: name.as_str().to_owned(),
-        addresses,
-        machines,
+        .buffer_unordered(MAX_CONCURRENT_DNS_READS);
+
+    let mut gathered = Vec::new();
+    while let Some(answer) = answers.next().await {
+        gathered.push(answer);
+    }
+    gathered.sort_by(|left, right| testimony_machine_id(left).cmp(testimony_machine_id(right)));
+    gathered
+}
+
+const fn testimony_machine_id(testimony: &NetworkResolveMachineTestimony) -> &MachineId {
+    match testimony {
+        NetworkResolveMachineTestimony::Answered { machine_id, .. }
+        | NetworkResolveMachineTestimony::NoAnswer { machine_id } => machine_id,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::Duration;
 
-    use super::{network_resolve_result, normalize_internal_name};
     use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
     use ployz_sdk_types::NetworkResolveMachineTestimony;
-    use ployz_test_support::containers;
-    use ployz_test_support::ids::machine_id;
+    use ployz_test_support::{containers, ids::machine_id};
+
+    use super::{gather_dns_answers, normalize_internal_name};
+    use crate::fact_cache::FactCache;
+    use crate::roles::dns::service::start_dns_role_service;
 
     #[test]
     fn normalizes_supported_name_forms() {
@@ -135,72 +152,64 @@ mod tests {
     #[test]
     fn rejects_invalid_name() {
         assert!(normalize_internal_name("db.team-a.internal.extra").is_none());
-        // A two-label name ending in the reserved suffix is ambiguous.
         assert!(normalize_internal_name("db.internal").is_none());
         assert!(normalize_internal_name("db.Internal").is_none());
     }
 
-    #[test]
-    fn projects_all_answers_and_keeps_silent_machines() {
-        let web_a = containers::observation("machine_a", "ctr_web_a")
+    #[tokio::test]
+    async fn gathers_each_intended_dns_role_and_keeps_silence() {
+        let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+            machine_id("dns_a"),
+            machine_id("dns_b"),
+        ])
+        .await;
+        let cache = FactCache::default();
+        let observed_machine_id = machine_id("worker_a");
+        let container = containers::observation("worker_a", "ctr_web")
             .with(containers::identity("web").namespace("team-a"))
-            .running_at("10.42.1.8".parse().expect("valid IPv4"))
+            .running_at(IpAddr::V4(Ipv4Addr::new(10, 42, 1, 8)))
             .build();
-        let web_b = containers::observation("machine_b", "ctr_web_b")
-            .with(containers::identity("web").namespace("team-a"))
-            .running_at("10.42.2.9".parse().expect("valid IPv4"))
-            .build();
-        let machine_ids = vec![
-            machine_id("machine_a"),
-            machine_id("machine_b"),
-            machine_id("machine_c"),
-        ];
-        let machine_a_facts = machine_facts("machine_a", [web_a]);
-        let machine_b_facts = machine_facts("machine_b", [web_b]);
-        let facts = BTreeMap::from([
-            (machine_a_facts.machine_id().clone(), machine_a_facts),
-            (machine_b_facts.machine_id().clone(), machine_b_facts),
-        ]);
-
-        let result = network_resolve_result(
-            normalize_internal_name("web.team-a").expect("valid query"),
-            &machine_ids,
-            &facts,
+        cache.record_machine_facts(
+            MachineFactsSnapshot::try_new(
+                observed_machine_id.clone(),
+                MachineContainerObservationSnapshot::try_new(observed_machine_id, [container])
+                    .expect("container facts"),
+                None,
+                ployz_test_support::fixtures::test_disk_space(),
+                1,
+            )
+            .expect("machine facts"),
         );
+        let service = start_dns_role_service(
+            nats.machine_client(&machine_id("dns_a")).await,
+            machine_id("dns_a"),
+            cache,
+        )
+        .await
+        .expect("DNS role service");
+        let name = normalize_internal_name("web.team-a").expect("internal name");
+
+        let answers = gather_dns_answers(
+            &nats.controller,
+            Duration::from_millis(100),
+            &name,
+            vec![machine_id("dns_a"), machine_id("dns_b")],
+        )
+        .await;
 
         assert_eq!(
-            result.addresses,
-            vec!["10.42.1.8".to_owned(), "10.42.2.9".to_owned()]
-        );
-        assert_eq!(
-            result.machines,
+            answers,
             vec![
                 NetworkResolveMachineTestimony::Answered {
-                    machine_id: machine_id("machine_a"),
-                },
-                NetworkResolveMachineTestimony::Answered {
-                    machine_id: machine_id("machine_b"),
+                    machine_id: machine_id("dns_a"),
+                    name,
+                    addresses: vec![Ipv4Addr::new(10, 42, 1, 8)],
                 },
                 NetworkResolveMachineTestimony::NoAnswer {
-                    machine_id: machine_id("machine_c"),
+                    machine_id: machine_id("dns_b"),
                 },
             ]
         );
-    }
-
-    fn machine_facts(
-        machine_id_value: &str,
-        containers: impl IntoIterator<Item = ployz_core::machine_runtime::ManagedContainerObservation>,
-    ) -> MachineFactsSnapshot {
-        let machine_id = machine_id(machine_id_value);
-        MachineFactsSnapshot::try_new(
-            machine_id.clone(),
-            MachineContainerObservationSnapshot::try_new(machine_id, containers)
-                .expect("valid container snapshot"),
-            None,
-            ployz_test_support::fixtures::test_disk_space(),
-            1,
-        )
-        .expect("valid machine facts")
+        service.shutdown().await.expect("shutdown DNS role service");
     }
 }

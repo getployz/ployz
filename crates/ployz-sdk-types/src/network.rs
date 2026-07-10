@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::core_types::{EventSequence, MachineId, OperationId};
+use std::net::Ipv4Addr;
+
+use crate::core_types::{EventSequence, InternalServiceName, MachineId, OperationId};
 use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -13,16 +15,21 @@ pub struct NetworkResolveRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkResolveResult {
-    pub name: String,
-    pub addresses: Vec<String>,
+    pub name: InternalServiceName,
     pub machines: Vec<NetworkResolveMachineTestimony>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkResolveMachineTestimony {
-    Answered { machine_id: MachineId },
-    NoAnswer { machine_id: MachineId },
+    Answered {
+        machine_id: MachineId,
+        name: InternalServiceName,
+        addresses: Vec<Ipv4Addr>,
+    },
+    NoAnswer {
+        machine_id: MachineId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]

@@ -20,6 +20,7 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start().await;
     let runtime = start_dns_process_with_client(
         nats.dns_client.clone(),
+        machine_id("dns_machine"),
         Duration::from_millis(10),
         None,
         None,
@@ -44,6 +45,7 @@ async fn dns_process_applies_route_changes_on_next_poll() {
     let _intent = nats.start_intent().await;
     let runtime = start_dns_process_with_client(
         nats.dns_client.clone(),
+        machine_id("dns_machine"),
         Duration::from_millis(10),
         None,
         None,

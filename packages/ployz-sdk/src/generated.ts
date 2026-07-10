@@ -431,11 +431,13 @@ export type MachineInspectRequest = { machine_id: MachineId, };
 
 export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", message: string, };
 
+export type InternalServiceName = Brand<string, "InternalServiceName">;
+
 export type NetworkResolveRequest = { name: string, };
 
-export type NetworkResolveResult = { name: string, addresses: Array<string>, machines: Array<NetworkResolveMachineTestimony>, };
+export type NetworkResolveResult = { name: InternalServiceName, machines: Array<NetworkResolveMachineTestimony>, };
 
-export type NetworkResolveMachineTestimony = { "status": "answered", machine_id: MachineId, } | { "status": "no_answer", machine_id: MachineId, };
+export type NetworkResolveMachineTestimony = { "status": "answered", machine_id: MachineId, name: InternalServiceName, addresses: Array<string>, } | { "status": "no_answer", machine_id: MachineId, };
 
 export type NetworkResolveError = { "error": "invalid_name", name: string, } | { "error": "unavailable", message: string, };
 

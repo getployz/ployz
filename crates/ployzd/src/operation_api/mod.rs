@@ -109,7 +109,8 @@ impl OperationApiHandlers {
         let machine_query =
             MachineQueryService::new(intent_reader.clone(), facts.clone(), facts_reader.clone());
         let service_query = ServiceQueryService::new(intent_reader.clone(), facts_reader.clone());
-        let network_query = NetworkQueryService::new(intent_reader.clone(), facts_reader.clone());
+        let network_query =
+            NetworkQueryService::new(intent_reader.clone(), intent_change_client.clone());
         let volume_query = VolumeQueryService::new(intent_reader.clone());
         let runtime_snapshot_query = RuntimeSnapshotQueryService::new(
             intent_reader.clone(),

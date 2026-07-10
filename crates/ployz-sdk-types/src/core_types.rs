@@ -34,6 +34,7 @@ pub use ployz_core::install::{
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
+pub use ployz_core::internal_dns::{InternalServiceName, InternalServiceNameError};
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MachineAddFailure, MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,

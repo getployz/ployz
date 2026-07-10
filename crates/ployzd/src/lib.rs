@@ -19,10 +19,10 @@ pub mod roles {
     pub mod control;
     pub mod dns {
         mod internal;
-        pub(crate) mod records;
         pub use internal::InternalResolverHealth;
         pub mod process;
         pub mod projection;
+        pub(crate) mod service;
         pub mod source;
     }
     pub mod gateway {

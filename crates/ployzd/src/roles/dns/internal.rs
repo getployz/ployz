@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::fact_cache::FactCache;
-use crate::roles::dns::records::{InternalServiceName, internal_dns_records};
+use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
 
 const DNS_HEADER_LEN: usize = 12;
 const DNS_PORT: u16 = 53;
@@ -225,7 +225,8 @@ async fn response_for_request(
         // ponytail: full projection rebuild per query; cache on fact change if a machine's query rate ever matters.
         let records = internal_dns_records(&facts.machine_facts_all());
         let answers = if query.qtype == DNS_TYPE_A && query.qclass == DNS_CLASS_IN {
-            InternalServiceName::parse(&query.name)
+            InternalServiceName::try_new(&query.name)
+                .ok()
                 .and_then(|name| records.get(&name))
                 .map(Vec::as_slice)
                 .unwrap_or(&[])

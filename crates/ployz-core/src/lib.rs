@@ -12,6 +12,7 @@ pub mod dataplane;
 pub mod deploy;
 pub mod ids;
 pub mod install;
+pub mod internal_dns;
 pub mod machine;
 pub mod machine_runtime;
 pub mod nats_config;
