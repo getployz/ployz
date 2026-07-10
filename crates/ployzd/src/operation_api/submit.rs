@@ -139,6 +139,22 @@ pub async fn network_repair(
     handlers: &OperationApiHandlers,
     request: NetworkRepairRequest,
 ) -> Result<AcceptedOperation, NetworkRepairError> {
+    let active_machine_ids = handlers
+        .machine_roster
+        .active_machines()
+        .await
+        .map_err(|error| NetworkRepairError::Unavailable {
+            operation_id: request.operation_id.clone(),
+            message: error.to_string(),
+        })?
+        .into_iter()
+        .map(|machine| machine.machine_id)
+        .collect::<Vec<_>>();
+    validate_network_repair_preconditions(
+        &request.operation_id,
+        request.machine_id.as_ref(),
+        &active_machine_ids,
+    )?;
     let operation_id = request.operation_id.clone();
     let accepted = handlers
         .controllers()
@@ -170,6 +186,27 @@ pub async fn network_repair(
     );
     handlers.network_repair().start(accepted);
     Ok(operation)
+}
+
+fn validate_network_repair_preconditions(
+    operation_id: &OperationId,
+    target_machine_id: Option<&MachineId>,
+    active_machine_ids: &[MachineId],
+) -> Result<(), NetworkRepairError> {
+    if active_machine_ids.is_empty() {
+        return Err(NetworkRepairError::NoActiveMachines {
+            operation_id: operation_id.clone(),
+        });
+    }
+    if let Some(machine_id) = target_machine_id
+        && !active_machine_ids.contains(machine_id)
+    {
+        return Err(NetworkRepairError::TargetMachineNotFound {
+            operation_id: operation_id.clone(),
+            machine_id: machine_id.clone(),
+        });
+    }
+    Ok(())
 }
 
 pub async fn namespace_remove(
@@ -546,4 +583,43 @@ async fn machine_add_bootstrap_material(
     request: &MachineAddRequest,
 ) -> Result<MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError> {
     controllers.issue_machine_add_bootstrap_material(&request.operation_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::ids::{MachineId, OperationId};
+    use ployz_sdk_types::NetworkRepairError;
+
+    use super::validate_network_repair_preconditions;
+
+    fn operation_id() -> OperationId {
+        OperationId::try_new("op_network_repair").expect("operation id")
+    }
+
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("machine id")
+    }
+
+    #[test]
+    fn network_repair_requires_an_active_machine_before_admission() {
+        let error = validate_network_repair_preconditions(&operation_id(), None, &[])
+            .expect_err("empty roster must be rejected");
+
+        assert!(matches!(error, NetworkRepairError::NoActiveMachines { .. }));
+    }
+
+    #[test]
+    fn targeted_network_repair_requires_the_target_before_admission() {
+        let error = validate_network_repair_preconditions(
+            &operation_id(),
+            Some(&machine_id("machine_b")),
+            &[machine_id("machine_a")],
+        )
+        .expect_err("unknown target must be rejected");
+
+        assert!(matches!(
+            error,
+            NetworkRepairError::TargetMachineNotFound { .. }
+        ));
+    }
 }

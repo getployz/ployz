@@ -525,7 +525,7 @@ export type NamespaceRemoveError = { "error": "resource_busy", operation_id: Ope
 
 export type NetworkRepairRequest = { operation_id: OperationId, machine_id?: MachineId, };
 
-export type NetworkRepairError = { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type NetworkRepairError = { "error": "no_active_machines", operation_id: OperationId, } | { "error": "target_machine_not_found", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type VolumeListRequest = Record<symbol, never>;
 

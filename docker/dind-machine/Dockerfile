@@ -20,7 +20,6 @@ RUN apt-get update \
     dbus \
     docker.io \
     iproute2 \
-    iputils-ping \
     iptables \
     iputils-ping \
     procps \

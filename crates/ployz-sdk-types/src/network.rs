@@ -132,6 +132,17 @@ pub type NetworkRepairResponse = OperationApiResponse<AcceptedOperation, Network
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairError {
+    #[error("network repair {} requires at least one active machine", .operation_id.as_str())]
+    NoActiveMachines { operation_id: OperationId },
+    #[error(
+        "network repair {} target machine {} does not exist",
+        .operation_id.as_str(),
+        .machine_id.as_str()
+    )]
+    TargetMachineNotFound {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
     #[error("network repair {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
