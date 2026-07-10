@@ -57,6 +57,7 @@ fn sdk_exports_core_wire_types() {
     let running = DeployRunningStage::ServingTargetCommit;
     let deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -72,6 +73,7 @@ fn sdk_exports_core_wire_types() {
         ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id"),
         deploy.namespace_id.clone(),
         service_id,
+        None,
         EventSequence::try_new(1).expect("valid event sequence"),
     );
     let replay_request = OperationEventReplayRequest {
@@ -185,6 +187,7 @@ fn sdk_exports_operation_api_wire_types() {
         reservation_id: DeployReservationId::first(),
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            origin: None,
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),

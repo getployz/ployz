@@ -842,6 +842,7 @@ async fn reserved_deploy_request(
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),

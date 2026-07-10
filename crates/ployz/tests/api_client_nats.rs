@@ -740,6 +740,7 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: ployz_core::ids::NamespaceId::try_new("default").expect("valid namespace id"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),

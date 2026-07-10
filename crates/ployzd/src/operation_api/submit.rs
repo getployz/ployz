@@ -861,6 +861,7 @@ mod tests {
             reservation_id: DeployReservationId::first(),
             target: DeployRequest {
                 namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+                origin: None,
                 services: vec![DeployServiceSpec {
                     service_id: ServiceId::try_new("api").expect("valid service id"),
                     image,

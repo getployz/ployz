@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal, Write};
 
 use ployz_core::ids::OperationId;
+use ployz_core::ops::ReplayedOperationEvent;
 use ployz_sdk_types::DeployReserveRequest;
 
 use crate::api_client::OperationApiClient;
@@ -11,19 +12,23 @@ use crate::commands::deploy_render::{
 
 use super::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, api_error,
-    operation_api_client, operation_replay_request, watch_operation_until_terminal_with,
+    deploy_history, nats_connect_config, operation_api_client_with_connect,
+    operation_replay_request, watch_operation_until_terminal_with,
 };
 
 pub(super) async fn execute_deploy(
     mut command: DeployCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let config = config.clone().with_cluster_context_from_disk()?;
     let detach = command.detach;
+    let namespace_id = command.namespace_id.clone();
     let warnings = command.warnings.join("\n");
     if !warnings.is_empty() {
         eprintln!("{warnings}");
     }
-    let api = operation_api_client(config).await?;
+    let connect = nats_connect_config(&config)?;
+    let api = operation_api_client_with_connect(&config, connect).await?;
     let reservation = api
         .deploy_reserve(&DeployReserveRequest {
             namespace_id: command.namespace_id.clone(),
@@ -56,16 +61,31 @@ pub(super) async fn execute_deploy(
             stderr: String::new(),
         });
     }
-    let mut output = watch_deploy_operation(&api, accepted.operation_id, config).await?;
+    let history = deploy_history::stream(&config, namespace_id);
+    let operation_id = accepted.operation_id;
+    let (mut output, events) = watch_deploy_operation(&api, operation_id.clone(), &config).await?;
+    let history_result = deploy_history::record_terminal_success(history, operation_id, &events);
+    append_history_warning(&mut output, history_result);
     output.stdout.insert_str(0, &receipt_output);
     Ok(output)
+}
+
+fn append_history_warning(
+    output: &mut PloyzctlExecutionOutput,
+    history_result: Result<(), deploy_history::DeployHistoryRuntimeError>,
+) {
+    if let Err(error) = history_result {
+        output.stderr.push_str(&format!(
+            "warning: deploy succeeded but local history was not updated: {error}\n"
+        ));
+    }
 }
 
 pub(super) async fn watch_deploy_operation(
     api: &OperationApiClient,
     operation_id: OperationId,
     config: &PloyzctlRuntimeConfig,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+) -> Result<(PloyzctlExecutionOutput, Vec<ReplayedOperationEvent>), PloyzctlExecutionError> {
     let mut tree = DeployTree::new();
     let stdout = io::stdout();
     let mode = if stdout.is_terminal() {
@@ -76,7 +96,7 @@ pub(super) async fn watch_deploy_operation(
     let mut stdout = stdout.lock();
     let mut output = DeployProgressOutput::new(&mut stdout, mode);
 
-    watch_operation_until_terminal_with(
+    let events = watch_operation_until_terminal_with(
         api,
         operation_replay_request(operation_id),
         config.ops_watch_timeout(),
@@ -92,7 +112,7 @@ pub(super) async fn watch_deploy_operation(
     .await?;
     output.finish(&tree)?;
 
-    Ok(PloyzctlExecutionOutput::stdout(String::new()))
+    Ok((PloyzctlExecutionOutput::stdout(String::new()), events))
 }
 
 #[derive(Clone, Copy)]
@@ -195,5 +215,21 @@ mod tests {
             .expect("second page writes only its suffix");
 
         assert_eq!(bytes, b"planning\ncontainer running\n");
+    }
+
+    #[test]
+    fn deploy_history_failure_is_a_warning_on_success_output() {
+        let mut output = PloyzctlExecutionOutput::stdout("deployed\n".to_owned());
+
+        append_history_warning(
+            &mut output,
+            Err(deploy_history::DeployHistoryRuntimeError::MissingRoot),
+        );
+
+        assert_eq!(output.stdout, "deployed\n");
+        assert_eq!(
+            output.stderr,
+            "warning: deploy succeeded but local history was not updated: cannot determine deploy history directory (set XDG_STATE_HOME or HOME)\n"
+        );
     }
 }

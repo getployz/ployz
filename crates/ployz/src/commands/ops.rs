@@ -147,11 +147,14 @@ impl ListOutput {
             .iter()
             .map(|operation| {
                 format!(
-                    "{} {} {} {}",
+                    "{} {} {} {}{}",
                     operation.status.id().as_str(),
                     operation_kind_name(operation.status.kind()),
                     operation_subject(&operation.status),
                     operation_state(&operation.status),
+                    operation_origin(&operation.status)
+                        .map(|origin| format!(" origin {origin}"))
+                        .unwrap_or_default(),
                 )
             })
             .collect::<Vec<_>>()
@@ -175,12 +178,16 @@ impl StatusOutput {
         let failure_detail = status_failure_detail(&self.snapshot.status)
             .map(|detail| format!("{detail}\n"))
             .unwrap_or_default();
+        let origin = operation_origin(&self.snapshot.status)
+            .map(|origin| format!("origin {origin}\n"))
+            .unwrap_or_default();
 
         let status = format!(
-            "operation {}\nkind {}\n{}\nstate {}\n{}last-event {}\n",
+            "operation {}\nkind {}\n{}\n{}state {}\n{}last-event {}\n",
             self.snapshot.status.id().as_str(),
             operation_kind_name(self.snapshot.status.kind()),
             operation_subject(&self.snapshot.status),
+            origin,
             operation_state(&self.snapshot.status),
             failure_detail,
             self.snapshot.status.last_event_sequence().get(),
@@ -320,6 +327,15 @@ fn operation_subject(status: &OperationStatus) -> String {
             }
         },
     }
+}
+
+fn operation_origin(status: &OperationStatus) -> Option<&str> {
+    let OperationStatus::Deploy { origin, .. } = status else {
+        return None;
+    };
+    origin
+        .as_ref()
+        .map(ployz_core::deploy::DeployOrigin::as_str)
 }
 
 const fn machine_lifecycle_name(lifecycle: ployz_sdk_types::MachineLifecycle) -> &'static str {
@@ -641,6 +657,17 @@ fn render_replayed_event_text(
 ) -> String {
     let label = operation_event_label(&event.event);
     match &event.event {
+        OperationEvent::DeploySubmitted { target, .. } => target.origin.as_ref().map_or_else(
+            || format!("{} {}", event.sequence.get(), label),
+            |origin| {
+                format!(
+                    "{} {} origin {}",
+                    event.sequence.get(),
+                    label,
+                    origin.as_str()
+                )
+            },
+        ),
         OperationEvent::DeployFailed { failure, .. } => format!(
             "{} {} {}",
             event.sequence.get(),
@@ -674,8 +701,7 @@ fn render_replayed_event_text(
                 "absent"
             }
         ),
-        OperationEvent::DeploySubmitted { .. }
-        | OperationEvent::DeployPlanningStarted { .. }
+        OperationEvent::DeployPlanningStarted { .. }
         | OperationEvent::DeployPlanCreated { .. }
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployContainerStarted { .. }

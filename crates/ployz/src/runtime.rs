@@ -33,6 +33,7 @@ use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 mod deploy_follow;
+mod deploy_history;
 mod network;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -67,6 +68,8 @@ pub struct PloyzctlRuntimeConfig {
     /// Where `machine init` records the local cluster context (test seam;
     /// defaults to the user config directory).
     pub cluster_context_path: Option<PathBuf>,
+    #[cfg(test)]
+    pub(crate) deploy_history_root: Option<PathBuf>,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -98,6 +101,8 @@ impl PloyzctlRuntimeConfig {
                 .map(PathBuf::from),
             ssh_install_timeout: None,
             cluster_context_path: None,
+            #[cfg(test)]
+            deploy_history_root: None,
         }
     }
 
@@ -218,6 +223,7 @@ pub async fn execute_command(
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
+        PloyzctlCommand::DeployHistory(command) => deploy_history::inspect(command, config),
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
                 host_runner_install,
@@ -834,6 +840,8 @@ pub enum PloyzctlExecutionError {
     },
     #[error("failed to write deploy progress: {message}")]
     WriteDeployProgress { message: String },
+    #[error("{message}")]
+    DeployHistory { message: String },
 }
 
 impl PloyzctlExecutionError {
@@ -929,6 +937,7 @@ mod tests {
             ssh_program: None,
             ssh_install_timeout: None,
             cluster_context_path: None,
+            deploy_history_root: None,
         };
 
         let config = env_config.with_cluster_context(Some(cluster_context()));

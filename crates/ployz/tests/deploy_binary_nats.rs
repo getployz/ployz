@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 use ployz::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
-use ployz_core::deploy::{ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployOrigin, ImageReference, ReplicaCount};
 use ployz_core::ids::ServiceId;
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -57,6 +57,10 @@ async fn binary_deploy_calls_nats_service() {
             let request: DeploySubmitRequest =
                 serde_json::from_slice(&request.payload).expect("deploy request decodes");
             assert_eq!(request.reservation_id, DeployReservationId::first());
+            assert_eq!(
+                request.target.origin,
+                Some(DeployOrigin::try_new("release candidate").expect("valid origin"))
+            );
             assert!(
                 request
                     .idempotency_key
@@ -168,7 +172,7 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     }
 }
 
-fn deploy_args() -> [&'static str; 8] {
+fn deploy_args() -> [&'static str; 10] {
     [
         "deploy",
         "--service",
@@ -177,6 +181,8 @@ fn deploy_args() -> [&'static str; 8] {
         "ghcr.io/acme/api:rev-2",
         "--replicas",
         "1",
+        "--origin",
+        "release candidate",
         "--detach",
     ]
 }

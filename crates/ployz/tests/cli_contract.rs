@@ -6,7 +6,7 @@ use ployz::commands::init::{
     FirstMachineInitOutput, InstallRolePolicy, plan_first_machine_process_set,
 };
 use ployz::commands::machine::MachineName;
-use ployz::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
+use ployz::commands::ops::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::service::{ServiceInspectOutput, ServiceListOutput};
 use ployz::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse_invocation};
 use ployz_core::dataplane::{
@@ -14,7 +14,9 @@ use ployz_core::dataplane::{
     PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
 };
-use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
+};
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
 use ployz_core::machine_runtime::ManagedContainerHealthStatus;
 use ployz_core::ops::{
@@ -25,8 +27,8 @@ use ployz_core::ops::{
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_sdk_types::{
-    LogsTailLines, LogsTailTarget, ServiceContainerMembership, ServiceContainerTestimony,
-    ServiceSnapshot,
+    LogsTailLines, LogsTailTarget, OpsListResult, ServiceContainerMembership,
+    ServiceContainerTestimony, ServiceSnapshot,
 };
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 
@@ -1035,6 +1037,8 @@ fn init_first_machine_can_include_gateway_role() {
 
 #[test]
 fn ops_watch_renders_persisted_operation_events() {
+    let mut request = deploy_request();
+    request.origin = Some(DeployOrigin::try_new("manual release").expect("valid deploy origin"));
     let output = WatchOutput {
         events: vec![
             replayed(
@@ -1042,7 +1046,7 @@ fn ops_watch_renders_persisted_operation_events() {
                 ployz_core::ops::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
                     reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                    target: deploy_request(),
+                    target: request,
                 },
             ),
             replayed(
@@ -1057,7 +1061,30 @@ fn ops_watch_renders_persisted_operation_events() {
     }
     .render();
 
-    assert_eq!(output, "1 deploy.submitted\n2 deploy.completed\n");
+    assert_eq!(
+        output,
+        "1 deploy.submitted origin manual release\n2 deploy.completed\n"
+    );
+}
+
+#[test]
+fn ops_list_renders_deploy_origin() {
+    let output = ListOutput::from_result(OpsListResult {
+        operations: vec![OperationStatusSnapshot::new(OperationStatus::Deploy {
+            id: operation_id("op_deploy"),
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            origin: Some(DeployOrigin::try_new("manual release").expect("valid deploy origin")),
+            state: DeployOperationState::Accepted,
+            last_event_sequence: event_sequence(1),
+        })],
+    })
+    .render();
+
+    assert_eq!(
+        output,
+        "op_deploy deploy service svc_api accepted origin manual release\n"
+    );
 }
 
 #[test]
@@ -1185,6 +1212,7 @@ fn ops_status_renders_operation_state() {
             id: operation_id.clone(),
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            origin: Some(DeployOrigin::try_new("manual release").expect("valid deploy origin")),
             state: DeployOperationState::Running {
                 stage: DeployRunningStage::WaitingForHealth,
             },
@@ -1202,7 +1230,7 @@ fn ops_status_renders_operation_state() {
 
     assert_eq!(
         output,
-        "operation op_deploy\nkind deploy\nservice svc_api\nstate running:waiting-for-health\nlast-event 7\ntimeline\n7 deploy.running\n"
+        "operation op_deploy\nkind deploy\nservice svc_api\norigin manual release\nstate running:waiting-for-health\nlast-event 7\ntimeline\n7 deploy.running\n"
     );
 }
 
@@ -1213,6 +1241,7 @@ fn ops_status_renders_failed_deploy_details() {
             id: operation_id("op_deploy"),
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            origin: None,
             state: DeployOperationState::Failed {
                 failure: health_check_failure(),
             },
@@ -1384,6 +1413,7 @@ fn health_check_failure() -> DeployOperationFailure {
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),

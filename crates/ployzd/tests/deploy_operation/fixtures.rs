@@ -893,6 +893,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
+            origin: None,
             services: vec![DeployServiceSpec {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
@@ -930,6 +931,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
 pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecutionInput {
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
@@ -1064,6 +1066,7 @@ pub(super) fn deploy_command_replacing_old_container(
 pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
@@ -1133,6 +1136,7 @@ pub(super) fn empty_deploy_command_with_running_container(
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
+            origin: None,
             services: Vec::new(),
         },
         DeployExecutionFacts {

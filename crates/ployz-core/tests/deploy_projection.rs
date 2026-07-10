@@ -1,7 +1,9 @@
 //! Deploy operation status projection: staged transitions, evidence
 //! freshness, and terminal rules.
 
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot};
+use ployz_core::deploy::{
+    DeployOrigin, DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot,
+};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
@@ -18,6 +20,7 @@ fn deploy_transition_updates_status_sequence() {
         operation_id("op_123"),
         namespace_id("default"),
         service_id("svc_api"),
+        Some(DeployOrigin::try_new("manual release").expect("valid deploy origin")),
         event_sequence(1),
     );
 
@@ -32,6 +35,7 @@ fn deploy_transition_updates_status_sequence() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: Some(DeployOrigin::try_new("manual release").expect("valid deploy origin")),
                 state: DeployOperationState::Planning,
                 last_event_sequence: event_sequence(2),
             }),
@@ -45,6 +49,7 @@ fn satisfied_deploy_transition_does_not_rewrite_status() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Planning,
         last_event_sequence: event_sequence(2),
     };
@@ -61,6 +66,7 @@ fn terminal_operation_status_cannot_return_to_running() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::completed(),
         last_event_sequence: event_sequence(4),
     };
@@ -83,6 +89,7 @@ fn deploy_completion_is_rejected_before_active_commit_stage() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
         },
@@ -111,6 +118,7 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Planning,
         last_event_sequence: event_sequence(2),
     };
@@ -140,6 +148,7 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
         },
@@ -176,6 +185,7 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: active_service_running(),
         },
@@ -193,6 +203,7 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::completed(),
                 last_event_sequence: event_sequence(6),
             }),
@@ -206,6 +217,7 @@ fn deploy_completion_can_record_warning_outcome() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: active_service_running(),
         },
@@ -225,6 +237,7 @@ fn deploy_completion_can_record_warning_outcome() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Completed {
                     outcome: DeployCompletionOutcome::CompletedWithWarnings,
                 },
@@ -240,6 +253,7 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
         },
@@ -272,6 +286,7 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: active_service_running(),
                 },
@@ -287,6 +302,7 @@ fn deploy_cleanup_can_follow_active_service_commit() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: active_service_running(),
         },
@@ -306,6 +322,7 @@ fn deploy_cleanup_can_follow_active_service_commit() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::RemovingSupersededContainers,
                 },
@@ -321,6 +338,7 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: active_service_running(),
         },
@@ -342,6 +360,7 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: active_service_running(),
                 },
@@ -357,6 +376,7 @@ fn invalid_deploy_transitions_are_rejected() {
         operation_id("op_123"),
         namespace_id("default"),
         service_id("svc_api"),
+        None,
         event_sequence(1),
     );
 
@@ -380,6 +400,7 @@ fn container_started_event_records_without_changing_status() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
         },
@@ -393,6 +414,7 @@ fn container_started_event_records_without_changing_status() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::StartingContainers,
                 },
@@ -408,6 +430,7 @@ fn health_check_started_event_records_without_changing_status() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
         },
@@ -421,6 +444,7 @@ fn health_check_started_event_records_without_changing_status() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::WaitingForHealth,
                 },
@@ -436,6 +460,7 @@ fn plan_created_event_records_without_changing_status() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Planning,
         last_event_sequence: event_sequence(2),
     };
@@ -447,6 +472,7 @@ fn plan_created_event_records_without_changing_status() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Planning,
                 last_event_sequence: event_sequence(3),
             }),
@@ -460,6 +486,7 @@ fn plan_created_event_after_execution_starts_records_without_changing_status() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
         },
@@ -473,6 +500,7 @@ fn plan_created_event_after_execution_starts_records_without_changing_status() {
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::StartingContainers,
                 },
@@ -488,6 +516,7 @@ fn older_container_started_event_is_satisfied_after_later_stage() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: active_service_running(),
         },
@@ -506,6 +535,7 @@ fn fresh_container_started_event_after_later_stage_records_without_changing_stat
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: active_service_running(),
         },
@@ -519,6 +549,7 @@ fn fresh_container_started_event_after_later_stage_records_without_changing_stat
                 id: operation_id("op_123"),
                 namespace_id: namespace_id("default"),
                 service_id: service_id("svc_api"),
+                origin: None,
                 state: DeployOperationState::Running {
                     stage: active_service_running(),
                 },

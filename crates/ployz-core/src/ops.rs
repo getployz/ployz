@@ -116,6 +116,8 @@ pub enum OperationStatus {
         id: OperationId,
         namespace_id: NamespaceId,
         service_id: ServiceId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<crate::deploy::DeployOrigin>,
         state: DeployOperationState,
         last_event_sequence: EventSequence,
     },
@@ -209,12 +211,14 @@ impl OperationStatus {
         id: OperationId,
         namespace_id: NamespaceId,
         service_id: ServiceId,
+        origin: Option<crate::deploy::DeployOrigin>,
         event_sequence: EventSequence,
     ) -> Self {
         Self::Deploy {
             id,
             namespace_id,
             service_id,
+            origin,
             state: DeployOperationState::Accepted,
             last_event_sequence: event_sequence,
         }
