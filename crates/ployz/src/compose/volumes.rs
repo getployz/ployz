@@ -4,6 +4,11 @@ use serde_yaml::Value;
 use super::diagnostics::{ComposeFinding, ComposePath};
 use super::model::{ComposeKnownVolumeType, ComposeLongVolume, ComposeVolume, ComposeVolumeType};
 
+/// A named-volume mount is self-declaring pinned intent: the mount creates the
+/// volume, so a service may reference a name with no matching top-level
+/// `volumes:` entry. Top-level declarations are validated on their own path and
+/// exist only to reject unsupported options (external, drivers); they are not a
+/// registry a mount must appear in.
 pub(super) fn parse_volume_mounts(
     volumes: Option<Vec<ComposeVolume>>,
     service_path: &ComposePath,
