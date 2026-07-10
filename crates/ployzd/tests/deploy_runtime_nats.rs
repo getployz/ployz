@@ -53,6 +53,13 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .subscribe(INTENT_CHANGED)
         .await
         .expect("subscribe intent changes");
+    let resolved_request = resolved_deploy_request(1);
+    let resolved_entry_id = resolved_request
+        .service_requests()
+        .into_iter()
+        .next()
+        .expect("resolved fixture has one service")
+        .namespace_revision_entry_id;
 
     let outcome = run_deploy_operation(
         accepted,
@@ -75,7 +82,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     .expect("accepted deploy runs");
     assert_eq!(
         outcome.namespace_revision_id,
-        target_namespace_revision_id(1)
+        resolved_request.namespace_revision_id()
     );
     tokio::time::timeout(Duration::from_secs(1), intent_changed.next())
         .await
@@ -100,7 +107,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             })
             .expect("serving target committed")
             .namespace_revision_entry_id,
-        target_namespace_revision_entry_id()
+        resolved_entry_id
     );
     assert!(matches!(
         controllers
@@ -166,6 +173,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
 
     let next = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
             operation_id: operation_id("op_next"),
             idempotency_key: idempotency_key("idem_deploy_next"),
             target: deploy_request(1),
@@ -315,7 +323,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .submit_deploy(deploy_submit_command(resolved_deploy_request(1)))
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -343,7 +351,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     .await
     .expect_err("missing machine responder fails deploy");
 
-    assert!(matches!(error, DeployOperationRunError::Execute(_)));
+    assert!(matches!(error, DeployOperationRunError::Prepare { .. }));
     assert!(
         nats.namespace_intent
             .load()
@@ -389,7 +397,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .submit_deploy(deploy_submit_command(resolved_deploy_request(1)))
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -459,6 +467,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
     let controllers = operation_controllers(nats.client.clone()).await;
     controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_first"),
             target: deploy_request(1),
@@ -468,6 +477,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
 
     let error = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
             target: deploy_request(1),
@@ -499,6 +509,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
     let controllers = operation_controllers(nats.client.clone()).await;
     let first = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_deploy"),
             target: deploy_request(1),
@@ -508,6 +519,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
 
     let retry = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
             operation_id: operation_id("op_retry_candidate"),
             idempotency_key: idempotency_key("idem_deploy"),
             target: deploy_request(1),
@@ -700,6 +712,7 @@ async fn operation_controllers(client: async_nats::Client) -> OperationControlle
 
 fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
     DeploySubmitCommand {
+        registry_credentials: Vec::new(),
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
         target,
@@ -720,4 +733,17 @@ fn deploy_request(replicas: u16) -> DeployRequest {
             routes: Vec::new(),
         }],
     }
+}
+
+fn resolved_deploy_request(replicas: u16) -> DeployRequest {
+    let mut request = deploy_request(replicas);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    let digest = ployz_core::image::OciDigest::sha256(service.image.as_str().as_bytes());
+    service.image = service
+        .image
+        .with_digest(&digest)
+        .expect("fixture image accepts a digest");
+    request
 }

@@ -7,8 +7,9 @@ use crate::operations::deploy::{
     DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionOutcome,
     DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError, DeployHealthChecker,
     DeployMachineCandidates, MachineContainerRuntime, NamespaceCommitError,
-    NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
-    prepare_deploy_execution_command,
+    NamespaceStateCommitter, execute_deploy_operation_after_planning,
+    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command_with_credentials,
+    record_planning, resolve_deploy_registry_images,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -58,7 +59,7 @@ where
         machine_runtime,
         health_checker,
     } = ports;
-    let request = accepted.target.clone();
+    let mut request = accepted.target.clone();
 
     let facts = match load_deploy_execution_facts_from_nats(
         &request,
@@ -108,11 +109,54 @@ where
             failure_record_error,
         });
     }
-    let command =
-        prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
+    let provisional_command = prepare_deploy_execution_command_with_credentials(
+        accepted.operation_id.clone(),
+        request.clone(),
+        facts.clone(),
+        &accepted.registry_credentials,
+    );
     let mut recorder = controllers;
+    if let Err(source) = record_planning(&provisional_command, &mut recorder).await {
+        let failure_record_error = record_operation_failure(
+            &recorder,
+            &accepted,
+            source.deploy_failure(&provisional_command, Vec::new()),
+        )
+        .await
+        .err();
+        return Err(DeployOperationRunError::Prepare {
+            source,
+            failure_record_error,
+        });
+    }
+    if let Err(source) = resolve_deploy_registry_images(
+        &provisional_command,
+        &mut request,
+        &mut recorder,
+        machine_runtime,
+    )
+    .await
+    {
+        let failure_record_error = record_operation_failure(
+            &recorder,
+            &accepted,
+            source.deploy_failure(&provisional_command, Vec::new()),
+        )
+        .await
+        .err();
+        return Err(DeployOperationRunError::Prepare {
+            source,
+            failure_record_error,
+        });
+    }
+    let command = prepare_deploy_execution_command_with_credentials(
+        accepted.operation_id.clone(),
+        request,
+        facts,
+        &accepted.registry_credentials,
+    );
     let mut namespace_state = NamespaceIntentCommitter::new(intent_change_client, namespace_intent);
-    execute_deploy_operation(
+    execute_deploy_operation_after_planning(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -284,6 +328,10 @@ pub enum DeployOperationRunError {
         failure_record_error: Option<RecordDeployTransitionError>,
     },
     AutoDnsWithoutLease {
+        failure_record_error: Option<RecordDeployTransitionError>,
+    },
+    Prepare {
+        source: DeployExecutionError,
         failure_record_error: Option<RecordDeployTransitionError>,
     },
     Execute(DeployExecutionError),

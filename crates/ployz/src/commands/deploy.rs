@@ -33,6 +33,7 @@ impl DeployCommand {
     #[must_use]
     pub fn into_request(self) -> DeploySubmitRequest {
         DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: self.idempotency_key,
             target: DeployRequest {
                 namespace_id: self.namespace_id,

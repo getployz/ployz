@@ -1,13 +1,14 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
 use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, ImageSource};
+use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployRequest, ImageSource};
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
 use ployz_core::ops::{DeployEvidence, DeployOperationFailure, FailureMessage};
 
-use crate::roles::machine::client::MachineImageEnsureError;
-use crate::roles::machine::protocol::MachineImagePull;
+use crate::roles::machine::client::{MachineImageEnsureError, MachineImageResolveError};
+use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};
 
+use super::deploy_plan;
 use super::{
     DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
     DeployServiceExecutionCommand, MachineContainerRuntime, record_evidence,
@@ -29,6 +30,125 @@ pub(super) fn dataplane_prepare_request(
         }
     }
     DataplanePrepareRequest::for_deploy_plan(command.operation_id.clone(), plan, &members)
+}
+
+pub(super) async fn resolve_registry_images<R, N>(
+    command: &DeployExecutionCommand,
+    request: &mut DeployRequest,
+    recorder: &mut R,
+    machine_runtime: &mut N,
+) -> Result<(), DeployExecutionError>
+where
+    R: DeployOperationRecorder,
+    N: MachineContainerRuntime,
+{
+    let provisional_plan = deploy_plan(command)?;
+    for target in &mut request.services {
+        if !matches!(target.image_source, ImageSource::Registry) {
+            continue;
+        }
+        let Some(service) = command
+            .services()
+            .iter()
+            .find(|service| service.request.service_id == target.service_id)
+        else {
+            return Err(DeployExecutionError::PlanInconsistent {
+                service_id: target.service_id.clone(),
+            });
+        };
+        let Some(machine_id) = provisional_plan
+            .services
+            .iter()
+            .find(|plan| plan.service_id == target.service_id)
+            .and_then(|plan| plan.steps.first())
+            .map(|step| match step {
+                DeployPlanStep::UseExistingContainer { machine_id, .. }
+                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
+            })
+        else {
+            return Err(DeployExecutionError::PlanInconsistent {
+                service_id: target.service_id.clone(),
+            });
+        };
+        let requested = target.image.clone();
+        let digest = match requested.pinned_digest() {
+            Some(digest) => digest,
+            None => tokio::time::timeout(
+                command.step_timeout(),
+                machine_runtime.resolve_image(
+                    &machine_id,
+                    MachineContainerResolveImageRpcRequest {
+                        reference: requested.clone(),
+                        credential: service.registry_credential().cloned(),
+                    },
+                ),
+            )
+            .await
+            .map_err(|_| {
+                image_resolution_failure(
+                    service,
+                    &machine_id,
+                    &requested,
+                    deploy_failure_message("image resolution timed out"),
+                )
+            })?
+            .map_err(|error| image_resolution_error(service, &requested, error))?,
+        };
+        let resolved = requested.with_digest(&digest).map_err(|error| {
+            image_resolution_failure(
+                service,
+                &machine_id,
+                &requested,
+                deploy_failure_message(error.to_string()),
+            )
+        })?;
+        target.image = resolved.clone();
+        record_evidence(
+            command,
+            recorder,
+            DeployEvidence::ImageResolved {
+                service_id: target.service_id.clone(),
+                machine_id,
+                requested,
+                resolved,
+                credential_supplied: service.registry_credential().is_some(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn image_resolution_error(
+    service: &DeployServiceExecutionCommand,
+    requested: &ployz_core::deploy::ImageReference,
+    error: MachineImageResolveError,
+) -> DeployExecutionError {
+    match error {
+        MachineImageResolveError::Rejected {
+            machine_id,
+            message,
+        } => image_resolution_failure(service, &machine_id, requested, message),
+        MachineImageResolveError::Unavailable { machine_id, reason } => {
+            image_resolution_failure(service, &machine_id, requested, reason.failure_message())
+        }
+    }
+}
+
+fn image_resolution_failure(
+    service: &DeployServiceExecutionCommand,
+    machine_id: &ployz_core::ids::MachineId,
+    requested: &ployz_core::deploy::ImageReference,
+    message: FailureMessage,
+) -> DeployExecutionError {
+    DeployExecutionError::Image {
+        failure: Box::new(DeployOperationFailure::ImageResolutionFailed {
+            service_id: service.request.service_id.clone(),
+            machine_id: machine_id.clone(),
+            image: requested.clone(),
+            message,
+        }),
+    }
 }
 
 pub(super) async fn ensure_images<R, N>(
@@ -63,7 +183,7 @@ where
             machine_runtime.ensure_image(seed, request),
         )
         .await
-        .map_err(|_| DeployExecutionError::EnsureImage {
+        .map_err(|_| DeployExecutionError::Image {
             failure: Box::new(DeployOperationFailure::SeedUnavailable {
                 service_id: service.request.service_id.clone(),
                 seed: seed.clone(),
@@ -92,7 +212,7 @@ where
                 });
             };
             if ensured.platform != *target_platform {
-                return Err(DeployExecutionError::EnsureImage {
+                return Err(DeployExecutionError::Image {
                     failure: Box::new(DeployOperationFailure::UnsupportedTargetPlatform {
                         service_id: service.request.service_id.clone(),
                         machine_id: machine_id.clone(),
@@ -155,7 +275,7 @@ fn ensure_image_failure(
             message: deploy_failure_message(format!("image seed rejected ensure: {error:?}")),
         },
     };
-    DeployExecutionError::EnsureImage {
+    DeployExecutionError::Image {
         failure: Box::new(failure),
     }
 }
@@ -167,6 +287,7 @@ pub(super) fn machine_image_pull(
     match &service.request.image_source {
         ImageSource::Registry => Ok(MachineImagePull::Registry {
             reference: service.request.image.clone(),
+            credential: service.registry_credential().cloned(),
         }),
         ImageSource::PushedToSeed {
             seed,

@@ -33,9 +33,11 @@ use ployzd::operations::deploy::{
     NamespaceCommitError, NamespaceStateCommitter, PreStartHookRuntimeError,
     prepare_deploy_execution_command,
 };
+use ployzd::roles::machine::client::MachineImageResolveError;
 use ployzd::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
 };
@@ -117,6 +119,7 @@ impl DeployOperationRecorder for RecordingOperations {
     ) -> Result<(), DeployOperationRecordError> {
         assert_eq!(recorded_operation_id, &operation_id("op_123"));
         match evidence {
+            DeployEvidence::ImageResolved { .. } => {}
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {
                     replica_count: plan
@@ -569,6 +572,16 @@ impl RecordingRuntime {
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
+    async fn resolve_image(
+        &mut self,
+        _machine_id: &MachineId,
+        request: MachineContainerResolveImageRpcRequest,
+    ) -> Result<ployz_core::image::OciDigest, MachineImageResolveError> {
+        Ok(ployz_core::image::OciDigest::sha256(
+            request.reference.as_str().as_bytes(),
+        ))
+    }
+
     async fn ensure_image(
         &mut self,
         machine_id: &MachineId,

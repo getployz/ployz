@@ -181,6 +181,7 @@ fn assert_observed_running(
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         pull: MachineImagePull::Registry {
+            credential: None,
             reference: image("ghcr.io/acme/api:rev-2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),

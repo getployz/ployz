@@ -175,6 +175,7 @@ fn sdk_exports_cert_wire_types() {
 fn sdk_exports_operation_api_wire_types() {
     let operation_id = ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id");
     let request = DeploySubmitRequest {
+        registry_credentials: Vec::new(),
         idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
             .expect("valid idempotency key"),
         target: DeployRequest {

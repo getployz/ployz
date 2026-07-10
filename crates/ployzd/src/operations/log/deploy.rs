@@ -48,6 +48,7 @@ impl OperationRepository {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
             target: submitted.payload,
+            registry_credentials: Vec::new(),
             should_start_execution: submitted.should_start_execution,
         })
     }

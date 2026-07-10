@@ -185,6 +185,7 @@ pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
     pub target: ployz_core::deploy::DeployRequest,
+    pub registry_credentials: Vec<ployz_sdk_types::DeployRegistryCredential>,
     pub should_start_execution: bool,
 }
 

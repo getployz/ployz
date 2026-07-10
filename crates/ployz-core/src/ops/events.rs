@@ -84,6 +84,14 @@ pub enum OperationEvent {
     DeployPlanningStarted {
         operation_id: OperationId,
     },
+    DeployImageResolved {
+        operation_id: OperationId,
+        service_id: ServiceId,
+        machine_id: MachineId,
+        requested: crate::deploy::ImageReference,
+        resolved: crate::deploy::ImageReference,
+        credential_supplied: bool,
+    },
     DeployPlanCreated {
         operation_id: OperationId,
         plan: DeployPlan,
@@ -304,6 +312,7 @@ impl OperationEvent {
         match self {
             Self::DeploySubmitted { operation_id, .. }
             | Self::DeployPlanningStarted { operation_id }
+            | Self::DeployImageResolved { operation_id, .. }
             | Self::DeployPlanCreated { operation_id, .. }
             | Self::DeployRunning { operation_id, .. }
             | Self::DeployDataplanePrepared { operation_id, .. }
@@ -368,6 +377,7 @@ impl OperationEvent {
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
             Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
+            | Self::DeployImageResolved { .. }
             | Self::DeployImageAvailabilityVerified { .. }
             | Self::DeployContainerStarted { .. }
             | Self::DeployRunning { .. }
@@ -420,6 +430,20 @@ impl OperationEvent {
     #[must_use]
     pub fn deploy_evidence(&self) -> Option<DeployEvidence> {
         match self {
+            Self::DeployImageResolved {
+                service_id,
+                machine_id,
+                requested,
+                resolved,
+                credential_supplied,
+                ..
+            } => Some(DeployEvidence::ImageResolved {
+                service_id: service_id.clone(),
+                machine_id: machine_id.clone(),
+                requested: requested.clone(),
+                resolved: resolved.clone(),
+                credential_supplied: *credential_supplied,
+            }),
             Self::DeployPlanCreated { plan, .. } => {
                 Some(DeployEvidence::PlanCreated { plan: plan.clone() })
             }
@@ -584,6 +608,23 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployPlanningStarted { operation_id } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Planning),
+            },
+            OperationEvent::DeployImageResolved {
+                operation_id,
+                service_id,
+                machine_id,
+                requested,
+                resolved,
+                credential_supplied,
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::ImageResolved {
+                    service_id,
+                    machine_id,
+                    requested,
+                    resolved,
+                    credential_supplied,
+                }),
             },
             OperationEvent::DeployPlanCreated {
                 operation_id, plan, ..

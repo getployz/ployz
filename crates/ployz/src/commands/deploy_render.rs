@@ -89,6 +89,30 @@ impl DeployTree {
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
+            OperationEvent::DeployImageResolved {
+                operation_id,
+                service_id,
+                requested,
+                resolved,
+                ..
+            } => {
+                if let Some(deploy) = &mut self.deploy
+                    && let Some(service) = deploy
+                        .target
+                        .services
+                        .iter_mut()
+                        .find(|service| service.service_id == *service_id)
+                {
+                    service.image = resolved.clone();
+                }
+                self.plain_lines.push(format!(
+                    "deploy {}: image {} — {} → {}",
+                    operation_id.as_str(),
+                    service_id.as_str(),
+                    requested.as_str(),
+                    resolved.as_str()
+                ));
+            }
             OperationEvent::DeployPlanCreated { operation_id, plan } => {
                 if let Some(deploy) = &self.deploy {
                     let target = &deploy.target;
@@ -733,6 +757,9 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                 let reason = tree
                     .failure()
                     .map_or_else(String::new, |failure| match failure {
+                        DeployOperationFailure::ImageResolutionFailed { .. } => {
+                            failure_cause(tree, failure)
+                        }
                         DeployOperationFailure::ArtifactUnavailable { reason, .. } => {
                             artifact_unavailable_reason(reason)
                         }

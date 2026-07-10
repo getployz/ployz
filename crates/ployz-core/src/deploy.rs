@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use crate::ids::{
@@ -99,8 +100,8 @@ pub struct PreStartHook {
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v7";
-    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v4";
+        "ployz.namespace_revision_entry.v8";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v5";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -248,6 +249,91 @@ pub enum ImageSource {
         manifest_digest: OciDigest,
         image_id: OciDigest,
     },
+}
+
+/// One deploy-scoped registry credential. It may cross the operator and
+/// machine RPC boundaries, but it is never part of deploy intent or evidence.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct RegistryCredential {
+    pub username: String,
+    pub secret: RegistryCredentialSecret,
+}
+
+impl RegistryCredential {
+    pub fn try_new(
+        username: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> Result<Self, RegistryCredentialError> {
+        let username = username.into();
+        if username.is_empty() {
+            return Err(RegistryCredentialError::EmptyUsername);
+        }
+        Ok(Self {
+            username,
+            secret: RegistryCredentialSecret::try_new(secret)?,
+        })
+    }
+}
+
+impl fmt::Debug for RegistryCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegistryCredential")
+            .field("username", &self.username)
+            .field("secret", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct RegistryCredentialSecret(String);
+
+impl RegistryCredentialSecret {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, RegistryCredentialError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(RegistryCredentialError::EmptySecret);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RegistryCredentialSecret {
+    type Error = RegistryCredentialError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<RegistryCredentialSecret> for String {
+    fn from(value: RegistryCredentialSecret) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Debug for RegistryCredentialSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RegistryCredentialSecret([redacted])")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RegistryCredentialError {
+    #[error("registry credential username is empty")]
+    EmptyUsername,
+    #[error("registry credential secret is empty")]
+    EmptySecret,
 }
 
 impl ImageSource {
@@ -1815,6 +1901,14 @@ impl ImageReference {
         {
             return Err(ImageReferenceError::InvalidCharacter { value });
         }
+        if value.contains('@') {
+            let Some((name, digest)) = value.split_once('@') else {
+                unreachable!("contains checked above");
+            };
+            if name.is_empty() || digest.contains('@') || OciDigest::try_new(digest).is_err() {
+                return Err(ImageReferenceError::InvalidDigest { value });
+            }
+        }
 
         Ok(Self(value))
     }
@@ -1822,6 +1916,28 @@ impl ImageReference {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    #[must_use]
+    pub fn pinned_digest(&self) -> Option<OciDigest> {
+        self.0
+            .rsplit_once('@')
+            .and_then(|(_, digest)| OciDigest::try_new(digest).ok())
+    }
+
+    pub fn with_digest(&self, digest: &OciDigest) -> Result<Self, ImageReferenceError> {
+        let name = self
+            .0
+            .split_once('@')
+            .map_or(self.as_str(), |(name, _)| name);
+        let last_slash = name.rfind('/');
+        let name = match name.rfind(':') {
+            Some(tag_separator) if last_slash.is_none_or(|slash| tag_separator > slash) => {
+                &name[..tag_separator]
+            }
+            Some(_) | None => name,
+        };
+        Self::try_new(format!("{name}@{digest}"))
     }
 }
 
@@ -1845,6 +1961,8 @@ pub enum ImageReferenceError {
     Empty,
     #[error("image reference contains invalid characters: {value}")]
     InvalidCharacter { value: String },
+    #[error("image reference has an invalid digest: {value}")]
+    InvalidDigest { value: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1886,4 +2004,25 @@ impl From<ReplicaCount> for u16 {
 pub enum ReplicaCountError {
     #[error("replica count must be greater than zero")]
     Zero,
+}
+
+#[cfg(test)]
+mod image_reference_tests {
+    use super::*;
+
+    #[test]
+    fn digest_pinning_replaces_a_tag_without_mistaking_a_registry_port_for_one() {
+        let digest = OciDigest::sha256(b"manifest");
+
+        let pinned = ImageReference::try_new("registry.example:5000/team/api:latest")
+            .expect("valid tagged image")
+            .with_digest(&digest)
+            .expect("digest-pinned image");
+
+        assert_eq!(
+            pinned.as_str(),
+            format!("registry.example:5000/team/api@{digest}")
+        );
+        assert_eq!(pinned.pinned_digest(), Some(digest));
+    }
 }

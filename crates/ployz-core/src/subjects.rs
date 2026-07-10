@@ -312,6 +312,7 @@ pub enum MachineServiceEndpoint {
     FactsGet,
     ContainerEnsureEndpointNetwork,
     ContainerInspect,
+    ContainerResolveImage,
     ContainerRun,
     ContainerRunHook,
     ContainerRestart,
@@ -343,6 +344,7 @@ impl MachineServiceEndpoint {
             Self::FactsGet => "facts.get",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
+            Self::ContainerResolveImage => "container.resolve_image",
             Self::ContainerRun => "container.run",
             Self::ContainerRunHook => "container.run_hook",
             Self::ContainerRestart => "container.restart",
@@ -371,6 +373,7 @@ impl MachineServiceEndpoint {
             Self::Inspect
             | Self::FactsGet
             | Self::ContainerInspect
+            | Self::ContainerResolveImage
             | Self::DataplaneProbeMtu
             | Self::SubstrateReport
             | Self::LogsTail

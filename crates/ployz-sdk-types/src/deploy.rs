@@ -9,6 +9,15 @@ use crate::ops::{AcceptedOperation, OperationApiResponse};
 pub struct DeploySubmitRequest {
     pub idempotency_key: OperationIdempotencyKey,
     pub target: DeployRequest,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registry_credentials: Vec<DeployRegistryCredential>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeployRegistryCredential {
+    pub service_id: ServiceId,
+    pub credential: RegistryCredential,
 }
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;

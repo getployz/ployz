@@ -34,10 +34,11 @@ pub(super) async fn execute_deploy(
         .iter()
         .map(crate::image_push::ImagePushReceipt::render)
         .collect::<String>();
-    let accepted = api
-        .deploy_submit(&command.into_request())
-        .await
-        .map_err(api_error)?;
+    let registry_credentials = crate::registry_auth::deploy_registry_credentials(&command.services)
+        .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
+    let mut request = command.into_request();
+    request.registry_credentials = registry_credentials;
+    let accepted = api.deploy_submit(&request).await.map_err(api_error)?;
     if detach {
         return Ok(PloyzctlExecutionOutput {
             stdout: format!(

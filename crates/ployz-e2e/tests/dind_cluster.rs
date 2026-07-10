@@ -26,8 +26,8 @@ use ployz_core::deploy::{
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest,
     DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
-    NanoCpus, PidsLimit, PreStartHook, ReplicaCount, ServiceEnvironment, ServiceVolumeMount,
-    VolumeName,
+    NanoCpus, PidsLimit, PreStartHook, RegistryCredential, ReplicaCount, ServiceEnvironment,
+    ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::{
@@ -53,8 +53,9 @@ use ployz_e2e::dind::{
 use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
-    MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest, VolumeListRequest,
+    DeployRegistryCredential, DeploySubmitRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot, MachineTestimony,
+    NamespaceRemoveRequest, OpsListRequest, ServiceInspectRequest, VolumeListRequest,
     VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
@@ -86,6 +87,7 @@ use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE
 /// The workload image `scripts/build-dind-machine-image.sh` bakes into the
 /// machine image; the inner Docker daemons load it at boot.
 const WORKLOAD_IMAGE: &str = "nginx:1.27-alpine";
+const REGISTRY_IMAGE: &str = "registry:2.8.3";
 /// Route hostname the smoke deploy registers on both gateways.
 const ROUTE_HOSTNAME: &str = "smoke.local";
 /// Port nginx listens on inside its workload container.
@@ -286,6 +288,7 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
         let failed = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_convergence_failed"),
                 // The 0.4s outlives at least one 100ms health poll (so the
                 // container is sampled running) yet exits inside the 1.5s
@@ -328,6 +331,7 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
         let retry = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_convergence_retry"),
                 target: convergence_deploy_target("sleep 600"),
             })
@@ -407,6 +411,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
         let success = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_pre_start_success"),
                 target: pre_start_deploy_target("pre_start_success", "echo ok > /data/marker"),
             })
@@ -449,6 +454,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
         let failed = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_pre_start_failure"),
                 target: pre_start_deploy_target("pre_start_failure", "exit 7"),
             })
@@ -512,6 +518,7 @@ async fn scenario_services_start_in_depends_on_order() {
         let accepted = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_depends_on_order"),
                 target: depends_on_deploy_target(),
             })
@@ -929,6 +936,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
         let accepted = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_direct_push"),
                 target: DeployRequest {
                     namespace_id: namespace,
@@ -1006,6 +1014,143 @@ async fn scenario_direct_push_multi_machine_deploy() {
                 .any(|machine| machine != receipt.seed.as_str()),
             "at least one pushed-image replica must run away from seed {}: {running_machines:?}",
             receipt.seed.as_str()
+        );
+    })
+    .await;
+    finish(core).await;
+}
+
+/// A private Registry V2 image is resolved once through a target machine's
+/// Docker daemon, pulled by digest with an operation-scoped credential, and
+/// leaves no credential in machine or operation storage.
+#[tokio::test]
+async fn scenario_private_registry_digest_pinning() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 0).await;
+    with_evidence(&core.cluster, async {
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        let registry_host = "127.0.0.1";
+        let requested = ImageReference::try_new(format!(
+            "{registry_host}:5001/private/nginx:1"
+        ))
+        .expect("valid private registry reference");
+        let setup = core
+            .exec_sh(
+                core.cluster.core(),
+                &format!(
+                    "set -eu
+mkdir -p /tmp/ployz-private-auth
+printf '%s\\n' 'alice:$2y$04$qafo3sApXM2BmheA/ibO/eWU/sPUOc6MAT/mGx.03tFxAmHczRQNe' > /tmp/ployz-private-auth/htpasswd
+docker volume create ployz-private-registry-data >/dev/null
+docker run -d --name ployz-private-registry -p 5001:5000 -v ployz-private-registry-data:/var/lib/registry {REGISTRY_IMAGE} >/dev/null
+docker tag {WORKLOAD_IMAGE} {requested}
+docker push {requested} >/dev/null
+docker rm -f ployz-private-registry >/dev/null
+docker run -d --name ployz-private-registry -p 5001:5000 -v ployz-private-registry-data:/var/lib/registry -v /tmp/ployz-private-auth:/auth:ro -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=ployz-e2e -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd {REGISTRY_IMAGE} >/dev/null
+for attempt in $(seq 1 30); do
+  if curl -fsS -u alice:s3cr3t http://{registry_host}:5001/v2/ >/dev/null; then exit 0; fi
+  sleep 1
+done
+exit 1",
+                    requested = requested.as_str(),
+                ),
+            )
+            .await;
+        assert!(setup.success(), "private registry setup failed: {setup:?}");
+
+        let namespace = namespace_id("private_registry");
+        let service = service_id("svc_private_registry");
+        let credential = RegistryCredential::try_new("alice", "s3cr3t")
+            .expect("valid deploy-scoped registry credential");
+        let accepted = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: vec![DeployRegistryCredential {
+                    service_id: service.clone(),
+                    credential,
+                }],
+                idempotency_key: idempotency_key("idem_dind_private_registry"),
+                target: DeployRequest {
+                    namespace_id: namespace.clone(),
+                    services: vec![DeployServiceSpec {
+                        service_id: service.clone(),
+                        image: requested.clone(),
+                        image_source: ployz_core::deploy::ImageSource::Registry,
+                        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                        runtime: ContainerRuntimeSpec::image_defaults(),
+                        pre_start: None,
+                        depends_on: Vec::new(),
+                        routes: Vec::new(),
+                    }],
+                },
+            })
+            .await
+            .expect("private registry deploy submits");
+        let status =
+            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                &status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "private registry deploy did not complete: {status:?}"
+        );
+
+        let events = terminal_operation_events(&core, &accepted.operation_id).await;
+        let resolved = events.iter().find_map(|event| {
+            let OperationEvent::DeployImageResolved {
+                service_id,
+                machine_id: resolver,
+                requested: event_requested,
+                resolved,
+                credential_supplied: true,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            assert_eq!(service_id, &service);
+            assert_eq!(resolver, &machine_id("core_1"));
+            assert_eq!(event_requested, &requested);
+            Some(resolved.clone())
+        });
+        let resolved = resolved.expect("digest resolution evidence exists");
+        assert!(resolved.pinned_digest().is_some());
+        let snapshot = core
+            .api
+            .service_inspect(&ServiceInspectRequest {
+                namespace_id: namespace,
+                service_id: service,
+            })
+            .await
+            .expect("committed service manifest reads");
+        assert_eq!(snapshot.active.image, resolved);
+        assert!(
+            !serde_json::to_string(&events)
+                .expect("operation evidence serializes")
+                .contains("s3cr3t"),
+            "registry credential leaked into operation evidence"
+        );
+        let no_persisted_credential = core
+            .exec_sh(
+                core.cluster.core(),
+                "set -eu
+test ! -s /root/.docker/config.json
+if grep -R -F 's3cr3t' /etc/ployz /var/lib/ployz /root/.docker 2>/dev/null; then exit 1; fi",
+            )
+            .await;
+        assert!(
+            no_persisted_credential.success(),
+            "deploy credential persisted on the machine: {no_persisted_credential:?}"
         );
     })
     .await;
@@ -1093,6 +1238,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         let accepted = core
             .api
             .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_internal_dns"),
                 target: internal_dns_deploy_target(),
             })
@@ -1268,6 +1414,7 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     let accepted = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_deploy"),
             target: smoke_deploy_target(),
         })
@@ -1345,13 +1492,16 @@ async fn assert_smoke_workload_container(
     machine: &DindMachine,
     deploy_operation: &ployz_core::ids::OperationId,
 ) -> ManagedWorkloadContainer {
-    // The revision entry is the content-derived id of the deployed service spec.
-    let smoke_target = smoke_deploy_target();
-    let [smoke_service] = smoke_target.services.as_slice() else {
-        panic!("smoke deploy target carries one service");
-    };
-    let revision_entry = smoke_service
-        .namespace_revision_entry_id(&smoke_target.namespace_id)
+    let revision_entry = core
+        .api
+        .service_inspect(&ServiceInspectRequest {
+            namespace_id: namespace_id("smoke"),
+            service_id: service_id("svc_smoke"),
+        })
+        .await
+        .expect("smoke service is inspectable")
+        .active
+        .namespace_revision_entry_id
         .as_str()
         .to_owned();
     let containers = managed_workload_containers(core, machine).await;
@@ -1447,6 +1597,7 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
     let accepted = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_runtime_fields"),
             target: runtime_fields_deploy_target(),
         })
@@ -1523,6 +1674,7 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
     let accepted = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_failing_healthcheck"),
             target: failing_healthcheck_deploy_target(),
         })
@@ -1585,6 +1737,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
     let first = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_volume_first"),
             target: volume_deploy_target(
                 "printf first > /data/marker; while true; do sleep 600; done",
@@ -1610,6 +1763,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
     let second = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_volume_second"),
             target: volume_deploy_target(
                 "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
@@ -1667,6 +1821,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
     let drop_mount = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_volume_drop_mount"),
             target: volume_deploy_target_without_mount(),
         })
@@ -1711,6 +1866,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
     let reattach = core
         .api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_dind_volume_reattach"),
             target: volume_deploy_target(
                 "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",

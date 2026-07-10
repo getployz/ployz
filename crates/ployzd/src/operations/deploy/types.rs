@@ -1,6 +1,7 @@
 use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
+    RegistryCredential,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -34,6 +35,7 @@ pub struct DeployExecutionCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionCommand {
     pub(super) request: DeployServiceRequest,
+    pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
@@ -102,6 +104,11 @@ impl DeployExecutionCommand {
 }
 
 impl DeployServiceExecutionCommand {
+    #[must_use]
+    pub fn registry_credential(&self) -> Option<&RegistryCredential> {
+        self.registry_credential.as_ref()
+    }
+
     #[must_use]
     pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
         &self.existing_replicas

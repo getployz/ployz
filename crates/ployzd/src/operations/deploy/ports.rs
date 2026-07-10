@@ -8,10 +8,11 @@ use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use std::future::Future;
 
-use crate::roles::machine::client::MachineImageEnsureError;
+use crate::roles::machine::client::{MachineImageEnsureError, MachineImageResolveError};
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
 };
@@ -36,6 +37,20 @@ pub trait DeployOperationRecorder {
 }
 
 pub trait MachineContainerRuntime {
+    fn resolve_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerResolveImageRpcRequest,
+    ) -> impl Future<Output = Result<ployz_core::image::OciDigest, MachineImageResolveError>> + Send
+    {
+        let _ = request;
+        std::future::ready(Err(MachineImageResolveError::Rejected {
+            machine_id: machine_id.clone(),
+            message: ployz_core::ops::FailureMessage::try_new("registry resolution is unavailable")
+                .expect("static registry resolution error is non-empty"),
+        }))
+    }
+
     fn ensure_image(
         &mut self,
         machine_id: &MachineId,

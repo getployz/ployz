@@ -2,12 +2,14 @@ use super::network::{DRIVER_MTU_OPTION, ENDPOINT_NETWORK_NAME, endpoint_network_
 use crate::adapters::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
 use crate::adapters::host_dataplane::WireGuardMtuPolicy;
 use crate::adapters::host_dataplane::resolve_wireguard_mtu;
+use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogQuery, MachineLogReader,
     MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
 use bollard::Docker;
+use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
@@ -24,8 +26,10 @@ use futures_util::StreamExt;
 use ployz_core::dataplane::{INTERNAL_DNS_SUFFIX, endpoint_bridge_gateway_ipv4};
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
+    ImageReference, RegistryCredential,
 };
 use ployz_core::ids::{ContainerId, SubjectTokenError};
+use ployz_core::image::OciDigest;
 use ployz_core::machine_runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
 };
@@ -150,12 +154,43 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         self.ensure_endpoint_network_inner().await
     }
 
+    async fn resolve_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+    ) -> Result<OciDigest, MachineContainerRunnerError> {
+        let docker =
+            self.docker()
+                .await
+                .map_err(|error| MachineContainerRunnerError::ImagePull {
+                    message: error.to_string(),
+                })?;
+        let inspected = docker
+            .inspect_registry_image(reference.as_str(), docker_credentials(credential))
+            .await
+            .map_err(|error| MachineContainerRunnerError::ImagePull {
+                message: format!("resolve Docker image {}: {error}", reference.as_str()),
+            })?;
+        let Some(digest) = inspected.descriptor.digest else {
+            return Err(MachineContainerRunnerError::ImagePull {
+                message: format!("registry returned no digest for {}", reference.as_str()),
+            });
+        };
+        OciDigest::try_new(digest).map_err(|error| MachineContainerRunnerError::ImagePull {
+            message: error.to_string(),
+        })
+    }
+
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerRunnerError> {
         let pull_reference = command.pull.reference();
-        self.pull_image(&pull_reference).await?;
+        let credential = match &command.pull {
+            MachineImagePull::Registry { credential, .. } => credential.as_ref(),
+            MachineImagePull::MeshSeed { .. } => None,
+        };
+        self.pull_image(&pull_reference, credential).await?;
 
         // Every service container joins the endpoint network at creation;
         // route state alone decides whether anything dials it (ADR 0023).
@@ -453,7 +488,11 @@ impl MachineLogReader for DockerManagedContainerRunner {
 }
 
 impl DockerManagedContainerRunner {
-    pub(crate) async fn pull_image(&self, image: &str) -> Result<(), MachineContainerRunnerError> {
+    pub(crate) async fn pull_image(
+        &self,
+        image: &str,
+        credential: Option<&RegistryCredential>,
+    ) -> Result<(), MachineContainerRunnerError> {
         let docker =
             self.docker()
                 .await
@@ -461,7 +500,7 @@ impl DockerManagedContainerRunner {
                     message: error.to_string(),
                 })?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
-        let mut stream = docker.create_image(Some(options), None, None);
+        let mut stream = docker.create_image(Some(options), None, docker_credentials(credential));
 
         while let Some(result) = stream.next().await {
             result.map_err(|error| MachineContainerRunnerError::ImagePull {
@@ -532,6 +571,23 @@ impl DockerManagedContainerRunner {
 
         Ok(())
     }
+}
+
+fn docker_credentials(credential: Option<&RegistryCredential>) -> Option<DockerCredentials> {
+    credential.map(|credential| {
+        if credential.username == "<token>" {
+            DockerCredentials {
+                identitytoken: Some(credential.secret.secret().to_owned()),
+                ..DockerCredentials::default()
+            }
+        } else {
+            DockerCredentials {
+                username: Some(credential.username.clone()),
+                password: Some(credential.secret.secret().to_owned()),
+                ..DockerCredentials::default()
+            }
+        }
+    })
 }
 
 fn endpoint_network_mtu_matches(network: &NetworkInspect, endpoint_mtu: u32) -> bool {
@@ -980,6 +1036,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
@@ -1000,6 +1057,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: runtime_spec(),
@@ -1022,6 +1080,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
@@ -1061,6 +1120,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
@@ -1095,6 +1155,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
@@ -1111,6 +1172,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
@@ -1133,6 +1195,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
@@ -1176,6 +1239,7 @@ mod tests {
         let body = create_body(
             CreateManagedContainer {
                 pull: MachineImagePull::Registry {
+                    credential: None,
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),

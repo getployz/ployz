@@ -2,11 +2,14 @@ use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
     WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
+use ployz_core::deploy::{ImageReference, RegistryCredential};
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::image::OciDigest;
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
+use ployzd::roles::machine::protocol::MachineImagePull;
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
@@ -30,6 +33,9 @@ impl ObservingContainerRunner {
             state: Arc::new(Mutex::new(ObservingContainerRunnerState {
                 next_container_number: 0,
                 snapshot,
+                resolutions: Vec::new(),
+                pulls: Vec::new(),
+                resolution_failure: None,
             })),
         }
     }
@@ -41,6 +47,31 @@ impl ObservingContainerRunner {
             .expect("observing runner state lock is not poisoned")
             .snapshot
             .clone()
+    }
+
+    #[must_use]
+    pub fn resolutions(&self) -> Vec<(ImageReference, Option<RegistryCredential>)> {
+        self.state
+            .lock()
+            .expect("observing runner state lock is not poisoned")
+            .resolutions
+            .clone()
+    }
+
+    #[must_use]
+    pub fn pulls(&self) -> Vec<MachineImagePull> {
+        self.state
+            .lock()
+            .expect("observing runner state lock is not poisoned")
+            .pulls
+            .clone()
+    }
+
+    pub fn fail_registry_resolution(&self, message: impl Into<String>) {
+        self.state
+            .lock()
+            .expect("observing runner state lock is not poisoned")
+            .resolution_failure = Some(message.into());
     }
 
     fn replace_snapshot(&self, snapshot: MachineContainerObservationSnapshot) {
@@ -67,10 +98,39 @@ impl MachineContainerRunner for ObservingContainerRunner {
         Ok(())
     }
 
+    async fn resolve_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+    ) -> Result<OciDigest, MachineContainerRunnerError> {
+        let mut state =
+            self.state
+                .lock()
+                .map_err(|error| MachineContainerRunnerError::ImagePull {
+                    message: error.to_string(),
+                })?;
+        state
+            .resolutions
+            .push((reference.clone(), credential.cloned()));
+        if let Some(message) = &state.resolution_failure {
+            return Err(MachineContainerRunnerError::ImagePull {
+                message: message.clone(),
+            });
+        }
+        Ok(OciDigest::sha256(reference.as_str().as_bytes()))
+    }
+
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerRunnerError> {
+        self.state
+            .lock()
+            .map_err(|error| MachineContainerRunnerError::Create {
+                message: error.to_string(),
+            })?
+            .pulls
+            .push(command.pull.clone());
         let container_id = self.next_container_id()?;
         let observation = ManagedContainerObservation {
             machine_id: self.machine_id.clone(),
@@ -287,6 +347,9 @@ impl ObservingContainerRunner {
 struct ObservingContainerRunnerState {
     next_container_number: u64,
     snapshot: MachineContainerObservationSnapshot,
+    resolutions: Vec<(ImageReference, Option<RegistryCredential>)>,
+    pulls: Vec<MachineImagePull>,
+    resolution_failure: Option<String>,
 }
 
 impl ObservingContainerRunnerState {

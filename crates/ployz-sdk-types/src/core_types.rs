@@ -20,8 +20,9 @@ pub use ployz_core::deploy::{
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
     LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
-    ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount,
-    StopGracePeriod, VolumeName, VolumeNameError,
+    RegistryCredential, RegistryCredentialError, RegistryCredentialSecret, ReplicaCount,
+    ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+    VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,

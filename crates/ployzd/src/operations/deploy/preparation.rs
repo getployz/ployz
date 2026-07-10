@@ -36,6 +36,16 @@ pub fn prepare_deploy_execution_command(
     request: DeployRequest,
     facts: DeployExecutionFacts,
 ) -> DeployExecutionCommand {
+    prepare_deploy_execution_command_with_credentials(operation_id, request, facts, &[])
+}
+
+#[must_use]
+pub fn prepare_deploy_execution_command_with_credentials(
+    operation_id: OperationId,
+    request: DeployRequest,
+    facts: DeployExecutionFacts,
+    registry_credentials: &[ployz_sdk_types::DeployRegistryCredential],
+) -> DeployExecutionCommand {
     let service_requests = request.service_requests();
     let namespace_declared_targets = request
         .services
@@ -76,6 +86,10 @@ pub fn prepare_deploy_execution_command(
             observed_machines: facts.observed_machines.clone(),
         });
         services.push(DeployServiceExecutionCommand {
+            registry_credential: registry_credentials
+                .iter()
+                .find(|credential| credential.service_id == prepared.request.service_id)
+                .map(|credential| credential.credential.clone()),
             request: prepared.request,
             route_commits: prepared.route_commits,
             volume_pins: facts.namespace_volume_pins.clone(),

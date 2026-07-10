@@ -42,10 +42,16 @@ pub fn owned_operation(
 
 impl From<DeploySubmitRequest> for DeploySubmitCommand {
     fn from(value: DeploySubmitRequest) -> Self {
+        let DeploySubmitRequest {
+            idempotency_key,
+            target,
+            registry_credentials,
+        } = value;
         Self {
             operation_id: mint_deploy_operation_id(),
-            idempotency_key: value.idempotency_key,
-            target: value.target,
+            idempotency_key,
+            target,
+            registry_credentials,
         }
     }
 }
@@ -70,6 +76,7 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
+    validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
     let accepted = handlers
         .controllers
@@ -87,6 +94,76 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted);
 
     Ok(operation)
+}
+
+fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for supplied in &command.registry_credentials {
+        let Some(service) = command
+            .target
+            .services
+            .iter()
+            .find(|service| service.service_id == supplied.service_id)
+        else {
+            return Err(invalid_registry_credential(
+                command,
+                &supplied.service_id,
+                "does not name a service in the deploy target",
+            ));
+        };
+        if !matches!(service.image_source, ImageSource::Registry) {
+            return Err(invalid_registry_credential(
+                command,
+                &supplied.service_id,
+                "belongs to a pushed image",
+            ));
+        }
+        if supplied.credential.username.is_empty() {
+            return Err(invalid_registry_credential(
+                command,
+                &supplied.service_id,
+                "has an empty username",
+            ));
+        }
+        if !seen.insert(&supplied.service_id) {
+            return Err(invalid_registry_credential(
+                command,
+                &supplied.service_id,
+                "was supplied more than once",
+            ));
+        }
+    }
+
+    for service in &command.target.services {
+        if matches!(service.image_source, ImageSource::PushedToSeed { .. })
+            && service.image.pinned_digest().is_none()
+        {
+            return Err(DeploySubmitError::InvalidTarget {
+                operation_id: command.operation_id.clone(),
+                message: ployz_core::ops::FailureMessage::try_new(format!(
+                    "pushed image for service {} must be digest-pinned",
+                    service.service_id.as_str()
+                ))
+                .expect("generated pushed image failure message is non-empty"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn invalid_registry_credential(
+    command: &DeploySubmitCommand,
+    service_id: &ployz_core::ids::ServiceId,
+    reason: &str,
+) -> DeploySubmitError {
+    DeploySubmitError::InvalidTarget {
+        operation_id: command.operation_id.clone(),
+        message: ployz_core::ops::FailureMessage::try_new(format!(
+            "registry credential for service {} {reason}",
+            service_id.as_str()
+        ))
+        .expect("generated registry credential failure message is non-empty"),
+    }
 }
 
 async fn validate_pushed_image_seeds(

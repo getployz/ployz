@@ -35,6 +35,7 @@ pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
     pub target: DeployRequest,
+    pub registry_credentials: Vec<ployz_sdk_types::DeployRegistryCredential>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +207,7 @@ impl OperationControllers {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
         let target = command.target;
+        let registry_credentials = command.registry_credentials;
         let claimed = self
             .repository
             .claim_deploy(DeployOperationSubmission {
@@ -228,7 +230,8 @@ impl OperationControllers {
         let submitted = self.repository.submit_deploy(claimed).await;
 
         match submitted {
-            Ok(accepted) => {
+            Ok(mut accepted) => {
+                accepted.registry_credentials = registry_credentials;
                 if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
                     self.release_namespace(&namespace_id, &operation_id).await;
                 }

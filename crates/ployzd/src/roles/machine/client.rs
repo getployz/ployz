@@ -7,11 +7,12 @@ use crate::operations::deploy::{
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
-    MachineContainerRemoveRpcRequest, MachineContainerRestartDomainError,
-    MachineContainerRestartRpcRequest, MachineContainerRpcOk, MachineContainerRunDomainError,
-    MachineContainerRunHookDomainError, MachineContainerRunHookRpcOk,
-    MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageDomainError,
+    MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartDomainError, MachineContainerRestartRpcRequest, MachineContainerRpcOk,
+    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
+    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk,
+    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
@@ -23,7 +24,7 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError, OciDigest};
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
@@ -87,6 +88,18 @@ pub enum MachineImageEnsureError {
     Domain {
         machine_id: MachineId,
         error: ImageRpcDomainError,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineImageResolveError {
+    Rejected {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
     },
     Unavailable {
         machine_id: MachineId,
@@ -569,6 +582,34 @@ impl NatsMachineContainerRuntime {
 }
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
+    async fn resolve_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerResolveImageRpcRequest,
+    ) -> Result<OciDigest, MachineImageResolveError> {
+        call_machine::<MachineContainerResolveImageRpcOk, MachineContainerResolveImageDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerResolveImage,
+            &request,
+        )
+        .await
+        .map(|ok| ok.digest)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineImageResolveError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineContainerResolveImageDomainError::ResolveFailed {
+                message,
+            }) => MachineImageResolveError::Rejected {
+                machine_id: machine_id.clone(),
+                message,
+            },
+        })
+    }
+
     async fn ensure_image(
         &mut self,
         machine_id: &MachineId,

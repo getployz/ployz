@@ -8,15 +8,16 @@
 use futures_util::StreamExt;
 use ployz_core::cert::{ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
-    VolumeName,
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
+    RegistryCredential, ReplicaCount, VolumeName,
 };
-use ployz_core::ids::{MachineId, NamespaceRevisionEntryId};
+use ployz_core::ids::MachineId;
+use ployz_core::image::OciDigest;
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, MachineSubstrateVersions, OperationStatus,
-    RouteTarget,
+    DeployCompletionOutcome, DeployOperationState, MachineSubstrateVersions, OperationEvent,
+    OperationEventReplayLimit, OperationStatus, RouteTarget,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
@@ -33,11 +34,11 @@ use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_sdk_types::{
-    DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError, MachineAddRequest,
-    MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
-    MachineTestimony, MachineUpdateError, MachineUpdateRequest, RuntimeDerivedCollectionStatus,
-    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
-    VolumeStatus,
+    DeployRegistryCredential, DeploySubmitRequest, InitFirstMachineActivateRequest,
+    MachineAddError, MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome,
+    MachineJoinReportRequest, MachineListRequest, MachineTestimony, MachineUpdateError,
+    MachineUpdateRequest, OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest,
+    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::intent::lease_intent::LeaseIntentStore;
@@ -77,6 +78,7 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_control_runtime"),
             target: deploy_target("svc_api"),
         })
@@ -513,7 +515,13 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     .await
     .expect("machine runtime starts");
     let api = nats.api();
+    let credential = RegistryCredential::try_new("alice", "deploy-only-secret")
+        .expect("valid registry credential");
     let request = DeploySubmitRequest {
+        registry_credentials: vec![DeployRegistryCredential {
+            service_id: service_id("svc_api"),
+            credential: credential.clone(),
+        }],
         idempotency_key: idempotency_key("idem_run"),
         target: deploy_target("svc_api"),
     };
@@ -537,25 +545,89 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         ),
         "expected deploy to complete, got {status:?}"
     );
+    let replay = api
+        .ops_watch(&OpsWatchRequest {
+            operation_id: accepted.operation_id.clone(),
+            start_sequence: event_sequence(1),
+            limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
+        })
+        .await
+        .expect("deploy evidence replays");
     let namespace_intent = NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
     );
+    let digest = OciDigest::sha256(b"ghcr.io/acme/api:rev-2");
+    let pinned = image("ghcr.io/acme/api:rev-2")
+        .with_digest(&digest)
+        .expect("resolved image pins to digest");
+    let entry = namespace_intent
+        .load()
+        .await
+        .expect("namespace intent reads")
+        .serving_target_entries
+        .into_iter()
+        .find(|entry| {
+            entry.namespace_id == namespace_id("default")
+                && entry.service_id == service_id("svc_api")
+        })
+        .expect("serving target committed");
+    assert_eq!(entry.image, pinned);
     assert_eq!(
-        namespace_intent
-            .load()
-            .await
-            .expect("namespace intent reads")
-            .serving_target_entries
-            .into_iter()
-            .find(|entry| {
-                entry.namespace_id == namespace_id("default")
-                    && entry.service_id == service_id("svc_api")
-            })
-            .expect("serving target committed")
-            .namespace_revision_entry_id,
-        deploy_target_entry_id("svc_api")
+        entry.namespace_revision_entry_id,
+        ployz_core::deploy::namespace_revision_entry_id_for(
+            &namespace_id("default"),
+            &service_id("svc_api"),
+            &entry.image,
+            &ployz_core::deploy::ImageSource::Registry,
+            &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        )
+    );
+    assert_eq!(
+        runner.resolutions(),
+        vec![(image("ghcr.io/acme/api:rev-2"), Some(credential.clone()))]
+    );
+    let pulls = runner.pulls();
+    let [
+        ployzd::roles::machine::protocol::MachineImagePull::Registry {
+            reference,
+            credential: pull_credential,
+        },
+    ] = pulls.as_slice()
+    else {
+        panic!("one registry pull was recorded")
+    };
+    assert_eq!(reference, &entry.image);
+    assert_eq!(pull_credential.as_ref(), Some(&credential));
+    assert!(replay.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            OperationEvent::DeployImageResolved {
+                service_id,
+                machine_id,
+                requested,
+                resolved,
+                credential_supplied: true,
+                ..
+            } if service_id == &self::service_id("svc_api")
+                && machine_id == &self::machine_id("machine_a")
+                && requested == &self::image("ghcr.io/acme/api:rev-2")
+                && resolved == &entry.image
+        )
+    }));
+    assert!(
+        !serde_json::to_string(&replay)
+            .expect("deploy evidence serializes")
+            .contains("deploy-only-secret"),
+        "deploy-scoped registry secret reached operation evidence"
+    );
+    assert!(
+        !std::fs::read(&config.core_db_path)
+            .expect("core database reads")
+            .windows(b"deploy-only-secret".len())
+            .any(|window| window == b"deploy-only-secret"),
+        "deploy-scoped registry secret reached durable core storage"
     );
     let duplicate = api
         .deploy_submit(&request)
@@ -564,6 +636,78 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     assert_eq!(duplicate.operation_id, accepted.operation_id);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(runner.snapshot().containers().len(), 1);
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve() {
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine_id("machine_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    machine_roster
+        .replace_active_machine(&active_machine("machine_a"))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine_id("machine_a"));
+    runner.fail_registry_resolution("registry denied the manifest");
+    let machine_runtime = start_machine_role_service(
+        machine_client,
+        machine_id("machine_a"),
+        runner.clone(),
+        ReadyWireGuardEbpf,
+        runner.clone(),
+    )
+    .await
+    .expect("machine runtime starts");
+    let api = nats.api();
+    let accepted = api
+        .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
+            idempotency_key: idempotency_key("idem_resolution_failure"),
+            target: deploy_target("svc_api"),
+        })
+        .await
+        .expect("deploy submits before planning");
+
+    let status =
+        wait_for_terminal_status(&api, &accepted.operation_id, Duration::from_secs(4)).await;
+    let OperationStatus::Deploy {
+        state:
+            DeployOperationState::Failed {
+                failure:
+                    ployz_core::ops::DeployOperationFailure::ImageResolutionFailed {
+                        service_id,
+                        machine_id,
+                        image,
+                        message,
+                    },
+            },
+        ..
+    } = status
+    else {
+        panic!("expected typed image resolution failure, got {status:?}")
+    };
+    assert_eq!(service_id, self::service_id("svc_api"));
+    assert_eq!(machine_id, self::machine_id("machine_a"));
+    assert_eq!(image, self::image("ghcr.io/acme/api:rev-2"));
+    assert_eq!(message.as_str(), "registry denied the manifest");
+    assert!(
+        runner.pulls().is_empty(),
+        "planning failure started no container"
+    );
 
     machine_runtime
         .shutdown()
@@ -705,6 +849,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: Vec::new(),
             idempotency_key: idempotency_key("idem_routed"),
             target: deploy_target_with_route(
                 "svc_api",
@@ -973,16 +1118,6 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             routes: Vec::new(),
         }],
     }
-}
-
-fn deploy_target_entry_id(service_id: &str) -> NamespaceRevisionEntryId {
-    ployz_core::deploy::namespace_revision_entry_id_for(
-        &namespace_id("default"),
-        &self::service_id(service_id),
-        &image("ghcr.io/acme/api:rev-2"),
-        &ployz_core::deploy::ImageSource::Registry,
-        &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
-    )
 }
 
 fn deploy_target_with_route(

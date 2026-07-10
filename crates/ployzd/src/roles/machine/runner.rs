@@ -1,7 +1,8 @@
 use std::future::Future;
 
-use ployz_core::deploy::ContainerRuntimeSpec;
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
 use ployz_core::ids::ContainerId;
+use ployz_core::image::OciDigest;
 use ployz_core::machine_runtime::ContainerHealth;
 use std::net::IpAddr;
 
@@ -115,6 +116,17 @@ pub trait MachineContainerRunner {
     fn ensure_endpoint_network(
         &self,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn resolve_registry_image(
+        &self,
+        reference: &ImageReference,
+        credential: Option<&RegistryCredential>,
+    ) -> impl Future<Output = Result<OciDigest, MachineContainerRunnerError>> + Send {
+        let _ = (reference, credential);
+        std::future::ready(Err(MachineContainerRunnerError::ImagePull {
+            message: "registry resolution is unavailable".to_owned(),
+        }))
+    }
 
     fn create_managed_container(
         &self,
