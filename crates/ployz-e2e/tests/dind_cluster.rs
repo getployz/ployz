@@ -66,15 +66,16 @@ use ployzd::adapters::docker::labels::{
     CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
     SERVICE_ID_LABEL,
 };
+use ployzd::intent::service::NatsIntentReader;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use support::dind::assert::{
     ManagedWorkloadContainer, all_managed_workload_containers, assert_deploy_event_sequence,
     assert_machine_add_event_sequence, assert_unit_active, connect_with_event_capture,
-    decode_base64, gateway_http_get, managed_workload_containers, next_permission_violation,
-    operation_events, operation_status, terminal_operation_events, wait_for_inspect,
-    wait_for_machine_observations, wait_for_terminal_deploy_status,
+    decode_base64, gateway_http_get, gateway_https_get, managed_workload_containers,
+    next_permission_violation, operation_events, operation_status, terminal_operation_events,
+    wait_for_inspect, wait_for_machine_observations, wait_for_terminal_deploy_status,
 };
 use support::dind::formation::{
     CoreContext, add_and_join_edge, connect_core_client, finish, host_client_config,
@@ -268,6 +269,138 @@ async fn scenario_init_and_activate_first_machine() {
     })
     .await;
 
+    finish(core).await;
+}
+
+#[tokio::test]
+async fn scenario_auto_hostname_https_survives_core_stop() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 0).await;
+    with_evidence(&core.cluster, async {
+        let first = core
+            .api
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_auto_https_first",
+                    auto_hostname_deploy_target(),
+                )
+                .await,
+            )
+            .await
+            .expect("auto-hostname deploy submits");
+        let status =
+            wait_for_terminal_deploy_status(&core, &first.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed { .. },
+                    ..
+                }
+            ),
+            "auto-hostname deploy did not complete: {status:?}"
+        );
+
+        let client = connect_core_client(
+            &core,
+            NatsPrincipal::Controller,
+            &core.material.controller_seed,
+        )
+        .await
+        .expect("connect controller for intent read");
+        let reader = NatsIntentReader::new(client);
+        let intent = reader.intent().await.expect("read auto-hostname intent");
+        let binding = intent
+            .route_bindings
+            .iter()
+            .find(|binding| binding.namespace_id == namespace_id("auto_https"))
+            .expect("auto hostname binding committed");
+        let hostname = binding.target.hostname.as_str().to_owned();
+        let ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } =
+            intent.managed_lease
+        else {
+            panic!("managed lease is ready");
+        };
+        assert_eq!(
+            hostname,
+            "svc-auto.demo.up.ployz.app".replace("demo", lease.name.as_str())
+        );
+
+        let second = core
+            .api
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_auto_https_second",
+                    auto_hostname_deploy_target(),
+                )
+                .await,
+            )
+            .await
+            .expect("auto-hostname redeploy submits");
+        let second_status =
+            wait_for_terminal_deploy_status(&core, &second.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(matches!(
+            second_status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed { .. },
+                ..
+            }
+        ));
+        let intent_after = reader.intent().await.expect("read redeployed intent");
+        assert!(intent_after.route_bindings.iter().any(|binding| {
+            binding.namespace_id == namespace_id("auto_https")
+                && binding.target.hostname.as_str() == hostname
+        }));
+
+        let machine = core.cluster.core();
+        let response = gateway_https_get(
+            machine.published.gateway_tls,
+            &hostname,
+            &bundle.certificate_chain_pem,
+        )
+        .await
+        .expect("managed HTTPS route answers");
+        assert!(response.contains("Welcome to nginx"), "{response}");
+        let redirect = gateway_http_get(machine.published.gateway, &hostname)
+            .await
+            .expect("managed HTTP route redirects");
+        assert!(redirect.starts_with("HTTP/1.1 301"), "{redirect}");
+        assert!(
+            gateway_https_get(
+                machine.published.gateway_tls,
+                &format!("unrouted.{}", bundle.lease.hostname_suffix()),
+                &bundle.certificate_chain_pem,
+            )
+            .await
+            .is_err(),
+            "unknown SNI must be refused"
+        );
+
+        let stopped = core
+            .exec_on(machine, &["systemctl", "stop", "ployzd-control"])
+            .await;
+        assert!(stopped.success(), "stop core control: {stopped:?}");
+        let response = gateway_https_get(
+            machine.published.gateway_tls,
+            &hostname,
+            &bundle.certificate_chain_pem,
+        )
+        .await
+        .expect("last-known-good HTTPS survives core stop");
+        assert!(response.contains("Welcome to nginx"), "{response}");
+        let started = core
+            .exec_on(machine, &["systemctl", "start", "ployzd-control"])
+            .await;
+        assert!(started.success(), "restart core control: {started:?}");
+    })
+    .await;
     finish(core).await;
 }
 
@@ -1948,6 +2081,27 @@ fn smoke_deploy_target() -> DeployRequest {
                 target: DeployRouteTarget::Hostname {
                     hostname: route_hostname(ROUTE_HOSTNAME),
                     port: route_port(dind::MACHINE_GATEWAY_PORT),
+                },
+                endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
+            }],
+        }],
+    }
+}
+
+fn auto_hostname_deploy_target() -> DeployRequest {
+    DeployRequest {
+        namespace_id: namespace_id("auto_https"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_auto"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: vec![DeployRoute {
+                target: DeployRouteTarget::AutoHostname {
+                    port: route_port(dind::MACHINE_GATEWAY_TLS_PORT),
                 },
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],

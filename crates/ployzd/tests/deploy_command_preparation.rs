@@ -1,5 +1,7 @@
+use ployz_core::cert::ManagedLeaseName;
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ReplicaCount,
 };
 use ployz_core::ids::NamespaceRevisionEntryId;
 use ployz_core::machine_runtime::{
@@ -46,7 +48,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        has_managed_lease: false,
+        managed_lease: None,
         step_timeout: Duration::from_secs(5),
     };
 
@@ -86,7 +88,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        has_managed_lease: false,
+        managed_lease: None,
         step_timeout: Duration::from_secs(5),
     };
 
@@ -149,7 +151,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             &namespace_id("default"),
             &[omitted_container],
         ),
-        has_managed_lease: false,
+        managed_lease: None,
         step_timeout: Duration::from_secs(5),
     };
 
@@ -178,7 +180,7 @@ async fn empty_manifest_prepares_no_services() {
         dataplane_members: Vec::new(),
         observed_machines: Vec::new(),
         namespace_cleanup_candidates: Vec::new(),
-        has_managed_lease: false,
+        managed_lease: None,
         step_timeout: Duration::from_secs(5),
     };
     let command = prepare_deploy_execution_command(
@@ -191,6 +193,57 @@ async fn empty_manifest_prepares_no_services() {
     );
 
     assert!(command.services().is_empty());
+}
+
+#[test]
+fn auto_hostname_is_stable_and_collision_safe() {
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.routes = vec![DeployRoute {
+        target: DeployRouteTarget::AutoHostname {
+            port: RoutePort::try_new(443).expect("valid route port"),
+        },
+        endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
+    }];
+    let existing = RouteBindingState {
+        namespace_id: namespace_id("default"),
+        target: RouteTarget::new(
+            RouteHostname::try_new("svc-api-2.demo.up.ployz.app").expect("valid hostname"),
+            RoutePort::try_new(443).expect("valid route port"),
+        ),
+        endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
+        service_id: service_id("svc_api"),
+    };
+    let facts = DeployExecutionFacts {
+        namespace_route_bindings: vec![
+            RouteBindingState {
+                namespace_id: namespace_id("other"),
+                service_id: service_id("svc_other"),
+                target: RouteTarget::new(
+                    RouteHostname::try_new("svc-api.demo.up.ployz.app").expect("valid hostname"),
+                    RoutePort::try_new(443).expect("valid route port"),
+                ),
+                endpoint_port: existing.endpoint_port,
+            },
+            existing.clone(),
+        ],
+        namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: Vec::new(),
+        unusable_machines: Vec::new(),
+        dataplane_members: Vec::new(),
+        observed_machines: Vec::new(),
+        machine_platforms: std::collections::BTreeMap::new(),
+        namespace_cleanup_candidates: Vec::new(),
+        managed_lease: Some(ManagedLeaseName::try_new("demo").expect("valid lease")),
+        step_timeout: Duration::from_secs(5),
+    };
+
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
+
+    assert_eq!(single_service(&command).route_binding_states(), [existing]);
 }
 
 fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCommand {

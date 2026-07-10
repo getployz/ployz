@@ -21,6 +21,7 @@ pub const MACHINE_NATS_PORT: u16 = 4222;
 /// Gateway route port inside every machine container: the Host Runner
 /// renders the gateway role env with its default listen address, port 80.
 pub const MACHINE_GATEWAY_PORT: u16 = 80;
+pub const MACHINE_GATEWAY_TLS_PORT: u16 = 443;
 
 /// Total budget for systemd + inner dockerd readiness.
 const READINESS_BUDGET: Duration = Duration::from_secs(90);
@@ -56,17 +57,26 @@ pub struct PublishedPorts {
     pub nats: SocketAddr,
     /// Maps to [`MACHINE_GATEWAY_PORT`] inside the machine.
     pub gateway: SocketAddr,
+    /// Maps to [`MACHINE_GATEWAY_TLS_PORT`] inside the machine.
+    pub gateway_tls: SocketAddr,
 }
 
 impl PublishedPorts {
     pub(super) fn reserve() -> Result<Self, DindError> {
         let nats_listener = bind_loopback()?;
         let gateway_listener = bind_loopback()?;
+        let gateway_tls_listener = bind_loopback()?;
         let nats = local_addr(&nats_listener)?;
         let gateway = local_addr(&gateway_listener)?;
+        let gateway_tls = local_addr(&gateway_tls_listener)?;
         drop(nats_listener);
         drop(gateway_listener);
-        Ok(Self { nats, gateway })
+        drop(gateway_tls_listener);
+        Ok(Self {
+            nats,
+            gateway,
+            gateway_tls,
+        })
     }
 }
 
@@ -134,6 +144,7 @@ fn machine_create_body(
 ) -> ContainerCreateBody {
     let nats_port_key = format!("{MACHINE_NATS_PORT}/tcp");
     let gateway_port_key = format!("{MACHINE_GATEWAY_PORT}/tcp");
+    let gateway_tls_port_key = format!("{MACHINE_GATEWAY_TLS_PORT}/tcp");
     let port_bindings: PortMap = HashMap::from([
         (
             nats_port_key.clone(),
@@ -142,6 +153,10 @@ fn machine_create_body(
         (
             gateway_port_key.clone(),
             Some(vec![loopback_binding(published.gateway)]),
+        ),
+        (
+            gateway_tls_port_key.clone(),
+            Some(vec![loopback_binding(published.gateway_tls)]),
         ),
     ]);
     ContainerCreateBody {
@@ -153,7 +168,7 @@ fn machine_create_body(
             (RUN_LABEL.to_owned(), run_id.as_str().to_owned()),
         ])),
         stop_signal: Some("SIGRTMIN+3".to_owned()),
-        exposed_ports: Some(vec![nats_port_key, gateway_port_key]),
+        exposed_ports: Some(vec![nats_port_key, gateway_port_key, gateway_tls_port_key]),
         host_config: Some(HostConfig {
             privileged: Some(true),
             cgroupns_mode: Some(HostConfigCgroupnsModeEnum::HOST),

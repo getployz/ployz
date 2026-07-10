@@ -285,6 +285,7 @@ mod tests {
             machine_id: machine_id(id),
             name: ployz_core::machine::MachineName::try_new(id).expect("machine name"),
             activated_by: operation_id("op_activate"),
+            roles: ployz_core::roles::InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Active,
             control_endpoints: endpoints.iter().map(|ip| ip.parse().expect("ip")).collect(),
             mesh_endpoints: Vec::new(),
@@ -306,7 +307,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
-            managed_lease: None,
+            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         }
     }
 

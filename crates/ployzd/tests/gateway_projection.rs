@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 #[test]
 fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
     let projection = project_gateway(GatewayProjectionInput {
+        managed_cert_bundle: None,
         routes: vec![
             gateway_route("WWW.example.com", "svc_web"),
             gateway_route("api.example.com", "svc_api"),
@@ -61,6 +62,7 @@ fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
     assert_eq!(
         projection,
         GatewayProjection {
+            managed_cert_bundle: None,
             routes: vec![
                 GatewayProjectedRoute {
                     target: route_target("api.example.com", 443),
@@ -95,6 +97,7 @@ fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
 #[test]
 fn gateway_filters_running_containers_without_endpoint_evidence() {
     let projection = project_gateway(GatewayProjectionInput {
+        managed_cert_bundle: None,
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
         observed_machines: vec![observed_machine(
@@ -113,6 +116,7 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
     assert_eq!(
         projection,
         GatewayProjection {
+            managed_cert_bundle: None,
             routes: vec![GatewayProjectedRoute {
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
@@ -131,6 +135,7 @@ fn gateway_dials_matching_containers_on_the_route_endpoint_port() {
     // every serving-entry container is dialed on the route's endpoint port
     // (ADR 0023), so an endpoint reroute needs no container replacement.
     let projection = project_gateway(GatewayProjectionInput {
+        managed_cert_bundle: None,
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
         observed_machines: vec![observed_machine(
@@ -158,6 +163,7 @@ fn gateway_dials_matching_containers_on_the_route_endpoint_port() {
     assert_eq!(
         projection,
         GatewayProjection {
+            managed_cert_bundle: None,
             routes: vec![GatewayProjectedRoute {
                 target: route_target("api.example.com", 443),
                 upstreams: vec![
@@ -183,6 +189,7 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
     // A binding whose service is absent from the serving target stays
     // attached and unavailable instead of becoming invalid state (ADR 0024).
     let projection = project_gateway(GatewayProjectionInput {
+        managed_cert_bundle: None,
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![],
         observed_machines: vec![observed_machine(
@@ -201,6 +208,7 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
     assert_eq!(
         projection,
         GatewayProjection {
+            managed_cert_bundle: None,
             routes: vec![GatewayProjectedRoute {
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
@@ -213,6 +221,7 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
 #[test]
 fn gateway_ignores_containers_with_a_different_entry_identity() {
     let projection = project_gateway(GatewayProjectionInput {
+        managed_cert_bundle: None,
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
         observed_machines: vec![observed_machine(
@@ -231,6 +240,7 @@ fn gateway_ignores_containers_with_a_different_entry_identity() {
     assert_eq!(
         projection,
         GatewayProjection {
+            managed_cert_bundle: None,
             routes: vec![GatewayProjectedRoute {
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
@@ -269,6 +279,7 @@ fn gateway_rejects_duplicate_route_targets() {
     let target = route_target("api.example.com", 443);
     assert_eq!(
         project_gateway(GatewayProjectionInput {
+            managed_cert_bundle: None,
             routes: vec![
                 GatewayRoute {
                     namespace_id: namespace_id("default"),
@@ -295,6 +306,7 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
     let target = route_target("api.example.com", 443);
     let last_good = single_route_projection();
     let update = GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
+        managed_cert_bundle: None,
         routes: vec![
             GatewayRoute {
                 namespace_id: namespace_id("default"),
@@ -361,6 +373,7 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
 
 fn single_route_projection() -> GatewayProjection {
     GatewayProjection {
+        managed_cert_bundle: None,
         routes: vec![GatewayProjectedRoute {
             target: route_target("api.example.com", 443),
             upstreams: vec![GatewayUpstream {

@@ -277,11 +277,28 @@ async fn activate_reported_machine(
     machine_id: &MachineId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
+    let status = handlers
+        .controllers
+        .repository()
+        .get(operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+        .ok_or_else(|| MachineJoinReportError::Unavailable {
+            message: corrupt("missing machine-add operation during activation"),
+        })?;
+    let OperationStatus::MachineAdd { roles, .. } = status else {
+        return Err(MachineJoinReportError::Unavailable {
+            message: corrupt("activation operation is not machine-add"),
+        });
+    };
     let endpoint_subnet = allocate_endpoint_subnet(handlers, machine_id).await?;
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
+        roles,
         endpoint_subnet,
         ployz_core::ops::MachineAddOperationState::Completed,
     )

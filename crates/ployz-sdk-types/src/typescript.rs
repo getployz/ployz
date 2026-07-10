@@ -19,17 +19,16 @@ use crate::{
     ContainerRuntimeSpec, ContainerRuntimeState, ControlPlaneCommitScope, CoreReplaceError,
     CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceReportError,
     CoreReplaceReportOutcome, CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
-    DEFAULT_MANAGED_LEASE_TTL_SECONDS, DataplaneMember, DataplaneProviderFailure,
-    DeployCleanupContainer, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployOperationState, DeployPlan, DeployPlanStep, DeployRequest, DeployReservationExpiresAt,
-    DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserveResponse,
-    DeployReserved, DeployRoute, DeployRouteTarget, DeployRunningStage, DeployServicePlan,
-    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, EnvName, EnvValue, EventSequence,
-    FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayRole,
-    GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageSource,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    DataplaneMember, DataplaneProviderFailure, DeployCleanupContainer, DeployCleanupFailure,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPlan,
+    DeployPlanStep, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
+    DeployReserveError, DeployReserveRequest, DeployReserveResponse, DeployReserved, DeployRoute,
+    DeployRouteTarget, DeployRunningStage, DeployServicePlan, DeployServiceSpec, DeploySubmitError,
+    DeploySubmitRequest, DeploySubmitResponse, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    EnvName, EnvValue, EventSequence, FailureMessage, FirstMachineInstallArtifacts,
+    FirstMachineInstallSpec, GatewayRole, GatewayServingStatus, GatewayStatusObservation,
+    HealthCheckFailure, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
+    ImageReference, ImageSource, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
     InitFirstMachineActivateResponse, InitFirstMachineActivated, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy, InstallSha256Digest,
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
@@ -104,9 +103,6 @@ pub fn generated_typescript() -> String {
     ));
     output.push_str(&format!(
         "export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = {CLOUD_BOOTSTRAP_PROTOCOL_VERSION} as const;\n\n"
-    ));
-    output.push_str(&format!(
-        "export const DEFAULT_MANAGED_LEASE_TTL_SECONDS = {DEFAULT_MANAGED_LEASE_TTL_SECONDS} as const;\n\n"
     ));
     push_contract_decls(&mut output, &config);
     push_operation_api_contracts(&mut output, &config);
