@@ -273,7 +273,7 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             .api
             .deploy_submit(&DeploySubmitRequest {
                 idempotency_key: idempotency_key("idem_dind_convergence_failed"),
-                target: convergence_deploy_target("exit 42"),
+                target: convergence_deploy_target("sleep 0.4; exit 42"),
             })
             .await
             .expect("failing deploy submits");
