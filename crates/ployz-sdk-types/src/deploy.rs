@@ -6,8 +6,32 @@ use crate::ops::{AcceptedOperation, OperationApiResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+pub struct DeployReserveRequest {
+    pub namespace_id: NamespaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeployReserved {
+    pub reservation_id: DeployReservationId,
+    pub expires_at: DeployReservationExpiresAt,
+}
+
+pub type DeployReserveResponse = OperationApiResponse<DeployReserved, DeployReserveError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(thiserror::Error)]
+pub enum DeployReserveError {
+    #[error("deploy reservation unavailable: {message}")]
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct DeploySubmitRequest {
     pub idempotency_key: OperationIdempotencyKey,
+    pub reservation_id: DeployReservationId,
     pub target: DeployRequest,
 }
 
@@ -17,6 +41,50 @@ pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySu
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 #[derive(thiserror::Error)]
 pub enum DeploySubmitError {
+    #[error(
+        "deploy reservation {} was not issued for namespace {}",
+        .reservation_id.get(),
+        .namespace_id.as_str()
+    )]
+    ReservationNotFound {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+    },
+    #[error(
+        "deploy reservation {} expired at unix second {}",
+        .reservation_id.get(),
+        .expired_at.unix_seconds()
+    )]
+    ReservationExpired {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+        expired_at: DeployReservationExpiresAt,
+    },
+    #[error(
+        "deploy reservation {} is stale; namespace {} committed newer reservation {}",
+        .reservation_id.get(),
+        .namespace_id.as_str(),
+        .last_committed_reservation_id.get()
+    )]
+    StaleReservation {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+        last_committed_reservation_id: DeployReservationId,
+    },
+    #[error(
+        "deploy reservation {} was already committed by operation {}",
+        .reservation_id.get(),
+        .owner_operation_id.as_str()
+    )]
+    ReservationAlreadyCommitted {
+        operation_id: OperationId,
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+        owner_operation_id: OperationId,
+    },
     #[error("deploy target invalid for operation {}: {message}", .operation_id.as_str())]
     InvalidTarget {
         operation_id: OperationId,

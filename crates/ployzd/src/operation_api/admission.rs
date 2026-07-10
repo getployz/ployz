@@ -8,7 +8,10 @@ use crate::operations::log::{
     RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
     SubmitOperationError, VolumeRemoveOperationSubmission,
 };
-use ployz_core::deploy::{DeployRequest, VolumeName};
+use ployz_core::deploy::{
+    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
+    DeployReservationId, VolumeName,
+};
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
     InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
@@ -30,11 +33,21 @@ pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
 
 const MACHINE_JOIN_TOKEN_TTL_SECONDS: u64 = 600;
 
+type DeployReservations =
+    BTreeMap<NamespaceId, BTreeMap<DeployReservationId, DeployReservationExpiresAt>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
+    pub reservation_id: DeployReservationId,
     pub target: DeployRequest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IssuedDeployReservation {
+    pub reservation_id: DeployReservationId,
+    pub expires_at: DeployReservationExpiresAt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +172,7 @@ pub struct OperationControllers {
     /// and the resubmit converges from observed reality rather than resuming a
     /// half-held lock. Do not reintroduce a durable lock here.
     namespace_locks: Arc<Mutex<BTreeMap<NamespaceId, OperationId>>>,
+    deploy_reservations: Arc<Mutex<DeployReservations>>,
     mesh_lock: Arc<Mutex<()>>,
     machine_bootstrap: MachineAddBootstrapConfig,
     pending_join_recovery: Arc<Mutex<Vec<PendingMachineJoinRecovery>>>,
@@ -173,6 +187,7 @@ impl OperationControllers {
         Self {
             repository,
             namespace_locks: Arc::default(),
+            deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::default(),
@@ -188,6 +203,7 @@ impl OperationControllers {
         Self {
             repository,
             namespace_locks: Arc::default(),
+            deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::new(Mutex::new(pending_join_recovery)),
@@ -205,16 +221,28 @@ impl OperationControllers {
     ) -> Result<AcceptedDeploySubmission, SubmitCommandError> {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
+        let reservation_id = command.reservation_id;
         let target = command.target;
         let claimed = self
             .repository
             .claim_deploy(DeployOperationSubmission {
                 operation_id,
                 idempotency_key,
+                reservation_id,
                 target,
             })
             .await?;
         let operation_id = claimed.operation_id.clone();
+        if self
+            .repository
+            .get(&operation_id)
+            .await
+            .map_err(SubmitOperationError::StoreStatus)?
+            .is_none()
+        {
+            self.validate_deploy_reservation(&claimed.target.namespace_id, claimed.reservation_id)
+                .await?;
+        }
         let target = claimed.target.clone();
         let namespace_id = target.namespace_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -241,6 +269,45 @@ impl OperationControllers {
                 Err(SubmitCommandError::Submit(error))
             }
         }
+    }
+
+    pub async fn reserve_deploy(
+        &self,
+        namespace_id: &NamespaceId,
+    ) -> Result<IssuedDeployReservation, DeployReservationIssueError> {
+        let now = current_unix_seconds().map_err(DeployReservationIssueError::Clock)?;
+        let reservation_id = self
+            .repository
+            .issue_deploy_reservation(namespace_id)
+            .await
+            .map_err(|error| match error {
+                crate::operations::log::IssueDeployReservationError::StoreStatus(source) => {
+                    DeployReservationIssueError::Store(source)
+                }
+            })?;
+        let expires_at = now
+            .checked_add(DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS)
+            .and_then(|value| DeployReservationExpiresAt::try_new(value).ok())
+            .ok_or_else(|| DeployReservationIssueError::Clock("timestamp overflow".to_owned()))?;
+        let mut reservations = self.deploy_reservations.lock().await;
+        let namespace_reservations = reservations.entry(namespace_id.clone()).or_default();
+        namespace_reservations.retain(|_, expiry| expiry.unix_seconds() > now);
+        namespace_reservations.insert(reservation_id, expires_at);
+        Ok(IssuedDeployReservation {
+            reservation_id,
+            expires_at,
+        })
+    }
+
+    async fn validate_deploy_reservation(
+        &self,
+        namespace_id: &NamespaceId,
+        reservation_id: DeployReservationId,
+    ) -> Result<(), SubmitCommandError> {
+        let now =
+            current_unix_seconds().map_err(|message| SubmitCommandError::Clock { message })?;
+        let mut reservations = self.deploy_reservations.lock().await;
+        validate_deploy_reservation_at(&mut reservations, namespace_id, reservation_id, now)
     }
 
     pub async fn submit_machine_add(
@@ -580,7 +647,24 @@ pub enum SubmitCommandError {
         namespace_id: NamespaceId,
         owner: OperationId,
     },
+    ReservationNotFound {
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+    },
+    ReservationExpired {
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+        expired_at: DeployReservationExpiresAt,
+    },
     Submit(SubmitOperationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeployReservationIssueError {
+    #[error("clock: {0}")]
+    Clock(String),
+    #[error("{0}")]
+    Store(OperationStatusStoreError),
 }
 
 impl From<SubmitOperationError> for SubmitCommandError {
@@ -619,6 +703,35 @@ fn current_unix_seconds() -> Result<u64, String> {
     Ok(seconds)
 }
 
+fn validate_deploy_reservation_at(
+    reservations: &mut DeployReservations,
+    namespace_id: &NamespaceId,
+    reservation_id: DeployReservationId,
+    now: u64,
+) -> Result<(), SubmitCommandError> {
+    let Some(namespace_reservations) = reservations.get_mut(namespace_id) else {
+        return Err(SubmitCommandError::ReservationNotFound {
+            namespace_id: namespace_id.clone(),
+            reservation_id,
+        });
+    };
+    let Some(expires_at) = namespace_reservations.get(&reservation_id).copied() else {
+        return Err(SubmitCommandError::ReservationNotFound {
+            namespace_id: namespace_id.clone(),
+            reservation_id,
+        });
+    };
+    if expires_at.unix_seconds() <= now {
+        namespace_reservations.remove(&reservation_id);
+        return Err(SubmitCommandError::ReservationExpired {
+            namespace_id: namespace_id.clone(),
+            reservation_id,
+            expired_at: expires_at,
+        });
+    }
+    Ok(())
+}
+
 fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -630,4 +743,39 @@ fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenErro
     JoinTokenRedeemedAt::try_new(seconds).map_err(|error| RedeemMachineJoinTokenError::Clock {
         message: error.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deploy_reservation_expires_at_its_deadline() {
+        let namespace_id = NamespaceId::try_new("default").expect("valid namespace id");
+        let reservation_id = DeployReservationId::first();
+        let expired_at = DeployReservationExpiresAt::try_new(10).expect("valid expiration");
+        let mut reservations = BTreeMap::from([(
+            namespace_id.clone(),
+            BTreeMap::from([(reservation_id, expired_at)]),
+        )]);
+
+        let error = validate_deploy_reservation_at(
+            &mut reservations,
+            &namespace_id,
+            reservation_id,
+            expired_at.unix_seconds(),
+        )
+        .expect_err("reservation expires at its deadline");
+
+        assert!(matches!(
+            error,
+            SubmitCommandError::ReservationExpired {
+                namespace_id: expired_namespace,
+                reservation_id: expired_reservation,
+                expired_at: deadline,
+            } if expired_namespace == namespace_id
+                && expired_reservation == reservation_id
+                && deadline == expired_at
+        ));
+    }
 }

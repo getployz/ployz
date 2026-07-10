@@ -120,6 +120,15 @@ const MIGRATIONS: &[&str] = &[
         json TEXT NOT NULL
     );
     ",
+    "
+    DELETE FROM deploy_claims;
+    CREATE TABLE deploy_reservations (
+        namespace_id                  TEXT PRIMARY KEY,
+        last_issued                   TEXT NOT NULL,
+        last_committed                TEXT,
+        committed_owner_operation_id  TEXT
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -366,6 +375,7 @@ mod tests {
             "managed_lease_intent",
             "operation_events",
             "operations",
+            "deploy_reservations",
             "route_bindings",
             "serving_targets",
             "volume_pins",

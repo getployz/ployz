@@ -15,13 +15,14 @@ pub use ployz_core::dataplane::{
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
-    DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
-    DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
-    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
-    ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount,
-    StopGracePeriod, VolumeName, VolumeNameError,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS,
+    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployReservationExpiresAt,
+    DeployReservationId, DeployReservationNumberError, DeployRoute, DeployRouteTarget,
+    DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError,
+    HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand, ImageReference,
+    ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+    PreStartHook, PreStartHookStep, ReplicaCount, ReplicaCountError, ReplicaSlot,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,

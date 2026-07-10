@@ -8,26 +8,27 @@ use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
-    CoreReplaceReported, CoreReplaceRequest, DeploySubmitError, DeploySubmitRequest,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
-    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
-    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, OperationApiResponse,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    CoreReplaceReported, CoreReplaceRequest, DeployReserveError, DeployReserveRequest,
+    DeployReserved, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
+    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError,
+    NamespaceRemoveRequest, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
+    ServiceListError, ServiceListRequest, ServiceListResult, ServiceRestartError,
+    ServiceRestartRequest, ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult,
+    VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
-        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
-        VolumeRemoveApi,
+        CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, OperationApiContract, OpsListApi,
+        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -42,6 +43,13 @@ pub struct OperationApiClient {
 }
 
 impl OperationApiClient {
+    pub async fn deploy_reserve(
+        &self,
+        request: &DeployReserveRequest,
+    ) -> Result<DeployReserved, OperationApiClientError<DeployReserveError>> {
+        self.request_api::<DeployReserveApi>(request).await
+    }
+
     #[must_use]
     pub fn new(client: async_nats::Client) -> Self {
         Self {

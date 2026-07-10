@@ -73,8 +73,19 @@
     },
     "session_secret": "pcbsess_secret_123"
   },
+  "deploy_reserve_request": {
+    "namespace_id": "default"
+  },
+  "deploy_reserve_response": {
+    "status": "ok",
+    "value": {
+      "expires_at": "4102444800",
+      "reservation_id": "1"
+    }
+  },
   "deploy_submit_request": {
     "idempotency_key": "idem_deploy_123",
+    "reservation_id": "1",
     "target": {
       "namespace_id": "default",
       "services": [
@@ -261,6 +272,7 @@
         "event": {
           "event": "deploy_submitted",
           "operation_id": "op_123",
+          "reservation_id": "1",
           "target": {
             "namespace_id": "default",
             "services": [
@@ -333,6 +345,7 @@
           "event": {
             "event": "deploy_submitted",
             "operation_id": "op_123",
+            "reservation_id": "1",
             "target": {
               "namespace_id": "default",
               "services": [

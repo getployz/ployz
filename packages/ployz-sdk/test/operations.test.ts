@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import {
   certBundleRef,
   containerId,
+  deployReservationId,
+  deployReserveRequest,
   deploySubmitRequest,
   eventSequence,
   imageReference,
@@ -39,6 +41,9 @@ import {
 } from "../src/index.ts";
 import type {
   AcceptedOperation,
+  DeployReserveRequest,
+  DeployReserveResponse,
+  DeployReserved,
   DeploySubmitResponse,
   DeploySubmitRequest,
   InitFirstMachineActivateRequest,
@@ -93,14 +98,17 @@ test("deploy returns an operation handle with status and replay helpers", async 
   const transport = new RecordingTransport(defaultFixture());
   const client = new PloyzClient(transport);
   const input = deployInput();
-  const request = deploySubmitRequest(input);
+  const reservationId = deployReservationId(1);
+  const request = deploySubmitRequest(input, reservationId);
 
   const handle = await client.deploy(input);
   const status = await handle.status();
   const page = await handle.replayFromStart(100);
 
   assert.equal(handle.operationId, "op_123");
+  assert.deepEqual(transport.deployReserveRequests, [deployReserveRequest(input)]);
   assert.deepEqual(transport.deployRequests, [request]);
+  assert.deepEqual(transport.requestEndpoints.slice(0, 2), ["deploy.reserve", "deploy.submit"]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_123" }]);
   assert.deepEqual(transport.watchRequests, [
     { operation_id: "op_123", start_sequence: "11", limit: 100 },
@@ -339,8 +347,10 @@ test("sdk does not expose machine service calls", () => {
 });
 
 test("sdk maps raw deploy input to the wire request", () => {
-  assert.deepEqual(deploySubmitRequest(deployInput()), {
+  const reservationId = deployReservationId(1);
+  assert.deepEqual(deploySubmitRequest(deployInput(), reservationId), {
     idempotency_key: "idem_deploy_123",
+    reservation_id: "1",
     target: {
       namespace_id: "default",
       services: [
@@ -361,12 +371,16 @@ test("sdk maps raw deploy input to the wire request", () => {
     },
   });
   assert.deepEqual(
-    deploySubmitRequest({
-      ...deployInput(),
-      routes: [{ hostname: "api.example.com", port: 443, endpointPort: 8080 }],
-    }),
+    deploySubmitRequest(
+      {
+        ...deployInput(),
+        routes: [{ hostname: "api.example.com", port: 443, endpointPort: 8080 }],
+      },
+      reservationId,
+    ),
     {
       idempotency_key: "idem_deploy_123",
+      reservation_id: "1",
       target: {
         namespace_id: "default",
         services: [
@@ -397,11 +411,11 @@ test("sdk maps raw deploy input to the wire request", () => {
     },
   );
   assert.throws(
-    () => deploySubmitRequest({ ...deployInput(), serviceId: "svc.api" }),
+    () => deploySubmitRequest({ ...deployInput(), serviceId: "svc.api" }, reservationId),
     /service id/,
   );
   assert.throws(
-    () => deploySubmitRequest({ ...deployInput(), replicas: 0 }),
+    () => deploySubmitRequest({ ...deployInput(), replicas: 0 }, reservationId),
     /replica count/,
   );
 });
@@ -526,6 +540,15 @@ test("sdk exports operation subjects", () => {
 
 test("sdk exports the Rust operation API contract registry", () => {
   assert.deepEqual(OPERATION_API_CONTRACTS, [
+    {
+      name: "deploy.reserve",
+      subject: "plz.v1.rpc.operator.command.deploy.reserve",
+      execution: "mutates_operation",
+      request: "DeployReserveRequest",
+      success: "DeployReserved",
+      error: "DeployReserveError",
+      response: "DeployReserveResponse",
+    },
     {
       name: "deploy.submit",
       subject: "plz.v1.rpc.operator.command.deploy.submit",
@@ -757,6 +780,8 @@ test("sdk helpers enforce public primitive boundaries", () => {
 });
 
 class RecordingTransport implements PloyzOperationTransport {
+  readonly requestEndpoints: PloyzApiEndpoint[] = [];
+  readonly deployReserveRequests: DeployReserveRequest[] = [];
   readonly deployRequests: DeploySubmitRequest[] = [];
   readonly initFirstMachineActivateRequests: InitFirstMachineActivateRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
@@ -772,6 +797,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
+  readonly deployReserved: DeployReserved;
   readonly firstMachineActivated: InitFirstMachineActivated;
   readonly machineAddAccepted: MachineAddAccepted;
   readonly machineSnapshots: MachineSnapshot[];
@@ -781,6 +807,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly status: OperationStatusSnapshot;
   readonly replay: OperationEventReplayPage;
   readonly replayPages: OperationEventReplayPage[] = [];
+  deployReserveResponse?: DeployReserveResponse;
   deployResponse?: DeploySubmitResponse;
   initFirstMachineActivateResponse?: InitFirstMachineActivateResponse;
   machineAddResponse?: MachineAddResponse;
@@ -797,6 +824,7 @@ class RecordingTransport implements PloyzOperationTransport {
 
   constructor(fixture: OperationFixture) {
     this.accepted = fixture.accepted_operation;
+    this.deployReserved = fixture.deploy_reserve_response.value;
     this.firstMachineActivated = fixture.init_first_machine_activate_response.value;
     this.machineAddAccepted = fixture.machine_add_response.value;
     this.machineSnapshots = fixture.machine_snapshots;
@@ -808,7 +836,14 @@ class RecordingTransport implements PloyzOperationTransport {
   }
 
   async request(endpoint: PloyzApiEndpoint, request: unknown): Promise<any> {
+    this.requestEndpoints.push(endpoint);
     switch (endpoint) {
+      case "deploy.reserve":
+        this.deployReserveRequests.push(request as DeployReserveRequest);
+        return (this.deployReserveResponse ?? {
+          status: "ok",
+          value: this.deployReserved,
+        }) as any;
       case "deploy.submit":
         this.deployRequests.push(request as DeploySubmitRequest);
         return (this.deployResponse ?? { status: "ok", value: this.accepted }) as any;
@@ -908,6 +943,7 @@ class RecordingTransport implements PloyzOperationTransport {
 
 interface OperationFixture {
   accepted_operation: AcceptedOperation;
+  deploy_reserve_response: { status: "ok"; value: DeployReserved };
   init_first_machine_activate_response: { status: "ok"; value: InitFirstMachineActivated };
   machine_add_response: { status: "ok"; value: MachineAddAccepted };
   machine_snapshots: MachineSnapshot[];
@@ -921,6 +957,13 @@ interface OperationFixture {
 function defaultFixture(): OperationFixture {
   return {
     accepted_operation: acceptedOperation("op_123"),
+    deploy_reserve_response: {
+      status: "ok",
+      value: {
+        reservation_id: deployReservationId(1),
+        expires_at: "4102444800" as DeployReserved["expires_at"],
+      },
+    },
     init_first_machine_activate_response: {
       status: "ok",
       value: {

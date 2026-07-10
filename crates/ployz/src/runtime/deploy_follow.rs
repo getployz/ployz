@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal, Write};
 
 use ployz_core::ids::OperationId;
+use ployz_sdk_types::DeployReserveRequest;
 
 use crate::api_client::OperationApiClient;
 use crate::commands::deploy::{DeployCommand, DeployOutput};
@@ -23,6 +24,12 @@ pub(super) async fn execute_deploy(
         eprintln!("{warnings}");
     }
     let api = operation_api_client(config).await?;
+    let reservation = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: command.namespace_id.clone(),
+        })
+        .await
+        .map_err(api_error)?;
     let receipts = crate::image_push::prepare_deploy_images(
         &api,
         &mut command.services,
@@ -35,7 +42,7 @@ pub(super) async fn execute_deploy(
         .map(crate::image_push::ImagePushReceipt::render)
         .collect::<String>();
     let accepted = api
-        .deploy_submit(&command.into_request())
+        .deploy_submit(&command.into_request(reservation.reservation_id))
         .await
         .map_err(api_error)?;
     if detach {
