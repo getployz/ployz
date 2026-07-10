@@ -8,6 +8,7 @@ mod client_ids;
 pub mod commands;
 pub mod compose;
 pub mod config;
+mod confirmation;
 pub mod host_runner_install;
 pub mod remote_machine_runtime;
 pub mod runtime;

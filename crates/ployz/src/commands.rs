@@ -15,6 +15,7 @@ pub mod namespace;
 pub mod ops;
 pub mod role_policy;
 pub mod service;
+pub mod volume;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzctlInvocation {
@@ -42,6 +43,8 @@ pub enum PloyzctlCommand {
     ServiceInspect(service::ServiceInspectCommand),
     ServiceRestart(service::ServiceRestartCommand),
     NamespaceRemove(namespace::NamespaceRemoveCommand),
+    VolumeList(volume::VolumeListCommand),
+    VolumeRemove(volume::VolumeRemoveCommand),
     LogsTail(logs::LogsTailCommand),
     OpsList(ops::OpsListCommand),
     OpsStatus(ops::OpsStatusCommand),
@@ -111,6 +114,10 @@ enum CommandCli {
         #[command(subcommand)]
         command: NamespaceCli,
     },
+    Volume {
+        #[command(subcommand)]
+        command: VolumeCli,
+    },
     Logs(logs::LogsCli),
     Ops {
         #[command(subcommand)]
@@ -167,6 +174,13 @@ enum ServiceCli {
 #[derive(Debug, Subcommand)]
 enum NamespaceCli {
     Rm(namespace::NamespaceRemoveCli),
+}
+
+#[derive(Debug, Subcommand)]
+enum VolumeCli {
+    #[command(alias = "ls")]
+    List(volume::VolumeListCli),
+    Rm(volume::VolumeRemoveCli),
 }
 
 #[derive(Debug, Subcommand)]
@@ -243,6 +257,14 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
         CommandCli::Namespace { command } => match command {
             NamespaceCli::Rm(command) => {
                 namespace::namespace_remove_command(command).map(PloyzctlCommand::NamespaceRemove)
+            }
+        },
+        CommandCli::Volume { command } => match command {
+            VolumeCli::List(command) => Ok(PloyzctlCommand::VolumeList(
+                volume::volume_list_command(command),
+            )),
+            VolumeCli::Rm(command) => {
+                volume::volume_remove_command(command).map(PloyzctlCommand::VolumeRemove)
             }
         },
         CommandCli::Logs(command) => {

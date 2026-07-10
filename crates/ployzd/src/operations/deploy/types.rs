@@ -120,12 +120,22 @@ impl DeployServiceExecutionCommand {
 
     #[must_use]
     pub fn serving_target_entry_state(&self) -> ServingTargetEntry {
+        let mut volume_names = self
+            .request
+            .runtime
+            .volume_mounts
+            .iter()
+            .map(|mount| mount.volume_name.clone())
+            .collect::<Vec<_>>();
+        volume_names.sort();
+        volume_names.dedup();
         ServingTargetEntry {
             namespace_id: self.request.namespace_id.clone(),
             service_id: self.request.service_id.clone(),
             namespace_revision_entry_id: self.request.namespace_revision_entry_id.clone(),
             image: self.request.image.clone(),
             desired_replicas: self.request.replicas,
+            volume_names,
         }
     }
 

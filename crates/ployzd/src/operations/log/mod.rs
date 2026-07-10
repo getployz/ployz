@@ -30,6 +30,7 @@ mod namespace_remove;
 mod operation;
 mod service_restart;
 mod types;
+mod volume_remove;
 use action::OperationAction;
 use machine_add::{duplicate_machine_add_joined, scrub_failed_machine_add_secrets};
 pub use types::*;
