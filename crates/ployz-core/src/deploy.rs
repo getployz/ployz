@@ -93,7 +93,7 @@ pub struct PreStartHook {
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision_entry.v6";
-    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v3";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v4";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -136,6 +136,27 @@ pub fn namespace_revision_id_for(
             service.replicas.get().to_string().as_bytes(),
         );
         hash_runtime_spec(&mut hasher, &service.runtime);
+
+        match &service.pre_start {
+            Some(pre_start) => {
+                hash_frame(&mut hasher, "pre_start", b"some");
+                for argument in pre_start.command.as_slice() {
+                    hash_frame(&mut hasher, "pre_start_arg", argument.as_bytes());
+                }
+            }
+            None => hash_frame(&mut hasher, "pre_start", b"none"),
+        }
+
+        let mut dependencies = service.depends_on.iter().collect::<Vec<_>>();
+        dependencies.sort();
+        dependencies.dedup();
+        for dependency in dependencies {
+            hash_frame(
+                &mut hasher,
+                "depends_on",
+                dependency.as_str().as_bytes(),
+            );
+        }
 
         let mut routes = service.routes.iter().collect::<Vec<_>>();
         routes.sort_by(|left, right| {
@@ -1302,6 +1323,10 @@ pub enum ReplicaSlotError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanError {
     NoEligibleMachines,
+    UnknownServiceDependency {
+        service_id: ServiceId,
+        dependency: ServiceId,
+    },
     ServiceDependencyCycle {
         service_ids: Vec<ServiceId>,
     },
@@ -1481,12 +1506,16 @@ fn dependency_ordered_services(
     let mut dependency_counts = vec![0_usize; services.len()];
 
     for (service_index, input) in services.iter().enumerate() {
-        let dependencies = input
-            .request
-            .depends_on
-            .iter()
-            .filter_map(|dependency| service_indexes.get(dependency).copied())
-            .collect::<BTreeSet<_>>();
+        let mut dependencies = BTreeSet::new();
+        for dependency in &input.request.depends_on {
+            let Some(dependency_index) = service_indexes.get(dependency).copied() else {
+                return Err(DeployPlanError::UnknownServiceDependency {
+                    service_id: input.request.service_id.clone(),
+                    dependency: dependency.clone(),
+                });
+            };
+            dependencies.insert(dependency_index);
+        }
         let Some(dependency_count) = dependency_counts.get_mut(service_index) else {
             continue;
         };

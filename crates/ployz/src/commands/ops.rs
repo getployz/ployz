@@ -477,7 +477,6 @@ const fn deploy_completion_outcome(
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::PreparingDataplane => "running:preparing-dataplane",
-        DeployRunningStage::RunningPreStartHooks => "running:pre-start-hooks",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::RouteCutover => "running:route-cutover",

@@ -251,7 +251,6 @@ impl DeployRunningStage {
     pub const fn as_subject(&self) -> &'static str {
         match self {
             Self::PreparingDataplane => "preparing_dataplane",
-            Self::RunningPreStartHooks => "running_pre_start_hooks",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
             Self::RouteCutover => "route_cutover",

@@ -332,6 +332,17 @@ impl DeployExecutionError {
                     message: failure_message("volume-backed service has conflicting volume pins"),
                 }
             }
+            Self::Plan(DeployPlanError::UnknownServiceDependency {
+                service_id,
+                dependency,
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "service depends on unknown service {}",
+                    dependency.as_str()
+                )),
+            },
             Self::Plan(DeployPlanError::ServiceDependencyCycle { .. }) => {
                 DeployOperationFailure::PlanningFailed {
                     service_id: failure_service_id(command),

@@ -22,10 +22,11 @@ use ployz_nats::service_runtime::{
     RunningNatsService, start_nats_service,
 };
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
-// Hooks may legitimately outlive the default service-handler budget. The deploy
-// caller owns the shorter operation timeout; this bound prevents an endless wait.
+// The request carries the operation-owned execution timeout. This outer bound
+// limits malformed or future callers that fail to supply a useful inner bound.
 const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub use super::facts::MachineFactsReadError;
@@ -116,10 +117,10 @@ where
     runtime
         .bind_endpoint_with_policy(
             &hook_spec,
-            EndpointExecutionPolicy {
-                request_timeout: PRE_START_HOOK_ENDPOINT_TIMEOUT,
-                ..EndpointExecutionPolicy::default()
-            },
+            EndpointExecutionPolicy::new(
+                NonZeroUsize::MIN,
+                PRE_START_HOOK_ENDPOINT_TIMEOUT,
+            ),
             move |request| {
                 handle_container_run_hook(hook_machine_id.clone(), hook_state.clone(), request)
             },

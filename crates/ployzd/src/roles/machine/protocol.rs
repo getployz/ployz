@@ -167,25 +167,35 @@ pub struct MachineContainerRunHookRpcRequest {
     pub image: ImageReference,
     pub runtime: ContainerRuntimeSpec,
     pub container: ManagedContainerIdentity,
+    pub timeout_millis: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineContainerRunHookRpcResponse {
-    Completed {
-        machine_id: MachineId,
-        container_id: ContainerId,
-        exit_code: i64,
-    },
-    DomainError {
-        machine_id: MachineId,
-        error: MachineContainerRunHookDomainError,
-    },
+#[serde(deny_unknown_fields)]
+pub struct MachineContainerRunHookRpcOk {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    pub exit_code: i64,
 }
+
+impl MachineRpcResponder for MachineContainerRunHookRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type MachineContainerRunHookRpcResponse =
+    MachineRpcResponse<MachineContainerRunHookRpcOk, MachineContainerRunHookDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineContainerRunHookDomainError {
+    OperationStepAmbiguous {
+        operation_id: OperationId,
+        step_id: StepId,
+        container_ids: Vec<ContainerId>,
+    },
     CreateFailed {
         message: FailureMessage,
     },
@@ -198,6 +208,12 @@ pub enum MachineContainerRunHookDomainError {
         container_id: ContainerId,
         message: FailureMessage,
         log_hint: OperatorHint,
+    },
+    TimedOut {
+        container_id: ContainerId,
+        timeout_millis: u64,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
     },
 }
 

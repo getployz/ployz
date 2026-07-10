@@ -380,8 +380,8 @@ pub(crate) fn classify_service(
     };
     let pre_start = match pre_start {
         Ok(pre_start) => pre_start,
-        Err(finding) => {
-            findings.push(finding);
+        Err(mut hook_findings) => {
+            findings.append(&mut hook_findings);
             service_valid = false;
             None
         }
@@ -437,9 +437,13 @@ fn parse_depends_on(
             }
         }
         Value::Mapping(values) => {
-            for (key, _value) in values {
+            for (key, value) in values {
                 match key.as_str() {
-                    Some(name) => names.push((path.field(name), name.to_owned())),
+                    Some(name) => {
+                        let dependency_path = path.field(name);
+                        validate_dependency_options(value, &dependency_path, &mut findings);
+                        names.push((dependency_path, name.to_owned()));
+                    }
                     None => findings.push(ComposeFinding::invalid(
                         path.clone(),
                         "dependency keys must be strings",
@@ -473,49 +477,102 @@ fn parse_depends_on(
     }
 }
 
+fn validate_dependency_options(
+    value: Value,
+    path: &ComposePath,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let Value::Mapping(options) = value else {
+        if !matches!(value, Value::Null) {
+            findings.push(ComposeFinding::invalid(
+                path.clone(),
+                "dependency options must be a mapping",
+            ));
+        }
+        return;
+    };
+    for (key, value) in options {
+        let Some(key) = key.as_str() else {
+            findings.push(ComposeFinding::invalid(
+                path.clone(),
+                "dependency option names must be strings",
+            ));
+            continue;
+        };
+        let option_path = path.field(key);
+        if key != "condition" {
+            findings.push(ComposeFinding::unknown(option_path));
+            continue;
+        }
+        if value.as_str() != Some("service_started") {
+            findings.push(ComposeFinding::invalid(
+                option_path,
+                "only the service_started dependency condition is supported",
+            ));
+        }
+    }
+}
+
 fn parse_pre_start(
     value: Option<Value>,
     path: &ComposePath,
-) -> Result<Option<PreStartHook>, ComposeFinding> {
+) -> Result<Option<PreStartHook>, Vec<ComposeFinding>> {
     let Some(value) = value else {
         return Ok(None);
     };
     let command = match value {
-        Value::String(command) => parse_hook_command(ComposeCommand::Shell(command), path)?,
-        Value::Sequence(command) => parse_hook_command(ComposeCommand::Exec(command), path)?,
+        Value::String(command) => {
+            parse_hook_command(ComposeCommand::Shell(command), path).map_err(|error| vec![error])?
+        }
+        Value::Sequence(command) => {
+            parse_hook_command(ComposeCommand::Exec(command), path).map_err(|error| vec![error])?
+        }
         Value::Mapping(mapping) => {
+            let mut findings = mapping
+                .keys()
+                .filter_map(Value::as_str)
+                .filter(|key| *key != "command")
+                .map(|key| ComposeFinding::unknown(path.field(key)))
+                .collect::<Vec<_>>();
             let Some(command) = mapping.get(Value::String("command".to_owned())) else {
-                return Err(ComposeFinding::invalid(
+                findings.push(ComposeFinding::invalid(
                     path.clone(),
                     "pre_start mapping needs command",
                 ));
+                return Err(findings);
             };
-            match command {
+            let command = match command {
                 Value::String(command) => parse_hook_command(
                     ComposeCommand::Shell(command.clone()),
                     &path.field("command"),
-                )?,
+                ),
                 Value::Sequence(command) => parse_hook_command(
                     ComposeCommand::Exec(command.clone()),
                     &path.field("command"),
-                )?,
+                ),
                 Value::Null
                 | Value::Bool(_)
                 | Value::Number(_)
                 | Value::Mapping(_)
-                | Value::Tagged(_) => {
-                    return Err(ComposeFinding::invalid(
+                | Value::Tagged(_) => Err(ComposeFinding::invalid(
                         path.field("command"),
                         "hook command must be a string or list",
-                    ));
+                    )),
+            };
+            match command {
+                Ok(command) if findings.is_empty() => command,
+                Ok(_) => return Err(findings),
+                Err(error) => {
+                    findings.push(error);
+                    return Err(findings);
                 }
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Tagged(_) => {
-            return Err(ComposeFinding::invalid(
+            return Err(vec![ComposeFinding::invalid(
                 path.clone(),
                 "pre_start must be a string, list, or mapping",
-            ));
+            )]);
         }
     };
     Ok(Some(PreStartHook { command }))
