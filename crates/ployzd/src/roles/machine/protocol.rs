@@ -7,29 +7,15 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
+use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
+pub use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::machine_runtime::{
     MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerObservation,
 };
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
-
-/// Shared machine RPC response envelope: every endpoint answers either with its
-/// success payload or with `{ machine_id, error }`. The serialized shape is
-/// identical to the previous per-endpoint enums.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineRpcResponse<T, E> {
-    Ok(T),
-    DomainError { machine_id: MachineId, error: E },
-}
-
-/// Success payloads carry the responding machine id so the request side can
-/// reject answers from the wrong machine.
-pub trait MachineRpcResponder {
-    fn responder_machine_id(&self) -> &MachineId;
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
@@ -139,11 +125,38 @@ pub enum MachineContainerInspectDomainError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunRpcRequest {
-    pub image: ImageReference,
+    pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
     /// The identity the machine stamps onto the created container; the
     /// wire shape is identical to the dissolved per-RPC run spec.
     pub container: ManagedContainerIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineImagePull {
+    Registry {
+        reference: ImageReference,
+    },
+    MeshSeed {
+        seed_host: std::net::Ipv4Addr,
+        repository: ImageRepository,
+        manifest_digest: OciDigest,
+    },
+}
+
+impl MachineImagePull {
+    #[must_use]
+    pub fn reference(&self) -> String {
+        match self {
+            Self::Registry { reference } => reference.as_str().to_owned(),
+            Self::MeshSeed {
+                seed_host,
+                repository,
+                manifest_digest,
+            } => format!("{seed_host}:{IMAGE_MESH_REGISTRY_PORT}/{repository}@{manifest_digest}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,7 +179,7 @@ pub type MachineContainerRunRpcResponse =
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunHookRpcRequest {
-    pub image: ImageReference,
+    pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
     pub container: ManagedContainerIdentity,
     pub timeout_millis: u64,
@@ -222,6 +235,11 @@ pub enum MachineContainerRunHookDomainError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineContainerRunDomainError {
+    ImagePullFailed {
+        service_id: ployz_core::ids::ServiceId,
+        namespace_revision_entry_id: ployz_core::ids::NamespaceRevisionEntryId,
+        message: FailureMessage,
+    },
     OperationStepAmbiguous {
         operation_id: OperationId,
         step_id: StepId,
@@ -966,7 +984,10 @@ mod tests {
     #[test]
     fn container_run_hook_wire_shape_is_pinned() {
         let request = MachineContainerRunHookRpcRequest {
-            image: ImageReference::try_new("registry.example/api:rev_2").expect("valid image"),
+            pull: MachineImagePull::Registry {
+                reference: ImageReference::try_new("registry.example/api:rev_2")
+                    .expect("valid image"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             container: ManagedContainerIdentity {
                 namespace_id: ployz_core::ids::NamespaceId::try_new("default")
@@ -984,7 +1005,10 @@ mod tests {
             timeout_millis: 1_000,
         };
         let request_json = json!({
-            "image": "registry.example/api:rev_2",
+            "pull": {
+                "source": "registry",
+                "reference": "registry.example/api:rev_2",
+            },
             "runtime": {
                 "command": null,
                 "entrypoint": null,

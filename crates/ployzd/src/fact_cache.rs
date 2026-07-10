@@ -292,6 +292,7 @@ fn empty_machine_facts(
         containers,
         None,
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         observed_at_unix_ms,
     )
 }
@@ -505,6 +506,7 @@ mod tests {
                 .expect("valid container snapshot"),
             None,
             ployz_test_support::fixtures::test_disk_space(),
+            ployz_core::image::OciPlatform::current(),
             observed_at_unix_ms,
         )
         .expect("valid machine facts")

@@ -14,6 +14,13 @@ impl OperationEvent {
             Self::DeployPlanCreated { .. } => "deploy.plan.created".to_owned(),
             Self::DeployRunning { stage, .. } => format!("deploy.running.{}", stage.as_subject()),
             Self::DeployDataplanePrepared { .. } => "deploy.dataplane.prepared".to_owned(),
+            Self::DeployImageAvailabilityVerified {
+                service_id, seed, ..
+            } => format!(
+                "deploy.image.availability_verified.{}.{}",
+                service_id.as_str(),
+                seed.as_str()
+            ),
             Self::DeployContainerStarted {
                 machine_id,
                 container_id,

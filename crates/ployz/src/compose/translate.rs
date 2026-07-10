@@ -391,6 +391,7 @@ pub(crate) fn classify_service(
         Some(DeployServiceSpec {
             service_id,
             image,
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas,
             runtime: ContainerRuntimeSpec {
                 command,

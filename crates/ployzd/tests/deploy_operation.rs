@@ -183,6 +183,46 @@ async fn deploy_worker_runs_containers_then_completes() {
 }
 
 #[tokio::test]
+async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        route_less_pushed_deploy_command(2),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("route-less pushed deploy succeeds");
+
+    let [request] = dataplane.requests.as_slice() else {
+        panic!("one dataplane prepare request is recorded");
+    };
+    assert_eq!(
+        request.machines(),
+        vec![
+            machine_id("machine_a"),
+            machine_id("machine_b"),
+            machine_id("machine_seed"),
+        ]
+    );
+    assert!(runtime.requests.iter().all(|(_, request)| matches!(
+        &request.pull,
+        ployzd::roles::machine::protocol::MachineImagePull::MeshSeed { seed_host, .. }
+            if *seed_host
+                == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
+    )));
+}
+
+#[tokio::test]
 async fn pre_start_hook_runs_before_service_with_derived_runtime() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -265,7 +305,7 @@ async fn nonzero_pre_start_hook_fails_before_service_start_and_retains_hook() {
             },
         retained_artifacts,
         ..
-    } = failure
+    } = *failure
     else {
         panic!("expected pre-start hook failure");
     };
@@ -299,18 +339,17 @@ async fn pre_start_hook_cleanup_failure_is_typed_and_blocks_service_start() {
     .await
     .expect_err("hook cleanup failure rejects deploy");
 
-    let DeployExecutionError::Failed {
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("expected recorded deploy failure");
+    };
+    let DeployOperationFailure::PreStartHookFailed {
         failure:
-            DeployOperationFailure::PreStartHookFailed {
-                failure:
-                    PreStartHookFailure::CleanupFailed {
-                        container_id: failed_container,
-                        ..
-                    },
+            PreStartHookFailure::CleanupFailed {
+                container_id: failed_container,
                 ..
             },
         ..
-    } = error
+    } = *failure
     else {
         panic!("expected typed hook cleanup failure");
     };
@@ -867,24 +906,37 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
     .await
     .expect_err("deploy fails");
 
+    let DeployExecutionError::Failed {
+        source, failure, ..
+    } = error
+    else {
+        panic!("deploy must record a terminal failure");
+    };
+    let DeployOperationFailure::ContainerStartFailed {
+        machine_id: failure_machine_id,
+        container_id: failure_container_id,
+        message,
+        retained_artifacts,
+    } = *failure
+    else {
+        panic!("deploy must record container start failure");
+    };
     assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            source,
-            failure:
-                DeployOperationFailure::ContainerStartFailed {
-                    machine_id: failure_machine_id,
-                    container_id: failure_container_id,
-                    message,
-                    retained_artifacts,
-                },
-            ..
-        } if matches!(*source, DeployExecutionError::RunContainer(MachineContainerRuntimeError::CreatedContainerStartFailed { .. }))
-            && failure_machine_id == machine_id("machine_a")
-            && failure_container_id == container_id("ctr_created")
-            && message == failure_message("container start failed: exec format error")
-            && retained_artifacts == vec![retained_created_container("machine_a", "ctr_created")]
+        *source,
+        DeployExecutionError::RunContainer(
+            MachineContainerRuntimeError::CreatedContainerStartFailed { .. }
+        )
     ));
+    assert_eq!(failure_machine_id, machine_id("machine_a"));
+    assert_eq!(failure_container_id, container_id("ctr_created"));
+    assert_eq!(
+        message,
+        failure_message("container start failed: exec format error")
+    );
+    assert_eq!(
+        retained_artifacts,
+        vec![retained_created_container("machine_a", "ctr_created")]
+    );
     assert!(namespace_state.serving_requests.is_empty());
     assert_eq!(
         runtime.stops,
@@ -928,20 +980,22 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
     .await
     .expect_err("deploy fails");
 
-    assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            failure:
-                DeployOperationFailure::HealthCheckFailed {
-                    retained_artifacts,
-                    ..
-                },
-            ..
-        } if retained_artifacts == vec![
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("deploy must record a terminal failure");
+    };
+    let DeployOperationFailure::HealthCheckFailed {
+        retained_artifacts, ..
+    } = *failure
+    else {
+        panic!("deploy must record health check failure");
+    };
+    assert_eq!(
+        retained_artifacts,
+        vec![
             retained_container("machine_a", "ctr_1"),
             retained_stop_failed_container("machine_a", "ctr_1"),
         ]
-    ));
+    );
     assert_eq!(runtime.stops.len(), 1);
 }
 
@@ -1348,19 +1402,22 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     .await
     .expect_err("active commit timeout fails the operation");
 
+    let DeployExecutionError::Failed {
+        source, failure, ..
+    } = error
+    else {
+        panic!("deploy must record a terminal failure");
+    };
     assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            source,
-            failure: DeployOperationFailure::ControlPlaneCommitFailed { .. },
+        *failure,
+        DeployOperationFailure::ControlPlaneCommitFailed { .. }
+    ));
+    assert!(matches!(
+        *source,
+        DeployExecutionError::StepTimedOut {
+            step: DeployExecutionStep::CommitServingTarget,
             ..
-        } if matches!(
-            *source,
-            DeployExecutionError::StepTimedOut {
-                step: DeployExecutionStep::CommitServingTarget,
-                ..
-            }
-        )
+        }
     ));
     assert_eq!(
         recorder.records,
@@ -1420,17 +1477,20 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
     .await
     .expect_err("lost namespace lock fails the operation through the worker path");
 
+    let DeployExecutionError::Failed {
+        source, failure, ..
+    } = error
+    else {
+        panic!("deploy must record a terminal failure");
+    };
     assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            source,
-            failure: DeployOperationFailure::ControlPlaneCommitFailed { .. },
-            ..
-        } if matches!(
-            *source,
-            DeployExecutionError::CommitNamespaceState(
-                ployzd::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
-            )
+        *failure,
+        DeployOperationFailure::ControlPlaneCommitFailed { .. }
+    ));
+    assert!(matches!(
+        *source,
+        DeployExecutionError::CommitNamespaceState(
+            ployzd::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
         )
     ));
     assert_eq!(

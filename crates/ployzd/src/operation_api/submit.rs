@@ -8,8 +8,10 @@ use crate::operation_api::admission::{
     MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, OperationControllers,
     ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
+use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::EventSequence;
+use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, DeploySubmitError,
@@ -68,6 +70,7 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
+    validate_pushed_image_seeds(handlers, &command).await?;
     let accepted = handlers
         .controllers
         .submit_deploy(command)
@@ -84,6 +87,60 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted);
 
     Ok(operation)
+}
+
+async fn validate_pushed_image_seeds(
+    handlers: &OperationApiHandlers,
+    command: &DeploySubmitCommand,
+) -> Result<(), DeploySubmitError> {
+    let seeds = command.target.services.iter().filter_map(|service| {
+        let ImageSource::PushedToSeed { seed, .. } = &service.image_source else {
+            return None;
+        };
+        Some(seed)
+    });
+
+    for seed in seeds {
+        let active = handlers
+            .machine_roster
+            .active_machine(seed)
+            .await
+            .map_err(|error| DeploySubmitError::Unavailable {
+                operation_id: command.operation_id.clone(),
+                message: error.to_string(),
+            })?;
+        let Some(active) = active else {
+            return Err(invalid_image_seed(
+                command,
+                seed,
+                "is not in the active roster",
+            ));
+        };
+        if !matches!(active.lifecycle, MachineLifecycle::Active) {
+            return Err(invalid_image_seed(
+                command,
+                seed,
+                "is not in the active lifecycle",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn invalid_image_seed(
+    command: &DeploySubmitCommand,
+    seed: &MachineId,
+    reason: &str,
+) -> DeploySubmitError {
+    DeploySubmitError::InvalidTarget {
+        operation_id: command.operation_id.clone(),
+        message: ployz_core::ops::FailureMessage::try_new(format!(
+            "pushed image seed {} {reason}",
+            seed.as_str()
+        ))
+        .expect("generated pushed image seed failure message is non-empty"),
+    }
 }
 
 pub async fn service_restart(

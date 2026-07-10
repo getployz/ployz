@@ -199,9 +199,17 @@ impl PloyzdRoleUnit {
 
     #[must_use]
     pub fn render(&self) -> String {
+        let dependencies = match &self.role {
+            DaemonProcessRole::Machine(_) => "network-online.target docker.service",
+            DaemonProcessRole::Control | DaemonProcessRole::Gateway | DaemonProcessRole::Dns => {
+                "network-online.target"
+            }
+        };
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.process_name(),
+            dependencies,
+            dependencies,
             self.environment_file.path().display(),
             self.exec_start,
         )

@@ -21,6 +21,9 @@ pub trait HostRunnerCommandRunner {
     fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage>;
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage>;
     fn docker_info(&mut self) -> Result<(), FailureMessage>;
+    fn docker_is_installed(&mut self) -> bool;
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage>;
+    fn docker_has_insecure_registry(&mut self, cidr: &str) -> Result<bool, FailureMessage>;
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage>;
     fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage>;
     fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage>;
@@ -108,6 +111,50 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             "docker info failed: {}",
             output.failure_summary()
         )))
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        command_success("docker", &["--version"], self.timeout)
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        let output = run_command(
+            "docker",
+            &["info", "--format", "{{json .DriverStatus}}"],
+            self.timeout,
+        )?;
+        if !output.status.success() {
+            return Err(failure_message(format!(
+                "docker info failed: {}",
+                output.failure_summary()
+            )));
+        }
+        Ok(output.stdout.contains("io.containerd.snapshotter.v1"))
+    }
+
+    fn docker_has_insecure_registry(&mut self, cidr: &str) -> Result<bool, FailureMessage> {
+        let output = run_command(
+            "docker",
+            &[
+                "info",
+                "--format",
+                "{{json .RegistryConfig.InsecureRegistryCIDRs}}",
+            ],
+            self.timeout,
+        )?;
+        if !output.status.success() {
+            return Err(failure_message(format!(
+                "docker info failed: {}",
+                output.failure_summary()
+            )));
+        }
+        let registries =
+            serde_json::from_str::<Vec<String>>(output.stdout.trim()).map_err(|error| {
+                failure_message(format!(
+                    "docker info returned invalid insecure registries: {error}"
+                ))
+            })?;
+        Ok(registries.iter().any(|registry| registry == cidr))
     }
 
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {

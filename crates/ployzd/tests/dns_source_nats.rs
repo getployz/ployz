@@ -216,6 +216,7 @@ fn machine_facts(machine_id_value: &str, public_ip: Option<[u8; 4]>) -> MachineF
             .expect("empty container facts are valid"),
         public_ip.map(|address| machine_public_ip(machine_id_value, address)),
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("machine facts are valid")

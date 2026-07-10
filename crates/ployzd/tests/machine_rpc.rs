@@ -13,8 +13,9 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcResponse,
-    MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
+    MachineImagePull, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
+    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
 };
 use ployzd::service_catalog::machine_role_service;
 use std::sync::{Arc, Mutex};
@@ -57,7 +58,9 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .expect("received request lock is not poisoned")
             .as_slice(),
         [MachineContainerRunRpcRequest {
-            image: image("registry.example/api:rev_2"),
+            pull: MachineImagePull::Registry {
+                reference: image("registry.example/api:rev_2"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             container: managed_identity()
         }]
@@ -623,7 +626,9 @@ async fn test_nats() -> TestNats {
 
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        image: image("registry.example/api:rev_2"),
+        pull: MachineImagePull::Registry {
+            reference: image("registry.example/api:rev_2"),
+        },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_identity(),
     }
@@ -643,15 +648,18 @@ fn image(value: &str) -> ImageReference {
 
 #[test]
 fn container_run_request_wire_shape_survived_run_spec_dissolution() {
-    // The run RPC's container field is the managed container identity,
-    // serialized flat; this pin is the wire contract for that shape.
+    // The run RPC keeps the managed container identity flat and carries an
+    // explicit image pull instruction.
     let request = run_request();
     let json = serde_json::to_value(&request).expect("run request serializes");
 
     assert_eq!(
         json,
         serde_json::json!({
-            "image": "registry.example/api:rev_2",
+            "pull": {
+                "source": "registry",
+                "reference": "registry.example/api:rev_2",
+            },
             "runtime": {
                 "command": null,
                 "entrypoint": null,

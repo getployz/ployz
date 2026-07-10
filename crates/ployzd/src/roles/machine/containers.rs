@@ -81,10 +81,12 @@ where
     };
     match decide_container_run(&request.container, existing) {
         MachineContainerRunDecision::Create { identity } => {
+            let service_id = identity.service_id.clone();
+            let namespace_revision_entry_id = identity.namespace_revision_entry_id.clone();
             match state
                 .runner
                 .create_managed_container(CreateManagedContainer {
-                    image: request.image,
+                    pull: request.pull,
                     runtime: request.runtime,
                     identity,
                 })
@@ -114,6 +116,16 @@ where
                         },
                     ),
                 },
+                Err(MachineContainerRunnerError::ImagePull { message }) => {
+                    machine_domain_error(MachineContainerRunRpcResponse::DomainError {
+                        machine_id,
+                        error: MachineContainerRunDomainError::ImagePullFailed {
+                            service_id,
+                            namespace_revision_entry_id,
+                            message: failure_message(message),
+                        },
+                    })
+                }
                 Err(error) => runner_error(error),
             }
         }
@@ -201,7 +213,7 @@ where
             let container_id = match state
                 .runner
                 .create_managed_container(CreateManagedContainer {
-                    image: request.image,
+                    pull: request.pull,
                     runtime: request.runtime,
                     identity,
                 })
@@ -220,6 +232,7 @@ where
                 }
                 Err(error @ MachineContainerRunnerError::ListExisting { .. })
                 | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+                | Err(error @ MachineContainerRunnerError::ImagePull { .. })
                 | Err(error @ MachineContainerRunnerError::Start { .. })
                 | Err(error @ MachineContainerRunnerError::Wait { .. })
                 | Err(error @ MachineContainerRunnerError::Stop { .. })
@@ -277,6 +290,7 @@ where
             Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::ImagePull { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Stop { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Restart { .. }))
@@ -301,6 +315,7 @@ where
                     Err(error @ MachineContainerRunnerError::ListExisting { .. })
                     | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
                     | Err(error @ MachineContainerRunnerError::Create { .. })
+                    | Err(error @ MachineContainerRunnerError::ImagePull { .. })
                     | Err(error @ MachineContainerRunnerError::Start { .. })
                     | Err(error @ MachineContainerRunnerError::Wait { .. })
                     | Err(error @ MachineContainerRunnerError::Restart { .. })
@@ -349,6 +364,7 @@ fn hook_start_error(
         error @ (MachineContainerRunnerError::ListExisting { .. }
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
         | MachineContainerRunnerError::Create { .. }
+        | MachineContainerRunnerError::ImagePull { .. }
         | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }

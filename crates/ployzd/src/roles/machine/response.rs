@@ -29,6 +29,9 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
         MachineContainerRunnerError::Create { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container create failed: {message}")),
         ),
+        MachineContainerRunnerError::ImagePull { message } => NatsServiceResponse::transport_error(
+            NatsServiceError::internal(format!("image pull failed: {message}")),
+        ),
         MachineContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container start failed: {message}")),
         ),
@@ -82,6 +85,7 @@ pub(crate) fn container_start_error(
         error @ (MachineContainerRunnerError::ListExisting { .. }
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
         | MachineContainerRunnerError::Create { .. }
+        | MachineContainerRunnerError::ImagePull { .. }
         | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }

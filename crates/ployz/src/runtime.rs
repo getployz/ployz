@@ -216,25 +216,7 @@ pub async fn execute_command(
         }
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
-        PloyzctlCommand::Deploy(command) => {
-            let detach = command.detach;
-            let warnings = command.warnings.join("\n");
-            if !warnings.is_empty() {
-                eprintln!("{warnings}");
-            }
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .deploy_submit(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput {
-                    stdout: crate::commands::deploy::DeployOutput::from_accepted(accepted).render(),
-                    stderr: String::new(),
-                });
-            }
-            deploy_follow::watch_deploy_operation(&api, accepted.operation_id, config).await
-        }
+        PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
                 host_runner_install,
@@ -808,6 +790,10 @@ pub enum PloyzctlExecutionError {
     },
     #[error("{message}")]
     OperationApi { message: String },
+    #[error("image push failed: {source}")]
+    ImagePush {
+        source: crate::image_push::ImagePushError,
+    },
     #[error("namespace rm {} was not confirmed", namespace_id.as_str())]
     NamespaceRemoveNotConfirmed {
         namespace_id: ployz_core::ids::NamespaceId,

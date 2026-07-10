@@ -1,8 +1,8 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget,
+    DeployRouteTarget, ImageSource,
 };
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::ops::{
     CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
     DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
@@ -23,6 +23,7 @@ pub(crate) struct DeployTree {
 struct ObservedDeploy {
     operation_id: OperationId,
     target: DeployRequest,
+    verified_image_services: Vec<ServiceId>,
     work: DeployWork,
     result: DeployResult,
 }
@@ -77,6 +78,7 @@ impl DeployTree {
                 self.deploy = Some(ObservedDeploy {
                     operation_id: operation_id.clone(),
                     target: target.clone(),
+                    verified_image_services: Vec::new(),
                     work: DeployWork::Planning,
                     result: DeployResult::Active,
                 });
@@ -143,6 +145,27 @@ impl DeployTree {
                 operation_id: _,
                 report: _,
             } => {}
+            OperationEvent::DeployImageAvailabilityVerified {
+                operation_id,
+                service_id,
+                seed,
+                manifest_digest: _,
+            } => {
+                let image = self.requested_image(service_id).map(str::to_owned);
+                if let Some(deploy) = &mut self.deploy
+                    && !deploy.verified_image_services.contains(service_id)
+                {
+                    deploy.verified_image_services.push(service_id.clone());
+                }
+                if let Some(image) = image {
+                    self.plain_lines.push(format!(
+                        "deploy {}: images — {} available from {}",
+                        operation_id.as_str(),
+                        image,
+                        seed.as_str()
+                    ));
+                }
+            }
             OperationEvent::DeployContainerStarted {
                 operation_id,
                 machine_id: _,
@@ -428,6 +451,23 @@ impl DeployTree {
             .find(|service| &service.service_id == service_id)
             .map(|service| service.image.as_str())
     }
+
+    fn image_is_ready(&self, image: &str) -> bool {
+        let Some(deploy) = &self.deploy else {
+            return false;
+        };
+        deploy
+            .target
+            .services
+            .iter()
+            .filter(|service| service.image.as_str() == image)
+            .all(|service| match &service.image_source {
+                ImageSource::Registry => true,
+                ImageSource::PushedToSeed { .. } => {
+                    deploy.verified_image_services.contains(&service.service_id)
+                }
+            })
+    }
 }
 
 /// One child line of a stage group.
@@ -680,7 +720,7 @@ fn route_text(service_id: &str, route: &DeployRoute) -> String {
 fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine> {
     let failed_service = tree
         .failure()
-        .and_then(|failure| DeployFailureView::new(failure, None).artifact_service());
+        .and_then(|failure| DeployFailureView::new(failure, None).image_failure_service());
     distinct_images(target)
         .into_iter()
         .map(|image| {
@@ -690,24 +730,54 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                 })
             });
             if failed_here {
-                let reason = tree.failure().map_or_else(String::new, |failure| {
-                    let DeployOperationFailure::ArtifactUnavailable { reason, .. } = failure else {
-                        return String::new();
-                    };
-                    artifact_unavailable_reason(reason)
-                });
+                let reason = tree
+                    .failure()
+                    .map_or_else(String::new, |failure| match failure {
+                        DeployOperationFailure::ArtifactUnavailable { reason, .. } => {
+                            artifact_unavailable_reason(reason)
+                        }
+                        DeployOperationFailure::ImageMissingOnSeed { .. }
+                        | DeployOperationFailure::ImageDigestMismatch { .. }
+                        | DeployOperationFailure::SeedUnavailable { .. }
+                        | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
+                            failure_cause(tree, failure)
+                        }
+                        DeployOperationFailure::NoUsableMachines { .. }
+                        | DeployOperationFailure::PlanningFailed { .. }
+                        | DeployOperationFailure::AutoDnsWithoutLease { .. }
+                        | DeployOperationFailure::DataplaneUnavailable { .. }
+                        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
+                        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
+                        | DeployOperationFailure::RuntimeUnavailable { .. }
+                        | DeployOperationFailure::ContainerStartFailed { .. }
+                        | DeployOperationFailure::PreStartHookFailed { .. }
+                        | DeployOperationFailure::HealthCheckFailed { .. }
+                        | DeployOperationFailure::ControlPlaneCommitFailed { .. }
+                        | DeployOperationFailure::RouteCutoverFailed { .. } => String::new(),
+                    });
                 TreeLine::Settled {
                     text: format!("✗ {image} — {reason}"),
                 }
-            } else if tree.plan().is_some() {
+            } else if tree.plan().is_some() && tree.image_is_ready(image) {
                 TreeLine::Settled {
                     text: format!("✓ {image}"),
                 }
             } else {
+                let ensuring = matches!(tree.stage(), Some(DeployRunningStage::EnsuringImages));
                 TreeLine::Pending {
-                    active: image.to_owned(),
+                    active: if ensuring {
+                        format!("{image} — redistributing")
+                    } else {
+                        image.to_owned()
+                    },
                     idle: format!("{image} — waiting on images"),
-                    phase: PendingPhase::Engaged,
+                    phase: if ensuring {
+                        PendingPhase::Engaged
+                    } else if tree.plan().is_some() {
+                        PendingPhase::Queued
+                    } else {
+                        PendingPhase::Engaged
+                    },
                 }
             }
         })
@@ -766,11 +836,15 @@ fn render_service_step(
                     phase: PendingPhase::Queued,
                 };
             }
-            let step_text = if matches!(tree.stage(), Some(DeployRunningStage::PreparingDataplane))
-            {
-                "preparing dataplane"
-            } else {
-                "queued"
+            let step_text = match tree.stage() {
+                Some(DeployRunningStage::PreparingDataplane) => "preparing dataplane",
+                Some(DeployRunningStage::EnsuringImages) => "ensuring images",
+                Some(DeployRunningStage::StartingContainers)
+                | Some(DeployRunningStage::WaitingForHealth)
+                | Some(DeployRunningStage::RouteCutover)
+                | Some(DeployRunningStage::ServingTargetCommit)
+                | Some(DeployRunningStage::RemovingSupersededContainers)
+                | None => "queued",
             };
             TreeLine::Pending {
                 active: format!("{name} — {step_text}"),
@@ -802,6 +876,7 @@ fn render_route_line(tree: &DeployTree, service_id: &str, route: &DeployRoute) -
         Some(DeployRunningStage::ServingTargetCommit)
         | Some(DeployRunningStage::RemovingSupersededContainers) => "committing",
         Some(DeployRunningStage::PreparingDataplane)
+        | Some(DeployRunningStage::EnsuringImages)
         | Some(DeployRunningStage::StartingContainers)
         | Some(DeployRunningStage::WaitingForHealth)
         | None => "queued",
@@ -882,11 +957,12 @@ impl DeployTree {
 const fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::PreparingDataplane => 0,
-        DeployRunningStage::StartingContainers => 1,
-        DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::RouteCutover => 3,
-        DeployRunningStage::ServingTargetCommit => 4,
-        DeployRunningStage::RemovingSupersededContainers => 5,
+        DeployRunningStage::EnsuringImages => 1,
+        DeployRunningStage::StartingContainers => 2,
+        DeployRunningStage::WaitingForHealth => 3,
+        DeployRunningStage::RouteCutover => 4,
+        DeployRunningStage::ServingTargetCommit => 5,
+        DeployRunningStage::RemovingSupersededContainers => 6,
     }
 }
 

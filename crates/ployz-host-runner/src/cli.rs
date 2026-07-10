@@ -404,6 +404,7 @@ pub fn first_machine_install_target_from_spec(
     let roles = install.role_policy();
     let FirstMachineInstallSpec {
         machine_id,
+        dataplane_endpoint_supernet,
         gateway: _,
         dns: _,
         machine_public_ip,
@@ -478,7 +479,8 @@ pub fn first_machine_install_target_from_spec(
         recovery_key_wrapped,
         core_seeds_wrapped,
     )
-    .with_nats_server_unit(nats_server_unit);
+    .with_nats_server_unit(nats_server_unit)
+    .with_dataplane_endpoint_supernet(dataplane_endpoint_supernet);
     if let Some(url) = machine_bootstrap_url {
         target = target.with_machine_bootstrap_url(url);
     }

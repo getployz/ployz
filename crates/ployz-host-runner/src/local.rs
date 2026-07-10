@@ -31,6 +31,7 @@ const DOCKER_INSTALL_SCRIPT_URL: &str = "https://get.docker.com";
 pub struct HostRunnerLocalConfig {
     pub systemd_dir: PathBuf,
     pub state_dir: PathBuf,
+    pub docker_daemon_config: PathBuf,
 }
 
 pub struct HostRunnerLocalEffects<R> {
@@ -57,8 +58,8 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
             HostRunnerStep::PrepareDataplaneHost => self.prepare_dataplane_host(),
-            HostRunnerStep::PrepareContainerRuntime(runtime) => {
-                self.prepare_container_runtime(*runtime)
+            HostRunnerStep::PrepareContainerRuntime(runtime, endpoint_supernet) => {
+                self.prepare_container_runtime(*runtime, endpoint_supernet)
             }
             HostRunnerStep::VerifyContainerRuntime(runtime) => {
                 self.verify_container_runtime(*runtime)
@@ -121,12 +122,22 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
     fn prepare_container_runtime(
         &mut self,
         runtime: ContainerRuntime,
+        endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
     ) -> Result<(), HostRunnerStepEffectError> {
         match runtime {
-            ContainerRuntime::Docker => self.prepare_docker().map_err(|message| {
+            ContainerRuntime::Docker => self.prepare_docker(endpoint_supernet).map_err(|message| {
+                let reason = match message {
+                    PrepareDockerError::ClassicStore(message) => {
+                        return HostRunnerStepEffectError::new(
+                            HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported,
+                            message,
+                        );
+                    }
+                    PrepareDockerError::Other(message) => message,
+                };
                 HostRunnerStepEffectError::new(
                     HostRunnerStepFailureReason::ContainerRuntimePrepareFailed,
-                    message,
+                    reason,
                 )
             }),
         }
@@ -146,29 +157,87 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         runtime: ContainerRuntime,
     ) -> Result<(), HostRunnerStepEffectError> {
         match runtime {
-            ContainerRuntime::Docker => self.runner.docker_info().map_err(|message| {
-                HostRunnerStepEffectError::new(
-                    HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed,
-                    message,
-                )
-            }),
+            ContainerRuntime::Docker => {
+                self.runner.docker_info().map_err(|message| {
+                    HostRunnerStepEffectError::new(
+                        HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed,
+                        message,
+                    )
+                })?;
+                let containerd =
+                    self.runner
+                        .docker_uses_containerd_snapshotter()
+                        .map_err(|message| {
+                            HostRunnerStepEffectError::new(
+                                HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed,
+                                message,
+                            )
+                        })?;
+                if !containerd {
+                    return Err(classic_store_failure());
+                }
+                Ok(())
+            }
         }
     }
 
-    fn prepare_docker(&mut self) -> Result<(), FailureMessage> {
+    fn prepare_docker(
+        &mut self,
+        endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
+    ) -> Result<(), PrepareDockerError> {
+        let endpoint_supernet = endpoint_supernet.as_string();
         if self.runner.docker_info().is_ok() {
-            return Ok(());
+            return self.prepare_running_docker(&endpoint_supernet);
         }
 
-        if self.runner.enable_docker_service().is_ok() && self.runner.docker_info().is_ok() {
-            return Ok(());
+        let enable_result = self.runner.enable_docker_service();
+        if enable_result.is_ok() && self.runner.docker_info().is_ok() {
+            return self.prepare_running_docker(&endpoint_supernet);
+        }
+        if self.runner.docker_is_installed() {
+            return Err(PrepareDockerError::Other(
+                enable_result.err().unwrap_or_else(|| {
+                    failure_message("Docker is installed but did not become ready after enabling")
+                }),
+            ));
         }
 
+        merge_docker_daemon_config(&self.config.docker_daemon_config, &endpoint_supernet)?;
         let script = DockerInstallScript::new()?;
         self.runner
             .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
         self.runner.run_docker_install_script(script.path())?;
-        self.runner.enable_docker_service()
+        self.runner.enable_docker_service()?;
+        self.verify_running_docker(&endpoint_supernet)
+    }
+
+    fn prepare_running_docker(
+        &mut self,
+        endpoint_supernet: &str,
+    ) -> Result<(), PrepareDockerError> {
+        if !self.runner.docker_uses_containerd_snapshotter()? {
+            return Err(PrepareDockerError::ClassicStore(classic_store_message()));
+        }
+        if merge_docker_daemon_config(&self.config.docker_daemon_config, endpoint_supernet)? {
+            self.runner.systemctl(&["restart", "docker"])?;
+        }
+        self.verify_running_docker(endpoint_supernet)
+    }
+
+    fn verify_running_docker(&mut self, endpoint_supernet: &str) -> Result<(), PrepareDockerError> {
+        self.runner.docker_info()?;
+        if !self.runner.docker_uses_containerd_snapshotter()? {
+            return Err(PrepareDockerError::ClassicStore(classic_store_message()));
+        }
+        if !self
+            .runner
+            .docker_has_insecure_registry(endpoint_supernet)?
+        {
+            return Err(PrepareDockerError::Other(failure_message(format!(
+                "Docker is not running with insecure registry CIDR {endpoint_supernet}"
+            ))));
+        }
+        Ok(())
     }
 
     fn write_supervisor_unit(&self, spec: &SupervisorUnitSpec) -> Result<(), FailureMessage> {
@@ -415,6 +484,121 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         })?;
         commit_join_material_directory(&self.config.state_dir, material)
     }
+}
+
+#[derive(Debug)]
+enum PrepareDockerError {
+    ClassicStore(FailureMessage),
+    Other(FailureMessage),
+}
+
+impl From<FailureMessage> for PrepareDockerError {
+    fn from(message: FailureMessage) -> Self {
+        Self::Other(message)
+    }
+}
+
+fn classic_store_failure() -> HostRunnerStepEffectError {
+    HostRunnerStepEffectError::new(
+        HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported,
+        classic_store_message(),
+    )
+}
+
+fn classic_store_message() -> FailureMessage {
+    failure_message(
+        "Docker is running with the classic image store; explicitly enable features.containerd-snapshotter in /etc/docker/daemon.json and restart Docker (switching stores hides existing images)",
+    )
+}
+
+fn merge_docker_daemon_config(
+    path: &Path,
+    endpoint_supernet: &str,
+) -> Result<bool, FailureMessage> {
+    let mut config = if path.exists() {
+        let bytes = fs::read(path).map_err(|error| {
+            failure_message(format!(
+                "failed to read Docker daemon config {}: {error}",
+                path.display()
+            ))
+        })?;
+        serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+            failure_message(format!(
+                "failed to parse Docker daemon config {}: {error}",
+                path.display()
+            ))
+        })?
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+    let Some(config) = config.as_object_mut() else {
+        return Err(failure_message(format!(
+            "Docker daemon config {} must be a JSON object",
+            path.display()
+        )));
+    };
+
+    let features = config
+        .entry("features")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(features) = features.as_object_mut() else {
+        return Err(failure_message(
+            "Docker daemon config features must be a JSON object",
+        ));
+    };
+    let mut changed =
+        features.get("containerd-snapshotter") != Some(&serde_json::Value::Bool(true));
+    features.insert(
+        "containerd-snapshotter".to_owned(),
+        serde_json::Value::Bool(true),
+    );
+
+    let insecure_registries = config
+        .entry("insecure-registries")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(insecure_registries) = insecure_registries.as_array_mut() else {
+        return Err(failure_message(
+            "Docker daemon config insecure-registries must be a JSON array",
+        ));
+    };
+    if !insecure_registries
+        .iter()
+        .any(|entry| entry.as_str() == Some(endpoint_supernet))
+    {
+        insecure_registries.push(serde_json::Value::String(endpoint_supernet.to_owned()));
+        changed = true;
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let directory = path.parent().ok_or_else(|| {
+        failure_message(format!(
+            "Docker daemon config path {} has no parent directory",
+            path.display()
+        ))
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            failure_message(format!(
+                "Docker daemon config path {} has no UTF-8 file name",
+                path.display()
+            ))
+        })?;
+    fs::create_dir_all(directory).map_err(|error| {
+        failure_message(format!(
+            "failed to create Docker daemon config directory {}: {error}",
+            directory.display()
+        ))
+    })?;
+    let mut rendered = serde_json::to_vec_pretty(&config).map_err(|error| {
+        failure_message(format!("failed to render Docker daemon config: {error}"))
+    })?;
+    rendered.push(b'\n');
+    write_durable_file(directory, file_name, FileMode::Plain, &rendered)?;
+    Ok(true)
 }
 
 fn commit_join_material_directory(

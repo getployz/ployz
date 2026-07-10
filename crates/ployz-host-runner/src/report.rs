@@ -136,6 +136,9 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
         HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed => {
             "container-runtime-verify-failed"
         }
+        HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported => {
+            "container-runtime-classic-store-unsupported"
+        }
     }
 }
 

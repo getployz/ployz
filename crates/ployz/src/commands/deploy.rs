@@ -26,6 +26,7 @@ pub struct DeployCommand {
     pub services: Vec<DeployServiceSpec>,
     pub warnings: Vec<String>,
     pub detach: bool,
+    pub from_registry: bool,
 }
 
 impl DeployCommand {
@@ -84,6 +85,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         endpoint_port,
         allow_unsupported,
         detach,
+        from_registry,
     } = parsed;
 
     if let Some(file) = file {
@@ -131,6 +133,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             services: parsed.services,
             warnings: warnings.into_iter().map(|warning| warning.0).collect(),
             detach,
+            from_registry,
         });
     }
     if allow_unsupported {
@@ -185,6 +188,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         services: vec![DeployServiceSpec {
             service_id,
             image,
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas,
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -193,6 +197,7 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
         }],
         warnings: Vec::new(),
         detach,
+        from_registry,
     })
 }
 
@@ -208,6 +213,9 @@ pub(crate) struct DeployCli {
     image: Option<String>,
     #[arg(long)]
     replicas: Option<String>,
+    /// Resolve the image from its registry even when it exists in local Docker.
+    #[arg(long)]
+    from_registry: bool,
     /// Route HOST on public HTTP port 80 to container endpoint PORT.
     /// Repeat to bind multiple hostnames to the same service.
     #[arg(
