@@ -233,6 +233,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::CoreReplace => "core-replace",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
+        OperationKind::ManagedLease => "managed-lease",
         OperationKind::NamespaceRemove => "namespace-remove",
     }
 }
@@ -289,6 +290,15 @@ fn operation_subject(status: &OperationStatus) -> String {
         OperationStatus::NamespaceRemove { namespace_id, .. } => {
             format!("namespace {}", namespace_id.as_str())
         }
+        OperationStatus::ManagedLease { subject, .. } => match subject {
+            ployz_sdk_types::ManagedLeaseSubject::Acquire => "lease acquisition".to_owned(),
+            ployz_sdk_types::ManagedLeaseSubject::DownloadBundle { lease } => {
+                format!("lease {} bundle download", lease.as_str())
+            }
+            ployz_sdk_types::ManagedLeaseSubject::Renew { lease } => {
+                format!("lease {} renewal", lease.as_str())
+            }
+        },
     }
 }
 
@@ -322,6 +332,7 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::CoreReplace { state, .. } => core_replace_state(state).to_owned(),
         OperationStatus::NetworkRepair { state, .. } => network_repair_state(state).to_owned(),
         OperationStatus::ServiceRestart { state, .. } => service_restart_state(state).to_owned(),
+        OperationStatus::ManagedLease { state, .. } => managed_lease_state(state).to_owned(),
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
     }
 }
@@ -339,6 +350,14 @@ const fn network_repair_state(
         ployz_sdk_types::NetworkRepairOperationState::Completed => "completed",
         ployz_sdk_types::NetworkRepairOperationState::Failed { .. } => "failed",
         ployz_sdk_types::NetworkRepairOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+const fn managed_lease_state(state: &ployz_sdk_types::ManagedLeaseOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::ManagedLeaseOperationState::Accepted => "accepted",
+        ployz_sdk_types::ManagedLeaseOperationState::Completed => "completed",
+        ployz_sdk_types::ManagedLeaseOperationState::Failed { .. } => "failed",
     }
 }
 
@@ -416,6 +435,10 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             render_network_repair_failure(failure)
         )),
+        OperationStatus::ManagedLease {
+            state: ployz_sdk_types::ManagedLeaseOperationState::Failed { failure },
+            ..
+        } => Some(format!("failure {}", failure.message.as_str())),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
@@ -424,6 +447,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::CoreReplace { .. }
         | OperationStatus::NetworkRepair { .. }
         | OperationStatus::ServiceRestart { .. }
+        | OperationStatus::ManagedLease { .. }
         | OperationStatus::NamespaceRemove { .. } => None,
     }
 }
@@ -575,6 +599,9 @@ impl DeployEventRenderContext {
             | OperationEvent::ServiceRestartContainerRestarted { .. }
             | OperationEvent::ServiceRestartCompleted { .. }
             | OperationEvent::ServiceRestartFailed { .. }
+            | OperationEvent::ManagedLeaseSubmitted { .. }
+            | OperationEvent::ManagedLeaseCompleted { .. }
+            | OperationEvent::ManagedLeaseFailed { .. }
             | OperationEvent::NamespaceRemoveSubmitted { .. }
             | OperationEvent::NamespaceRemoveRunning { .. }
             | OperationEvent::NamespaceRemoveRouteBindingRemoved { .. }
@@ -641,6 +668,9 @@ fn render_replayed_event_text(
         | OperationEvent::ServiceRestartContainerRestarted { .. }
         | OperationEvent::ServiceRestartCompleted { .. }
         | OperationEvent::ServiceRestartFailed { .. }
+        | OperationEvent::ManagedLeaseSubmitted { .. }
+        | OperationEvent::ManagedLeaseCompleted { .. }
+        | OperationEvent::ManagedLeaseFailed { .. }
         | OperationEvent::NamespaceRemoveSubmitted { .. }
         | OperationEvent::NamespaceRemoveRunning { .. }
         | OperationEvent::NamespaceRemoveRouteBindingRemoved { .. }
@@ -741,6 +771,9 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         }
         OperationEvent::ServiceRestartCompleted { .. } => "service.restart.completed",
         OperationEvent::ServiceRestartFailed { .. } => "service.restart.failed",
+        OperationEvent::ManagedLeaseSubmitted { .. } => "managed.lease.submitted",
+        OperationEvent::ManagedLeaseCompleted { .. } => "managed.lease.completed",
+        OperationEvent::ManagedLeaseFailed { .. } => "managed.lease.failed",
         OperationEvent::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted",
         OperationEvent::NamespaceRemoveRunning { .. } => "namespace.remove.running",
         OperationEvent::NamespaceRemoveRouteBindingRemoved { .. } => {
@@ -759,13 +792,29 @@ fn render_deploy_failure_detail(
     failure: &DeployOperationFailure,
     service_id: Option<&ServiceId>,
 ) -> String {
-    format!(
+    let detail = format!(
         "class {} service {} {} {}",
         failure.failure_class().as_str(),
         deploy_failure_service(failure, service_id),
         deploy_failure_machines(failure),
         deploy_failure_evidence(failure),
-    )
+    );
+    match failure {
+        DeployOperationFailure::AutoDnsWithoutLease { message, .. } => {
+            format!("{detail} guidance {}", message.as_str())
+        }
+        DeployOperationFailure::NoUsableMachines { .. }
+        | DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::ArtifactUnavailable { .. }
+        | DeployOperationFailure::DataplaneUnavailable { .. }
+        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
+        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
+        | DeployOperationFailure::RuntimeUnavailable { .. }
+        | DeployOperationFailure::ContainerStartFailed { .. }
+        | DeployOperationFailure::HealthCheckFailed { .. }
+        | DeployOperationFailure::ControlPlaneCommitFailed { .. }
+        | DeployOperationFailure::RouteCutoverFailed { .. } => detail,
+    }
 }
 
 fn deploy_failure_service(
@@ -781,6 +830,7 @@ fn deploy_failure_service(
 fn deploy_failure_service_id(failure: &DeployOperationFailure) -> Option<&ServiceId> {
     match failure {
         DeployOperationFailure::PlanningFailed { service_id, .. }
+        | DeployOperationFailure::AutoDnsWithoutLease { service_id, .. }
         | DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
         DeployOperationFailure::ControlPlaneCommitFailed { scope, .. } => match scope {
             ControlPlaneCommitScope::ServiceEntry { service_id, .. } => Some(service_id),
@@ -844,6 +894,7 @@ fn deploy_failure_machines(failure: &DeployOperationFailure) -> String {
             | RouteCutoverFailureReason::TimedOut { .. } => {}
         },
         DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::AutoDnsWithoutLease { .. }
         | DeployOperationFailure::ArtifactUnavailable { .. }
         | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
         | DeployOperationFailure::ControlPlaneCommitFailed { .. } => {}

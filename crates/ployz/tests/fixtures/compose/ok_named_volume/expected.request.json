@@ -1,0 +1,43 @@
+{
+  "namespace_id": "fixture_named_volume",
+  "services": [
+    {
+      "service_id": "long",
+      "image": "nginx:latest",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10,
+        "volume_mounts": [
+          {
+            "volume_name": "cache",
+            "target": "/cache"
+          },
+          {
+            "volume_name": "logs",
+            "target": "/logs"
+          }
+        ]
+      }
+    },
+    {
+      "service_id": "short",
+      "image": "nginx:latest",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10,
+        "volume_mounts": [
+          {
+            "volume_name": "data",
+            "target": "/data"
+          }
+        ]
+      }
+    }
+  ]
+}

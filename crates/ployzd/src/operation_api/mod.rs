@@ -26,6 +26,7 @@ pub use submit::{
 use crate::adapters::nats_authorization::MachineCredentialMint;
 use crate::core_store::CoreStore;
 use crate::fact_cache::FactCache;
+use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
 use crate::operation_api::admission::OperationControllers;
@@ -67,6 +68,7 @@ pub struct OperationApiHandlers {
     local_machine_id: MachineId,
     intent_change_client: async_nats::Client,
     machine_roster: MachineRosterStore,
+    lease_intent: LeaseIntentStore,
     machine_query: Arc<MachineQueryService>,
     service_query: Arc<ServiceQueryService>,
     network_query: Arc<NetworkQueryService>,
@@ -109,6 +111,7 @@ impl OperationApiHandlers {
             facts_reader.clone(),
         );
         let logs_query = LogsQueryService::new(intent_reader, facts_reader, logs_tailer);
+        let lease_intent = LeaseIntentStore::new(core_store.clone());
         Self {
             controllers,
             deploy_driver: Arc::new(deploy_driver),
@@ -123,6 +126,7 @@ impl OperationApiHandlers {
             local_machine_id,
             intent_change_client,
             machine_roster,
+            lease_intent,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
             network_query: Arc::new(network_query),
@@ -178,6 +182,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn local_machine_id(&self) -> &MachineId {
         &self.local_machine_id
+    }
+
+    pub(crate) fn lease_intent(&self) -> &LeaseIntentStore {
+        &self.lease_intent
     }
 
     pub(crate) fn dataplane_endpoint_supernet(&self) -> &MachineEndpointSupernet {

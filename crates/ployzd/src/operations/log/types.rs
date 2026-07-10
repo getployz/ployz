@@ -5,8 +5,8 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
 use ployz_core::ops::{
-    EventSequence, MachineAddOperationStateName, OperationIdempotencyKey, OperationStatus,
-    StatusProjectionError,
+    EventSequence, MachineAddOperationStateName, ManagedLeaseSubject, OperationIdempotencyKey,
+    OperationStatus, StatusProjectionError,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
@@ -159,6 +159,17 @@ pub struct NetworkRepairOperationSubmission {
 pub(super) struct NetworkRepairPayload;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedLeaseOperationSubmission {
+    pub operation_id: OperationId,
+    pub subject: ManagedLeaseSubject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ManagedLeasePayload {
+    pub(super) subject: ManagedLeaseSubject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NamespaceRemovePayload {
     pub(super) namespace_id: NamespaceId,
 }
@@ -227,6 +238,11 @@ pub struct AcceptedNetworkRepairSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
     pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedManagedLeaseSubmission {
+    pub operation_id: OperationId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +319,7 @@ pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;
 pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
 pub type RecordNetworkRepairTransitionError = RecordOperationEventError;
+pub type RecordManagedLeaseTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
 

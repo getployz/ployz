@@ -23,6 +23,7 @@ mod events;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
+mod managed_lease;
 mod namespace_remove;
 mod network_repair;
 mod projection;
@@ -49,6 +50,10 @@ pub use machine_lifecycle::{
 pub use machine_update::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     MachineUpdateTransition,
+};
+pub use managed_lease::{
+    ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
+    ManagedLeaseSubject, ManagedLeaseTransition,
 };
 pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
@@ -86,6 +91,7 @@ pub enum OperationKind {
     CoreReplace,
     NetworkRepair,
     ServiceRestart,
+    ManagedLease,
     NamespaceRemove,
 }
 
@@ -149,6 +155,12 @@ pub enum OperationStatus {
         namespace_id: NamespaceId,
         service_id: ServiceId,
         state: ServiceRestartOperationState,
+        last_event_sequence: EventSequence,
+    },
+    ManagedLease {
+        id: OperationId,
+        subject: ManagedLeaseSubject,
+        state: ManagedLeaseOperationState,
         last_event_sequence: EventSequence,
     },
     NamespaceRemove {
@@ -307,6 +319,20 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn managed_lease_accepted(
+        id: OperationId,
+        subject: ManagedLeaseSubject,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::ManagedLease {
+            id,
+            subject,
+            state: ManagedLeaseOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
@@ -317,6 +343,7 @@ impl OperationStatus {
             Self::CoreReplace { state, .. } => state.is_terminal(),
             Self::NetworkRepair { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
+            Self::ManagedLease { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
         }
     }

@@ -114,6 +114,12 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (namespace_id, volume_name)
     );
     ",
+    "
+    CREATE TABLE managed_lease_intent (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -357,6 +363,7 @@ mod tests {
         for expected in [
             "control_plane",
             "machines",
+            "managed_lease_intent",
             "operation_events",
             "operations",
             "route_bindings",

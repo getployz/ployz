@@ -10,6 +10,7 @@ use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
+use super::managed_lease::{self, ManagedLeaseOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
 use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
@@ -78,6 +79,8 @@ pub enum StatusProjectionError {
         current: Box<ProjectionOperationState>,
         attempted: Box<ProjectionOperationState>,
     },
+    #[error("managed lease operation {} does not support cancellation", .operation_id.as_str())]
+    ManagedLeaseCancellationUnsupported { operation_id: OperationId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +93,7 @@ pub enum ProjectionOperationState {
     CoreReplace(CoreReplaceOperationState),
     NetworkRepair(NetworkRepairOperationState),
     ServiceRestart(ServiceRestartOperationState),
+    ManagedLease(ManagedLeaseOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
 }
 
@@ -105,6 +109,7 @@ impl ProjectionOperationState {
             Self::CoreReplace(_) => OperationKind::CoreReplace,
             Self::NetworkRepair(_) => OperationKind::NetworkRepair,
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
+            Self::ManagedLease(_) => OperationKind::ManagedLease,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
         }
     }
@@ -120,6 +125,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::CoreReplace => "core-replace",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
+        OperationKind::ManagedLease => "managed-lease",
         OperationKind::NamespaceRemove => "namespace-remove",
     }
 }
@@ -139,6 +145,7 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         OperationSubjectRef::CoreReplace(machine_id) => {
             format!("core-replace {}", machine_id.as_str())
         }
+        OperationSubjectRef::ManagedLease(subject) => format!("managed-lease {subject:?}"),
     }
 }
 
@@ -352,6 +359,15 @@ pub fn project_operation_event(
                 event,
                 event_sequence,
             )
+        }
+        ClassifiedOperationEvent::ManagedLease { event, .. } => {
+            let OperationStatus::ManagedLease {
+                id, subject, state, ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::ManagedLease));
+            };
+            managed_lease::project_event(id, subject, state, event, event_sequence)
         }
         ClassifiedOperationEvent::NamespaceRemove { event, .. } => {
             let OperationStatus::NamespaceRemove {

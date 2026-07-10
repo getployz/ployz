@@ -21,6 +21,7 @@ use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
+use super::managed_lease::{ManagedLeaseEvent, ManagedLeaseTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
 use super::network_repair::{NetworkRepairEvent, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
@@ -44,6 +45,7 @@ pub enum OperationSubject {
     CoreReplace { machine_id: MachineId },
     NetworkRepair,
     ServiceRestart { service_id: ServiceId },
+    ManagedLease { subject: super::ManagedLeaseSubject },
     NamespaceRemove { namespace_id: NamespaceId },
 }
 
@@ -224,6 +226,19 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: ServiceRestartFailure,
     },
+    ManagedLeaseSubmitted {
+        operation_id: OperationId,
+        subject: super::ManagedLeaseSubject,
+    },
+    ManagedLeaseCompleted {
+        operation_id: OperationId,
+        subject: super::ManagedLeaseSubject,
+    },
+    ManagedLeaseFailed {
+        operation_id: OperationId,
+        subject: super::ManagedLeaseSubject,
+        failure: super::ManagedLeaseOperationFailure,
+    },
     NamespaceRemoveSubmitted {
         operation_id: OperationId,
         namespace_id: NamespaceId,
@@ -298,6 +313,9 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { operation_id, .. }
             | Self::ServiceRestartCompleted { operation_id }
             | Self::ServiceRestartFailed { operation_id, .. }
+            | Self::ManagedLeaseSubmitted { operation_id, .. }
+            | Self::ManagedLeaseCompleted { operation_id, .. }
+            | Self::ManagedLeaseFailed { operation_id, .. }
             | Self::NamespaceRemoveSubmitted { operation_id, .. }
             | Self::NamespaceRemoveRunning { operation_id, .. }
             | Self::NamespaceRemoveRouteBindingRemoved { operation_id, .. }
@@ -354,6 +372,9 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { .. }
             | Self::ServiceRestartCompleted { .. }
             | Self::ServiceRestartFailed { .. }
+            | Self::ManagedLeaseSubmitted { .. }
+            | Self::ManagedLeaseCompleted { .. }
+            | Self::ManagedLeaseFailed { .. }
             | Self::NamespaceRemoveSubmitted { .. }
             | Self::NamespaceRemoveRunning { .. }
             | Self::NamespaceRemoveRouteBindingRemoved { .. }
@@ -426,6 +447,9 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { .. }
             | Self::ServiceRestartCompleted { .. }
             | Self::ServiceRestartFailed { .. }
+            | Self::ManagedLeaseSubmitted { .. }
+            | Self::ManagedLeaseCompleted { .. }
+            | Self::ManagedLeaseFailed { .. }
             | Self::NamespaceRemoveSubmitted { .. }
             | Self::NamespaceRemoveRunning { .. }
             | Self::NamespaceRemoveRouteBindingRemoved { .. }
@@ -504,6 +528,9 @@ impl OperationEvent {
             ),
             Self::ServiceRestartCompleted { .. } => "service.restart.completed".to_owned(),
             Self::ServiceRestartFailed { .. } => "service.restart.failed".to_owned(),
+            Self::ManagedLeaseSubmitted { .. } => "managed.lease.submitted".to_owned(),
+            Self::ManagedLeaseCompleted { .. } => "managed.lease.completed".to_owned(),
+            Self::ManagedLeaseFailed { .. } => "managed.lease.failed".to_owned(),
             Self::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted".to_owned(),
             Self::NamespaceRemoveRunning { stage, .. } => {
                 format!("namespace.remove.running.{}", stage.as_subject())
@@ -551,6 +578,7 @@ pub enum OperationSubjectRef {
     MachineUpdate(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
+    ManagedLease(super::ManagedLeaseSubject),
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -586,6 +614,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: ServiceRestartEvent,
     },
+    ManagedLease {
+        operation_id: OperationId,
+        event: ManagedLeaseEvent,
+    },
     NamespaceRemove {
         operation_id: OperationId,
         event: NamespaceRemoveEvent,
@@ -603,6 +635,7 @@ impl ClassifiedOperationEvent {
             | Self::CoreReplace { operation_id, .. }
             | Self::NetworkRepair { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
+            | Self::ManagedLease { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
         }
     }
@@ -938,6 +971,34 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     failure,
                 }),
             },
+            OperationEvent::ManagedLeaseSubmitted {
+                operation_id,
+                subject,
+            } => Self::ManagedLease {
+                operation_id,
+                event: ManagedLeaseEvent::Submitted { subject },
+            },
+            OperationEvent::ManagedLeaseCompleted {
+                operation_id,
+                subject,
+            } => Self::ManagedLease {
+                operation_id,
+                event: ManagedLeaseEvent::Transition {
+                    subject,
+                    transition: ManagedLeaseTransition::Completed,
+                },
+            },
+            OperationEvent::ManagedLeaseFailed {
+                operation_id,
+                subject,
+                failure,
+            } => Self::ManagedLease {
+                operation_id,
+                event: ManagedLeaseEvent::Transition {
+                    subject,
+                    transition: ManagedLeaseTransition::Failed { failure },
+                },
+            },
             OperationEvent::NamespaceRemoveSubmitted {
                 operation_id,
                 namespace_id,
@@ -1025,6 +1086,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     event: ServiceRestartEvent::Transition(ServiceRestartTransition::Cancelled {
                         reason,
                     }),
+                },
+                OperationKind::ManagedLease => Self::ManagedLease {
+                    operation_id,
+                    event: ManagedLeaseEvent::UnsupportedCancellation,
                 },
                 OperationKind::NamespaceRemove => Self::NamespaceRemove {
                     operation_id,
