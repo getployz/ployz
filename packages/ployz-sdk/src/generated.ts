@@ -178,7 +178,7 @@ export type ContainerRuntimeState = { "state": "running",
  * port is route state, not container state (ADR 0023), so the
  * observation carries only the IP gateways dial.
  */
-ip?: string | null, health: ContainerHealth, } | { "state": "exited" };
+ip?: string | null, health: ContainerHealth, started_at_unix_ms?: number | null, } | { "state": "exited" };
 
 export type ContainerHealth = "none" | "starting" | "healthy" | "unhealthy";
 

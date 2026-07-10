@@ -14,6 +14,7 @@ use ployzd::roles::machine::runner::{
 };
 use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct ObservingContainerRunner {
@@ -104,7 +105,11 @@ impl MachineContainerRunner for ObservingContainerRunner {
         // so a started container always observes an endpoint IP.
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
-                state: ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into()),
+                state: ContainerRuntimeState::Running {
+                    ip: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+                    health: ployz_core::machine_runtime::ContainerHealth::None,
+                    started_at_unix_ms: Some(current_unix_ms()),
+                },
                 ..observation
             })
             .map_err(|error| MachineContainerRunnerError::Start {
@@ -235,7 +240,11 @@ impl MachineContainerRunner for ObservingContainerRunner {
 
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
-                state: ContainerRuntimeState::running_at(std::net::Ipv4Addr::LOCALHOST.into()),
+                state: ContainerRuntimeState::Running {
+                    ip: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+                    health: ployz_core::machine_runtime::ContainerHealth::None,
+                    started_at_unix_ms: Some(current_unix_ms()),
+                },
                 ..existing
             })
             .map_err(|error| MachineContainerRunnerError::Restart {
@@ -373,12 +382,24 @@ fn existing_container_from_observation(
 
 fn existing_container_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
-        ContainerRuntimeState::Running { ip, health } => ExistingManagedContainerState::Running {
+        ContainerRuntimeState::Running {
+            ip,
+            health,
+            started_at_unix_ms,
+        } => ExistingManagedContainerState::Running {
             ip: *ip,
             health: *health,
+            started_at_unix_ms: *started_at_unix_ms,
         },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
+}
+
+fn current_unix_ms() -> u64 {
+    let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn empty_snapshot(machine_id: &MachineId) -> MachineContainerObservationSnapshot {

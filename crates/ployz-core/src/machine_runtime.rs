@@ -264,6 +264,8 @@ pub enum ContainerRuntimeState {
         ip: Option<IpAddr>,
         #[serde(default)]
         health: ContainerHealth,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_unix_ms: Option<u64>,
     },
     Exited,
 }
@@ -274,6 +276,7 @@ impl ContainerRuntimeState {
         Self::Running {
             ip: None,
             health: ContainerHealth::None,
+            started_at_unix_ms: None,
         }
     }
 
@@ -282,12 +285,17 @@ impl ContainerRuntimeState {
         Self::Running {
             ip: Some(ip),
             health: ContainerHealth::None,
+            started_at_unix_ms: None,
         }
     }
 
     #[must_use]
     pub const fn running_at_with_health(ip: Option<IpAddr>, health: ContainerHealth) -> Self {
-        Self::Running { ip, health }
+        Self::Running {
+            ip,
+            health,
+            started_at_unix_ms: None,
+        }
     }
 
     #[must_use]
