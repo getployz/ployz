@@ -129,11 +129,51 @@ fn stored_artifact_is_adopted_from_active_metadata_after_restart() {
     GatewayCertificateStore::new(state.path().to_path_buf())
         .push_at(&request, NOW)
         .expect("initial push");
+    let active = request.bundle.active_cert().clone();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = GatewayCertificateStore::new(state.path().to_path_buf())
+            .artifact_path(&active)
+            .expect("artifact path");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make artifact permissive");
+        std::fs::set_permissions(
+            path.parent().expect("artifact parent"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("make artifact directory permissive");
+    }
 
     assert_eq!(
         GatewayCertificateStore::new(state.path().to_path_buf()).load(request.bundle.active_cert()),
         Ok(request.bundle)
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = GatewayCertificateStore::new(state.path().to_path_buf())
+            .artifact_path(&active)
+            .expect("artifact path");
+        assert_eq!(
+            (
+                std::fs::metadata(path.parent().expect("artifact parent"))
+                    .expect("directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                std::fs::metadata(path)
+                    .expect("artifact metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+            ),
+            (0o700, 0o600)
+        );
+    }
 }
 
 #[test]

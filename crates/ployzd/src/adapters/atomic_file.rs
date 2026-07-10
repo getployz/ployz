@@ -50,12 +50,22 @@ pub(crate) fn write_secret_file_atomically(
     std::fs::create_dir_all(parent).map_err(|error| write_error(error.to_string()))?;
     restrict_secret_permissions(parent, None).map_err(|error| write_error(error.to_string()))?;
     write_file_atomically(path, contents)?;
-    restrict_secret_permissions(parent, Some(path))
-        .map_err(|error| write_error(error.to_string()))?;
+    restrict_secret_file_permissions(path)?;
     std::fs::File::open(path)
         .and_then(|file| file.sync_all())
         .map_err(|error| write_error(error.to_string()))?;
     sync_parent_directory(parent).map_err(|error| write_error(error.to_string()))
+}
+
+pub(crate) fn restrict_secret_file_permissions(path: &Path) -> Result<(), AtomicFileWriteError> {
+    let write_error = |message: String| AtomicFileWriteError {
+        path: path.to_path_buf(),
+        message,
+    };
+    let Some(parent) = path.parent() else {
+        return Err(write_error("path has no parent directory".to_owned()));
+    };
+    restrict_secret_permissions(parent, Some(path)).map_err(|error| write_error(error.to_string()))
 }
 
 #[cfg(unix)]

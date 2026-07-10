@@ -11,7 +11,9 @@ use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::ops::RouteHostname;
 use time::PrimitiveDateTime;
 
-use crate::adapters::atomic_file::write_secret_file_atomically;
+use crate::adapters::atomic_file::{
+    restrict_secret_file_permissions, write_secret_file_atomically,
+};
 
 pub(crate) fn prepare_custom_certificate(
     state_dir: &Path,
@@ -60,6 +62,12 @@ pub(crate) fn load_custom_certificate(
     active_cert: &ActiveCertState,
 ) -> Result<CustomCertBundle, CertificateMaterialError> {
     let path = custom_certificate_material_path(state_dir, active_cert)?;
+    restrict_secret_file_permissions(&path).map_err(|error| {
+        CertificateMaterialError::ArtifactFile {
+            path: path.clone(),
+            message: error.to_string(),
+        }
+    })?;
     let material =
         std::fs::read(&path).map_err(|error| CertificateMaterialError::ArtifactFile {
             path,
