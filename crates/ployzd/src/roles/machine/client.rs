@@ -37,7 +37,9 @@ use ployz_nats::service_runtime::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_MACHINE_READS: usize = 16;
@@ -53,6 +55,7 @@ pub struct NatsMachineDataplanePreparer {
     pub(super) client: async_nats::Client,
     pub(super) facts_reader: NatsMachineFactsReader,
     pub(super) request_timeout: Duration,
+    pub(super) mesh_lock: Option<Arc<Mutex<()>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +483,7 @@ impl NatsMachineDataplanePreparer {
             facts_reader: NatsMachineFactsReader::new(client.clone()),
             client,
             request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+            mesh_lock: None,
         }
     }
 
@@ -487,6 +491,12 @@ impl NatsMachineDataplanePreparer {
     pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
         self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_mesh_lock(mut self, mesh_lock: Arc<Mutex<()>>) -> Self {
+        self.mesh_lock = Some(mesh_lock);
         self
     }
 }

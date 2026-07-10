@@ -8,7 +8,9 @@ use defguard_wireguard_rs::{
 #[cfg(target_os = "linux")]
 use futures_util::TryStreamExt;
 use ipnet::Ipv4Net;
-use ployz_core::dataplane::{WireGuardPeer, WireGuardPublicKey};
+use ployz_core::dataplane::{
+    MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardPeer, WireGuardPublicKey,
+};
 #[cfg(target_os = "linux")]
 use rtnetlink::{
     LinkUnspec, RouteMessageBuilder,
@@ -21,15 +23,21 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use tokio::process::Command;
 
 #[cfg(target_os = "linux")]
 type HostWireGuardApi = Kernel;
 #[cfg(not(target_os = "linux"))]
 type HostWireGuardApi = Userspace;
 
-pub(super) const MIN_WIREGUARD_MTU: u32 = 1280;
-pub(super) const MAX_WIREGUARD_MTU: u32 = 1500 - WIREGUARD_ENCAP_OVERHEAD;
 const WIREGUARD_ENCAP_OVERHEAD: u32 = 80;
+#[cfg(target_os = "linux")]
+const IPV4_ICMP_OVERHEAD: u32 = 28;
+#[cfg(target_os = "linux")]
+const MTU_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WireGuardMtu(u32);
@@ -172,6 +180,95 @@ pub(super) fn wireguard_mtu_from_egress(egress_mtu: u32) -> WireGuardMtu {
             .saturating_sub(WIREGUARD_ENCAP_OVERHEAD)
             .clamp(MIN_WIREGUARD_MTU, MAX_WIREGUARD_MTU),
     )
+}
+
+pub(super) async fn probe_wireguard_path_mtu(
+    wg_ifname: &str,
+    peer_gateway: Ipv4Addr,
+    configured_mtu: u32,
+) -> Result<u32, String> {
+    probe_path_mtu(configured_mtu, |mtu| {
+        probe_wireguard_packet(wg_ifname, peer_gateway, mtu)
+    })
+    .await
+}
+
+async fn probe_path_mtu<F, Fut>(configured_mtu: u32, mut probe: F) -> Result<u32, String>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, String>>,
+{
+    let mut lower = MIN_WIREGUARD_MTU;
+    let mut upper = configured_mtu.clamp(MIN_WIREGUARD_MTU, MAX_WIREGUARD_MTU);
+    let mut measured = None;
+    while lower <= upper {
+        let candidate = lower + (upper - lower) / 2;
+        if probe(candidate).await? {
+            measured = Some(candidate);
+            lower = candidate.saturating_add(1);
+        } else {
+            let Some(next_upper) = candidate.checked_sub(1) else {
+                break;
+            };
+            upper = next_upper;
+        }
+    }
+    measured.ok_or_else(|| {
+        format!("peer did not answer a {MIN_WIREGUARD_MTU}-byte WireGuard path MTU probe")
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn probe_wireguard_packet(
+    wg_ifname: &str,
+    peer_gateway: Ipv4Addr,
+    mtu: u32,
+) -> Result<bool, String> {
+    let payload_size = mtu.saturating_sub(IPV4_ICMP_OVERHEAD);
+    let output = tokio::time::timeout(
+        MTU_PROBE_TIMEOUT,
+        Command::new("ping")
+            .args([
+                "-4",
+                "-I",
+                wg_ifname,
+                "-M",
+                "do",
+                "-c",
+                "1",
+                "-W",
+                "1",
+                "-s",
+                &payload_size.to_string(),
+                &peer_gateway.to_string(),
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "path MTU probe timed out after {}s",
+            MTU_PROBE_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|source| format!("start path MTU probe: {source}"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "path MTU probe failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn probe_wireguard_packet(
+    _wg_ifname: &str,
+    _peer_gateway: Ipv4Addr,
+    _mtu: u32,
+) -> Result<bool, String> {
+    Err("WireGuard path MTU probing is supported only on Linux".to_owned())
 }
 
 pub(super) fn ensure_private_key(path: &Path) -> Result<String, String> {
@@ -383,6 +480,24 @@ mod tests {
         );
         assert!(WireGuardMtuPolicy::from_config(Some(1279)).is_err());
         assert!(WireGuardMtuPolicy::from_config(Some(1421)).is_err());
+    }
+
+    #[tokio::test]
+    async fn path_mtu_probe_returns_the_largest_answering_packet() {
+        let mtu = probe_path_mtu(1420, |candidate| async move { Ok(candidate <= 1360) })
+            .await
+            .expect("probe succeeds");
+
+        assert_eq!(mtu, 1360);
+    }
+
+    #[tokio::test]
+    async fn path_mtu_probe_reports_when_the_minimum_does_not_answer() {
+        let error = probe_path_mtu(1420, |_| async { Ok(false) })
+            .await
+            .expect_err("minimum MTU must answer");
+
+        assert!(error.contains("1280-byte"));
     }
 
     #[test]

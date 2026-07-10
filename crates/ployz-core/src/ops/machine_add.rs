@@ -254,11 +254,15 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
         )
         | (
             MachineAddOperationState::Joining { .. },
-            MachineAddFailure::BootstrapFailed { .. } | MachineAddFailure::ReadinessFailed { .. },
+            MachineAddFailure::BootstrapFailed { .. }
+            | MachineAddFailure::ReadinessFailed { .. }
+            | MachineAddFailure::ConnectivityProofFailed { .. },
         ) => true,
         (
             MachineAddOperationState::Pending { .. },
-            MachineAddFailure::BootstrapFailed { .. } | MachineAddFailure::ReadinessFailed { .. },
+            MachineAddFailure::BootstrapFailed { .. }
+            | MachineAddFailure::ReadinessFailed { .. }
+            | MachineAddFailure::ConnectivityProofFailed { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },

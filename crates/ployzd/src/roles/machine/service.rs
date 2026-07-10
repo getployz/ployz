@@ -5,7 +5,7 @@ use super::containers::{
     handle_container_restart, handle_container_run, handle_container_run_hook,
     handle_container_stop, handle_ensure_endpoint_network, handle_volume_remove,
 };
-use super::dataplane::handle_dataplane_prepare;
+use super::dataplane::{handle_dataplane_mtu_probe, handle_dataplane_prepare};
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
@@ -16,8 +16,8 @@ use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::dataplane::{
-    PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
-    WireGuardPublicKey,
+    OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
+    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
@@ -26,6 +26,7 @@ use ployz_nats::service_runtime::{
     RunningNatsService, start_nats_service,
 };
 use std::future::Future;
+use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -34,6 +35,9 @@ use std::time::Duration;
 const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub use super::facts::MachineFactsReadError;
+
+const DATAPLANE_REQUEST_TIMEOUT: Duration =
+    OVERLAY_CONNECTIVITY_PROOF_BUDGET.saturating_add(Duration::from_secs(15));
 
 pub async fn start_machine_role_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
@@ -189,6 +193,14 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::DataplaneProbeMtu,
+        preparer.clone(),
+        handle_dataplane_mtu_probe,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::DataplanePrepare,
         preparer,
         handle_dataplane_prepare,
@@ -269,13 +281,22 @@ where
     Fut: Future<Output = NatsServiceResponse> + Send + 'static,
 {
     let spec = machine_endpoint_spec(machine_id, endpoint);
+    let policy = machine_endpoint_policy(endpoint);
     let machine_id = machine_id.clone();
     runtime
-        .bind_endpoint(&spec, move |request| {
+        .bind_endpoint_with_policy(&spec, policy, move |request| {
             handler(machine_id.clone(), state.clone(), request)
         })
         .await
         .map_err(MachineServiceError::Nats)
+}
+
+fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutionPolicy {
+    let mut policy = EndpointExecutionPolicy::default();
+    if endpoint == MachineServiceEndpoint::DataplanePrepare {
+        policy.request_timeout = DATAPLANE_REQUEST_TIMEOUT;
+    }
+    policy
 }
 
 pub trait MachinePloyzNativeMeshPreparer {
@@ -288,10 +309,38 @@ pub trait MachinePloyzNativeMeshPreparer {
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
     ) -> impl Future<Output = Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError>> + Send;
+
+    fn prepare_wireguard(
+        &self,
+        endpoint_routes: &[WireGuardEbpfEndpointRoute],
+        peers: &[WireGuardPeer],
+    ) -> impl Future<Output = Result<WireGuardReady, WireGuardEbpfPrepareError>> + Send;
+
+    fn probe_overlay(
+        &self,
+        peers: &[WireGuardPublicKey],
+    ) -> impl Future<Output = Result<Vec<WireGuardPublicKey>, WireGuardEbpfPrepareError>> + Send;
+
+    fn probe_link_mtu(
+        &self,
+        peer_gateway: Ipv4Addr,
+    ) -> impl Future<Output = Result<u32, WireGuardEbpfPrepareError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MachineServiceError {
     #[error("failed to start machine service: {0:?}")]
     Nats(NatsServiceRuntimeError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dataplane_endpoint_timeout_covers_the_overlay_probe_budget() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::DataplanePrepare);
+
+        assert!(policy.request_timeout > OVERLAY_CONNECTIVITY_PROOF_BUDGET);
+    }
 }

@@ -185,12 +185,30 @@ pub enum MachineJoinReportFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinReportedOutcome {
+    Completed,
+    Failed { failure: MachineJoinReportedFailure },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinReportedFailure {
+    BootstrapFailed {
+        message: FailureMessage,
+    },
+    ConnectivityProofFailed {
+        evidence: crate::core_types::ConnectivityProofEvidence,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinReported {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
     pub last_event_sequence: EventSequence,
-    pub outcome: MachineJoinReportOutcome,
+    pub outcome: MachineJoinReportedOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -199,8 +199,9 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
                 OsString::from("-y"),
                 OsString::from("wireguard-tools"),
                 OsString::from("iproute2"),
+                OsString::from("iputils-ping"),
             ],
-            "apt-get install -y wireguard-tools iproute2".to_owned(),
+            "apt-get install -y wireguard-tools iproute2 iputils-ping".to_owned(),
             DATAPLANE_HOST_INSTALL_TIMEOUT,
         )?;
         if !output.status.success() {
@@ -224,6 +225,7 @@ fn dataplane_host_ready(timeout: Duration) -> bool {
         && command_success("wg", &["--version"], timeout)
         && command_success("ip", &["-V"], timeout)
         && command_success("tc", &["-V"], timeout)
+        && command_success("ping", &["-V"], timeout)
 }
 
 fn command_success(program: &str, args: &[&str], timeout: Duration) -> bool {

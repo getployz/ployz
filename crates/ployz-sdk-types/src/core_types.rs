@@ -36,8 +36,9 @@ pub use ployz_core::install::{
     MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
 pub use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
-    MachineAddFailure, MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
+    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
+    JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
+    MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
