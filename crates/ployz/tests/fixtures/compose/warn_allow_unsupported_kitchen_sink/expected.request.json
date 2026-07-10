@@ -10,6 +10,12 @@
         "entrypoint": null,
         "environment": {},
         "stop_grace_period": 10,
+        "volume_mounts": [
+          {
+            "volume_name": "data",
+            "target": "/data"
+          }
+        ],
         "healthcheck": {
           "test": {
             "exec": [

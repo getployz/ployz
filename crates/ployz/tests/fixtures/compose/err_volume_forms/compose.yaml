@@ -1,0 +1,67 @@
+name: fixture_volume_forms
+services:
+  short_forms:
+    image: nginx:latest
+    volumes:
+      - ./host:/bind
+      - /anonymous
+      - data:/readonly:ro
+      - bad/name:/data
+      - data:relative
+  long_bind:
+    image: nginx:latest
+    volumes:
+      - type: bind
+        source: ./host
+        target: /bind
+  long_tmpfs:
+    image: nginx:latest
+    volumes:
+      - type: tmpfs
+        target: /tmp
+  long_options:
+    image: nginx:latest
+    volumes:
+      - type: volume
+        source: data
+        target: /readonly
+        read_only: true
+      - type: volume
+        source: data
+        target: /volume-options
+        volume:
+          nocopy: true
+      - type: volume
+        source: data
+        target: /bind-options
+        bind: {}
+      - type: volume
+        source: data
+        target: /tmpfs-options
+        tmpfs: {}
+      - type: volume
+        source: data
+        target: /unknown-options
+        consistency: cached
+  long_missing:
+    image: nginx:latest
+    volumes:
+      - type: volume
+        target: /missing-source
+      - type: volume
+        source: data
+volumes:
+  data: {}
+  external_data:
+    external: true
+  configured:
+    driver: local
+    driver_opts:
+      type: nfs
+  renamed:
+    name: custom-name
+  labeled:
+    labels:
+      purpose: test
+  custom:
+    mystery: true
