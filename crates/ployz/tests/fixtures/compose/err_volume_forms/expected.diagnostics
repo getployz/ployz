@@ -1,0 +1,20 @@
+services.long_bind.volumes[0].type  invalid value  bind mounts are not supported; use a named volume such as data:/data
+services.long_missing.volumes[0].source  invalid value  long-syntax volume mount requires source; name the volume
+services.long_missing.volumes[1].target  invalid value  long-syntax volume mount requires target; set an absolute container path
+services.long_options.volumes[0].read_only  invalid value  read-only volume mounts are not supported yet; remove read_only or set it to false
+services.long_options.volumes[1].volume  invalid value  volume mount options are not supported yet; remove volume
+services.long_options.volumes[2].bind  invalid value  bind mount options are not supported; use a plain named volume mount
+services.long_options.volumes[3].tmpfs  invalid value  tmpfs mount options are not supported; use a named volume
+services.long_options.volumes[4].consistency  invalid value  volume option "consistency" is not supported; remove it
+services.long_tmpfs.volumes[0].type  invalid value  tmpfs mounts are not supported; use a named volume
+services.short_forms.volumes[0]  invalid value  bind mounts are not supported; use a named volume such as data:/data
+services.short_forms.volumes[1]  invalid value  anonymous volumes are not supported; name the volume, for example data:/data
+services.short_forms.volumes[2]  invalid value  read-only volume mounts and mount options are not supported yet; remove the third component
+services.short_forms.volumes[3]  invalid value  volume name contains invalid characters: bad/name
+services.short_forms.volumes[4]  invalid value  container mount path must be absolute: relative
+volumes.configured.driver  invalid value  custom volume drivers are not supported; remove driver
+volumes.configured.driver_opts  invalid value  volume driver options are not supported; remove driver_opts
+volumes.custom.mystery  invalid value  volume declaration option "mystery" is not supported; remove it
+volumes.external_data.external  invalid value  external volumes are not supported; remove external: true so Ployz creates the volume as pinned intent
+volumes.labeled.labels  invalid value  volume labels are not supported; remove labels
+volumes.renamed.name  invalid value  volume name overrides are not supported; use the top-level volume key

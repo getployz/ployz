@@ -18,13 +18,14 @@
 mod support;
 
 use futures_util::StreamExt;
+use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::image_push::{prepare_deploy_images, push_local_image};
 use ployz_core::deploy::{
-    ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
-    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest,
-    DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
-    NanoCpus, PidsLimit, ReplicaCount, ServiceEnvironment, ServiceVolumeMount, VolumeName,
+    ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerResourceLimits,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget,
+    DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos, HealthcheckRetries,
+    HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+    ReplicaCount, ServiceEnvironment,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::ImageRepository;
@@ -59,6 +60,7 @@ use ployzd::adapters::docker::labels::{
     SERVICE_ID_LABEL,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use support::dind::assert::{
     ManagedWorkloadContainer, all_managed_workload_containers, assert_deploy_event_sequence,
@@ -1431,16 +1433,30 @@ fn runtime_fields_deploy_target() -> DeployRequest {
 }
 
 fn volume_deploy_target(command: &str) -> DeployRequest {
+    let source = format!(
+        r#"
+name: volume
+services:
+  svc_volume:
+    image: {WORKLOAD_IMAGE}
+    command: ["sh", "-c", {command:?}]
+    volumes: [data:/data]
+volumes:
+  data: {{}}
+"#
+    );
+    let (parsed, warnings) = parse_deploy_file(ComposeInput {
+        source: &source,
+        base_dir: Path::new("."),
+        interpolation_env: BTreeMap::new(),
+        namespace_override: None,
+        mode: UnsupportedFieldMode::Strict,
+    })
+    .expect("volume compose parses");
+    assert!(warnings.is_empty(), "volume compose emitted warnings");
     DeployRequest {
-        namespace_id: namespace_id("volume"),
-        services: vec![DeployServiceSpec {
-            service_id: service_id("svc_volume"),
-            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
-            image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-            runtime: volume_runtime_spec(command),
-            routes: Vec::new(),
-        }],
+        namespace_id: parsed.namespace_id,
+        services: parsed.services,
     }
 }
 
@@ -1547,19 +1563,6 @@ async fn namespace_managed_containers(
         );
     }
     containers
-}
-
-fn volume_runtime_spec(command: &str) -> ContainerRuntimeSpec {
-    let mut runtime = ContainerRuntimeSpec::image_defaults();
-    runtime.command = Some(
-        ContainerCommand::try_new(vec!["sh".to_owned(), "-c".to_owned(), command.to_owned()])
-            .expect("valid volume command"),
-    );
-    runtime.volume_mounts = vec![ServiceVolumeMount {
-        volume_name: VolumeName::try_new("data").expect("valid volume name"),
-        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
-    }];
-    runtime
 }
 
 /// The route host header: hostname plus the gateway's in-machine listen
