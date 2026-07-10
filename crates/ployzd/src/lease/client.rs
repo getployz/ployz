@@ -63,9 +63,8 @@ impl LeaseClient {
 
     pub async fn acquire(
         &self,
-        cluster_id: String,
+        request: ManagedLeaseAcquireRequest,
     ) -> Result<ManagedLeaseAcquired, LeaseClientError> {
-        let request = ManagedLeaseAcquireRequest { cluster_id };
         self.post_json("/v1/leases", None, request).await
     }
 
@@ -222,7 +221,10 @@ mod tests {
         );
 
         let acquired = client
-            .acquire("cluster-one".to_owned())
+            .acquire(ManagedLeaseAcquireRequest {
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
+            })
             .await
             .expect("lease acquired");
         let bundle = client
@@ -258,7 +260,10 @@ mod tests {
             LeaseWorkerUrl::try_new(format!("http://{address}")).expect("valid worker URL"),
         );
         let acquired = client
-            .acquire("cluster-one".to_owned())
+            .acquire(ManagedLeaseAcquireRequest {
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
+            })
             .await
             .expect("lease acquired");
         let wrong_token = LeaseBearerToken::try_new("wrong-token").expect("valid token shape");

@@ -243,7 +243,7 @@ pub async fn start_control_process_with_client_and_reload(
         lease_intent.clone(),
         controllers.repository().clone(),
         LeaseClient::new(config.lease_worker_url.clone()),
-        core_machine_id.clone(),
+        facts.clone(),
     );
     let intent = start_intent_service(
         client.clone(),

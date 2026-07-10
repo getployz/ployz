@@ -1,13 +1,17 @@
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::{AutoLeaseState, ManagedCertBundle, ManagedLeaseIntent, ManagedLeaseRecord};
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::cert::{
+    AutoLeaseState, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseIntent,
+    ManagedLeaseRecord,
+};
+use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     FailureMessage, ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseSubject,
     ManagedLeaseTransition, OperationStatus,
 };
 
+use crate::fact_cache::FactCache;
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError, StoreLeaseOutcome};
 use crate::lease::{LeaseClient, LeaseClientError};
 use crate::operations::log::{
@@ -24,23 +28,23 @@ pub fn start_managed_lease_task(
     lease_intent: LeaseIntentStore,
     repository: OperationRepository,
     client: LeaseClient,
-    core_machine_id: MachineId,
+    facts: FactCache,
 ) {
-    registry.spawn(run_loop(lease_intent, repository, client, core_machine_id));
+    registry.spawn(run_loop(lease_intent, repository, client, facts));
 }
 
 async fn run_loop(
     lease_intent: LeaseIntentStore,
     repository: OperationRepository,
     client: LeaseClient,
-    core_machine_id: MachineId,
+    facts: FactCache,
 ) {
     if let Err(error) = recover_accepted_operations(&repository).await {
         eprintln!("ployzd managed lease recovery warning: {error}");
     }
     let mut consecutive_failures = 0;
     loop {
-        let delay = match run_once(&lease_intent, &repository, &client, &core_machine_id).await {
+        let delay = match run_once(&lease_intent, &repository, &client, &facts).await {
             Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration) => {
                 consecutive_failures = 0;
                 MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
@@ -85,7 +89,7 @@ pub async fn run_once(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     client: &LeaseClient,
-    core_machine_id: &MachineId,
+    facts: &FactCache,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
     let Some(intent) = lease_intent.load_if_configured().await? else {
         return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
@@ -113,7 +117,7 @@ pub async fn run_once(
                 ManagedLeaseSubject::Acquire,
                 || async {
                     client
-                        .acquire(core_machine_id.as_str().to_owned())
+                        .acquire(known_gateway_addresses(facts))
                         .await
                         .map(|acquired| (acquired.lease, acquired.bundle))
                 },
@@ -161,6 +165,41 @@ pub async fn run_once(
             .await
         }
     }
+}
+
+fn known_gateway_addresses(facts: &FactCache) -> ManagedLeaseAcquireRequest {
+    gateway_addresses(
+        facts.gateway_statuses(),
+        facts.machine_endpoint_observations(),
+    )
+}
+
+fn gateway_addresses(
+    statuses: Vec<ployz_core::state::GatewayStatusObservation>,
+    endpoints: Vec<ployz_core::state::MachineEndpointObservation>,
+) -> ManagedLeaseAcquireRequest {
+    let gateways = statuses
+        .into_iter()
+        .map(|status| status.machine_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut ipv4 = Vec::new();
+    let mut ipv6 = Vec::new();
+    for endpoint in endpoints {
+        if !gateways.contains(&endpoint.machine_id) {
+            continue;
+        }
+        for address in endpoint.control_endpoints {
+            match address {
+                std::net::IpAddr::V4(address) => ipv4.push(address),
+                std::net::IpAddr::V6(address) => ipv6.push(address),
+            }
+        }
+    }
+    ipv4.sort_unstable();
+    ipv4.dedup();
+    ipv6.sort_unstable();
+    ipv6.dedup();
+    ManagedLeaseAcquireRequest { ipv4, ipv6 }
 }
 
 async fn run_step<Worker, WorkerFuture, Success>(
@@ -337,10 +376,51 @@ pub enum ManagedLeaseTaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::state::{
+        GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
+    };
+    use ployz_test_support::ids::machine_id;
 
     #[test]
     fn failure_backoff_doubles_and_caps() {
         assert_eq!(failure_delay(1), Duration::from_secs(120));
         assert_eq!(failure_delay(10), MANAGED_LEASE_FAILURE_BACKOFF_CAP);
+    }
+
+    #[test]
+    fn acquisition_addresses_include_only_known_gateway_endpoints() {
+        let gateway = machine_id("gateway");
+        let result = gateway_addresses(
+            vec![GatewayStatusObservation {
+                machine_id: gateway.clone(),
+                listen_addr: "0.0.0.0:80".parse().expect("listen address"),
+                serving: GatewayServingStatus::Current,
+                route_count: 0,
+            }],
+            vec![
+                MachineEndpointObservation {
+                    machine_id: gateway,
+                    control_endpoints: vec![
+                        "203.0.113.8".parse().expect("IPv4"),
+                        "2001:db8::8".parse().expect("IPv6"),
+                    ],
+                    mesh_endpoints: Vec::new(),
+                },
+                MachineEndpointObservation {
+                    machine_id: machine_id("worker"),
+                    control_endpoints: vec!["203.0.113.9".parse().expect("IPv4")],
+                    mesh_endpoints: Vec::new(),
+                },
+            ],
+        );
+
+        assert_eq!(
+            result.ipv4,
+            ["203.0.113.8".parse::<std::net::Ipv4Addr>().expect("IPv4")]
+        );
+        assert_eq!(
+            result.ipv6,
+            ["2001:db8::8".parse::<std::net::Ipv6Addr>().expect("IPv6")]
+        );
     }
 }

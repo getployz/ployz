@@ -163,7 +163,8 @@ mod tests {
         let mut worker = StubLeaseWorker::new();
         let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
             .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-                cluster_id: "seed-recovery".to_owned(),
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
             }))
             .expect("acquire fixture lease")
         else {
