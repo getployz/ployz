@@ -13,6 +13,7 @@ use crate::ops::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
+pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataplanePrepareRequest {
@@ -237,6 +238,16 @@ impl MachineEndpointSubnet {
         let mut octets = subnet.network().octets();
         octets[3] = 254;
         Ipv4Addr::from(octets)
+    }
+
+    /// The subnet's first host: Docker assigns it as the `ployz` bridge
+    /// gateway, so it is the machine-local resolver's bind address.
+    #[must_use]
+    pub fn bridge_gateway_ipv4(&self) -> Ipv4Addr {
+        let IpNet::V4(network) = self.0 else {
+            unreachable!("MachineEndpointSubnet::try_new admits only IPv4 /24 networks");
+        };
+        Ipv4Addr::from(u32::from(network.network()) + 1)
     }
 }
 
@@ -498,6 +509,15 @@ pub fn default_endpoint_subnet(machine_id: &MachineId) -> String {
     format!("10.42.{octet}.0/24")
 }
 
+/// The endpoint bridge's gateway address for a `/24` endpoint subnet: the
+/// first host, which Docker assigns as the `ployz` bridge gateway and which a
+/// container on that bridge reaches its machine-local resolver at.
+#[must_use]
+pub fn endpoint_bridge_gateway_ipv4(subnet: &str) -> Option<std::net::Ipv4Addr> {
+    let net: Ipv4Net = subnet.parse().ok()?;
+    net.hosts().next()
+}
+
 #[cfg(test)]
 mod allocation_tests {
     use super::{MachineEndpointSubnet, MachineEndpointSupernet};
@@ -731,6 +751,29 @@ mod tests {
             default_endpoint_subnet(&machine_id("machine_255")),
             "10.42.1.0/24"
         );
+    }
+
+    #[test]
+    fn endpoint_bridge_gateway_is_first_subnet_host() {
+        assert_eq!(
+            endpoint_bridge_gateway_ipv4("10.42.7.0/24"),
+            Some(std::net::Ipv4Addr::new(10, 42, 7, 1))
+        );
+    }
+
+    #[test]
+    fn machine_endpoint_subnet_bridge_gateway_is_first_host() {
+        assert_eq!(
+            MachineEndpointSubnet::try_new("10.42.7.0/24")
+                .expect("valid endpoint subnet")
+                .bridge_gateway_ipv4(),
+            Ipv4Addr::new(10, 42, 7, 1)
+        );
+    }
+
+    #[test]
+    fn endpoint_bridge_gateway_rejects_invalid_subnet() {
+        assert_eq!(endpoint_bridge_gateway_ipv4("not-a-subnet"), None);
     }
 
     #[test]

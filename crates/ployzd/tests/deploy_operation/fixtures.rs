@@ -699,8 +699,8 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
 
 pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionCommand {
     let mut request = target_deploy_request(replicas);
-    let [service] = request.services.as_mut_slice() else {
-        panic!("deploy fixture has one service");
+    let [service, ..] = request.services.as_mut_slice() else {
+        panic!("target deploy request declares a service");
     };
     service.runtime.healthcheck = Some(ContainerHealthcheck {
         test: ContainerHealthcheckTest::Shell(
