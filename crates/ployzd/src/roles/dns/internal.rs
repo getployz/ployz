@@ -1,18 +1,18 @@
 //! Machine-local DNS for service names projected directly from machine facts.
 
-use std::collections::BTreeMap;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
-use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::fact_cache::FactCache;
+use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
+use ployz_core::state::IntentSnapshot;
 
 const DNS_HEADER_LEN: usize = 12;
 const DNS_PORT: u16 = 53;
@@ -22,77 +22,8 @@ const DNS_TTL_SECONDS: u32 = 5;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const BIND_RETRY_CAP: Duration = Duration::from_secs(30);
-
-/// A validated, lower-case `<service>.<namespace>.internal` wire name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct InternalServiceName(String);
-
-impl InternalServiceName {
-    /// Builds an internal name from its typed service and namespace ids.
-    #[must_use]
-    fn new(service_id: &ServiceId, namespace_id: &NamespaceId) -> Self {
-        Self(
-            format!(
-                "{}.{}.{}",
-                service_id.as_str(),
-                namespace_id.as_str(),
-                INTERNAL_DNS_SUFFIX
-            )
-            .to_ascii_lowercase(),
-        )
-    }
-
-    /// Parses an exact three-label internal service name.
-    #[must_use]
-    fn parse(name: &str) -> Option<Self> {
-        let mut labels = name.split('.');
-        let service = labels.next()?;
-        let namespace = labels.next()?;
-        let suffix = labels.next()?;
-        if labels.next().is_some() || !suffix.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) {
-            return None;
-        }
-        let service_id = ServiceId::try_new(service.to_ascii_lowercase()).ok()?;
-        let namespace_id = NamespaceId::try_new(namespace.to_ascii_lowercase()).ok()?;
-        Some(Self::new(&service_id, &namespace_id))
-    }
-}
-
-/// Fully-qualified internal service names mapped to their running service
-/// containers' endpoint IPv4 addresses.
-#[must_use]
-fn internal_dns_records(
-    snapshots: &[MachineFactsSnapshot],
-) -> BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
-    let mut records = BTreeMap::<InternalServiceName, Vec<Ipv4Addr>>::new();
-    for container in snapshots
-        .iter()
-        .flat_map(|snapshot| snapshot.containers().containers())
-    {
-        if !container.is_service() {
-            continue;
-        }
-        let ContainerRuntimeState::Running {
-            ip: Some(IpAddr::V4(ip)),
-            ..
-        } = &container.state
-        else {
-            continue;
-        };
-        records
-            .entry(InternalServiceName::new(
-                &container.identity.service_id,
-                &container.identity.namespace_id,
-            ))
-            .or_default()
-            .push(*ip);
-    }
-    for addresses in records.values_mut() {
-        addresses.sort_unstable();
-        addresses.dedup();
-    }
-    records
-}
+const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
+const LOCAL_QUERY_ID: u16 = 0x504c;
 
 /// A bounds-checked first DNS question parsed from a UDP datagram.
 #[derive(Debug)]
@@ -157,6 +88,136 @@ fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*high, *low]))
 }
 
+pub(super) async fn query_bound_resolver(
+    bound: SocketAddr,
+    name: &InternalServiceName,
+) -> io::Result<Vec<Ipv4Addr>> {
+    tokio::time::timeout(LOCAL_QUERY_TIMEOUT, async {
+        let local = match bound {
+            SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
+            SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
+        };
+        let socket = UdpSocket::bind(local).await?;
+        socket.connect(bound).await?;
+        socket.send(&a_query_packet(name)?).await?;
+        let mut response = [0_u8; 4096];
+        let length = socket.recv(&mut response).await?;
+        let Some(response) = response.get(..length) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "DNS response length exceeded buffer",
+            ));
+        };
+        parse_a_response(response)
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local DNS resolver timed out"))?
+}
+
+fn a_query_packet(name: &InternalServiceName) -> io::Result<Vec<u8>> {
+    let mut packet = Vec::from([
+        0x50, 0x4c, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    for label in name.as_str().split('.') {
+        let length = u8::try_from(label.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "DNS label exceeds 255 bytes")
+        })?;
+        packet.push(length);
+        packet.extend_from_slice(label.as_bytes());
+    }
+    packet.push(0);
+    packet.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+    packet.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+    Ok(packet)
+}
+
+fn parse_a_response(response: &[u8]) -> io::Result<Vec<Ipv4Addr>> {
+    if read_u16(response, 0) != Some(LOCAL_QUERY_ID) {
+        return Err(invalid_dns_response(
+            "DNS response transaction id did not match",
+        ));
+    }
+    let flags = response_u16(response, 2)?;
+    if flags & 0x8000 == 0 || flags & 0x000f != 0 {
+        return Err(invalid_dns_response(
+            "DNS resolver returned an unsuccessful response",
+        ));
+    }
+    let question_count = response_u16(response, 4)?;
+    let answer_count = response_u16(response, 6)?;
+    let mut offset = DNS_HEADER_LEN;
+    for _ in 0..question_count {
+        offset = skip_dns_name(response, offset)?;
+        offset = response
+            .get(offset..offset.saturating_add(4))
+            .map(|_| offset + 4)
+            .ok_or_else(|| invalid_dns_response("DNS question was truncated"))?;
+    }
+
+    let mut addresses = Vec::new();
+    for _ in 0..answer_count {
+        offset = skip_dns_name(response, offset)?;
+        let record_type = response_u16(response, offset)?;
+        let class = response_u16(response, offset + 2)?;
+        let data_length = usize::from(response_u16(response, offset + 8)?);
+        offset = offset
+            .checked_add(10)
+            .ok_or_else(|| invalid_dns_response("DNS answer offset overflowed"))?;
+        let data = response
+            .get(offset..offset.saturating_add(data_length))
+            .ok_or_else(|| invalid_dns_response("DNS answer was truncated"))?;
+        if record_type == DNS_TYPE_A && class == DNS_CLASS_IN {
+            let [a, b, c, d] = data else {
+                return Err(invalid_dns_response(
+                    "DNS A record length was not four bytes",
+                ));
+            };
+            addresses.push(Ipv4Addr::new(*a, *b, *c, *d));
+        }
+        offset = offset
+            .checked_add(data_length)
+            .ok_or_else(|| invalid_dns_response("DNS answer offset overflowed"))?;
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    Ok(addresses)
+}
+
+fn skip_dns_name(packet: &[u8], mut offset: usize) -> io::Result<usize> {
+    loop {
+        let length = *packet
+            .get(offset)
+            .ok_or_else(|| invalid_dns_response("DNS name was truncated"))?;
+        if length & 0xc0 == 0xc0 {
+            return packet
+                .get(offset..offset.saturating_add(2))
+                .map(|_| offset + 2)
+                .ok_or_else(|| invalid_dns_response("DNS name pointer was truncated"));
+        }
+        if length & 0xc0 != 0 {
+            return Err(invalid_dns_response("DNS name label was invalid"));
+        }
+        offset = offset
+            .checked_add(1)
+            .ok_or_else(|| invalid_dns_response("DNS name offset overflowed"))?;
+        if length == 0 {
+            return Ok(offset);
+        }
+        offset = offset
+            .checked_add(usize::from(length))
+            .filter(|end| *end <= packet.len())
+            .ok_or_else(|| invalid_dns_response("DNS name label was truncated"))?;
+    }
+}
+
+fn response_u16(packet: &[u8], offset: usize) -> io::Result<u16> {
+    read_u16(packet, offset).ok_or_else(|| invalid_dns_response("DNS response was truncated"))
+}
+
+fn invalid_dns_response(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
 /// DNS response codes emitted by the internal resolver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DnsRcode {
@@ -204,11 +265,47 @@ pub enum InternalResolverHealth {
     Serving { bound: SocketAddr },
 }
 
-/// Spawns the machine-local resolver. It reads only [`FactCache`], which is
-/// fed by machine fact broadcasts and retains each machine's last snapshot;
-/// it never reads core intent or gates records on health or gateway status.
+#[derive(Debug, Clone, Default)]
+pub(super) struct InternalDnsIntentCache {
+    intent: Arc<Mutex<Option<IntentSnapshot>>>,
+}
+
+impl InternalDnsIntentCache {
+    pub(super) fn record_if_available(&self, intent: Option<IntentSnapshot>) {
+        let Some(intent) = intent else {
+            return;
+        };
+        let mut current = self
+            .intent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current
+            .as_ref()
+            .is_some_and(|current| intent.epoch < current.epoch)
+        {
+            return;
+        }
+        *current = Some(intent);
+    }
+
+    fn records(
+        &self,
+        snapshots: &[ployz_core::machine_runtime::MachineFactsSnapshot],
+    ) -> std::collections::BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
+        self.intent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|intent| internal_dns_records(intent, snapshots))
+            .unwrap_or_default()
+    }
+}
+
+/// Spawns the machine-local resolver. Queries read cached facts and last-known-good
+/// intent; core availability, health, and gateway status are not query dependencies.
 pub(super) fn spawn_internal_resolver(
     facts: FactCache,
+    intent: InternalDnsIntentCache,
     bind: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
     health: Arc<Mutex<InternalResolverHealth>>,
@@ -265,10 +362,11 @@ pub(super) fn spawn_internal_resolver(
                     };
                     let request = request.to_vec();
                     let request_facts = facts.clone();
+                    let request_intent = intent.clone();
                     let response_socket = Arc::clone(&socket);
                     // ponytail: unbounded task per datagram; add a semaphore if a container ever floods the resolver.
                     tokio::spawn(async move {
-                        let Some(response) = response_for_request(&request_facts, upstream, request).await else {
+                        let Some(response) = response_for_request(&request_facts, &request_intent, upstream, request).await else {
                             return;
                         };
                         if let Err(error) = response_socket.send_to(&response, peer).await {
@@ -286,6 +384,7 @@ pub(super) fn spawn_internal_resolver(
 
 async fn response_for_request(
     facts: &FactCache,
+    intent: &InternalDnsIntentCache,
     upstream: IpAddr,
     packet: Vec<u8>,
 ) -> Option<Vec<u8>> {
@@ -296,9 +395,10 @@ async fn response_for_request(
         .is_some_and(|prefix| prefix.ends_with('.'))
     {
         // ponytail: full projection rebuild per query; cache on fact change if a machine's query rate ever matters.
-        let records = internal_dns_records(&facts.machine_facts_all());
+        let records = intent.records(&facts.machine_facts_all());
         let answers = if query.qtype == DNS_TYPE_A && query.qclass == DNS_CLASS_IN {
-            InternalServiceName::parse(&query.name)
+            InternalServiceName::try_new(&query.name)
+                .ok()
                 .and_then(|name| records.get(&name))
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
@@ -370,97 +470,23 @@ fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, StepId};
-    use ployz_core::machine_runtime::{
-        ContainerHealth, MachineContainerObservationSnapshot, MachineDiskSpace,
-        ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
+    use ployz_core::dataplane::MachineEndpointSubnet;
+    use ployz_core::ids::{
+        ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
+        StepId,
     };
-
-    #[test]
-    fn projection_sorts_and_deduplicates_running_service_ipv4_addresses() {
-        let snapshots = [facts(
-            "machine_a",
-            [
-                observation("ctr_1", ManagedContainerKind::Service, running("10.42.2.8")),
-                observation("ctr_2", ManagedContainerKind::Service, running("10.42.1.9")),
-                observation("ctr_3", ManagedContainerKind::Service, running("10.42.2.8")),
-            ],
-        )];
-
-        assert_eq!(
-            internal_dns_records(&snapshots),
-            BTreeMap::from([(
-                internal_name(),
-                vec![Ipv4Addr::new(10, 42, 1, 9), Ipv4Addr::new(10, 42, 2, 8)]
-            )])
-        );
-    }
-
-    #[test]
-    fn projection_excludes_exited_unaddressed_ipv6_and_non_service_containers() {
-        let snapshots = [facts(
-            "machine_a",
-            [
-                observation(
-                    "ctr_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::Exited,
-                ),
-                observation(
-                    "ctr_2",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_unroutable(),
-                ),
-                observation(
-                    "ctr_3",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_at("2001:db8::1".parse().expect("valid IPv6")),
-                ),
-                observation("ctr_4", ManagedContainerKind::Job, running("10.42.1.9")),
-            ],
-        )];
-
-        assert!(internal_dns_records(&snapshots).is_empty());
-    }
-
-    #[test]
-    fn projection_does_not_gate_running_service_on_health() {
-        let snapshots = [facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                ContainerRuntimeState::running_at_with_health(
-                    Some(IpAddr::V4(Ipv4Addr::new(10, 42, 1, 9))),
-                    ContainerHealth::Unhealthy,
-                ),
-            )],
-        )];
-
-        let expected = [Ipv4Addr::new(10, 42, 1, 9)];
-        assert_eq!(
-            internal_dns_records(&snapshots)
-                .get(&internal_name())
-                .map(Vec::as_slice),
-            Some(expected.as_slice())
-        );
-    }
-
-    #[test]
-    fn projection_removes_service_missing_from_fresh_facts() {
-        let present = [facts(
-            "machine_a",
-            [observation(
-                "ctr_1",
-                ManagedContainerKind::Service,
-                running("10.42.1.9"),
-            )],
-        )];
-        assert!(internal_dns_records(&present).contains_key(&internal_name()));
-
-        let absent = [facts("machine_a", [])];
-        assert!(!internal_dns_records(&absent).contains_key(&internal_name()));
-    }
+    use ployz_core::machine_runtime::{
+        ContainerRuntimeState, MachineContainerObservationSnapshot, MachineDiskSpace,
+        MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerKind,
+        ManagedContainerObservation,
+    };
+    use ployz_core::roles::InstallRolePolicy;
+    use ployz_core::state::{
+        ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
+        ManagedLeaseProjection,
+    };
+    use ployz_test_support::fixtures::serving_target_entry;
+    use ployz_test_support::ids::{machine_id, machine_name, operation_id};
 
     #[test]
     fn parser_reads_first_question_and_lowercases_name() {
@@ -497,6 +523,7 @@ mod tests {
         let packet = query_packet("missing.default.internal", DNS_TYPE_A);
         let response = response_for_request(
             &FactCache::default(),
+            &InternalDnsIntentCache::default(),
             IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
             packet,
         )
@@ -518,9 +545,14 @@ mod tests {
             )],
         ));
         let packet = query_packet("db.default.internal", 28);
-        let response = response_for_request(&cache, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), packet)
-            .await
-            .expect("internal query has a response");
+        let response = response_for_request(
+            &cache,
+            &internal_dns_intent("machine_a", "entry_db"),
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            packet,
+        )
+        .await
+        .expect("internal query has a response");
 
         assert_eq!(response_header(&response), (0x8500, 0));
     }
@@ -546,7 +578,13 @@ mod tests {
         let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
             attempts: 0,
         }));
-        let task = spawn_internal_resolver(cache, bind, receiver, Arc::clone(&health));
+        let task = spawn_internal_resolver(
+            cache,
+            internal_dns_intent("machine_a", "entry_db"),
+            bind,
+            receiver,
+            Arc::clone(&health),
+        );
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("bind test client");
@@ -606,6 +644,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn intent_cache_retains_last_known_good_when_refresh_is_unavailable() {
+        let cache = FactCache::default();
+        cache.record_machine_facts(facts(
+            "machine_a",
+            [observation(
+                "ctr_1",
+                ManagedContainerKind::Service,
+                running("10.42.2.8"),
+            )],
+        ));
+        let intent = internal_dns_intent("machine_a", "entry_db");
+
+        intent.record_if_available(None);
+
+        assert_eq!(
+            intent.records(&cache.machine_facts_all()),
+            std::collections::BTreeMap::from([(
+                InternalServiceName::try_new("db.default.internal").expect("internal name"),
+                vec![Ipv4Addr::new(10, 42, 2, 8)]
+            )])
+        );
+    }
+
+    #[test]
+    fn intent_cache_rejects_a_lower_control_plane_epoch() {
+        let intent = InternalDnsIntentCache::default();
+        intent.record_if_available(Some(internal_dns_intent_snapshot(
+            ControlPlaneEpoch::initial().next(),
+            "machine_a",
+            "entry_current",
+        )));
+        intent.record_if_available(Some(internal_dns_intent_snapshot(
+            ControlPlaneEpoch::initial(),
+            "machine_a",
+            "entry_stale",
+        )));
+
+        assert_eq!(
+            intent
+                .intent
+                .lock()
+                .expect("intent cache lock")
+                .as_ref()
+                .map(|intent| intent.epoch),
+            Some(ControlPlaneEpoch::initial().next())
+        );
+    }
+
     fn query_packet(name: &str, qtype: u16) -> Vec<u8> {
         let mut packet = Vec::from([
             0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -624,13 +711,6 @@ mod tests {
         (
             read_u16(response, 2).expect("response flags"),
             read_u16(response, 6).expect("answer count"),
-        )
-    }
-
-    fn internal_name() -> InternalServiceName {
-        InternalServiceName::new(
-            &ServiceId::try_new("db").expect("service id"),
-            &NamespaceId::try_new("default").expect("namespace id"),
         )
     }
 
@@ -680,5 +760,42 @@ mod tests {
 
     fn running(address: &str) -> ContainerRuntimeState {
         ContainerRuntimeState::running_at(address.parse().expect("valid IPv4"))
+    }
+
+    fn internal_dns_intent(machine: &str, entry: &str) -> InternalDnsIntentCache {
+        let intent = InternalDnsIntentCache::default();
+        intent.record_if_available(Some(internal_dns_intent_snapshot(
+            ControlPlaneEpoch::initial(),
+            machine,
+            entry,
+        )));
+        intent
+    }
+
+    fn internal_dns_intent_snapshot(
+        epoch: ControlPlaneEpoch,
+        machine: &str,
+        entry: &str,
+    ) -> IntentSnapshot {
+        IntentSnapshot {
+            epoch,
+            core_machine_id: machine_id("machine_a"),
+            active_machines: vec![ActiveMachineState {
+                machine_id: machine_id(machine),
+                name: machine_name(machine),
+                activated_by: operation_id("op_activate"),
+                roles: InstallRolePolicy::install_all(),
+                lifecycle: MachineLifecycle::Active,
+                control_endpoints: Vec::new(),
+                mesh_endpoints: Vec::new(),
+                endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
+                    .expect("endpoint subnet"),
+            }],
+            route_bindings: Vec::new(),
+            serving_target_entries: vec![serving_target_entry("db", entry)],
+            volume_pins: Vec::new(),
+            authorized_users: Vec::new(),
+            managed_lease: ManagedLeaseProjection::Unacquired,
+        }
     }
 }

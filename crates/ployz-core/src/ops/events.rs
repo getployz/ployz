@@ -26,6 +26,7 @@ use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
 use super::managed_lease::{ManagedLeaseEvent, ManagedLeaseTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
+use super::network_repair::{NetworkRepairEvent, NetworkRepairEvidence, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
 use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
@@ -33,8 +34,9 @@ use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployRunningStage, MachineAddOperationState, MachineLifecycleFailure,
     MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
-    NamespaceRemoveRunningStage, OperationKind, RouteTarget, ServiceRestartFailure,
-    ServiceRestartRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
+    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
+    VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +58,7 @@ pub enum OperationSubject {
     CoreReplace {
         machine_id: MachineId,
     },
+    NetworkRepair,
     ServiceRestart {
         service_id: ServiceId,
     },
@@ -229,6 +232,34 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: CoreReplaceFailure,
     },
+    NetworkRepairSubmitted {
+        operation_id: OperationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_machine_id: Option<MachineId>,
+    },
+    NetworkRepairRunning {
+        operation_id: OperationId,
+        stage: NetworkRepairRunningStage,
+    },
+    NetworkRepairDataplanePrepared {
+        operation_id: OperationId,
+        report: PloyzNativeMeshPrepareReport,
+    },
+    NetworkRepairMachineFactsRefreshed {
+        operation_id: OperationId,
+        refreshes: Vec<crate::machine_runtime::MachineFactsRefreshConfirmation>,
+    },
+    NetworkRepairDnsRefreshConfirmed {
+        operation_id: OperationId,
+        machine_ids: Vec<MachineId>,
+    },
+    NetworkRepairCompleted {
+        operation_id: OperationId,
+    },
+    NetworkRepairFailed {
+        operation_id: OperationId,
+        failure: NetworkRepairFailure,
+    },
     ServiceRestartSubmitted {
         operation_id: OperationId,
         namespace_id: NamespaceId,
@@ -346,6 +377,13 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { operation_id, .. }
             | Self::CoreReplaceCompleted { operation_id, .. }
             | Self::CoreReplaceFailed { operation_id, .. }
+            | Self::NetworkRepairSubmitted { operation_id, .. }
+            | Self::NetworkRepairRunning { operation_id, .. }
+            | Self::NetworkRepairDataplanePrepared { operation_id, .. }
+            | Self::NetworkRepairMachineFactsRefreshed { operation_id, .. }
+            | Self::NetworkRepairDnsRefreshConfirmed { operation_id, .. }
+            | Self::NetworkRepairCompleted { operation_id }
+            | Self::NetworkRepairFailed { operation_id, .. }
             | Self::ServiceRestartSubmitted { operation_id, .. }
             | Self::ServiceRestartRunning { operation_id, .. }
             | Self::ServiceRestartContainerRestarted { operation_id, .. }
@@ -368,15 +406,24 @@ impl OperationEvent {
         }
     }
 
-    /// The subject key of singleton deploy evidence — evidence recorded once
-    /// per deploy (plan, dataplane, health-check start, cleanup). `None` for
-    /// multi-instance evidence (per-container starts) and every non-evidence
-    /// event. The store keys idempotent singleton evidence on this.
+    /// The subject key of operation evidence recorded once per operation
+    /// phase. `None` for multi-instance evidence (per-container starts) and
+    /// every non-evidence event. The store keys idempotent singleton evidence
+    /// on this.
     #[must_use]
     pub fn singleton_subject(&self) -> Option<&'static str> {
         match self {
             Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
             Self::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
+            Self::NetworkRepairDataplanePrepared { .. } => {
+                Some("network.repair.dataplane.prepared")
+            }
+            Self::NetworkRepairMachineFactsRefreshed { .. } => {
+                Some("network.repair.machine_facts.refreshed")
+            }
+            Self::NetworkRepairDnsRefreshConfirmed { .. } => {
+                Some("network.repair.dns_refresh.confirmed")
+            }
             Self::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
             Self::DeploySubmitted { .. }
@@ -407,6 +454,10 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::NetworkRepairSubmitted { .. }
+            | Self::NetworkRepairRunning { .. }
+            | Self::NetworkRepairCompleted { .. }
+            | Self::NetworkRepairFailed { .. }
             | Self::ServiceRestartSubmitted { .. }
             | Self::ServiceRestartRunning { .. }
             | Self::ServiceRestartContainerRestarted { .. }
@@ -506,6 +557,13 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::NetworkRepairSubmitted { .. }
+            | Self::NetworkRepairRunning { .. }
+            | Self::NetworkRepairDataplanePrepared { .. }
+            | Self::NetworkRepairMachineFactsRefreshed { .. }
+            | Self::NetworkRepairDnsRefreshConfirmed { .. }
+            | Self::NetworkRepairCompleted { .. }
+            | Self::NetworkRepairFailed { .. }
             | Self::ServiceRestartSubmitted { .. }
             | Self::ServiceRestartRunning { .. }
             | Self::ServiceRestartContainerRestarted { .. }
@@ -567,6 +625,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: CoreReplaceEvent,
     },
+    NetworkRepair {
+        operation_id: OperationId,
+        event: NetworkRepairEvent,
+    },
     ServiceRestart {
         operation_id: OperationId,
         event: ServiceRestartEvent,
@@ -594,6 +656,7 @@ impl ClassifiedOperationEvent {
             | Self::MachineUpdate { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
+            | Self::NetworkRepair { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
             | Self::ManagedLease { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
@@ -898,6 +961,58 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: CoreReplaceTransition::Failed { failure },
                 },
             },
+            OperationEvent::NetworkRepairSubmitted {
+                operation_id,
+                target_machine_id: _,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Submitted,
+            },
+            OperationEvent::NetworkRepairRunning {
+                operation_id,
+                stage,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Transition(NetworkRepairTransition::Running { stage }),
+            },
+            OperationEvent::NetworkRepairDataplanePrepared {
+                operation_id,
+                report,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplanePrepared {
+                    report,
+                }),
+            },
+            OperationEvent::NetworkRepairMachineFactsRefreshed {
+                operation_id,
+                refreshes,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::MachineFactsRefreshed {
+                    refreshes,
+                }),
+            },
+            OperationEvent::NetworkRepairDnsRefreshConfirmed {
+                operation_id,
+                machine_ids,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DnsRefreshConfirmed {
+                    machine_ids,
+                }),
+            },
+            OperationEvent::NetworkRepairCompleted { operation_id } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Transition(NetworkRepairTransition::Completed),
+            },
+            OperationEvent::NetworkRepairFailed {
+                operation_id,
+                failure,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Transition(NetworkRepairTransition::Failed { failure }),
+            },
             OperationEvent::ServiceRestartSubmitted {
                 operation_id,
                 namespace_id,
@@ -1072,6 +1187,12 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::CoreReplace => Self::CoreReplace {
                     operation_id,
                     event: CoreReplaceEvent::Cancelled(reason),
+                },
+                OperationKind::NetworkRepair => Self::NetworkRepair {
+                    operation_id,
+                    event: NetworkRepairEvent::Transition(NetworkRepairTransition::Cancelled {
+                        reason,
+                    }),
                 },
                 OperationKind::ServiceRestart => Self::ServiceRestart {
                     operation_id,

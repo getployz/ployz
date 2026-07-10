@@ -1,8 +1,11 @@
 use ployz_core::dataplane::{
-    PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
+    EbpfAttachmentStatus, PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute,
+    WireGuardEbpfPrepareError,
 };
 use ployz_core::ids::MachineId;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::process::Command;
 
 use super::host_commands::{HostCommandPlan, ebpf_ctl_args, unavailable};
 
@@ -15,6 +18,43 @@ pub(super) struct HostDataplaneRouteProgramming {
 }
 
 impl HostDataplaneRouteProgramming {
+    pub(super) async fn attachment_status(&self, timeout: Duration) -> EbpfAttachmentStatus {
+        let args = ebpf_ctl_args(
+            &self.ebpf_pin_path,
+            ["status".to_owned(), self.bridge_ifname.clone()],
+        );
+        let mut command = Command::new(&self.ebpf_ctl_program);
+        command.args(args).kill_on_drop(true);
+        match tokio::time::timeout(timeout, command.output()).await {
+            Err(_) => EbpfAttachmentStatus::Unknown {
+                message: "eBPF attachment inspection timed out".to_owned(),
+            },
+            Ok(Err(error)) => EbpfAttachmentStatus::Unknown {
+                message: format!("eBPF attachment inspection failed: {error}"),
+            },
+            Ok(Ok(output)) if output.status.success() => EbpfAttachmentStatus::Attached,
+            Ok(Ok(output))
+                if output.status.code()
+                    == Some(i32::from(ployz_ebpf_common::EBPF_STATUS_DETACHED_EXIT_CODE)) =>
+            {
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                EbpfAttachmentStatus::Detached {
+                    message: if message.is_empty() {
+                        "Ployz eBPF programs are detached".to_owned()
+                    } else {
+                        message
+                    },
+                }
+            }
+            Ok(Ok(output)) => EbpfAttachmentStatus::Unknown {
+                message: format!(
+                    "eBPF attachment inspection failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            },
+        }
+    }
+
     pub(super) fn wireguard_plans_for(
         &self,
         machine_id: &MachineId,

@@ -1,7 +1,8 @@
 //! Host WireGuard/eBPF readiness for machine-local dataplane preparation.
 
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
+    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfAttachmentStatus, EbpfForwardingReady,
+    MachineDataplaneStatus, NetworkStatusMode, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
     PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
@@ -18,6 +19,7 @@ use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 mod host_commands;
 mod host_network;
 mod host_routes;
+mod host_status;
 
 #[cfg(test)]
 use host_commands::HostCommandAction;
@@ -26,6 +28,7 @@ pub use host_network::WireGuardMtuPolicy;
 pub(crate) use host_network::resolve_wireguard_mtu;
 use host_network::{ensure_private_key, ensure_wireguard_interface, public_key_from_private_key};
 use host_routes::HostDataplaneRouteProgramming;
+pub(crate) use host_status::dataplane_status_budget;
 
 const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_WIREGUARD_PRIVATE_KEY: &str = "/etc/ployz/wireguard.key";
@@ -163,6 +166,24 @@ impl PloyzNativeMeshPreparer {
 }
 
 impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
+    async fn read_ployz_native_mesh_status(
+        &self,
+        mode: NetworkStatusMode,
+    ) -> Result<MachineDataplaneStatus, String> {
+        let wireguard =
+            host_status::read_wireguard_status(&self.wg_ifname, self.mtu_policy, mode).await?;
+        let ebpf_attachment = match &self.route_programming {
+            Some(routes) => routes.attachment_status(self.command_timeout).await,
+            None => EbpfAttachmentStatus::Unknown {
+                message: "eBPF route programming is not configured".to_owned(),
+            },
+        };
+        Ok(MachineDataplaneStatus {
+            wireguard,
+            ebpf_attachment,
+        })
+    }
+
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {

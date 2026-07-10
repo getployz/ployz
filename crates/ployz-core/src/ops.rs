@@ -26,6 +26,7 @@ mod machine_lifecycle;
 mod machine_update;
 mod managed_lease;
 mod namespace_remove;
+mod network_repair;
 mod projection;
 mod replay;
 mod routes;
@@ -60,6 +61,12 @@ pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
     NamespaceRemoveTransition, project_namespace_remove_transition,
 };
+pub use network_repair::{
+    NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
+    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
+    NetworkRepairProgressPhase, NetworkRepairRequestFailure, NetworkRepairRunningStage,
+    NetworkRepairTransition, project_network_repair_transition,
+};
 pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
@@ -90,6 +97,7 @@ pub enum OperationKind {
     MachineUpdate,
     MachineLifecycle,
     CoreReplace,
+    NetworkRepair,
     ServiceRestart,
     ManagedLease,
     NamespaceRemove,
@@ -146,6 +154,13 @@ pub enum OperationStatus {
         machine_id: MachineId,
         successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
         state: CoreReplaceOperationState,
+        last_event_sequence: EventSequence,
+    },
+    NetworkRepair {
+        id: OperationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_machine_id: Option<MachineId>,
+        state: NetworkRepairOperationState,
         last_event_sequence: EventSequence,
     },
     ServiceRestart {
@@ -303,6 +318,20 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn network_repair_accepted(
+        id: OperationId,
+        target_machine_id: Option<MachineId>,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::NetworkRepair {
+            id,
+            target_machine_id,
+            state: NetworkRepairOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub fn namespace_remove_accepted(
         id: OperationId,
         namespace_id: NamespaceId,
@@ -355,6 +384,7 @@ impl OperationStatus {
             Self::MachineUpdate { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
+            Self::NetworkRepair { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
             Self::ManagedLease { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),

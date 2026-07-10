@@ -10,13 +10,16 @@ use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
 pub use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
-use ployz_core::machine_runtime::{
-    MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerObservation,
-};
+use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerObservation};
 use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 
+mod dataplane_status;
+mod facts;
+
+pub use dataplane_status::*;
+pub use facts::*;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineRunContainerOutcome {
@@ -57,31 +60,6 @@ impl MachineRpcResponder for MachineEnsureEndpointNetworkRpcOk {
 
 pub type MachineEnsureEndpointNetworkRpcResponse =
     MachineRpcResponse<MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineFactsGetRpcRequest {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineFactsGetRpcOk {
-    pub facts: MachineFactsSnapshot,
-}
-
-impl MachineRpcResponder for MachineFactsGetRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        self.facts.machine_id()
-    }
-}
-
-pub type MachineFactsGetRpcResponse =
-    MachineRpcResponse<MachineFactsGetRpcOk, MachineFactsGetDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineFactsGetDomainError {
-    GatherFailed { message: FailureMessage },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]

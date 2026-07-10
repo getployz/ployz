@@ -6,10 +6,15 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[cfg(target_os = "linux")]
-const DEFAULT_PIN_PATH: &str = "/sys/fs/bpf/ployz";
+const DEFAULT_PIN_PATH: &str = ployz_ebpf_common::DEFAULT_PIN_PATH;
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(EbpfCtlOutcome::Completed) => ExitCode::SUCCESS,
+        #[cfg(target_os = "linux")]
+        Ok(EbpfCtlOutcome::Detached { message }) => {
+            eprintln!("{message}");
+            ExitCode::from(ployz_ebpf_common::EBPF_STATUS_DETACHED_EXIT_CODE)
+        }
         Err(message) => {
             eprintln!("error: {message}");
             ExitCode::FAILURE
@@ -17,7 +22,16 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<(), String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EbpfCtlOutcome {
+    Completed,
+    #[cfg(target_os = "linux")]
+    Detached {
+        message: String,
+    },
+}
+
+fn run(args: Vec<String>) -> Result<EbpfCtlOutcome, String> {
     let args = EbpfCtlCli::try_parse_from(std::iter::once("ployz-ebpf-ctl".to_owned()).chain(args))
         .map_err(|error| error.to_string())?;
     let pin_path = args.pin_path.as_deref();
@@ -34,6 +48,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
             wg_ifname,
         } => ensure_attached(&bytecode, &bridge_ifname, &wg_ifname, pin_path),
         EbpfCtlCommand::Detach { bridge_ifname } => detach(&bridge_ifname, pin_path),
+        EbpfCtlCommand::Status { bridge_ifname } => {
+            return attachment_status(&bridge_ifname, pin_path);
+        }
         EbpfCtlCommand::Route { action } => match action {
             RouteCommand::Add { subnet, ifindex } => route_add(subnet, ifindex, pin_path),
             RouteCommand::AddIfname { subnet, ifname } => {
@@ -42,6 +59,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             RouteCommand::Del { subnet } => route_del(subnet, pin_path),
         },
     }
+    .map(|()| EbpfCtlOutcome::Completed)
 }
 
 #[derive(Debug, Parser)]
@@ -69,6 +87,9 @@ enum EbpfCtlCommand {
         wg_ifname: String,
     },
     Detach {
+        bridge_ifname: String,
+    },
+    Status {
         bridge_ifname: String,
     },
     Route {
@@ -101,6 +122,23 @@ fn validate_bytecode(path: &Path) -> Result<(), String> {
     ployz_ebpf_common::validate_ployz_tc_bytecode(bytes.as_slice())
         .map(|_| ())
         .map_err(|error| format!("validate eBPF bytecode {}: {error:?}", path.display()))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn tc_filter_has_program(output: &[u8], program: &str) -> Result<bool, String> {
+    let filters = serde_json::from_slice::<serde_json::Value>(output)
+        .map_err(|error| format!("invalid tc JSON: {error}"))?;
+    let Some(filters) = filters.as_array() else {
+        return Err("tc JSON response is not an array".to_owned());
+    };
+    Ok(filters.iter().any(|filter| {
+        filter.get("kind").and_then(serde_json::Value::as_str) == Some("bpf")
+            && filter
+                .get("options")
+                .and_then(|options| options.get("bpf_name"))
+                .and_then(serde_json::Value::as_str)
+                == Some(program)
+    }))
 }
 
 fn parse_ipv4_subnet(value: &str) -> Result<ipnet::Ipv4Net, String> {
@@ -170,6 +208,16 @@ fn detach(_bridge: &str, _pin_path: Option<&str>) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
+fn attachment_status(bridge: &str, pin_path: Option<&str>) -> Result<EbpfCtlOutcome, String> {
+    linux::attachment_status(bridge, pin_path.unwrap_or(DEFAULT_PIN_PATH))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn attachment_status(_bridge: &str, _pin_path: Option<&str>) -> Result<EbpfCtlOutcome, String> {
+    Err("status requires Linux".to_owned())
+}
+
+#[cfg(target_os = "linux")]
 fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: Option<&str>) -> Result<(), String> {
     linux::route_add(subnet, ifindex, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
@@ -222,12 +270,13 @@ fn subnet_to_key(subnet: ipnet::Ipv4Net) -> ployz_ebpf_common::RouteKey {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{subnet_to_key, validate_bytecode};
+    use super::{EbpfCtlOutcome, subnet_to_key, tc_filter_has_program, validate_bytecode};
     use aya::Ebpf;
     use aya::programs::tc::{NlOptions, TcAttachOptions};
     use aya::programs::{SchedClassifier, TcAttachType};
     use ployz_ebpf_common::{RouteEntry, RouteKey};
     use std::path::Path;
+    use std::process::Command;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -319,11 +368,43 @@ mod linux {
         pin_path: &str,
     ) -> Result<(), String> {
         validate_bytecode(bytecode)?;
-        if ployz_tc_pins_exist(pin_path) {
-            return Ok(());
+        match attachment_status(bridge, pin_path)? {
+            EbpfCtlOutcome::Completed => Ok(()),
+            EbpfCtlOutcome::Detached { .. } => {
+                detach_program_if_present(bridge, TcAttachType::Egress, "ployz_egress")?;
+                detach_program_if_present(bridge, TcAttachType::Ingress, "ployz_ingress")?;
+                remove_ployz_tc_pins(pin_path)?;
+                attach(bytecode, bridge, wg_ifname, pin_path)
+            }
         }
-        remove_ployz_tc_pins(pin_path)?;
-        attach(bytecode, bridge, wg_ifname, pin_path)
+    }
+
+    pub fn attachment_status(bridge: &str, pin_path: &str) -> Result<EbpfCtlOutcome, String> {
+        if !ployz_tc_pins_exist(pin_path) {
+            return Ok(EbpfCtlOutcome::Detached {
+                message: format!("required eBPF pins are missing under {pin_path}"),
+            });
+        }
+        for (direction, program) in [("ingress", "ployz_ingress"), ("egress", "ployz_egress")] {
+            let output = Command::new("tc")
+                .args(["-j", "filter", "show", "dev", bridge, direction])
+                .output()
+                .map_err(|error| format!("inspect tc {direction} attachment: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "inspect tc {direction} attachment: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            let attached = tc_filter_has_program(&output.stdout, program)
+                .map_err(|error| format!("inspect tc {direction} attachment: {error}"))?;
+            if !attached {
+                return Ok(EbpfCtlOutcome::Detached {
+                    message: format!("{program} is not attached to {bridge} {direction}"),
+                });
+            }
+        }
+        Ok(EbpfCtlOutcome::Completed)
     }
 
     pub fn detach(bridge: &str, pin_path: &str) -> Result<(), String> {
@@ -336,6 +417,18 @@ mod linux {
         remove_pin_file(format!("{pin_path}/ingress"))?;
         remove_pin_dir(pin_path)?;
         Ok(())
+    }
+
+    fn detach_program_if_present(
+        bridge: &str,
+        attach_type: TcAttachType,
+        program: &str,
+    ) -> Result<(), String> {
+        match aya::programs::tc::qdisc_detach_program(bridge, attach_type, program) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("detach {program} from {bridge}: {error}")),
+        }
     }
 
     fn ployz_tc_pins_exist(pin_path: &str) -> bool {
@@ -467,5 +560,21 @@ mod tests {
         .expect_err("invalid subnet fails");
 
         assert!(error.contains("invalid IPv4 subnet"));
+    }
+
+    #[test]
+    fn tc_filter_status_requires_the_owned_program_name() {
+        let output = br#"[
+            {"kind":"bpf","options":{"bpf_name":"ployz_ingress"}},
+            {"kind":"flower","options":{"bpf_name":"ployz_egress"}}
+        ]"#;
+
+        assert_eq!(tc_filter_has_program(output, "ployz_ingress"), Ok(true));
+        assert_eq!(tc_filter_has_program(output, "ployz_egress"), Ok(false));
+    }
+
+    #[test]
+    fn tc_filter_status_rejects_malformed_json() {
+        assert!(tc_filter_has_program(b"not-json", "ployz_ingress").is_err());
     }
 }
