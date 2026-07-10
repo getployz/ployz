@@ -251,15 +251,9 @@ pub async fn prepare_deploy_images(
             service.image_source = ImageSource::Registry;
             continue;
         }
-        let seed = match &seed {
-            Some(seed) => seed,
-            None => {
-                seed = Some(select_seed(api).await?);
-                let Some(seed) = &seed else {
-                    unreachable!("selected seed was just stored")
-                };
-                seed
-            }
+        let seed = match &mut seed {
+            Some(seed) => &*seed,
+            slot @ None => &*slot.insert(select_seed(api).await?),
         };
         let receipt =
             push_local_image(&api.nats_client(), &docker, seed, service.image.clone()).await?;

@@ -212,6 +212,10 @@ impl MachineEndpointSubnet {
         self.0.to_string()
     }
 
+    /// The subnet's last host (`.254`): the machine's own WireGuard address
+    /// in its endpoint /24, assigned by the dataplane as the mesh-reachable
+    /// host identity (see `wireguard_host_cidr`) — the image registry and any
+    /// machine-addressed mesh listener bind here.
     #[must_use]
     pub fn host_address(&self) -> Ipv4Addr {
         let IpNet::V4(subnet) = self.0 else {
@@ -778,6 +782,7 @@ mod tests {
                         slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
                     },
                 ],
+                pre_start: None,
             }],
             volume_pin_commits: Vec::new(),
             cleanup_containers: Vec::new(),
@@ -814,6 +819,7 @@ mod tests {
                     machine_id: machine_id("edge_2"),
                     slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
                 }],
+                pre_start: None,
             }],
             cleanup_containers: Vec::new(),
             volume_pin_commits: Vec::new(),

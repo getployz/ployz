@@ -209,6 +209,11 @@ pub enum DeployOperationFailure {
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
+    PreStartHookFailed {
+        machine_id: MachineId,
+        failure: PreStartHookFailure,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
     HealthCheckFailed {
         health_check: HealthCheckFailure,
         retained_artifacts: Vec<RetainedArtifact>,
@@ -222,6 +227,50 @@ pub enum DeployOperationFailure {
         route: RouteTarget,
         reason: RouteCutoverFailureReason,
         retained_artifacts: Vec<RetainedArtifact>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PreStartHookFailure {
+    RuntimeUnavailable {
+        message: FailureMessage,
+    },
+    OperationStepAmbiguous {
+        operation_id: OperationId,
+        step_id: crate::ids::StepId,
+        container_ids: Vec<ContainerId>,
+    },
+    CreateFailed {
+        message: FailureMessage,
+    },
+    StartFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    WaitFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    TimedOut {
+        container_id: ContainerId,
+        timeout_millis: u64,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    Exited {
+        container_id: ContainerId,
+        exit_code: i64,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    CleanupFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
     },
 }
 
@@ -253,6 +302,7 @@ impl DeployOperationFailure {
             Self::DataplanePrepareTimedOut { .. } => DeployFailureClass::Timeout,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
+            Self::PreStartHookFailed { .. } => DeployFailureClass::PreStartHookFailed,
             Self::HealthCheckFailed { health_check, .. } => match health_check {
                 HealthCheckFailure::ProbeFailed { .. } => DeployFailureClass::HealthGateFailed,
                 HealthCheckFailure::TimedOut { .. } => DeployFailureClass::Timeout,
@@ -289,6 +339,9 @@ impl DeployOperationFailure {
                 retained_artifacts, ..
             }
             | Self::ContainerStartFailed {
+                retained_artifacts, ..
+            }
+            | Self::PreStartHookFailed {
                 retained_artifacts, ..
             }
             | Self::HealthCheckFailed {

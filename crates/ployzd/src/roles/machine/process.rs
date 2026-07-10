@@ -549,6 +549,13 @@ mod tests {
             })
         }
 
+        async fn wait_managed_container(
+            &self,
+            _container_id: &ContainerId,
+        ) -> Result<i64, MachineContainerRunnerError> {
+            Ok(0)
+        }
+
         async fn remove_managed_container(
             &self,
             container_id: &ContainerId,
@@ -628,6 +635,13 @@ mod tests {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
+        }
+
+        async fn wait_managed_container(
+            &self,
+            _container_id: &ContainerId,
+        ) -> Result<i64, MachineContainerRunnerError> {
+            Ok(0)
         }
 
         async fn remove_managed_container(

@@ -715,6 +715,8 @@ fn deploy_request(replicas: u16) -> DeployRequest {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

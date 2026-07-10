@@ -313,6 +313,7 @@ pub enum MachineServiceEndpoint {
     ContainerEnsureEndpointNetwork,
     ContainerInspect,
     ContainerRun,
+    ContainerRunHook,
     ContainerRestart,
     ContainerStop,
     ContainerRemove,
@@ -342,6 +343,7 @@ impl MachineServiceEndpoint {
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
             Self::ContainerRun => "container.run",
+            Self::ContainerRunHook => "container.run_hook",
             Self::ContainerRestart => "container.restart",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
@@ -353,6 +355,10 @@ impl MachineServiceEndpoint {
             Self::ImageBlobCheck => "image.blob.check",
             Self::ImageBlobPush => "image.blob.push",
             Self::ImageManifestPush => "image.manifest.push",
+            // Deliberately outside the operator-granted `*.image.>` scopes:
+            // ensure mutates the seed's Docker store (self-pull), so it lives
+            // under the controller-only container command namespace while the
+            // three staging endpoints above stay operator-reachable.
             Self::ImageEnsure => "container.ensure_image",
         }
     }
@@ -368,6 +374,7 @@ impl MachineServiceEndpoint {
             | Self::ImageBlobCheck => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::ContainerRun
+            | Self::ContainerRunHook
             | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove

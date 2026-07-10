@@ -55,6 +55,10 @@ pub enum MachineContainerRunnerError {
         container_id: ContainerId,
         message: String,
     },
+    Wait {
+        container_id: ContainerId,
+        message: String,
+    },
     Stop {
         container_id: ContainerId,
         message: String,
@@ -121,6 +125,11 @@ pub trait MachineContainerRunner {
         &self,
         container_id: &ContainerId,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn wait_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> impl Future<Output = Result<i64, MachineContainerRunnerError>> + Send;
 
     fn stop_managed_container(
         &self,

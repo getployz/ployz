@@ -198,6 +198,35 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             })
     }
 
+    async fn wait_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<i64, MachineContainerRunnerError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| MachineContainerRunnerError::Wait {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        let result = docker
+            .wait_container(container_id.as_str(), None)
+            .next()
+            .await;
+        match result {
+            Some(Ok(response)) => Ok(response.status_code),
+            Some(Err(BollardError::DockerContainerWaitError { code, .. })) => Ok(code),
+            Some(Err(error)) => Err(MachineContainerRunnerError::Wait {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+            None => Err(MachineContainerRunnerError::Wait {
+                container_id: container_id.clone(),
+                message: "Docker wait stream ended without a status code".to_owned(),
+            }),
+        }
+    }
+
     async fn remove_managed_container(
         &self,
         container_id: &ContainerId,

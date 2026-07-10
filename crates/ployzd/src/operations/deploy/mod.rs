@@ -9,8 +9,8 @@ mod preparation;
 mod types;
 
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployPlanningInput, ImageSource, ReplicaSlot,
-    plan_namespace_deploy,
+    ContainerRestartPolicy, DeployPlan, DeployPlanStep, DeployPlanningInput, ImageSource,
+    ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerKind;
@@ -25,6 +25,7 @@ pub use facts::{
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
     DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 use images::{dataplane_prepare_request, ensure_images, machine_image_pull};
@@ -37,8 +38,9 @@ pub use preparation::{
 };
 
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerRunHookRpcRequest,
+    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
+    MachineEnsureEndpointNetworkRpcRequest,
 };
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
@@ -231,8 +233,21 @@ where
             .iter()
             .find(|service| service.request.service_id == service_plan.service_id)
         else {
-            continue;
+            return Err(run.fail(DeployExecutionError::PlanInconsistent {
+                service_id: service_plan.service_id.clone(),
+            }));
         };
+        if let Some(pre_start) = &service_plan.pre_start {
+            run_pre_start_hook(
+                command,
+                service,
+                pre_start,
+                &dataplane_request.membership,
+                &mut *ports.machine_runtime,
+            )
+            .await
+            .map_err(|source| run.fail(source))?;
+        }
         for step in &service_plan.steps {
             match step {
                 DeployPlanStep::UseExistingContainer {
@@ -375,6 +390,86 @@ where
     };
 
     Ok(outcome)
+}
+
+async fn run_pre_start_hook<N>(
+    command: &DeployExecutionCommand,
+    service: &DeployServiceExecutionCommand,
+    step: &ployz_core::deploy::PreStartHookStep,
+    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
+    machine_runtime: &mut N,
+) -> Result<(), DeployExecutionError>
+where
+    N: MachineContainerRuntime,
+{
+    let Some(pre_start) = &service.request.pre_start else {
+        return Err(DeployExecutionError::PlanInconsistent {
+            service_id: service.request.service_id.clone(),
+        });
+    };
+    let step_id = StepId::try_new("pre_start").map_err(DeployExecutionError::StepId)?;
+    let mut runtime = service.request.runtime.clone();
+    runtime.command = Some(pre_start.command.clone());
+    runtime.healthcheck = None;
+    runtime.restart_policy = ContainerRestartPolicy::No;
+    let identity = ManagedContainerIdentity {
+        namespace_id: service.request.namespace_id.clone(),
+        service_id: service.request.service_id.clone(),
+        namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+        operation_id: command.operation_id.clone(),
+        step_id,
+        kind: ManagedContainerKind::Predeploy,
+    };
+    let request = MachineContainerRunHookRpcRequest {
+        pull: machine_image_pull(service, dataplane_members)?,
+        runtime,
+        container: identity.clone(),
+        timeout_millis: hook_execution_timeout(command).as_millis() as u64,
+    };
+    let outcome = with_step_timeout(
+        command,
+        DeployExecutionStep::RunPreStartHook {
+            machine_id: step.machine_id.clone(),
+        },
+        async {
+            machine_runtime
+                .run_pre_start_hook(&step.machine_id, request)
+                .await
+                .map_err(DeployExecutionError::PreStartHook)
+        },
+    )
+    .await?;
+    if outcome.exit_code != 0 {
+        return Err(DeployExecutionError::PreStartHookExited {
+            machine_id: step.machine_id.clone(),
+            container_id: outcome.container_id,
+            exit_code: outcome.exit_code,
+            message: FailureMessage::try_new(format!(
+                "pre-start hook exited with code {}",
+                outcome.exit_code
+            ))
+            .expect("generated hook failure message is non-empty"),
+        });
+    }
+    machine_runtime
+        .remove_pre_start_hook(
+            &step.machine_id,
+            MachineContainerRemoveRpcRequest {
+                operation_id: command.operation_id.clone(),
+                container_id: outcome.container_id,
+                expected_identity: identity,
+            },
+        )
+        .await
+        .map_err(DeployExecutionError::PreStartHook)?;
+    Ok(())
+}
+
+fn hook_execution_timeout(command: &DeployExecutionCommand) -> std::time::Duration {
+    let millis = command.step_timeout().as_millis();
+    let bounded = millis.saturating_mul(9).div_euclid(10).max(1);
+    let bounded = u64::try_from(bounded).unwrap_or(u64::MAX);
+    std::time::Duration::from_millis(bounded)
 }
 
 async fn cleanup_superseded_containers<N>(

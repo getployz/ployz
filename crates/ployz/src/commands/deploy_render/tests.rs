@@ -12,7 +12,7 @@ use ployz_core::image::OciDigest;
 use ployz_core::ops::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage,
     EventSequence, FailureMessage, HealthCheckFailure, OperationEvent, OperatorHint,
-    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
+    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
 };
 
 fn operation_id() -> OperationId {
@@ -46,6 +46,8 @@ fn service(name: &str, image: &str, replicas: u16, routes: Vec<DeployRoute>) -> 
         image_source: ImageSource::Registry,
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
+        pre_start: None,
+        depends_on: Vec::new(),
         routes,
     }
 }
@@ -109,6 +111,7 @@ fn plan() -> DeployPlan {
         services: vec![
             DeployServicePlan {
                 service_id: service_id("web"),
+                pre_start: None,
                 steps: vec![
                     DeployPlanStep::RunContainer {
                         machine_id: machine_id("hetzner-1"),
@@ -122,6 +125,7 @@ fn plan() -> DeployPlan {
             },
             DeployServicePlan {
                 service_id: service_id("worker"),
+                pre_start: None,
                 steps: vec![DeployPlanStep::UseExistingContainer {
                     machine_id: machine_id("hetzner-2"),
                     container_id: container_id("worker-existing"),
@@ -540,4 +544,53 @@ fn deep_health_failure_keeps_container_evidence_and_hints() {
     assert!(output.contains("logs:      ployz logs web -n prod --failed"));
     assert!(output.contains("timeline:  ployz ops status op_317"));
     assert!(output.contains("rollback:  ployz deploy rollback -n prod"));
+}
+
+#[test]
+fn pre_start_failure_keeps_hook_evidence_and_serving_safety() {
+    let operation_id = operation_id();
+    let mut tree = DeployTree::new();
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: single_service_target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure: DeployOperationFailure::PreStartHookFailed {
+                    machine_id: machine_id("hetzner-1"),
+                    failure: PreStartHookFailure::Exited {
+                        container_id: container_id("web-hook-1"),
+                        exit_code: 17,
+                        message: FailureMessage::try_new("database migration rejected")
+                            .expect("valid failure message"),
+                        log_hint: OperatorHint::try_new("ployzctl logs web-hook-1")
+                            .expect("valid operator hint"),
+                    },
+                    retained_artifacts: vec![RetainedArtifact::StartedContainer {
+                        machine_id: machine_id("hetzner-1"),
+                        container_id: container_id("web-hook-1"),
+                        log_hint: OperatorHint::try_new("ployzctl logs web-hook-1")
+                            .expect("valid operator hint"),
+                    }],
+                },
+            },
+        ),
+    ]);
+
+    let output = render_failure_block(&tree);
+    assert!(
+        output.starts_with("Deploy failed — pre-start-hook-failed, service web on hetzner-1.\n")
+    );
+    assert!(
+        output.contains("  ✗ pre-start hook exited with code 17: database migration rejected\n")
+    );
+    assert!(output.contains("    failed container web-hook-1 retained on hetzner-1\n"));
+    assert!(output.contains("Serving is unchanged."));
+    assert!(output.contains("logs:      ployz logs web -n prod --failed"));
 }

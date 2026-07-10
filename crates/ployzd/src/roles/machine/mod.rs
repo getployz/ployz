@@ -19,7 +19,7 @@ mod ployz_native_mesh;
 pub mod process;
 pub mod protocol;
 pub mod registry_v2;
-mod response;
+pub(crate) mod response;
 pub mod runner;
 pub mod service;
 mod substrate;

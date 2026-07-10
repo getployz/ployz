@@ -21,17 +21,19 @@ use futures_util::StreamExt;
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::image_push::{prepare_deploy_images, push_local_image};
 use ployz_core::deploy::{
-    ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget,
-    DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos, HealthcheckRetries,
-    HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
-    ReplicaCount, ServiceEnvironment, VolumeName,
+    ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
+    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest,
+    DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
+    NanoCpus, PidsLimit, PreStartHook, ReplicaCount, ServiceEnvironment, ServiceVolumeMount,
+    VolumeName,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, NamespaceRemoveOperationState, OperationEvent,
-    OperationStatus, VolumeRemoveOperationState,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
+    NamespaceRemoveOperationState, OperationEvent, OperationStatus, PreStartHookFailure,
+    VolumeRemoveOperationState,
 };
 use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
@@ -386,6 +388,203 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
     finish(core).await;
 }
 
+#[tokio::test]
+async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidence() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 0).await;
+    with_evidence(&core.cluster, async {
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+
+        let success = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_pre_start_success"),
+                target: pre_start_deploy_target("pre_start_success", "echo ok > /data/marker"),
+            })
+            .await
+            .expect("pre-start deploy submits");
+        let success_status =
+            wait_for_terminal_deploy_status(&core, &success.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                success_status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "pre-start deploy did not complete: {success_status:?}"
+        );
+        let running = managed_workload_containers(&core, core.cluster.core())
+            .await
+            .into_iter()
+            .filter(|container| {
+                container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str)
+                    == Some("pre_start_success")
+                    && container
+                        .labels
+                        .get(CONTAINER_TYPE_LABEL)
+                        .map(String::as_str)
+                        == Some("service")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            running.len(),
+            1,
+            "service container must be running: {running:?}"
+        );
+
+        let failed = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_pre_start_failure"),
+                target: pre_start_deploy_target("pre_start_failure", "exit 7"),
+            })
+            .await
+            .expect("failing pre-start deploy submits");
+        let failed_status =
+            wait_for_terminal_deploy_status(&core, &failed.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        let OperationStatus::Deploy {
+            state: DeployOperationState::Failed { failure },
+            ..
+        } = failed_status
+        else {
+            panic!("pre-start deploy must fail with readable evidence");
+        };
+        assert!(
+            matches!(
+                failure,
+                DeployOperationFailure::PreStartHookFailed {
+                    failure: PreStartHookFailure::Exited { exit_code: 7, .. },
+                    ..
+                }
+            ),
+            "unexpected pre-start failure: {failure:?}"
+        );
+        let failed_containers = namespace_managed_containers(&core, "pre_start_failure").await;
+        assert!(
+            failed_containers.iter().all(|container| {
+                container
+                    .labels
+                    .get(CONTAINER_TYPE_LABEL)
+                    .map(String::as_str)
+                    != Some("service")
+            }),
+            "hook gate must prevent service container creation: {failed_containers:?}"
+        );
+        assert!(
+            failed_containers.iter().any(|container| {
+                container
+                    .labels
+                    .get(CONTAINER_TYPE_LABEL)
+                    .map(String::as_str)
+                    == Some("predeploy")
+            }),
+            "failed hook container must remain as evidence: {failed_containers:?}"
+        );
+    })
+    .await;
+    finish(core).await;
+}
+
+#[tokio::test]
+async fn scenario_services_start_in_depends_on_order() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 0).await;
+    with_evidence(&core.cluster, async {
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        let accepted = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_depends_on_order"),
+                target: depends_on_deploy_target(),
+            })
+            .await
+            .expect("dependency deploy submits");
+        let status =
+            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "dependency deploy did not complete: {status:?}"
+        );
+        let running = managed_workload_containers(&core, core.cluster.core())
+            .await
+            .into_iter()
+            .filter(|container| {
+                container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str)
+                    == Some("depends_on_order")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            running.len(),
+            2,
+            "both dependency services must run: {running:?}"
+        );
+        let started_at = running
+            .iter()
+            .map(|container| {
+                (
+                    container
+                        .labels
+                        .get(SERVICE_ID_LABEL)
+                        .expect("managed service container has service id")
+                        .as_str(),
+                    container.started_at.as_str(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let Some(a_started_at) = started_at.get("a") else {
+            panic!("dependency service is missing: {started_at:?}");
+        };
+        let Some(b_started_at) = started_at.get("b") else {
+            panic!("dependent service is missing: {started_at:?}");
+        };
+        assert!(
+            a_started_at < b_started_at,
+            "dependency must start first: {started_at:?}"
+        );
+
+        let events = terminal_operation_events(&core, &accepted.operation_id).await;
+        let Some(plan) = events.iter().find_map(|event| {
+            if let OperationEvent::DeployPlanCreated { plan, .. } = event {
+                Some(plan)
+            } else {
+                None
+            }
+        }) else {
+            panic!("dependency deploy must record its plan: {events:?}");
+        };
+        assert_eq!(
+            plan.services
+                .iter()
+                .map(|service| service.service_id.clone())
+                .collect::<Vec<_>>(),
+            vec![service_id("a"), service_id("b")]
+        );
+    })
+    .await;
+    finish(core).await;
+}
+
 /// Scenario 2 — machine add returns its operation id before the mint's
 /// reload lands, and the printed join bundle material drives the real
 /// `scripts/ployz.sh` join flow on an edge machine over direct TLS NATS.
@@ -621,6 +820,8 @@ async fn scenario_direct_push_multi_machine_deploy() {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
             runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }];
         let receipts = prepare_deploy_images(&core.api, &mut services, false)
@@ -1578,6 +1779,8 @@ fn smoke_deploy_target() -> DeployRequest {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: vec![DeployRoute {
                 target: DeployRouteTarget::Hostname {
                     hostname: route_hostname(ROUTE_HOSTNAME),
@@ -1600,6 +1803,8 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
                 routes: Vec::new(),
             },
             DeployServiceSpec {
@@ -1609,6 +1814,8 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(2).expect("valid replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
                 routes: Vec::new(),
             },
         ],
@@ -1624,6 +1831,8 @@ fn runtime_fields_deploy_target() -> DeployRequest {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: runtime_fields_spec(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }
@@ -1693,8 +1902,86 @@ fn failing_healthcheck_deploy_target() -> DeployRequest {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
+    }
+}
+
+fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "test -f /data/marker && sleep 600".to_owned(),
+        ])
+        .expect("valid service command"),
+    );
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    DeployRequest {
+        namespace_id: namespace_id(namespace),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_hooked"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime,
+            pre_start: Some(PreStartHook {
+                command: ContainerCommand::try_new(vec![
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    hook_command.to_owned(),
+                ])
+                .expect("valid hook command"),
+            }),
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
+    }
+}
+
+fn depends_on_deploy_target() -> DeployRequest {
+    let sleeper = || {
+        let mut runtime = ContainerRuntimeSpec::image_defaults();
+        runtime.command = Some(
+            ContainerCommand::try_new(vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "sleep 600".to_owned(),
+            ])
+            .expect("valid sleeper command"),
+        );
+        runtime
+    };
+    DeployRequest {
+        namespace_id: namespace_id("depends_on_order"),
+        services: vec![
+            DeployServiceSpec {
+                service_id: service_id("b"),
+                image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                runtime: sleeper(),
+                pre_start: None,
+                depends_on: vec![service_id("a")],
+                routes: Vec::new(),
+            },
+            DeployServiceSpec {
+                service_id: service_id("a"),
+                image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                runtime: sleeper(),
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            },
+        ],
     }
 }
 
@@ -1748,6 +2035,8 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

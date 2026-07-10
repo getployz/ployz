@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
 use crate::ids::{
@@ -60,6 +60,8 @@ impl DeployRequest {
                 image_source: service.image_source.clone(),
                 replicas: service.replicas,
                 runtime: service.runtime.clone(),
+                pre_start: service.pre_start.clone(),
+                depends_on: service.depends_on.clone(),
                 routes: service.routes.clone(),
             })
             .collect()
@@ -79,14 +81,26 @@ pub struct DeployServiceSpec {
     pub image_source: ImageSource,
     pub replicas: ReplicaCount,
     pub runtime: ContainerRuntimeSpec,
+    // Pre-start hooks and dependencies guide planning and execution, not container identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_start: Option<PreStartHook>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<ServiceId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct PreStartHook {
+    pub command: ContainerCommand,
 }
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision_entry.v7";
-    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v3";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v4";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -135,6 +149,23 @@ pub fn namespace_revision_id_for(
             service.replicas.get().to_string().as_bytes(),
         );
         hash_runtime_spec(&mut hasher, &service.runtime);
+
+        match &service.pre_start {
+            Some(pre_start) => {
+                hash_frame(&mut hasher, "pre_start", b"some");
+                for argument in pre_start.command.as_slice() {
+                    hash_frame(&mut hasher, "pre_start_arg", argument.as_bytes());
+                }
+            }
+            None => hash_frame(&mut hasher, "pre_start", b"none"),
+        }
+
+        let mut dependencies = service.depends_on.iter().collect::<Vec<_>>();
+        dependencies.sort();
+        dependencies.dedup();
+        for dependency in dependencies {
+            hash_frame(&mut hasher, "depends_on", dependency.as_str().as_bytes());
+        }
 
         let mut routes = service.routes.iter().collect::<Vec<_>>();
         routes.sort_by(|left, right| {
@@ -394,6 +425,10 @@ pub struct DeployServiceRequest {
     pub image_source: ImageSource,
     pub replicas: ReplicaCount,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_start: Option<PreStartHook>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<ServiceId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
 }
@@ -1258,6 +1293,15 @@ impl DeployPlan {
 pub struct DeployServicePlan {
     pub service_id: ServiceId,
     pub steps: Vec<DeployPlanStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_start: Option<PreStartHookStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct PreStartHookStep {
+    pub machine_id: MachineId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1319,6 +1363,13 @@ pub enum ReplicaSlotError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanError {
     NoEligibleMachines,
+    UnknownServiceDependency {
+        service_id: ServiceId,
+        dependency: ServiceId,
+    },
+    ServiceDependencyCycle {
+        service_ids: Vec<ServiceId>,
+    },
     ConflictingVolumePins {
         service_id: ServiceId,
         machines: Vec<MachineId>,
@@ -1453,6 +1504,7 @@ pub fn plan_namespace_deploy(
     services: Vec<DeployPlanningInput>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> Result<DeployPlan, DeployPlanError> {
+    let services = dependency_ordered_services(services)?;
     let mut service_plans = Vec::new();
     let mut cleanup_containers = cleanup_containers;
     let mut volume_pin_commits = Vec::new();
@@ -1468,6 +1520,7 @@ pub fn plan_namespace_deploy(
         service_plans.push(DeployServicePlan {
             service_id: plan.service_id,
             steps: plan.steps,
+            pre_start: plan.pre_start,
         });
         cleanup_containers.extend(plan.cleanup_containers);
     }
@@ -1481,11 +1534,86 @@ pub fn plan_namespace_deploy(
     })
 }
 
+fn dependency_ordered_services(
+    services: Vec<DeployPlanningInput>,
+) -> Result<Vec<DeployPlanningInput>, DeployPlanError> {
+    let service_indexes = services
+        .iter()
+        .enumerate()
+        .map(|(index, input)| (input.request.service_id.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut dependents = vec![Vec::new(); services.len()];
+    let mut dependency_counts = vec![0_usize; services.len()];
+
+    for (service_index, input) in services.iter().enumerate() {
+        let mut dependencies = BTreeSet::new();
+        for dependency in &input.request.depends_on {
+            let Some(dependency_index) = service_indexes.get(dependency).copied() else {
+                return Err(DeployPlanError::UnknownServiceDependency {
+                    service_id: input.request.service_id.clone(),
+                    dependency: dependency.clone(),
+                });
+            };
+            dependencies.insert(dependency_index);
+        }
+        let Some(dependency_count) = dependency_counts.get_mut(service_index) else {
+            continue;
+        };
+        *dependency_count = dependencies.len();
+        for dependency_index in dependencies {
+            let Some(dependency_dependents) = dependents.get_mut(dependency_index) else {
+                continue;
+            };
+            dependency_dependents.push(service_index);
+        }
+    }
+
+    let mut ready = dependency_counts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .collect::<BTreeSet<_>>();
+    let mut ordered_indexes = Vec::with_capacity(services.len());
+    while let Some(index) = ready.pop_first() {
+        ordered_indexes.push(index);
+        let Some(service_dependents) = dependents.get(index) else {
+            continue;
+        };
+        for dependent in service_dependents {
+            let Some(dependency_count) = dependency_counts.get_mut(*dependent) else {
+                continue;
+            };
+            *dependency_count -= 1;
+            if *dependency_count == 0 {
+                ready.insert(*dependent);
+            }
+        }
+    }
+
+    if ordered_indexes.len() != services.len() {
+        let mut service_ids = dependency_counts
+            .iter()
+            .zip(&services)
+            .filter(|(count, _)| **count > 0)
+            .map(|(_, input)| input.request.service_id.clone())
+            .collect::<Vec<_>>();
+        service_ids.sort();
+        return Err(DeployPlanError::ServiceDependencyCycle { service_ids });
+    }
+
+    let mut services = services.into_iter().map(Some).collect::<Vec<_>>();
+    Ok(ordered_indexes
+        .into_iter()
+        .filter_map(|index| services.get_mut(index).and_then(Option::take))
+        .collect())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploySingleServicePlan {
     pub service_id: ServiceId,
     pub namespace_revision_id: NamespaceRevisionId,
     pub steps: Vec<DeployPlanStep>,
+    pub pre_start: Option<PreStartHookStep>,
     pub volume_pin_commits: Vec<VolumePinState>,
     pub cleanup_containers: Vec<DeployCleanupContainer>,
 }
@@ -1560,11 +1688,20 @@ fn plan_deploy_service(
     cleanup_containers.dedup_by(|left, right| {
         left.machine_id == right.machine_id && left.container_id == right.container_id
     });
+    let pre_start = input.request.pre_start.as_ref().and_then(|_| {
+        steps.iter().find_map(|step| match step {
+            DeployPlanStep::RunContainer { machine_id, .. } => Some(PreStartHookStep {
+                machine_id: machine_id.clone(),
+            }),
+            DeployPlanStep::UseExistingContainer { .. } => None,
+        })
+    });
 
     Ok(DeploySingleServicePlan {
         service_id: input.request.service_id,
         namespace_revision_id: input.request.namespace_revision_id,
         steps,
+        pre_start,
         volume_pin_commits: volume_placement.commits,
         cleanup_containers,
     })

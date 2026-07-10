@@ -750,6 +750,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }
+                        | DeployOperationFailure::PreStartHookFailed { .. }
                         | DeployOperationFailure::HealthCheckFailed { .. }
                         | DeployOperationFailure::ControlPlaneCommitFailed { .. }
                         | DeployOperationFailure::RouteCutoverFailed { .. } => String::new(),

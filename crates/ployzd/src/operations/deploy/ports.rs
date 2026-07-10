@@ -11,13 +11,14 @@ use std::future::Future;
 use crate::roles::machine::client::MachineImageEnsureError;
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkRpcRequest, MachineRunContainerOutcome,
+    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineRunContainerOutcome,
 };
 
 use super::{
     DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    MachineContainerRuntimeError,
+    MachineContainerRuntimeError, PreStartHookRuntimeError,
 };
 
 pub trait DeployOperationRecorder {
@@ -52,6 +53,18 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: MachineContainerRunRpcRequest,
     ) -> impl Future<Output = Result<MachineRunContainerOutcome, MachineContainerRuntimeError>> + Send;
+
+    fn run_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRunHookRpcRequest,
+    ) -> impl Future<Output = Result<MachineContainerRunHookRpcOk, PreStartHookRuntimeError>> + Send;
+
+    fn remove_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> impl Future<Output = Result<(), PreStartHookRuntimeError>> + Send;
 
     fn remove_container(
         &mut self,

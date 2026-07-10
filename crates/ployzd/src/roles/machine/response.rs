@@ -35,6 +35,9 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
         MachineContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container start failed: {message}")),
         ),
+        MachineContainerRunnerError::Wait { message, .. } => NatsServiceResponse::transport_error(
+            NatsServiceError::internal(format!("container wait failed: {message}")),
+        ),
         MachineContainerRunnerError::Stop { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container stop failed: {message}")),
         ),
@@ -83,6 +86,7 @@ pub(crate) fn container_start_error(
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::ImagePull { .. }
+        | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }
         | MachineContainerRunnerError::Remove { .. }
@@ -97,4 +101,9 @@ pub(crate) fn failure_message(value: impl Into<String>) -> FailureMessage {
 pub(crate) fn inspect_hint(container_id: &ContainerId) -> OperatorHint {
     OperatorHint::try_new(format!("ployz container inspect {}", container_id.as_str()))
         .expect("generated inspect hint is non-empty")
+}
+
+pub(crate) fn log_hint(container_id: &ContainerId) -> OperatorHint {
+    OperatorHint::try_new(format!("ployzctl logs {}", container_id.as_str()))
+        .expect("generated log hint is non-empty")
 }

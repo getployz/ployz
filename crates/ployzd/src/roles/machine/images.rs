@@ -24,6 +24,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const UPLOAD_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// In-memory retention for committed-but-unensured leases, mirroring the
+/// containerd-side `gc.expire` label so the map never outlives the leases it
+/// guards. An ensure releases entries early; abandoned pushes expire here.
+const COMMITTED_LEASE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_UPLOAD_SESSIONS: usize = 16;
 const SELF_PULL_ATTEMPTS: u8 = 10;
 const SELF_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -34,7 +38,15 @@ pub(crate) struct AvailableImageService {
     docker: DockerManagedContainerRunner,
     seed_host: Ipv4Addr,
     uploads: Arc<Mutex<BTreeMap<ImageUploadId, Arc<Mutex<UploadSession>>>>>,
-    committed_leases: Arc<Mutex<BTreeMap<OciDigest, ContentLease>>>,
+    committed_leases: Arc<Mutex<BTreeMap<OciDigest, CommittedLease>>>,
+}
+
+/// A committed blob or manifest lease awaiting release by an ensure, with the
+/// deadline after which the sweeper drops it (the containerd lease itself
+/// expires via its `gc.expire` label on the same schedule).
+struct CommittedLease {
+    lease: ContentLease,
+    expires_at: Instant,
 }
 
 impl AvailableImageService {
@@ -154,6 +166,7 @@ async fn begin_upload(
     total_size: u64,
 ) -> NatsServiceResponse {
     sweep_expired_uploads(state).await;
+    sweep_expired_committed_leases(state).await;
     let lease = match state.content.acquire_lease().await {
         Ok(lease) => lease,
         Err(error) => {
@@ -211,6 +224,48 @@ async fn sweep_expired_uploads(state: &AvailableImageService) {
         drop(session);
         state.uploads.lock().await.remove(&upload_id);
         let _ = state.content.release_lease(lease).await;
+    }
+}
+
+/// Stores a freshly committed lease for later release by an ensure; a lease
+/// replaced by a re-push of the same digest is released immediately instead
+/// of waiting out its containerd expiry.
+async fn store_committed_lease(
+    state: &AvailableImageService,
+    digest: OciDigest,
+    lease: crate::adapters::containerd_content::ContentLease,
+) {
+    let replaced = state.committed_leases.lock().await.insert(
+        digest,
+        CommittedLease {
+            lease,
+            expires_at: Instant::now() + COMMITTED_LEASE_TIMEOUT,
+        },
+    );
+    if let Some(replaced) = replaced {
+        let _ = state.content.release_lease(replaced.lease).await;
+    }
+}
+
+/// Drops committed-lease entries whose deadline passed: their containerd
+/// leases expire on the same schedule via `gc.expire`, so an abandoned push
+/// stops costing memory here and content there at the same time.
+async fn sweep_expired_committed_leases(state: &AvailableImageService) {
+    let now = Instant::now();
+    let expired = {
+        let mut committed = state.committed_leases.lock().await;
+        let expired_digests = committed
+            .iter()
+            .filter(|(_, entry)| now >= entry.expires_at)
+            .map(|(digest, _)| digest.clone())
+            .collect::<Vec<_>>();
+        expired_digests
+            .into_iter()
+            .filter_map(|digest| committed.remove(&digest))
+            .collect::<Vec<_>>()
+    };
+    for entry in expired {
+        let _ = state.content.release_lease(entry.lease).await;
     }
 }
 
@@ -356,11 +411,7 @@ async fn commit_upload(
     }
     let digest = session.ingest.digest().clone();
     let size = session.ingest.total_size();
-    state
-        .committed_leases
-        .lock()
-        .await
-        .insert(digest.clone(), session.ingest.lease());
+    store_committed_lease(state, digest.clone(), session.ingest.lease()).await;
     machine_success(ImageBlobPushResponse::Ok(ImageBlobPushOk {
         machine_id,
         outcome: ImageBlobPushOutcome::Committed { digest, size },
@@ -415,11 +466,7 @@ pub(crate) async fn handle_image_manifest_push(
     if let Err(error) = state.content.commit_ingest(&ingest, offset).await {
         return storage_error(machine_id, error.to_string());
     }
-    state
-        .committed_leases
-        .lock()
-        .await
-        .insert(manifest_digest.clone(), ingest.lease());
+    store_committed_lease(&state, manifest_digest.clone(), ingest.lease()).await;
     let image_id = manifest.config.digest.clone();
     machine_success(ImageManifestPushResponse::Ok(ImageManifestPushOk {
         machine_id,
@@ -599,11 +646,11 @@ async fn release_manifest_leases(
         .chain(std::iter::once(&manifest.config.digest))
         .chain(manifest.layers.iter().map(|layer| &layer.digest));
     for digest in digests {
-        let lease = state.committed_leases.lock().await.remove(digest);
-        if let Some(lease) = lease {
+        let committed = state.committed_leases.lock().await.remove(digest);
+        if let Some(committed) = committed {
             state
                 .content
-                .release_lease(lease)
+                .release_lease(committed.lease)
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -630,6 +677,7 @@ fn runner_error_message(
         | MachineContainerRunnerError::Create { message }
         | MachineContainerRunnerError::ImagePull { message }
         | MachineContainerRunnerError::Start { message, .. }
+        | MachineContainerRunnerError::Wait { message, .. }
         | MachineContainerRunnerError::Stop { message, .. }
         | MachineContainerRunnerError::Restart { message, .. }
         | MachineContainerRunnerError::Remove { message, .. }

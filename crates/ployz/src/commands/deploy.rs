@@ -191,6 +191,8 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, Ployzct
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas,
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes,
         }],
         warnings: Vec::new(),

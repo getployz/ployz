@@ -734,6 +734,8 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: replicas(1),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }
