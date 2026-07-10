@@ -164,7 +164,6 @@ impl DeployHistory {
                 message: error.to_string(),
             }
         })?;
-        set_private_file_permissions(temporary.path())?;
         for entry in entries {
             serde_json::to_writer(&mut temporary, entry).map_err(|error| {
                 DeployHistoryError::Write {
@@ -259,20 +258,6 @@ fn prepare_private_directory(path: &Path) -> Result<(), DeployHistoryError> {
     {
         use std::os::unix::fs::PermissionsExt as _;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
-            DeployHistoryError::Write {
-                path: path.to_owned(),
-                message: error.to_string(),
-            }
-        })?;
-    }
-    Ok(())
-}
-
-fn set_private_file_permissions(path: &Path) -> Result<(), DeployHistoryError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
             DeployHistoryError::Write {
                 path: path.to_owned(),
                 message: error.to_string(),

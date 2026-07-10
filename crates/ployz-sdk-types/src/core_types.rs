@@ -15,7 +15,7 @@ pub use ployz_core::dataplane::{
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployOrigin, DeployPlan,
     DeployPlanStep, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
     DeployReservationNumberError, DeployRoute, DeployRouteTarget, DeployServicePlan,
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
