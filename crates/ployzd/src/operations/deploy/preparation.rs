@@ -3,11 +3,11 @@
 use ployz_core::cert::ManagedLeaseName;
 use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationInput, DeployRequest,
+    DeployCleanupContainer, DeployPreparationInput, DeployRequest, RegistryCredential,
     auto_hostname_route_binding_commits, namespace_route_binding_removals,
     namespace_serving_target_removals, prepare_deploy,
 };
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{MachineId, OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::VolumePinState;
@@ -32,21 +32,74 @@ pub struct DeployExecutionFacts {
     pub step_timeout: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployExecutionInput {
+    operation_id: OperationId,
+    request: DeployRequest,
+    facts: DeployExecutionFacts,
+    registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+}
+
+impl DeployExecutionInput {
+    #[must_use]
+    pub fn new(
+        operation_id: OperationId,
+        request: DeployRequest,
+        facts: DeployExecutionFacts,
+        registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+    ) -> Self {
+        Self {
+            operation_id,
+            request,
+            facts,
+            registry_credentials,
+        }
+    }
+
+    #[must_use]
+    pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
+        self.facts.step_timeout = step_timeout;
+        self
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        OperationId,
+        DeployRequest,
+        DeployExecutionFacts,
+        BTreeMap<ServiceId, RegistryCredential>,
+    ) {
+        let Self {
+            operation_id,
+            request,
+            facts,
+            registry_credentials,
+        } = self;
+        (operation_id, request, facts, registry_credentials)
+    }
+}
+
 #[must_use]
 pub fn prepare_deploy_execution_command(
     operation_id: OperationId,
     request: DeployRequest,
     facts: DeployExecutionFacts,
 ) -> DeployExecutionCommand {
-    prepare_deploy_execution_command_with_credentials(operation_id, request, facts, &[])
+    prepare_deploy_execution_command_with_credentials(
+        operation_id,
+        request,
+        facts,
+        &BTreeMap::new(),
+    )
 }
 
 #[must_use]
-pub fn prepare_deploy_execution_command_with_credentials(
+pub(super) fn prepare_deploy_execution_command_with_credentials(
     operation_id: OperationId,
     request: DeployRequest,
     facts: DeployExecutionFacts,
-    registry_credentials: &[ployz_sdk_types::DeployRegistryCredential],
+    registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
 ) -> DeployExecutionCommand {
     let service_requests = request.service_requests();
     let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
@@ -114,9 +167,8 @@ pub fn prepare_deploy_execution_command_with_credentials(
         );
         services.push(DeployServiceExecutionCommand {
             registry_credential: registry_credentials
-                .iter()
-                .find(|credential| credential.service_id == prepared.request.service_id)
-                .map(|credential| credential.credential.clone()),
+                .get(&prepared.request.service_id)
+                .cloned(),
             request: prepared.request,
             route_commits,
             volume_pins: facts.namespace_volume_pins.clone(),

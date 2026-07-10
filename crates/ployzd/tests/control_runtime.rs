@@ -34,12 +34,11 @@ use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_sdk_types::{
-    DeployRegistryCredential, DeployReserveRequest, DeploySubmitRequest,
-    InitFirstMachineActivateRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineTestimony,
-    MachineUpdateError, MachineUpdateRequest, OpsWatchRequest, RuntimeDerivedCollectionStatus,
-    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
-    VolumeStatus,
+    DeployReserveRequest, DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError,
+    MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
+    MachineListRequest, MachineTestimony, MachineUpdateError, MachineUpdateRequest,
+    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest, ServiceInspectRequest,
+    ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::intent::lease_intent::LeaseIntentStore;
@@ -514,13 +513,11 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     .await
     .expect("machine runtime starts");
     let api = nats.api();
-    let credential = RegistryCredential::try_new("alice", "deploy-only-secret")
+    let credential = RegistryCredential::try_basic("alice", "deploy-only-secret")
         .expect("valid registry credential");
     let mut request = reserved_deploy_request(&api, "idem_run", deploy_target("svc_api")).await;
-    request.registry_credentials = vec![DeployRegistryCredential {
-        service_id: service_id("svc_api"),
-        credential: credential.clone(),
-    }];
+    request.registry_credentials =
+        std::collections::BTreeMap::from([(service_id("svc_api"), credential.clone())]);
 
     let accepted = api
         .deploy_submit(&request)
@@ -1109,7 +1106,7 @@ async fn reserved_deploy_request(
         .await
         .expect("deploy reservation is issued");
     DeploySubmitRequest {
-        registry_credentials: Vec::new(),
+        registry_credentials: std::collections::BTreeMap::new(),
         idempotency_key: idempotency_key(idempotency),
         reservation_id: reservation.reservation_id,
         target,

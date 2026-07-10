@@ -332,6 +332,56 @@ fn push_unique<'a>(machines: &mut Vec<&'a MachineId>, machine_id: &'a MachineId)
     }
 }
 
+pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
+    let Some((operation_id, namespace, target_service, failure)) = tree.failure_render_context()
+    else {
+        return String::new();
+    };
+    let failure_view = DeployFailureView::new(failure, target_service);
+    let service = failure_view.service();
+    let cause = failure_cause(tree, failure);
+    let safety = failure_view.safety();
+    let machines = failure_view.machines();
+    let retained_containers = failure_view.containers();
+
+    let mut block = format!(
+        "Deploy failed — {}, service {}{}.\n",
+        failure.failure_class().as_str(),
+        service,
+        machines
+            .first()
+            .map_or_else(String::new, |machine| format!(" on {}", machine.as_str())),
+    );
+    block.push_str(&format!("\n  ✗ {cause}\n"));
+    if let Some(container) = retained_containers.last() {
+        block.push_str(&format!(
+            "    failed container {} retained on {}\n",
+            container.container_id.as_str(),
+            container.machine_id.as_str()
+        ));
+    }
+    match safety {
+        FailureSafety::NothingChanged => {
+            block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
+        }
+        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
+        FailureSafety::NoClaim => {}
+    }
+    block.push('\n');
+    if !retained_containers.is_empty() && service != "unknown" {
+        block.push_str(&format!(
+            "  logs:      ployz logs {service} -n {namespace} --failed\n"
+        ));
+    }
+    block.push_str(&format!("  timeline:  ployz ops status {operation_id}\n"));
+    if !matches!(safety, FailureSafety::NothingChanged) {
+        block.push_str(&format!(
+            "  rollback:  ployz deploy rollback -n {namespace}\n"
+        ));
+    }
+    block
+}
+
 pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure) -> String {
     match failure {
         DeployOperationFailure::NoUsableMachines { reasons } => {

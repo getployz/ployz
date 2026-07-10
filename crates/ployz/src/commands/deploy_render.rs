@@ -8,9 +8,8 @@ use ployz_core::ops::{
     DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
 };
 
-use super::deploy_failure::{
-    DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
-};
+pub(crate) use super::deploy_failure::render_failure_block;
+use super::deploy_failure::{DeployFailureView, artifact_unavailable_reason, failure_cause};
 
 const SPINNER_FRAMES: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -646,67 +645,6 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
     }
 }
 
-pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
-    let Some(deploy) = &tree.deploy else {
-        return String::new();
-    };
-    let DeployResult::Failed { failure } = &deploy.result else {
-        return String::new();
-    };
-    let operation_id = deploy.operation_id.as_str();
-    let namespace = deploy.target.namespace_id.as_str();
-    let target_service = match deploy.target.services.as_slice() {
-        [service] => Some(&service.service_id),
-        [] | [_, _, ..] => None,
-    };
-    let failure_view = DeployFailureView::new(failure, target_service);
-    let service = failure_view.service();
-    let cause = failure_cause(tree, failure);
-    let safety = failure_view.safety();
-    let machines = failure_view.machines();
-    let retained_containers = failure_view.containers();
-
-    let mut block = format!(
-        "Deploy failed — {}, service {}{}.\n",
-        failure.failure_class().as_str(),
-        service,
-        machines
-            .first()
-            .map_or_else(String::new, |machine| format!(" on {}", machine.as_str())),
-    );
-    block.push_str(&format!("\n  ✗ {cause}\n"));
-    // The header names the machine the failure blames; this line names where
-    // the newest body sits — the last retained artifact is the container
-    // this attempt created.
-    if let Some(container) = retained_containers.last() {
-        block.push_str(&format!(
-            "    failed container {} retained on {}\n",
-            container.container_id.as_str(),
-            container.machine_id.as_str()
-        ));
-    }
-    match safety {
-        FailureSafety::NothingChanged => {
-            block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
-        }
-        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
-        FailureSafety::NoClaim => {}
-    }
-    block.push('\n');
-    if !retained_containers.is_empty() && service != "unknown" {
-        block.push_str(&format!(
-            "  logs:      ployz logs {service} -n {namespace} --failed\n"
-        ));
-    }
-    block.push_str(&format!("  timeline:  ployz ops status {operation_id}\n"));
-    if !matches!(safety, FailureSafety::NothingChanged) {
-        block.push_str(&format!(
-            "  rollback:  ployz deploy rollback -n {namespace}\n"
-        ));
-    }
-    block
-}
-
 fn distinct_images(target: &DeployRequest) -> Vec<&str> {
     let mut images = Vec::new();
     for service in &target.services {
@@ -941,6 +879,25 @@ fn render_cleanup_lines(
 }
 
 impl DeployTree {
+    pub(super) fn failure_render_context(
+        &self,
+    ) -> Option<(&str, &str, Option<&ServiceId>, &DeployOperationFailure)> {
+        let deploy = self.deploy.as_ref()?;
+        let DeployResult::Failed { failure } = &deploy.result else {
+            return None;
+        };
+        let target_service = match deploy.target.services.as_slice() {
+            [service] => Some(&service.service_id),
+            [] | [_, _, ..] => None,
+        };
+        Some((
+            deploy.operation_id.as_str(),
+            deploy.target.namespace_id.as_str(),
+            target_service,
+            failure,
+        ))
+    }
+
     fn spinner(&self) -> char {
         SPINNER_FRAMES
             .get(self.spinner_frame)

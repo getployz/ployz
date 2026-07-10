@@ -98,11 +98,12 @@ pub async fn deploy_submit(
     let operation_id = command.operation_id.clone();
     validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
-    let accepted = handlers
+    let accepted_execution = handlers
         .controllers
         .submit_deploy(command)
         .await
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
+    let accepted = &accepted_execution.submission;
     let scope = OperationProgressScope::Namespace {
         namespace_id: accepted.target.namespace_id.clone(),
     };
@@ -111,45 +112,30 @@ pub async fn deploy_submit(
         scope,
         accepted.start_sequence,
     );
-    handlers.deploy_driver.start(accepted);
+    handlers.deploy_driver.start(accepted_execution);
 
     Ok(operation)
 }
 
 fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
-    let mut seen = std::collections::BTreeSet::new();
-    for supplied in &command.registry_credentials {
+    for service_id in command.registry_credentials.keys() {
         let Some(service) = command
             .target
             .services
             .iter()
-            .find(|service| service.service_id == supplied.service_id)
+            .find(|service| service.service_id == *service_id)
         else {
             return Err(invalid_registry_credential(
                 command,
-                &supplied.service_id,
+                service_id,
                 "does not name a service in the deploy target",
             ));
         };
         if !matches!(service.image_source, ImageSource::Registry) {
             return Err(invalid_registry_credential(
                 command,
-                &supplied.service_id,
+                service_id,
                 "belongs to a pushed image",
-            ));
-        }
-        if supplied.credential.username.is_empty() {
-            return Err(invalid_registry_credential(
-                command,
-                &supplied.service_id,
-                "has an empty username",
-            ));
-        }
-        if !seen.insert(&supplied.service_id) {
-            return Err(invalid_registry_credential(
-                command,
-                &supplied.service_id,
-                "was supplied more than once",
             ));
         }
     }

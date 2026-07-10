@@ -98,7 +98,9 @@ export type ImageSource = { "source": "registry" } | { "source": "pushed_to_seed
 
 export type RegistryCredentialSecret = string;
 
-export type RegistryCredential = { username: string, secret: RegistryCredentialSecret, };
+export type RegistryCredentialUsername = string;
+
+export type RegistryCredential = { "kind": "basic", username: RegistryCredentialUsername, password: RegistryCredentialSecret, } | { "kind": "identity_token", token: RegistryCredentialSecret, };
 
 export type OciDigest = string;
 
@@ -431,13 +433,11 @@ export type InitFirstMachineActivated = { operation_id: OperationId, machine_id:
 
 export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "error": "unavailable", message: string, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "machine_seed_write", message: FailureMessage, };
 
-export type DeployRegistryCredential = { service_id: ServiceId, credential: RegistryCredential, };
-
 export type DeployReserveRequest = { namespace_id: NamespaceId, };
 
 export type DeployReserved = { reservation_id: DeployReservationId, expires_at: DeployReservationExpiresAt, };
 
-export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: Array<DeployRegistryCredential>, };
+export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 
 export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, };
 

@@ -1472,6 +1472,16 @@ impl MachineContainerRunner for RecordingRunner {
         Ok(())
     }
 
+    async fn resolve_registry_image(
+        &self,
+        reference: &ployz_core::deploy::ImageReference,
+        _credential: Option<&ployz_core::deploy::RegistryCredential>,
+    ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
+        Ok(ployz_core::image::OciDigest::sha256(
+            reference.as_str().as_bytes(),
+        ))
+    }
+
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,

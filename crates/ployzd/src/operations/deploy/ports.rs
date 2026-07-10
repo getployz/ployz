@@ -41,15 +41,7 @@ pub trait MachineContainerRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerResolveImageRpcRequest,
-    ) -> impl Future<Output = Result<ployz_core::image::OciDigest, MachineImageResolveError>> + Send
-    {
-        let _ = request;
-        std::future::ready(Err(MachineImageResolveError::Rejected {
-            machine_id: machine_id.clone(),
-            message: ployz_core::ops::FailureMessage::try_new("registry resolution is unavailable")
-                .expect("static registry resolution error is non-empty"),
-        }))
-    }
+    ) -> impl Future<Output = Result<ployz_core::image::OciDigest, MachineImageResolveError>> + Send;
 
     fn ensure_image(
         &mut self,

@@ -10,7 +10,7 @@ use crate::operations::log::{
 };
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
-    DeployReservationId, VolumeName,
+    DeployReservationId, RegistryCredential, VolumeName,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
@@ -42,7 +42,13 @@ pub struct DeploySubmitCommand {
     pub idempotency_key: IdempotencyKey,
     pub reservation_id: DeployReservationId,
     pub target: DeployRequest,
-    pub registry_credentials: Vec<ployz_sdk_types::DeployRegistryCredential>,
+    pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedDeployExecution {
+    pub submission: AcceptedDeploySubmission,
+    pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,7 +225,7 @@ impl OperationControllers {
     pub async fn submit_deploy(
         &self,
         command: DeploySubmitCommand,
-    ) -> Result<AcceptedDeploySubmission, SubmitCommandError> {
+    ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
         let reservation_id = command.reservation_id;
@@ -265,12 +271,14 @@ impl OperationControllers {
         let submitted = self.repository.submit_claimed_deploy(claimed).await;
 
         match submitted {
-            Ok(mut accepted) => {
-                accepted.registry_credentials = registry_credentials;
+            Ok(accepted) => {
                 if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
                     self.release_namespace(&namespace_id, &operation_id).await;
                 }
-                Ok(accepted)
+                Ok(AcceptedDeployExecution {
+                    submission: accepted,
+                    registry_credentials,
+                })
             }
             Err(error) => {
                 if matches!(claim, NamespaceClaim::Acquired) {

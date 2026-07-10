@@ -7,32 +7,55 @@ use std::time::Duration;
 
 use base64::Engine;
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ImageSource, RegistryCredential};
-use ployz_sdk_types::DeployRegistryCredential;
+use ployz_core::ids::ServiceId;
 use serde::Deserialize;
 use wait_timeout::ChildExt;
 
 const CREDENTIAL_HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn deploy_registry_credentials(
+pub async fn deploy_registry_credentials(
     services: &[DeployServiceSpec],
-) -> Result<Vec<DeployRegistryCredential>, RegistryAuthError> {
-    let Some(config) = read_docker_config()? else {
-        return Ok(Vec::new());
-    };
-    services
+) -> Result<BTreeMap<ServiceId, RegistryCredential>, RegistryAuthError> {
+    let registry_services = services
         .iter()
         .filter(|service| matches!(service.image_source, ImageSource::Registry))
-        .filter_map(
-            |service| match credential_for_image(&config, &service.image) {
-                Ok(Some(credential)) => Some(Ok(DeployRegistryCredential {
-                    service_id: service.service_id.clone(),
-                    credential,
-                })),
-                Ok(None) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect()
+        .map(|service| (service.service_id.clone(), service.image.clone()))
+        .collect::<Vec<_>>();
+    if registry_services.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    tokio::task::spawn_blocking(move || deploy_registry_credentials_blocking(&registry_services))
+        .await
+        .map_err(|error| RegistryAuthError::LookupTask {
+            message: error.to_string(),
+        })?
+}
+
+fn deploy_registry_credentials_blocking(
+    services: &[(ServiceId, ImageReference)],
+) -> Result<BTreeMap<ServiceId, RegistryCredential>, RegistryAuthError> {
+    let Some(config) = read_docker_config()? else {
+        return Ok(BTreeMap::new());
+    };
+    collect_registry_credentials(services, |image| credential_for_image(&config, image))
+}
+
+fn collect_registry_credentials(
+    services: &[(ServiceId, ImageReference)],
+    mut lookup: impl FnMut(&ImageReference) -> Result<Option<RegistryCredential>, RegistryAuthError>,
+) -> Result<BTreeMap<ServiceId, RegistryCredential>, RegistryAuthError> {
+    let mut by_registry = BTreeMap::new();
+    let mut credentials = BTreeMap::new();
+    for (service_id, image) in services {
+        let registry = registry_for_image(image);
+        if !by_registry.contains_key(&registry) {
+            by_registry.insert(registry.clone(), lookup(image)?);
+        }
+        if let Some(credential) = by_registry.get(&registry).cloned().flatten() {
+            credentials.insert(service_id.clone(), credential);
+        }
+    }
+    Ok(credentials)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -117,12 +140,12 @@ fn credential_for_image(
 
 fn inline_credential(auth: &DockerAuth) -> Result<Option<RegistryCredential>, RegistryAuthError> {
     if let Some(token) = &auth.identity_token {
-        return RegistryCredential::try_new("<token>", token.clone())
+        return RegistryCredential::try_identity_token(token.clone())
             .map(Some)
             .map_err(|error| RegistryAuthError::InvalidCredential(error.to_string()));
     }
     if let (Some(username), Some(password)) = (&auth.username, &auth.password) {
-        return RegistryCredential::try_new(username.clone(), password.clone())
+        return RegistryCredential::try_basic(username.clone(), password.clone())
             .map(Some)
             .map_err(|error| RegistryAuthError::InvalidCredential(error.to_string()));
     }
@@ -141,7 +164,7 @@ fn inline_credential(auth: &DockerAuth) -> Result<Option<RegistryCredential>, Re
             "Docker auth does not contain username:secret".to_owned(),
         ));
     };
-    RegistryCredential::try_new(username, secret)
+    RegistryCredential::try_basic(username, secret)
         .map(Some)
         .map_err(|error| RegistryAuthError::InvalidCredential(error.to_string()))
 }
@@ -213,7 +236,12 @@ fn credential_from_helper(
             message: error.to_string(),
         }
     })?;
-    RegistryCredential::try_new(response.username, response.secret)
+    let credential = if response.username == "<token>" {
+        RegistryCredential::try_identity_token(response.secret)
+    } else {
+        RegistryCredential::try_basic(response.username, response.secret)
+    };
+    credential
         .map(Some)
         .map_err(|error| RegistryAuthError::InvalidCredential(error.to_string()))
 }
@@ -256,6 +284,8 @@ pub enum RegistryAuthError {
     InvalidCredential(String),
     #[error("Docker credential helper {helper:?} failed: {message}")]
     CredentialHelper { helper: String, message: String },
+    #[error("Docker registry credential lookup task failed: {message}")]
+    LookupTask { message: String },
 }
 
 #[cfg(test)]
@@ -275,8 +305,54 @@ mod tests {
         .expect("credential lookup succeeds")
         .expect("credential exists");
 
-        assert_eq!(credential.username, "alice");
-        assert_eq!(credential.secret.secret(), "s3cr3t");
+        let RegistryCredential::Basic { username, password } = &credential else {
+            panic!("inline auth should produce basic credentials");
+        };
+        assert_eq!(username.as_str(), "alice");
+        assert_eq!(password.secret(), "s3cr3t");
         assert!(!format!("{credential:?}").contains("s3cr3t"));
+    }
+
+    #[test]
+    fn inline_identity_token_is_typed_and_redacted() {
+        let auth = DockerAuth {
+            identity_token: Some("registry-token".to_owned()),
+            ..DockerAuth::default()
+        };
+
+        let credential = inline_credential(&auth)
+            .expect("credential lookup succeeds")
+            .expect("credential exists");
+
+        let RegistryCredential::IdentityToken { token } = &credential else {
+            panic!("identitytoken should produce token credentials");
+        };
+        assert_eq!(token.secret(), "registry-token");
+        assert!(!format!("{credential:?}").contains("registry-token"));
+    }
+
+    #[test]
+    fn registry_lookup_runs_once_for_services_sharing_a_registry() {
+        let services = [
+            (
+                ServiceId::try_new("api").expect("valid service id"),
+                ImageReference::try_new("registry.example/acme/api:1").expect("valid image"),
+            ),
+            (
+                ServiceId::try_new("worker").expect("valid service id"),
+                ImageReference::try_new("registry.example/acme/worker:1").expect("valid image"),
+            ),
+        ];
+        let mut lookups = 0;
+        let credentials = collect_registry_credentials(&services, |_| {
+            lookups += 1;
+            RegistryCredential::try_basic("alice", "s3cr3t")
+                .map(Some)
+                .map_err(|error| RegistryAuthError::InvalidCredential(error.to_string()))
+        })
+        .expect("credential collection succeeds");
+
+        assert_eq!(lookups, 1);
+        assert_eq!(credentials.len(), 2);
     }
 }

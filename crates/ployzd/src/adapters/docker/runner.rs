@@ -584,19 +584,16 @@ impl DockerManagedContainerRunner {
 }
 
 fn docker_credentials(credential: Option<&RegistryCredential>) -> Option<DockerCredentials> {
-    credential.map(|credential| {
-        if credential.username == "<token>" {
-            DockerCredentials {
-                identitytoken: Some(credential.secret.secret().to_owned()),
-                ..DockerCredentials::default()
-            }
-        } else {
-            DockerCredentials {
-                username: Some(credential.username.clone()),
-                password: Some(credential.secret.secret().to_owned()),
-                ..DockerCredentials::default()
-            }
-        }
+    credential.map(|credential| match credential {
+        RegistryCredential::Basic { username, password } => DockerCredentials {
+            username: Some(username.as_str().to_owned()),
+            password: Some(password.secret().to_owned()),
+            ..DockerCredentials::default()
+        },
+        RegistryCredential::IdentityToken { token } => DockerCredentials {
+            identitytoken: Some(token.secret().to_owned()),
+            ..DockerCredentials::default()
+        },
     })
 }
 
@@ -1522,6 +1519,22 @@ mod tests {
             existing_container_from_summary(summary),
             Err(DockerManagedContainerSummaryError::MissingLabels)
         );
+    }
+
+    #[test]
+    fn docker_credentials_keep_basic_and_identity_token_modes_distinct() {
+        let basic = RegistryCredential::try_basic("alice", "password").expect("valid basic auth");
+        let token = RegistryCredential::try_identity_token("token").expect("valid token auth");
+
+        let basic = docker_credentials(Some(&basic)).expect("basic credentials");
+        assert_eq!(basic.username.as_deref(), Some("alice"));
+        assert_eq!(basic.password.as_deref(), Some("password"));
+        assert_eq!(basic.identitytoken, None);
+
+        let token = docker_credentials(Some(&token)).expect("token credentials");
+        assert_eq!(token.username, None);
+        assert_eq!(token.password, None);
+        assert_eq!(token.identitytoken.as_deref(), Some("token"));
     }
 
     fn managed_identity() -> ManagedContainerIdentity {

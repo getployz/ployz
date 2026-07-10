@@ -531,6 +531,16 @@ mod tests {
             Ok(())
         }
 
+        async fn resolve_registry_image(
+            &self,
+            reference: &ployz_core::deploy::ImageReference,
+            _credential: Option<&ployz_core::deploy::RegistryCredential>,
+        ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
+            Ok(ployz_core::image::OciDigest::sha256(
+                reference.as_str().as_bytes(),
+            ))
+        }
+
         async fn create_managed_container(
             &self,
             _command: CreateManagedContainer,
@@ -615,6 +625,16 @@ mod tests {
 
         async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
             Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+                message: "docker unavailable".to_owned(),
+            })
+        }
+
+        async fn resolve_registry_image(
+            &self,
+            _reference: &ployz_core::deploy::ImageReference,
+            _credential: Option<&ployz_core::deploy::RegistryCredential>,
+        ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::ImagePull {
                 message: "docker unavailable".to_owned(),
             })
         }

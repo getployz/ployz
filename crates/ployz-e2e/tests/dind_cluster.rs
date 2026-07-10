@@ -53,10 +53,9 @@ use ployz_e2e::dind::{
 use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    DeployRegistryCredential, DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot, MachineTestimony,
-    NamespaceRemoveRequest, OpsListRequest, ServiceInspectRequest, VolumeListRequest,
-    VolumeRemoveRequest, VolumeStatus,
+    DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest,
+    ServiceInspectRequest, VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
@@ -1091,7 +1090,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
         let accepted = core
             .api
             .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
+                registry_credentials: std::collections::BTreeMap::new(),
                 idempotency_key: idempotency_key("idem_dind_direct_push"),
                 reservation_id: reservation.reservation_id,
                 target: DeployRequest {
@@ -1226,15 +1225,15 @@ exit 1",
             })
             .await
             .expect("private registry deploy reservation is issued");
-        let credential = RegistryCredential::try_new("alice", "s3cr3t")
+        let credential = RegistryCredential::try_basic("alice", "s3cr3t")
             .expect("valid deploy-scoped registry credential");
         let accepted = core
             .api
             .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: vec![DeployRegistryCredential {
-                    service_id: service.clone(),
+                registry_credentials: std::collections::BTreeMap::from([(
+                    service.clone(),
                     credential,
-                }],
+                )]),
                 idempotency_key: idempotency_key("idem_dind_private_registry"),
                 reservation_id: reservation.reservation_id,
                 target: DeployRequest {
@@ -1589,7 +1588,7 @@ async fn reserved_deploy_request(
         .await
         .expect("deploy reservation is issued");
     DeploySubmitRequest {
-        registry_credentials: Vec::new(),
+        registry_credentials: std::collections::BTreeMap::new(),
         idempotency_key: idempotency_key(idempotency),
         reservation_id: reservation.reservation_id,
         target,

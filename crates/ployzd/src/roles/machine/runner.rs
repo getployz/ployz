@@ -122,12 +122,7 @@ pub trait MachineContainerRunner {
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
-    ) -> impl Future<Output = Result<OciDigest, MachineContainerRunnerError>> + Send {
-        let _ = (reference, credential);
-        std::future::ready(Err(MachineContainerRunnerError::ImagePull {
-            message: "registry resolution is unavailable".to_owned(),
-        }))
-    }
+    ) -> impl Future<Output = Result<OciDigest, MachineContainerRunnerError>> + Send;
 
     fn create_managed_container(
         &self,

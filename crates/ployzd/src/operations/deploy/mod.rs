@@ -36,8 +36,8 @@ pub use ports::{
     NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
-    DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
-    prepare_deploy_execution_command_with_credentials,
+    DeployExecutionFacts, DeployExecutionInput, namespace_cleanup_candidates,
+    prepare_deploy_execution_command,
 };
 
 use crate::roles::machine::protocol::{
@@ -53,7 +53,7 @@ pub use types::{
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, S>(
-    command: DeployExecutionCommand,
+    input: DeployExecutionInput,
     ports: DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
@@ -63,18 +63,46 @@ where
     H: DeployHealthChecker,
     S: NamespaceStateCommitter,
 {
-    if let Err(source) = record_planning(&command, &mut *ports.recorder).await {
+    let (operation_id, mut request, facts, registry_credentials) = input.into_parts();
+    let provisional_command = preparation::prepare_deploy_execution_command_with_credentials(
+        operation_id.clone(),
+        request.clone(),
+        facts.clone(),
+        &registry_credentials,
+    );
+    if let Err(source) = record_planning(&provisional_command, &mut *ports.recorder).await {
         return fail_deploy(
-            command.clone(),
+            provisional_command.clone(),
             &mut *ports.recorder,
-            DeployExecutionFailure::new(&command, source, &[]),
+            DeployExecutionFailure::new(&provisional_command, source, &[]),
         )
         .await;
     }
-    execute_deploy_operation_after_planning(command, ports).await
+    if let Err(source) = resolve_registry_images(
+        &provisional_command,
+        &mut request,
+        &mut *ports.recorder,
+        &mut *ports.machine_runtime,
+    )
+    .await
+    {
+        return fail_deploy(
+            provisional_command.clone(),
+            &mut *ports.recorder,
+            DeployExecutionFailure::new(&provisional_command, source, &[]),
+        )
+        .await;
+    }
+    let command = preparation::prepare_deploy_execution_command_with_credentials(
+        operation_id,
+        request,
+        facts,
+        &registry_credentials,
+    );
+    execute_prepared_deploy_operation(command, ports).await
 }
 
-pub async fn execute_deploy_operation_after_planning<R, D, N, H, S>(
+async fn execute_prepared_deploy_operation<R, D, N, H, S>(
     command: DeployExecutionCommand,
     ports: DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
@@ -420,7 +448,7 @@ pub(super) fn deploy_plan(
     .map_err(DeployExecutionError::from)
 }
 
-pub(super) async fn record_planning<R>(
+async fn record_planning<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
 ) -> Result<(), DeployExecutionError>
@@ -428,19 +456,6 @@ where
     R: DeployOperationRecorder,
 {
     record_stage(command, recorder, DeployTransition::Planning).await
-}
-
-pub(super) async fn resolve_deploy_registry_images<R, N>(
-    command: &DeployExecutionCommand,
-    request: &mut ployz_core::deploy::DeployRequest,
-    recorder: &mut R,
-    machine_runtime: &mut N,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
-{
-    resolve_registry_images(command, request, recorder, machine_runtime).await
 }
 
 async fn run_pre_start_hook<N>(

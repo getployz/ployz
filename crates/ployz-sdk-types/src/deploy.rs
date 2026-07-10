@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -33,15 +35,8 @@ pub struct DeploySubmitRequest {
     pub idempotency_key: OperationIdempotencyKey,
     pub reservation_id: DeployReservationId,
     pub target: DeployRequest,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub registry_credentials: Vec<DeployRegistryCredential>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct DeployRegistryCredential {
-    pub service_id: ServiceId,
-    pub credential: RegistryCredential,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;

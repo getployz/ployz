@@ -145,7 +145,7 @@ async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
+            registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: idempotency_key("idem_newer"),
             reservation_id: newer.reservation_id,
             target: deploy_target("svc_api"),
@@ -155,7 +155,7 @@ async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
 
     let error = api
         .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
+            registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: idempotency_key("idem_older"),
             reservation_id: older.reservation_id,
             target: deploy_target("svc_api"),
@@ -832,7 +832,7 @@ async fn reserved_deploy_request(
         })
         .await?;
     Ok(DeploySubmitRequest {
-        registry_credentials: Vec::new(),
+        registry_credentials: std::collections::BTreeMap::new(),
         idempotency_key: idempotency_key(idempotency),
         reservation_id: reservation.reservation_id,
         target,

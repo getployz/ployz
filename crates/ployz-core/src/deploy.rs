@@ -278,35 +278,87 @@ pub enum ImageSource {
 /// machine RPC boundaries, but it is never part of deploy intent or evidence.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct RegistryCredential {
-    pub username: String,
-    pub secret: RegistryCredentialSecret,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RegistryCredential {
+    Basic {
+        username: RegistryCredentialUsername,
+        password: RegistryCredentialSecret,
+    },
+    IdentityToken {
+        token: RegistryCredentialSecret,
+    },
 }
 
 impl RegistryCredential {
-    pub fn try_new(
+    pub fn try_basic(
         username: impl Into<String>,
-        secret: impl Into<String>,
+        password: impl Into<String>,
     ) -> Result<Self, RegistryCredentialError> {
-        let username = username.into();
-        if username.is_empty() {
-            return Err(RegistryCredentialError::EmptyUsername);
-        }
-        Ok(Self {
-            username,
-            secret: RegistryCredentialSecret::try_new(secret)?,
+        Ok(Self::Basic {
+            username: RegistryCredentialUsername::try_new(username)?,
+            password: RegistryCredentialSecret::try_new(password)?,
+        })
+    }
+
+    pub fn try_identity_token(token: impl Into<String>) -> Result<Self, RegistryCredentialError> {
+        Ok(Self::IdentityToken {
+            token: RegistryCredentialSecret::try_new(token)?,
         })
     }
 }
 
 impl fmt::Debug for RegistryCredential {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RegistryCredential")
-            .field("username", &self.username)
-            .field("secret", &"[redacted]")
-            .finish()
+        match self {
+            Self::Basic {
+                username,
+                password: _,
+            } => formatter
+                .debug_struct("RegistryCredential::Basic")
+                .field("username", username)
+                .field("password", &"[redacted]")
+                .finish(),
+            Self::IdentityToken { token: _ } => formatter
+                .debug_struct("RegistryCredential::IdentityToken")
+                .field("token", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct RegistryCredentialUsername(String);
+
+impl RegistryCredentialUsername {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, RegistryCredentialError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(RegistryCredentialError::EmptyUsername);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RegistryCredentialUsername {
+    type Error = RegistryCredentialError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<RegistryCredentialUsername> for String {
+    fn from(value: RegistryCredentialUsername) -> Self {
+        let RegistryCredentialUsername(value) = value;
+        value
     }
 }
 
@@ -341,12 +393,14 @@ impl TryFrom<String> for RegistryCredentialSecret {
 
 impl From<RegistryCredentialSecret> for String {
     fn from(value: RegistryCredentialSecret) -> Self {
-        value.0
+        let RegistryCredentialSecret(value) = value;
+        value
     }
 }
 
 impl fmt::Debug for RegistryCredentialSecret {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(_secret) = self;
         formatter.write_str("RegistryCredentialSecret([redacted])")
     }
 }
@@ -2122,5 +2176,35 @@ mod image_reference_tests {
             format!("registry.example:5000/team/api@{digest}")
         );
         assert_eq!(pinned.pinned_digest(), Some(digest));
+    }
+}
+
+#[cfg(test)]
+mod registry_credential_tests {
+    use super::*;
+
+    #[test]
+    fn credential_variants_validate_and_redact_secret_fields() {
+        let basic = RegistryCredential::try_basic("alice", "s3cr3t").expect("valid basic auth");
+        let token =
+            RegistryCredential::try_identity_token("identity-token").expect("valid token auth");
+
+        assert!(!format!("{basic:?}").contains("s3cr3t"));
+        assert!(!format!("{token:?}").contains("identity-token"));
+        assert!(
+            serde_json::from_value::<RegistryCredential>(serde_json::json!({
+                "kind": "basic",
+                "username": "",
+                "password": "password"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<RegistryCredential>(serde_json::json!({
+                "kind": "identity_token",
+                "token": ""
+            }))
+            .is_err()
+        );
     }
 }

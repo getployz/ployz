@@ -42,6 +42,7 @@ pub(super) async fn execute_deploy(
         .map(crate::image_push::ImagePushReceipt::render)
         .collect::<String>();
     let registry_credentials = crate::registry_auth::deploy_registry_credentials(&command.services)
+        .await
         .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
     let mut request = command.into_request(reservation.reservation_id);
     request.registry_credentials = registry_credentials;
