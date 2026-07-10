@@ -2,7 +2,8 @@ use super::{
     CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
     MachineUpdatePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
-    ServiceRestartOperationSubmission, ServiceRestartPayload,
+    ServiceRestartOperationSubmission, ServiceRestartPayload, VolumeRemoveOperationSubmission,
+    VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -255,6 +256,50 @@ impl OperationAction for NamespaceRemoveOperationSubmission {
         OperationStatus::namespace_remove_accepted(
             operation_id,
             payload.namespace_id.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for VolumeRemoveOperationSubmission {
+    type Payload = VolumeRemovePayload;
+    const KIND: OperationKind = OperationKind::VolumeRemove;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::VolumeRemoveSubmitted {
+            operation_id,
+            namespace_id: payload.namespace_id,
+            volume_name: payload.volume_name,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::VolumeRemoveSubmitted {
+            operation_id,
+            namespace_id,
+            volume_name,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            VolumeRemovePayload {
+                namespace_id,
+                volume_name,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::volume_remove_accepted(
+            operation_id,
+            payload.namespace_id.clone(),
+            payload.volume_name.clone(),
             sequence,
         )
     }

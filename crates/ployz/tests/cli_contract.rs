@@ -467,6 +467,42 @@ fn cli_dispatches_namespace_rm_request() {
 }
 
 #[test]
+fn cli_dispatches_volume_ls_request() {
+    let command =
+        parse_command(["volume", "ls"].map(str::to_owned)).expect("volume ls command parses");
+
+    let PloyzctlCommand::VolumeList(command) = command else {
+        panic!("expected volume list command");
+    };
+    assert_eq!(
+        command.into_request(),
+        ployz_sdk_types::VolumeListRequest {}
+    );
+}
+
+#[test]
+fn cli_dispatches_volume_rm_request() {
+    let command =
+        parse_command(["volume", "rm", "prod", "data", "--yes", "--detach"].map(str::to_owned))
+            .expect("volume rm command parses");
+
+    let PloyzctlCommand::VolumeRemove(command) = command else {
+        panic!("expected volume remove command");
+    };
+    assert!(command.force);
+    assert!(command.detach);
+    let request = command.into_request();
+    assert_eq!(request.namespace_id.as_str(), "prod");
+    assert_eq!(request.volume_name.as_str(), "data");
+    assert!(
+        request
+            .operation_id
+            .as_str()
+            .starts_with("op_volume_rm_prod_data_")
+    );
+}
+
+#[test]
 fn cli_dispatches_service_inspect_request() {
     let command =
         parse_command(["service", "inspect", "-n", "default", "svc_api"].map(str::to_owned))

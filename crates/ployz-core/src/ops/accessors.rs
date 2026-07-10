@@ -14,6 +14,7 @@ impl OperationStatus {
             | Self::CoreReplace { id, .. }
             | Self::ServiceRestart { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
+            Self::VolumeRemove { id, .. } => id,
         }
     }
 
@@ -28,6 +29,7 @@ impl OperationStatus {
             Self::CoreReplace { .. } => OperationKind::CoreReplace,
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
+            Self::VolumeRemove { .. } => OperationKind::VolumeRemove,
         }
     }
 
@@ -39,6 +41,9 @@ impl OperationStatus {
             },
             Self::ServiceRestart { namespace_id, .. }
             | Self::NamespaceRemove { namespace_id, .. } => OperationProgressScope::Namespace {
+                namespace_id: namespace_id.clone(),
+            },
+            Self::VolumeRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
             Self::Cert { .. } => OperationProgressScope::Cluster,
@@ -83,6 +88,10 @@ impl OperationStatus {
                 ..
             }
             | Self::MachineUpdate {
+                last_event_sequence,
+                ..
+            }
+            | Self::VolumeRemove {
                 last_event_sequence,
                 ..
             } => *last_event_sequence,

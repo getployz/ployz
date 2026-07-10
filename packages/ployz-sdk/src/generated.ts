@@ -116,6 +116,10 @@ export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMou
 
 export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, };
 
+export type VolumeStatus = "in_use" | "orphaned";
+
+export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, status: VolumeStatus, };
+
 export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
 
 export type HealthcheckDurationNanos = SafeInteger<"HealthcheckDurationNanos">;
@@ -186,11 +190,11 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, } | { "kind": "core_replace", id: OperationId, machine_id: MachineId, successor_nats_url: MachineJoinRuntimeNatsUrl, state: CoreReplaceOperationState, last_event_sequence: EventSequence, } | { "kind": "service_restart", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: ServiceRestartOperationState, last_event_sequence: EventSequence, } | { "kind": "namespace_remove", id: OperationId, namespace_id: NamespaceId, state: NamespaceRemoveOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, } | { "kind": "core_replace", id: OperationId, machine_id: MachineId, successor_nats_url: MachineJoinRuntimeNatsUrl, state: CoreReplaceOperationState, last_event_sequence: EventSequence, } | { "kind": "service_restart", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: ServiceRestartOperationState, last_event_sequence: EventSequence, } | { "kind": "namespace_remove", id: OperationId, namespace_id: NamespaceId, state: NamespaceRemoveOperationState, last_event_sequence: EventSequence, } | { "kind": "volume_remove", id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, state: VolumeRemoveOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, };
 
-export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", machine_id: MachineId, } | { "kind": "machine_update", machine_id: MachineId, } | { "kind": "core_replace", machine_id: MachineId, } | { "kind": "service_restart", service_id: ServiceId, } | { "kind": "namespace_remove", namespace_id: NamespaceId, };
+export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", machine_id: MachineId, } | { "kind": "machine_update", machine_id: MachineId, } | { "kind": "core_replace", machine_id: MachineId, } | { "kind": "service_restart", service_id: ServiceId, } | { "kind": "namespace_remove", namespace_id: NamespaceId, } | { "kind": "volume_remove", namespace_id: NamespaceId, volume_name: VolumeName, };
 
 export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -228,11 +232,17 @@ export type NamespaceRemoveRunningStage = "removing_route_bindings" | "removing_
 
 export type NamespaceRemoveFailure = { "kind": "intent_read_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "container_remove_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, } | { "kind": "timeout", machine_id: MachineId, container_id: ContainerId, timeout_seconds: number, };
 
+export type VolumeRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: VolumeRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeRemoveFailure, };
+
+export type VolumeRemoveRunningStage = "removing_volume_data";
+
+export type VolumeRemoveFailure = { "kind": "volume_not_found", namespace_id: NamespaceId, volume_name: VolumeName, } | { "kind": "volume_in_use", namespace_id: NamespaceId, volume_name: VolumeName, referencing_services: Array<ServiceId>, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "volume_remove_failed", machine_id: MachineId, volume: VolumeName, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, };
+
 export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
 export type CertRunningStage = "challenge_published" | "validation_started";
 
-export type OperationKind = "deploy" | "cert" | "machine_add" | "machine_update" | "machine_lifecycle" | "core_replace" | "service_restart" | "namespace_remove";
+export type OperationKind = "deploy" | "cert" | "machine_add" | "machine_update" | "machine_lifecycle" | "core_replace" | "service_restart" | "namespace_remove" | "volume_remove";
 
 export type MachineLifecycle = "active" | "draining";
 
@@ -248,7 +258,7 @@ export type MachineUsabilityReason = { "reason": "draining" } | { "reason": "fac
 
 export type UnusableMachine = { machine_id: MachineId, reason: MachineUsabilityReason, };
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "machine_lifecycle_submitted", operation_id: OperationId, machine_id: MachineId, target: MachineLifecycle, } | { "event": "machine_lifecycle_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_lifecycle_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineLifecycleFailure, } | { "event": "core_replace_submitted", operation_id: OperationId, machine_id: MachineId, successor_nats_url: MachineJoinRuntimeNatsUrl, } | { "event": "core_replace_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "core_replace_failed", operation_id: OperationId, machine_id: MachineId, failure: CoreReplaceFailure, } | { "event": "service_restart_submitted", operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, } | { "event": "service_restart_running", operation_id: OperationId, stage: ServiceRestartRunningStage, } | { "event": "service_restart_container_restarted", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "service_restart_completed", operation_id: OperationId, } | { "event": "service_restart_failed", operation_id: OperationId, failure: ServiceRestartFailure, } | { "event": "namespace_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, } | { "event": "namespace_remove_running", operation_id: OperationId, stage: NamespaceRemoveRunningStage, } | { "event": "namespace_remove_route_binding_removed", operation_id: OperationId, target: RouteTarget, } | { "event": "namespace_remove_container_removed", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "namespace_remove_completed", operation_id: OperationId, } | { "event": "namespace_remove_failed", operation_id: OperationId, failure: NamespaceRemoveFailure, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_dataplane_prepared", operation_id: OperationId, report: PloyzNativeMeshPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "machine_update_submitted", operation_id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, } | { "event": "machine_update_running", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_update_completed", operation_id: OperationId, machine_id: MachineId, reported: MachineSubstrateVersions, } | { "event": "machine_update_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineUpdateFailure, } | { "event": "machine_lifecycle_submitted", operation_id: OperationId, machine_id: MachineId, target: MachineLifecycle, } | { "event": "machine_lifecycle_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_lifecycle_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineLifecycleFailure, } | { "event": "core_replace_submitted", operation_id: OperationId, machine_id: MachineId, successor_nats_url: MachineJoinRuntimeNatsUrl, } | { "event": "core_replace_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "core_replace_failed", operation_id: OperationId, machine_id: MachineId, failure: CoreReplaceFailure, } | { "event": "service_restart_submitted", operation_id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, } | { "event": "service_restart_running", operation_id: OperationId, stage: ServiceRestartRunningStage, } | { "event": "service_restart_container_restarted", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "service_restart_completed", operation_id: OperationId, } | { "event": "service_restart_failed", operation_id: OperationId, failure: ServiceRestartFailure, } | { "event": "namespace_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, } | { "event": "namespace_remove_running", operation_id: OperationId, stage: NamespaceRemoveRunningStage, } | { "event": "namespace_remove_route_binding_removed", operation_id: OperationId, target: RouteTarget, } | { "event": "namespace_remove_container_removed", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "namespace_remove_completed", operation_id: OperationId, } | { "event": "namespace_remove_failed", operation_id: OperationId, failure: NamespaceRemoveFailure, } | { "event": "volume_remove_submitted", operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, } | { "event": "volume_remove_running", operation_id: OperationId, stage: VolumeRemoveRunningStage, } | { "event": "volume_remove_completed", operation_id: OperationId, } | { "event": "volume_remove_failed", operation_id: OperationId, failure: VolumeRemoveFailure, } | { "event": "cancelled", operation_id: OperationId, kind: OperationKind, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -363,7 +373,7 @@ endpoint_subnet: MachineEndpointSubnet, };
 
 export type RouteBindingState = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, };
 
-export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, desired_replicas: ReplicaCount, };
+export type ServingTargetEntry = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, desired_replicas: ReplicaCount, volume_names: Array<VolumeName>, };
 
 export type MachineEndpointObservation = { machine_id: MachineId, control_endpoints: Array<string>, mesh_endpoints: Array<string>, };
 
@@ -432,6 +442,16 @@ export type ServiceRestartError = { "error": "resource_busy", operation_id: Oper
 export type NamespaceRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, };
 
 export type NamespaceRemoveError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type VolumeListRequest = Record<symbol, never>;
+
+export type VolumeListResult = { volumes: Array<VolumeSnapshot>, };
+
+export type VolumeListError = { "error": "unavailable", message: string, };
+
+export type VolumeRemoveRequest = { operation_id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, };
+
+export type VolumeRemoveError = { "error": "resource_busy", operation_id: OperationId, namespace_id: NamespaceId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type RuntimeSnapshotRequest = Record<symbol, never>;
 
@@ -608,6 +628,8 @@ export type ServiceRestartResponse = OperationApiResponse<AcceptedOperation, Ser
 
 export type NamespaceRemoveResponse = OperationApiResponse<AcceptedOperation, NamespaceRemoveError>;
 
+export type VolumeRemoveResponse = OperationApiResponse<AcceptedOperation, VolumeRemoveError>;
+
 export type CoreReplaceResponse = OperationApiResponse<AcceptedOperation, CoreReplaceError>;
 
 export type CoreReplaceReportResponse = OperationApiResponse<CoreReplaceReported, CoreReplaceReportError>;
@@ -621,6 +643,8 @@ export type MachineJoinRedeemResponse = OperationApiResponse<MachineJoinRedeemed
 export type MachineJoinReportResponse = OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
 
 export type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;
+
+export type VolumeListResponse = OperationApiResponse<VolumeListResult, VolumeListError>;
 
 export type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
 
@@ -645,6 +669,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.resume", subject: "plz.v1.rpc.operator.command.machine.resume", execution: "accepts_operation", request: "MachineLifecycleRequest", success: "AcceptedOperation", error: "MachineLifecycleError", response: "MachineResumeResponse" },
   { name: "service.restart", subject: "plz.v1.rpc.operator.command.service.restart", execution: "accepts_operation", request: "ServiceRestartRequest", success: "AcceptedOperation", error: "ServiceRestartError", response: "ServiceRestartResponse" },
   { name: "namespace.remove", subject: "plz.v1.rpc.operator.command.namespace.remove", execution: "accepts_operation", request: "NamespaceRemoveRequest", success: "AcceptedOperation", error: "NamespaceRemoveError", response: "NamespaceRemoveResponse" },
+  { name: "volume.remove", subject: "plz.v1.rpc.operator.command.volume.remove", execution: "accepts_operation", request: "VolumeRemoveRequest", success: "AcceptedOperation", error: "VolumeRemoveError", response: "VolumeRemoveResponse" },
   { name: "core.replace", subject: "plz.v1.rpc.operator.command.core.replace", execution: "accepts_operation", request: "CoreReplaceRequest", success: "AcceptedOperation", error: "CoreReplaceError", response: "CoreReplaceResponse" },
   { name: "core.replace.report", subject: "plz.v1.rpc.operator.command.core.replace.report", execution: "mutates_operation", request: "CoreReplaceReportRequest", success: "CoreReplaceReported", error: "CoreReplaceReportError", response: "CoreReplaceReportResponse" },
   { name: "machine.list", subject: "plz.v1.rpc.operator.query.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
@@ -652,6 +677,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.redeem", subject: "plz.v1.rpc.join.command.machine.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
   { name: "machine.report", subject: "plz.v1.rpc.join.command.machine.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
   { name: "service.list", subject: "plz.v1.rpc.operator.query.service.list", execution: "query", request: "ServiceListRequest", success: "ServiceListResult", error: "ServiceListError", response: "ServiceListResponse" },
+  { name: "volume.list", subject: "plz.v1.rpc.operator.query.volume.list", execution: "query", request: "VolumeListRequest", success: "VolumeListResult", error: "VolumeListError", response: "VolumeListResponse" },
   { name: "service.inspect", subject: "plz.v1.rpc.operator.query.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
   { name: "runtime.snapshot", subject: "plz.v1.rpc.operator.query.runtime.snapshot", execution: "query", request: "RuntimeSnapshotRequest", success: "RuntimeSnapshotResult", error: "RuntimeSnapshotError", response: "RuntimeSnapshotResponse" },
   { name: "logs.tail", subject: "plz.v1.rpc.operator.query.logs.tail", execution: "query", request: "LogsTailRequest", success: "LogsTailResult", error: "LogsTailError", response: "LogsTailResponse" },
@@ -671,6 +697,7 @@ export type OperationApiRequestByEndpoint = {
   "machine.resume": MachineLifecycleRequest;
   "service.restart": ServiceRestartRequest;
   "namespace.remove": NamespaceRemoveRequest;
+  "volume.remove": VolumeRemoveRequest;
   "core.replace": CoreReplaceRequest;
   "core.replace.report": CoreReplaceReportRequest;
   "machine.list": MachineListRequest;
@@ -678,6 +705,7 @@ export type OperationApiRequestByEndpoint = {
   "machine.redeem": MachineJoinRedeemRequest;
   "machine.report": MachineJoinReportRequest;
   "service.list": ServiceListRequest;
+  "volume.list": VolumeListRequest;
   "service.inspect": ServiceInspectRequest;
   "runtime.snapshot": RuntimeSnapshotRequest;
   "logs.tail": LogsTailRequest;
@@ -695,6 +723,7 @@ export type OperationApiResponseByEndpoint = {
   "machine.resume": MachineResumeResponse;
   "service.restart": ServiceRestartResponse;
   "namespace.remove": NamespaceRemoveResponse;
+  "volume.remove": VolumeRemoveResponse;
   "core.replace": CoreReplaceResponse;
   "core.replace.report": CoreReplaceReportResponse;
   "machine.list": MachineListResponse;
@@ -702,6 +731,7 @@ export type OperationApiResponseByEndpoint = {
   "machine.redeem": MachineJoinRedeemResponse;
   "machine.report": MachineJoinReportResponse;
   "service.list": ServiceListResponse;
+  "volume.list": VolumeListResponse;
   "service.inspect": ServiceInspectResponse;
   "runtime.snapshot": RuntimeSnapshotResponse;
   "logs.tail": LogsTailResponse;

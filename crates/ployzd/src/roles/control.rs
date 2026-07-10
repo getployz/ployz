@@ -42,6 +42,7 @@ pub struct RunningControlProcess {
     deploy_tasks: TaskRegistry,
     service_restart_tasks: TaskRegistry,
     namespace_remove_tasks: TaskRegistry,
+    volume_remove_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
@@ -57,6 +58,7 @@ impl RunningControlProcess {
         self.deploy_tasks.abort_all();
         self.service_restart_tasks.abort_all();
         self.namespace_remove_tasks.abort_all();
+        self.volume_remove_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
@@ -167,6 +169,7 @@ pub async fn start_control_process_with_client_and_reload(
     let deploy_tasks = TaskRegistry::default();
     let service_restart_tasks = TaskRegistry::default();
     let namespace_remove_tasks = TaskRegistry::default();
+    let volume_remove_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
@@ -197,6 +200,13 @@ pub async fn start_control_process_with_client_and_reload(
         controllers.clone(),
         config.deploy_step_timeout,
         namespace_remove_tasks.clone(),
+    );
+    let volume_remove = crate::operations::volume_remove::VolumeRemoveOperation::new(
+        client.clone(),
+        namespace_intent.clone(),
+        controllers.clone(),
+        config.deploy_step_timeout,
+        volume_remove_tasks.clone(),
     );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
@@ -251,6 +261,7 @@ pub async fn start_control_process_with_client_and_reload(
                 deploy: deploy_driver,
                 service_restart,
                 namespace_remove,
+                volume_remove,
                 machine_update,
                 machine_lifecycle,
                 machine_mint,
@@ -279,6 +290,7 @@ pub async fn start_control_process_with_client_and_reload(
         deploy_tasks,
         service_restart_tasks,
         namespace_remove_tasks,
+        volume_remove_tasks,
         machine_update_tasks,
         machine_lifecycle_tasks,
         mint_tasks,

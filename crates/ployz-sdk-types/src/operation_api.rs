@@ -14,6 +14,7 @@ use crate::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -40,6 +41,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineResumeApi,
             $crate::operation_api::ServiceRestartApi,
             $crate::operation_api::NamespaceRemoveApi,
+            $crate::operation_api::VolumeRemoveApi,
             $crate::operation_api::CoreReplaceApi,
             $crate::operation_api::CoreReplaceReportApi,
             $crate::operation_api::MachineListApi,
@@ -47,6 +49,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineJoinRedeemApi,
             $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::ServiceListApi,
+            $crate::operation_api::VolumeListApi,
             $crate::operation_api::ServiceInspectApi,
             $crate::operation_api::RuntimeSnapshotApi,
             $crate::operation_api::LogsTailApi,
@@ -166,6 +169,18 @@ impl OperationApiContract for NamespaceRemoveApi {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeRemoveApi;
+
+impl OperationApiContract for VolumeRemoveApi {
+    type Request = VolumeRemoveRequest;
+    type Success = AcceptedOperation;
+    type Error = VolumeRemoveError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::VolumeRemove;
+    const RESPONSE_ALIAS: &'static str = "VolumeRemoveResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreReplaceReportApi;
 
 impl OperationApiContract for CoreReplaceReportApi {
@@ -211,6 +226,18 @@ impl OperationApiContract for ServiceListApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::ServiceList;
     const RESPONSE_ALIAS: &'static str = "ServiceListResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeListApi;
+
+impl OperationApiContract for VolumeListApi {
+    type Request = VolumeListRequest;
+    type Success = VolumeListResult;
+    type Error = VolumeListError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::VolumeList;
+    const RESPONSE_ALIAS: &'static str = "VolumeListResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

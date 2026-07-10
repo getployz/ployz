@@ -58,7 +58,7 @@ pub use ployz_core::ops::{
     OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
-    UnusableMachine,
+    UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,

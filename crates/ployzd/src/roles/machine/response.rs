@@ -45,6 +45,11 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
                 "container remove failed: {message}"
             )))
         }
+        MachineContainerRunnerError::RemoveVolume { message, .. } => {
+            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
+                "volume remove failed: {message}"
+            )))
+        }
     }
 }
 
@@ -76,7 +81,8 @@ pub(crate) fn container_start_error(
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }
-        | MachineContainerRunnerError::Remove { .. }) => runner_error(error),
+        | MachineContainerRunnerError::Remove { .. }
+        | MachineContainerRunnerError::RemoveVolume { .. }) => runner_error(error),
     }
 }
 
