@@ -181,6 +181,46 @@ async fn deploy_worker_runs_containers_then_completes() {
 }
 
 #[tokio::test]
+async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        route_less_pushed_deploy_command(2),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("route-less pushed deploy succeeds");
+
+    let [request] = dataplane.requests.as_slice() else {
+        panic!("one dataplane prepare request is recorded");
+    };
+    assert_eq!(
+        request.machines(),
+        vec![
+            machine_id("machine_a"),
+            machine_id("machine_b"),
+            machine_id("machine_seed"),
+        ]
+    );
+    assert!(runtime.requests.iter().all(|(_, request)| matches!(
+        &request.pull,
+        ployzd::roles::machine::protocol::MachineImagePull::MeshSeed { seed_host, .. }
+            if *seed_host
+                == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
+    )));
+}
+
+#[tokio::test]
 async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();

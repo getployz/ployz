@@ -82,7 +82,6 @@ where
             match state
                 .runner
                 .create_managed_container(CreateManagedContainer {
-                    image: request.image,
                     pull: request.pull,
                     runtime: request.runtime,
                     identity,

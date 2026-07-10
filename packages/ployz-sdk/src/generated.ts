@@ -272,6 +272,8 @@ export type HealthCheckFailure = { "reason": "probe_failed", machine_id: Machine
 
 export type MachineEndpointSubnet = string;
 
+export type MachineEndpointSupernet = string;
+
 export type DataplaneMember = { machine_id: MachineId, endpoint_subnet: MachineEndpointSubnet, };
 
 export type DataplaneProviderFailure = { "provider": "ployz_native_mesh", component: PloyzNativeMeshComponent, };
@@ -477,7 +479,7 @@ export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
 
-export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats,
+export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, dataplane_endpoint_supernet: MachineEndpointSupernet, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats,
 /**
  * The cluster CA signing key wrapped with the recovery secret (ADR 0031),
  * delivered so a joined promotion candidate can decrypt it and self-issue the
@@ -495,7 +497,7 @@ export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
-export type FirstMachineInstallSpec = { machine_id: MachineId, gateway: GatewayRole, dns: DnsRole, machine_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstMachineInstallArtifacts, };
+export type FirstMachineInstallSpec = { machine_id: MachineId, dataplane_endpoint_supernet: MachineEndpointSupernet, gateway: GatewayRole, dns: DnsRole, machine_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstMachineInstallArtifacts, };
 
 export type FirstMachineInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec,
 /**

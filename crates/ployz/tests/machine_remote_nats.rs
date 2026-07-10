@@ -333,6 +333,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
     };
     MachineJoinBundle {
         material: MachineJoinMaterial {
+            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
+            ),
             cluster_name: MachineJoinClusterName::try_new("testcluster")
                 .expect("valid cluster name"),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")

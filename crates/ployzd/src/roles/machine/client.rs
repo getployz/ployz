@@ -20,7 +20,7 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::image::{ImageInspectOk, ImageInspectRequest, ImageRpcDomainError};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
@@ -71,13 +71,13 @@ pub struct NatsMachineSubstrateUpdater {
 }
 
 #[derive(Debug, Clone)]
-pub struct NatsMachineImageInspector {
+pub struct NatsMachineImageEnsurer {
     client: async_nats::Client,
     request_timeout: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineImageInspectError {
+pub enum MachineImageEnsureError {
     Domain {
         machine_id: MachineId,
         error: ImageRpcDomainError,
@@ -230,7 +230,7 @@ impl NatsMachineLogsTailer {
     }
 }
 
-impl NatsMachineImageInspector {
+impl NatsMachineImageEnsurer {
     #[must_use]
     pub fn new(client: async_nats::Client) -> Self {
         Self {
@@ -245,25 +245,25 @@ impl NatsMachineImageInspector {
         self
     }
 
-    pub async fn inspect(
+    pub async fn ensure(
         &self,
         machine_id: &MachineId,
-        request: &ImageInspectRequest,
-    ) -> Result<ImageInspectOk, MachineImageInspectError> {
-        call_machine::<ImageInspectOk, ImageRpcDomainError>(
+        request: &ImageEnsureRequest,
+    ) -> Result<ImageEnsureOk, MachineImageEnsureError> {
+        call_machine::<ImageEnsureOk, ImageRpcDomainError>(
             &self.client,
             self.request_timeout,
             machine_id,
-            MachineServiceEndpoint::ImageInspect,
+            MachineServiceEndpoint::ImageEnsure,
             request,
         )
         .await
         .map_err(|error| match error {
-            MachineCallError::Domain(error) => MachineImageInspectError::Domain {
+            MachineCallError::Domain(error) => MachineImageEnsureError::Domain {
                 machine_id: machine_id.clone(),
                 error,
             },
-            MachineCallError::Unavailable(reason) => MachineImageInspectError::Unavailable {
+            MachineCallError::Unavailable(reason) => MachineImageEnsureError::Unavailable {
                 machine_id: machine_id.clone(),
                 reason,
             },
@@ -514,17 +514,15 @@ impl NatsMachineContainerRuntime {
 }
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
-    async fn inspect_image(
+    async fn ensure_image(
         &mut self,
         machine_id: &MachineId,
-        request: ImageInspectRequest,
-    ) -> Result<ImageInspectOk, MachineImageInspectError> {
-        NatsMachineImageInspector {
-            client: self.client.clone(),
-            request_timeout: self.request_timeout,
-        }
-        .inspect(machine_id, &request)
-        .await
+        request: ImageEnsureRequest,
+    ) -> Result<ImageEnsureOk, MachineImageEnsureError> {
+        NatsMachineImageEnsurer::new(self.client.clone())
+            .with_request_timeout(self.request_timeout)
+            .ensure(machine_id, &request)
+            .await
     }
 
     async fn ensure_endpoint_network(

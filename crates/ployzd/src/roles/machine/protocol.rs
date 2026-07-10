@@ -123,7 +123,6 @@ pub enum MachineContainerInspectDomainError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineContainerRunRpcRequest {
-    pub image: ImageReference,
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
     /// The identity the machine stamps onto the created container; the

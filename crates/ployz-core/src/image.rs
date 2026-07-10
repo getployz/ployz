@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::ids::MachineId;
+use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
 use crate::ops::FailureMessage;
 
@@ -12,6 +12,9 @@ pub const IMAGE_BLOB_PUSH_ACTION_HEADER: &str = "ployz-image-push-action";
 pub const IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER: &str = "ployz-image-upload-id";
 pub const IMAGE_BLOB_PUSH_OFFSET_HEADER: &str = "ployz-image-offset";
 pub const IMAGE_BLOB_PUSH_ACTION_CHUNK: &str = "chunk";
+pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+pub const OCI_IMAGE_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
+pub const OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -104,6 +107,15 @@ impl ImageRepository {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    #[must_use]
+    pub fn for_service(namespace_id: &NamespaceId, service_id: &ServiceId) -> Self {
+        Self(format!(
+            "ployz/{}/{}",
+            namespace_id.as_str(),
+            service_id.as_str()
+        ))
     }
 }
 
@@ -202,7 +214,6 @@ impl OciPlatform {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageBlobCheckRequest {
-    pub repository: ImageRepository,
     pub digests: Vec<OciDigest>,
 }
 
@@ -232,18 +243,9 @@ pub enum ImageBlobPushRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageBlobPushOutcome {
-    Begun {
-        upload_id: ImageUploadId,
-        offset: u64,
-    },
-    ChunkAccepted {
-        upload_id: ImageUploadId,
-        next_offset: u64,
-    },
-    Committed {
-        digest: OciDigest,
-        size: u64,
-    },
+    Begun { upload_id: ImageUploadId },
+    ChunkAccepted { upload_id: ImageUploadId },
+    Committed { digest: OciDigest, size: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,7 +267,6 @@ pub type ImageBlobPushResponse = MachineRpcResponse<ImageBlobPushOk, ImageRpcDom
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageManifestPushRequest {
-    pub repository: ImageRepository,
     pub manifest_bytes: Vec<u8>,
 }
 
@@ -290,7 +291,6 @@ pub type ImageManifestPushResponse = MachineRpcResponse<ImageManifestPushOk, Ima
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageInspectRequest {
-    pub repository: ImageRepository,
     pub manifest_digest: OciDigest,
     pub image_id: OciDigest,
 }
@@ -299,8 +299,6 @@ pub struct ImageInspectRequest {
 #[serde(deny_unknown_fields)]
 pub struct ImageInspectOk {
     pub machine_id: MachineId,
-    pub manifest_digest: OciDigest,
-    pub image_id: OciDigest,
     pub platform: OciPlatform,
 }
 
@@ -312,6 +310,30 @@ impl MachineRpcResponder for ImageInspectOk {
 }
 
 pub type ImageInspectResponse = MachineRpcResponse<ImageInspectOk, ImageRpcDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageEnsureRequest {
+    pub repository: ImageRepository,
+    pub manifest_digest: OciDigest,
+    pub image_id: OciDigest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageEnsureOk {
+    pub machine_id: MachineId,
+    pub platform: OciPlatform,
+}
+
+impl MachineRpcResponder for ImageEnsureOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type ImageEnsureResponse = MachineRpcResponse<ImageEnsureOk, ImageRpcDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
@@ -329,6 +351,17 @@ pub enum ImageRpcDomainError {
     ChunkTooLarge {
         size: u64,
         maximum: u64,
+    },
+    ChunkOutOfBounds {
+        total_size: u64,
+        offset: u64,
+        size: u64,
+    },
+    UploadBusy {
+        maximum: u16,
+    },
+    ServiceUnavailable {
+        message: FailureMessage,
     },
     ImageMissing {
         digest: OciDigest,

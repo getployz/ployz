@@ -4,11 +4,12 @@ use ployz_core::permissions::{
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
-    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
-    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
-    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
-    PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope, machine_container_facts,
-    machine_facts, machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
+    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint,
+    OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
+    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
+    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope,
+    machine_container_facts, machine_facts, machine_facts_scope, machine_service,
+    machine_service_command_scope, machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -112,6 +113,20 @@ fn operator_credential_renders_operator_rpc_scope_without_machine_or_join_scope(
             .allowed_subjects()
             .contains(&JOIN_MACHINE_REDEEM.to_owned())
     );
+}
+
+#[test]
+fn image_ensure_is_controller_scoped_not_operator_image_scoped() {
+    let subject = machine_service(
+        &machine_id("machine_7"),
+        MachineServiceEndpoint::ImageEnsure,
+    );
+
+    assert_eq!(
+        subject,
+        "plz.v1.rpc.machine.command.machine_7.container.ensure_image"
+    );
+    assert!(!subject.contains(".image."));
 }
 
 #[test]

@@ -19,9 +19,11 @@ const CONTAINERD_NAMESPACE_HEADER: &str = "containerd-namespace";
 const CONTAINERD_LEASE_HEADER: &str = "containerd-lease";
 const CONTAINERD_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const INGEST_LEASE_LIFETIME: TimeDuration = TimeDuration::hours(1);
-const DOCKER_CONTAINERD_SOCKETS: [&str; 2] = [
+const DOCKER_CONTAINERD_SOCKETS: [&str; 4] = [
     "/var/run/docker/containerd/containerd.sock",
     "/run/docker/containerd/containerd.sock",
+    "/var/run/containerd/containerd.sock",
+    "/run/containerd/containerd.sock",
 ];
 
 #[derive(Clone)]
@@ -316,11 +318,6 @@ impl ContentIngest {
     #[must_use]
     pub fn lease(&self) -> ContentLease {
         self.lease.clone()
-    }
-
-    #[must_use]
-    pub fn into_lease(self) -> ContentLease {
-        self.lease
     }
 }
 

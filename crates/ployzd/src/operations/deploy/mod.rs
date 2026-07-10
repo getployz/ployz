@@ -3,6 +3,7 @@
 pub mod driver;
 mod facts;
 mod failure;
+mod images;
 mod ports;
 mod preparation;
 mod types;
@@ -12,14 +13,12 @@ use ployz_core::deploy::{
     plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
-use ployz_core::image::{ImageInspectRequest, ImageRpcDomainError};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
-use crate::roles::machine::client::MachineImageInspectError;
 pub use facts::{
     DeployFactLoadError, DeployMachineCandidates, load_deploy_execution_facts_from_nats,
 };
@@ -28,6 +27,7 @@ pub use failure::{
     DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
+use images::{dataplane_prepare_request, ensure_images, machine_image_pull};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
     NamespaceCommitError, NamespaceStateCommitter,
@@ -38,7 +38,7 @@ pub use preparation::{
 
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest, MachineImagePull,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
 };
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
@@ -166,6 +166,7 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
+    let dataplane_request = dataplane_prepare_request(command, &plan);
     if !plan.volume_pin_commits.is_empty() {
         commit_volume_pins(command, &plan, &mut *ports.namespace_state)
             .await
@@ -179,12 +180,13 @@ where
         )
         .await
         .map_err(|source| run.fail(source))?;
-        ensure_endpoint_networks(command, &plan, &mut *ports.machine_runtime)
+        ensure_endpoint_networks(command, &dataplane_request, &mut *ports.machine_runtime)
             .await
             .map_err(|source| run.fail(source))?;
-        let dataplane = prepare_dataplane(command, &plan, &mut *ports.dataplane)
-            .await
-            .map_err(|source| run.fail(source))?;
+        let dataplane =
+            prepare_dataplane(command, dataplane_request.clone(), &mut *ports.dataplane)
+                .await
+                .map_err(|source| run.fail(source))?;
         record_evidence(
             command,
             &mut *ports.recorder,
@@ -261,6 +263,7 @@ where
                             service,
                             machine_id,
                             *slot,
+                            &dataplane_request.membership,
                         ),
                     )
                     .await;
@@ -372,162 +375,6 @@ where
     };
 
     Ok(outcome)
-}
-
-async fn ensure_images<R, N>(
-    command: &DeployExecutionCommand,
-    plan: &DeployPlan,
-    recorder: &mut R,
-    machine_runtime: &mut N,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
-{
-    for service in command.services() {
-        let ImageSource::PushedToSeed {
-            seed,
-            manifest_digest,
-            image_id,
-        } = &service.request.image_source
-        else {
-            continue;
-        };
-        let repository = ployz_core::image::ImageRepository::try_new(format!(
-            "ployz/{}/{}",
-            service.request.namespace_id.as_str(),
-            service.request.service_id.as_str()
-        ))
-        .map_err(|error| DeployExecutionError::InvalidImagePull {
-            message: error.to_string(),
-        })?;
-        let request = ImageInspectRequest {
-            repository,
-            manifest_digest: manifest_digest.clone(),
-            image_id: image_id.clone(),
-        };
-        let inspected = tokio::time::timeout(
-            command.step_timeout(),
-            machine_runtime.inspect_image(seed, request),
-        )
-        .await
-        .map_err(|_| DeployExecutionError::EnsureImage {
-            failure: Box::new(ployz_core::ops::DeployOperationFailure::SeedUnavailable {
-                service_id: service.request.service_id.clone(),
-                seed: seed.clone(),
-                message: deploy_failure_message("image seed inspection timed out"),
-            }),
-        })?
-        .map_err(|error| ensure_image_failure(service, seed, manifest_digest, error))?;
-        if inspected.manifest_digest != *manifest_digest {
-            return Err(DeployExecutionError::EnsureImage {
-                failure: Box::new(
-                    ployz_core::ops::DeployOperationFailure::ImageDigestMismatch {
-                        service_id: service.request.service_id.clone(),
-                        seed: seed.clone(),
-                        expected: manifest_digest.clone(),
-                        actual: inspected.manifest_digest,
-                    },
-                ),
-            });
-        }
-        let Some(service_plan) = plan
-            .services
-            .iter()
-            .find(|plan| plan.service_id == service.request.service_id)
-        else {
-            continue;
-        };
-        for step in &service_plan.steps {
-            let machine_id = match step {
-                DeployPlanStep::UseExistingContainer { machine_id, .. }
-                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
-            };
-            let Some(target_platform) = command.machine_platform(machine_id) else {
-                return Err(DeployExecutionError::InvalidImagePull {
-                    message: format!(
-                        "target machine {} did not report a platform",
-                        machine_id.as_str()
-                    ),
-                });
-            };
-            if inspected.platform != *target_platform {
-                return Err(DeployExecutionError::EnsureImage {
-                    failure: Box::new(
-                        ployz_core::ops::DeployOperationFailure::UnsupportedTargetPlatform {
-                            service_id: service.request.service_id.clone(),
-                            machine_id: machine_id.clone(),
-                            image_platform: inspected.platform.clone(),
-                            target_platform: target_platform.clone(),
-                        },
-                    ),
-                });
-            }
-        }
-        record_evidence(
-            command,
-            recorder,
-            DeployEvidence::ImageAvailabilityVerified {
-                service_id: service.request.service_id.clone(),
-                seed: seed.clone(),
-                manifest_digest: manifest_digest.clone(),
-            },
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-fn ensure_image_failure(
-    service: &DeployServiceExecutionCommand,
-    seed: &ployz_core::ids::MachineId,
-    manifest_digest: &ployz_core::image::OciDigest,
-    error: MachineImageInspectError,
-) -> DeployExecutionError {
-    let failure = match error {
-        MachineImageInspectError::Domain {
-            error: ImageRpcDomainError::ImageMissing { .. },
-            ..
-        } => ployz_core::ops::DeployOperationFailure::ImageMissingOnSeed {
-            service_id: service.request.service_id.clone(),
-            seed: seed.clone(),
-            manifest_digest: manifest_digest.clone(),
-        },
-        MachineImageInspectError::Domain {
-            error:
-                ImageRpcDomainError::DigestMismatch { expected, actual }
-                | ImageRpcDomainError::ConfigMismatch { expected, actual },
-            ..
-        } => ployz_core::ops::DeployOperationFailure::ImageDigestMismatch {
-            service_id: service.request.service_id.clone(),
-            seed: seed.clone(),
-            expected,
-            actual,
-        },
-        MachineImageInspectError::Unavailable { reason, .. } => {
-            ployz_core::ops::DeployOperationFailure::SeedUnavailable {
-                service_id: service.request.service_id.clone(),
-                seed: seed.clone(),
-                message: reason.failure_message(),
-            }
-        }
-        MachineImageInspectError::Domain { error, .. } => {
-            ployz_core::ops::DeployOperationFailure::SeedUnavailable {
-                service_id: service.request.service_id.clone(),
-                seed: seed.clone(),
-                message: deploy_failure_message(format!(
-                    "image seed rejected inspection: {error:?}"
-                )),
-            }
-        }
-    };
-    DeployExecutionError::EnsureImage {
-        failure: Box::new(failure),
-    }
-}
-
-fn deploy_failure_message(message: impl Into<String>) -> FailureMessage {
-    FailureMessage::try_new(message.into()).expect("generated deploy failure message is non-empty")
 }
 
 async fn cleanup_superseded_containers<N>(
@@ -865,13 +712,12 @@ where
 
 async fn prepare_dataplane<D>(
     command: &DeployExecutionCommand,
-    plan: &DeployPlan,
+    request: ployz_core::dataplane::DataplanePrepareRequest,
     dataplane: &mut D,
 ) -> Result<ployz_core::dataplane::PloyzNativeMeshPrepareReport, DeployExecutionError>
 where
     D: DataplanePreparer,
 {
-    let request = command.dataplane_prepare_request(plan);
     with_step_timeout(
         command,
         DeployExecutionStep::PrepareDataplane {
@@ -884,15 +730,14 @@ where
 
 async fn ensure_endpoint_networks<N>(
     command: &DeployExecutionCommand,
-    plan: &DeployPlan,
+    request: &ployz_core::dataplane::DataplanePrepareRequest,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
 where
     N: MachineContainerRuntime,
 {
-    let request = command.dataplane_prepare_request(plan);
-    for member in request.membership {
-        let machine_id = member.machine_id;
+    for member in &request.membership {
+        let machine_id = &member.machine_id;
         let network_request = MachineEnsureEndpointNetworkRpcRequest {
             operation_id: command.operation_id.clone(),
         };
@@ -903,7 +748,7 @@ where
             },
             async {
                 machine_runtime
-                    .ensure_endpoint_network(&machine_id, network_request)
+                    .ensure_endpoint_network(machine_id, network_request)
                     .await
                     .map_err(DeployExecutionError::RunContainer)
             },
@@ -986,6 +831,7 @@ async fn run_deploy_step<N>(
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
+    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
 ) -> Result<(DeployContainer, RunContainerDisposition), DeployExecutionError>
 where
     N: MachineContainerRuntime,
@@ -993,8 +839,7 @@ where
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
-        image: service.request.image.clone(),
-        pull: machine_image_pull(command, service)?,
+        pull: machine_image_pull(service, dataplane_members)?,
         runtime: service.request.runtime.clone(),
         container: ManagedContainerIdentity {
             namespace_id: service.request.namespace_id.clone(),
@@ -1037,41 +882,6 @@ where
             )
         })
         .map_err(DeployExecutionError::RunContainer)
-}
-
-fn machine_image_pull(
-    command: &DeployExecutionCommand,
-    service: &DeployServiceExecutionCommand,
-) -> Result<MachineImagePull, DeployExecutionError> {
-    match &service.request.image_source {
-        ployz_core::deploy::ImageSource::Registry => Ok(MachineImagePull::Registry {
-            reference: service.request.image.clone(),
-        }),
-        ployz_core::deploy::ImageSource::PushedToSeed {
-            seed,
-            manifest_digest,
-            image_id: _,
-        } => {
-            let Some(seed_host) = command.mesh_seed_host(seed) else {
-                return Err(DeployExecutionError::InvalidImagePull {
-                    message: format!("image seed {} has no dataplane membership", seed.as_str()),
-                });
-            };
-            let repository = ployz_core::image::ImageRepository::try_new(format!(
-                "ployz/{}/{}",
-                service.request.namespace_id.as_str(),
-                service.request.service_id.as_str()
-            ))
-            .map_err(|error| DeployExecutionError::InvalidImagePull {
-                message: error.to_string(),
-            })?;
-            Ok(MachineImagePull::MeshSeed {
-                seed_host,
-                repository,
-                manifest_digest: manifest_digest.clone(),
-            })
-        }
-    }
 }
 
 fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {

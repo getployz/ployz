@@ -35,9 +35,9 @@ use crate::{
     LogsTailTarget, MAX_LOGS_TAIL_LINES, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted,
     MachineAddError, MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName,
     MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineCredentialProvisioningStep,
-    MachineDiskSpace, MachineEndpointObservation, MachineEndpointSubnet, MachineId,
-    MachineInspectError, MachineInspectRequest, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineDiskSpace, MachineEndpointObservation, MachineEndpointSubnet, MachineEndpointSupernet,
+    MachineId, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
+    MachineJoinClusterName, MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,
     MachineJoinReportRequest, MachineJoinReported, MachineJoinRuntimeNatsUrl,
@@ -246,6 +246,7 @@ macro_rules! exported_types {
             RetainedArtifact,
             HealthCheckFailure,
             MachineEndpointSubnet,
+            MachineEndpointSupernet,
             DataplaneMember,
             DataplaneProviderFailure,
             PloyzNativeMeshComponent,
@@ -766,6 +767,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
             cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
+            ),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: trusted_nats(),

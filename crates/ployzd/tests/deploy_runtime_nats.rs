@@ -571,6 +571,7 @@ fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsS
             .expect("empty machine snapshot is valid"),
         None,
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("empty machine facts are valid")

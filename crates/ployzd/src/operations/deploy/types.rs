@@ -1,6 +1,6 @@
-use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
+use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
+    DeployCleanupContainer, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -98,32 +98,6 @@ impl DeployExecutionCommand {
         } else {
             self.step_timeout
         }
-    }
-
-    #[must_use]
-    pub fn dataplane_prepare_request(&self, plan: &DeployPlan) -> DataplanePrepareRequest {
-        let seeds = self.services.iter().filter_map(|service| {
-            let ployz_core::deploy::ImageSource::PushedToSeed { seed, .. } =
-                &service.request.image_source
-            else {
-                return None;
-            };
-            Some(seed.clone())
-        });
-        DataplanePrepareRequest::for_deploy_plan_with_additional(
-            self.operation_id.clone(),
-            plan,
-            &self.dataplane_members,
-            seeds,
-        )
-    }
-
-    #[must_use]
-    pub fn mesh_seed_host(&self, seed: &MachineId) -> Option<std::net::Ipv4Addr> {
-        self.dataplane_members
-            .iter()
-            .find(|member| member.machine_id == *seed)
-            .map(|member| member.endpoint_subnet.host_address())
     }
 }
 

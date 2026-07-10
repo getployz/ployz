@@ -10,7 +10,8 @@ use crate::core_demote::repoint_non_core_roles;
 use crate::executor::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
-    JOIN_TRUSTED_CA_FILE, parse_machine_id_from_join_material,
+    JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
+    parse_machine_id_from_join_material,
 };
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::release_manifest::release_manifest_url;
@@ -211,6 +212,9 @@ fn resolve_core_promote_target(
     let cluster_name = parse_cluster_name_from_join_material(&join_material)
         .and_then(|value| MachineJoinClusterName::try_new(value).ok())
         .unwrap_or_else(|| MachineJoinClusterName::try_new("ployz").expect("valid cluster name"));
+    let dataplane_endpoint_supernet =
+        parse_dataplane_endpoint_supernet_from_join_material(&join_material)
+            .unwrap_or_else(ployz_core::dataplane::MachineEndpointSupernet::default_v1);
     let ca = ployz_core::nats_config::NatsCaCertificatePem::try_new(read_promote_file(
         &join_dir.join(JOIN_TRUSTED_CA_FILE),
     )?)
@@ -295,6 +299,7 @@ fn resolve_core_promote_target(
         nats_identity,
         ployz_core::install::WrappedCaKey::new(wrapped),
         wrapped_seeds,
+        dataplane_endpoint_supernet,
         Some(machine_public_ip),
         mirror_path,
         default_machine_join_template_file()?,

@@ -769,7 +769,6 @@ fn deploy_target_with_route(
 
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        image: image("ghcr.io/acme/api:probe"),
         pull: ployzd::roles::machine::protocol::MachineImagePull::Registry {
             reference: image("ghcr.io/acme/api:probe"),
         },
@@ -822,6 +821,7 @@ async fn publish_machine_facts(
             )],
         }),
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("machine facts are valid");

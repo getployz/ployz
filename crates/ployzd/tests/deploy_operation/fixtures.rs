@@ -548,18 +548,16 @@ impl RecordingRuntime {
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
-    async fn inspect_image(
+    async fn ensure_image(
         &mut self,
         machine_id: &MachineId,
-        request: ployz_core::image::ImageInspectRequest,
+        _request: ployz_core::image::ImageEnsureRequest,
     ) -> Result<
-        ployz_core::image::ImageInspectOk,
-        ployzd::roles::machine::client::MachineImageInspectError,
+        ployz_core::image::ImageEnsureOk,
+        ployzd::roles::machine::client::MachineImageEnsureError,
     > {
-        Ok(ployz_core::image::ImageInspectOk {
+        Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
-            manifest_digest: request.manifest_digest,
-            image_id: request.image_id,
             platform: ployz_core::image::OciPlatform {
                 os: "linux".to_owned(),
                 architecture: "amd64".to_owned(),
@@ -758,6 +756,63 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_members: Vec::new(),
+            observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
+pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecutionCommand {
+    let request = DeployRequest {
+        namespace_id: namespace_id("default"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: image("local/api:rev_2"),
+            image_source: ployz_core::deploy::ImageSource::PushedToSeed {
+                seed: machine_id("machine_seed"),
+                manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                    "sha256:{}",
+                    "a".repeat(64)
+                ))
+                .expect("valid manifest digest"),
+                image_id: ployz_core::image::OciDigest::try_new(format!(
+                    "sha256:{}",
+                    "b".repeat(64)
+                ))
+                .expect("valid image id"),
+            },
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            routes: Vec::new(),
+        }],
+    };
+    let platform = ployz_core::image::OciPlatform {
+        os: "linux".to_owned(),
+        architecture: "amd64".to_owned(),
+    };
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: [
+                (machine_id("machine_a"), platform.clone()),
+                (machine_id("machine_b"), platform),
+            ]
+            .into_iter()
+            .collect(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            dataplane_members: vec![ployz_core::dataplane::DataplaneMember {
+                machine_id: machine_id("machine_seed"),
+                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    "10.198.99.0/24",
+                )
+                .expect("valid seed subnet"),
+            }],
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
             step_timeout: Duration::from_secs(5),

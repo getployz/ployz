@@ -780,6 +780,8 @@ where
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
+            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
+            ),
             cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
                 .expect("valid cluster name"),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")

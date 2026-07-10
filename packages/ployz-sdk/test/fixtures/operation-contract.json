@@ -141,6 +141,7 @@
             5,
             6
           ],
+          "dataplane_endpoint_supernet": "10.198.0.0/16",
           "ebpf_bytecode": {
             "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -191,6 +192,7 @@
             5,
             6
           ],
+          "dataplane_endpoint_supernet": "10.198.0.0/16",
           "ebpf_bytecode": {
             "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

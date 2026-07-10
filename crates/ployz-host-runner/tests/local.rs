@@ -412,6 +412,36 @@ fn local_effects_start_docker_service_when_daemon_is_stopped() {
 }
 
 #[test]
+fn local_effects_reject_stopped_classic_store_before_writing_daemon_config() {
+    let root = temp_dir("ployz-host-runner-local-docker-stopped-classic");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            docker_running: false,
+            containerd_snapshotter: false,
+            ..RecordingRunner::root_linux()
+        },
+    );
+
+    let result = effects.apply_step(&HostRunnerStep::PrepareContainerRuntime(
+        ContainerRuntime::Docker,
+        ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+    ));
+
+    assert!(matches!(
+        result,
+        Err(error)
+            if error.reason()
+                == Some(HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported)
+    ));
+    assert!(!daemon_config.exists());
+    assert_eq!(effects.runner().docker_install_runs, 0);
+}
+
+#[test]
 fn local_effects_merge_required_docker_daemon_settings() {
     let root = temp_dir("ployz-host-runner-local-docker-config");
     let systemd_dir = root.join("systemd");
@@ -453,6 +483,46 @@ fn local_effects_merge_required_docker_daemon_settings() {
     assert_eq!(
         config.get("insecure-registries"),
         Some(&serde_json::json!(["192.0.2.0/24", "10.198.0.0/16"]))
+    );
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&vec!["restart".to_owned(), "docker".to_owned(),])
+    );
+}
+
+#[test]
+fn local_effects_use_configured_supernet_without_restarting_unchanged_docker() {
+    let root = temp_dir("ployz-host-runner-local-docker-custom-supernet");
+    let systemd_dir = root.join("systemd");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(daemon_config.parent().expect("config has parent"))
+        .expect("docker config dir can be created");
+    fs::write(
+        &daemon_config,
+        br#"{"features":{"containerd-snapshotter":true},"insecure-registries":["10.77.0.0/16"]}"#,
+    )
+    .expect("docker config can be written");
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::try_new("10.77.0.0/16")
+                .expect("valid custom supernet"),
+        ))
+        .expect("unchanged Docker config is accepted");
+
+    assert!(
+        !effects
+            .runner()
+            .systemctl_calls
+            .contains(&vec!["restart".to_owned(), "docker".to_owned(),])
     );
 }
 
@@ -589,8 +659,8 @@ fn local_effects_report_docker_info_failure_after_install_as_verify_failure() {
     assert!(matches!(
         execution.terminal.failure(),
         Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
-            step: HostRunnerStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
-            reason: HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed,
+            step: HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+            reason: HostRunnerStepFailureReason::ContainerRuntimePrepareFailed,
             message,
         })) if message.as_str() == "simulated docker info failure"
     ));
@@ -886,7 +956,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         )
         .expect("join material is stored"),
         format!(
-            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
+            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet=10.198.0.0/16\n",
             ployz_host_runner::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -948,6 +1018,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     assert_eq!(
         effects.runner().systemctl_calls,
         vec![
+            vec!["restart".to_owned(), "docker".to_owned()],
             vec!["daemon-reload".to_owned()],
             vec![
                 "enable".to_owned(),
@@ -999,7 +1070,7 @@ fn local_effects_store_redacted_join_material() {
         )
         .expect("join material is stored"),
         format!(
-            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
+            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet=10.198.0.0/16\n",
             ployz_host_runner::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -1186,9 +1257,17 @@ impl HostRunnerCommandRunner for RecordingRunner {
         Err(failure_message("simulated docker info failure"))
     }
 
+    fn docker_is_installed(&mut self) -> bool {
+        self.docker_installed
+    }
+
     fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
         self.docker_info()?;
         Ok(self.containerd_snapshotter)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
     }
 
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {

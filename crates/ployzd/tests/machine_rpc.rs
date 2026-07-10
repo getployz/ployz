@@ -57,7 +57,6 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .expect("received request lock is not poisoned")
             .as_slice(),
         [MachineContainerRunRpcRequest {
-            image: image("registry.example/api:rev_2"),
             pull: MachineImagePull::Registry {
                 reference: image("registry.example/api:rev_2"),
             },
@@ -561,7 +560,6 @@ async fn test_nats() -> TestNats {
 
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        image: image("registry.example/api:rev_2"),
         pull: MachineImagePull::Registry {
             reference: image("registry.example/api:rev_2"),
         },
@@ -592,7 +590,6 @@ fn container_run_request_wire_shape_survived_run_spec_dissolution() {
     assert_eq!(
         json,
         serde_json::json!({
-            "image": "registry.example/api:rev_2",
             "pull": {
                 "source": "registry",
                 "reference": "registry.example/api:rev_2",

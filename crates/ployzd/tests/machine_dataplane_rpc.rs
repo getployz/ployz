@@ -603,6 +603,7 @@ fn machine_facts(machine_id: &MachineId, public_ip_octet: Option<u8>) -> Machine
             )],
         }),
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("machine facts are valid")

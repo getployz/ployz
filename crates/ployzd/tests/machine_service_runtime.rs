@@ -186,7 +186,6 @@ async fn machine_role_service_creates_missing_container() {
     assert_eq!(
         state.creates(),
         vec![CreateManagedContainer {
-            image: image("registry.example/api:rev_2"),
             pull: MachineImagePull::Registry {
                 reference: image("registry.example/api:rev_2"),
             },
@@ -270,7 +269,6 @@ async fn machine_role_service_creates_when_sibling_service_uses_same_operation_s
     assert_eq!(
         state.creates(),
         vec![CreateManagedContainer {
-            image: image("registry.example/api:rev_2"),
             pull: MachineImagePull::Registry {
                 reference: image("registry.example/api:rev_2"),
             },
@@ -1526,7 +1524,6 @@ async fn test_nats() -> TestNats {
 
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        image: image("registry.example/api:rev_2"),
         pull: MachineImagePull::Registry {
             reference: image("registry.example/api:rev_2"),
         },

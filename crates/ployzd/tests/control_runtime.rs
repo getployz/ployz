@@ -848,6 +848,7 @@ fn machine_facts(
             mesh_endpoints: Vec::new(),
         }),
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("machine facts are valid")

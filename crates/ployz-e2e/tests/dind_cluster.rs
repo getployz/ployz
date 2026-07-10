@@ -719,7 +719,8 @@ async fn scenario_repush_transfers_only_new_layers() {
             "derived image must reuse every parent layer: first={first:?} second={second:?}"
         );
         assert_eq!(
-            second.uploaded.count, 1,
+            second.uploaded.count(),
+            1,
             "derived image must upload exactly its new layer: {second:?}"
         );
     })

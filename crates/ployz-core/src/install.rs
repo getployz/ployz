@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
+use crate::dataplane::MachineEndpointSupernet;
 use crate::ids::MachineId;
 use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
 use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
@@ -21,6 +22,8 @@ pub const INTENT_MIRROR_FILE_NAME: &str = "intent-mirror.json";
 #[serde(deny_unknown_fields)]
 pub struct FirstMachineInstallSpec {
     pub machine_id: MachineId,
+    #[serde(default = "MachineEndpointSupernet::default_v1")]
+    pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub gateway: GatewayRole,
     pub dns: DnsRole,
     pub machine_public_ip: Option<IpAddr>,
@@ -194,6 +197,8 @@ impl fmt::Debug for WrappedCoreSeeds {
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinMaterial {
     pub cluster_name: MachineJoinClusterName,
+    #[serde(default = "MachineEndpointSupernet::default_v1")]
+    pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub trusted_nats: MachineJoinTrustedNats,
     /// The cluster CA signing key wrapped with the recovery secret (ADR 0031),

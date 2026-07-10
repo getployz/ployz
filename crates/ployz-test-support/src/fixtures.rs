@@ -65,6 +65,7 @@ pub fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec
 pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoinMaterial {
     MachineJoinMaterial {
         cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
             .expect("valid runtime nats url"),
         trusted_nats: MachineJoinTrustedNats {

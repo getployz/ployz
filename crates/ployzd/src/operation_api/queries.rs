@@ -1088,6 +1088,7 @@ mod tests {
                 .expect("valid container snapshot"),
             None,
             ployz_test_support::fixtures::test_disk_space(),
+            ployz_core::image::OciPlatform::current(),
             1,
         )
         .expect("valid machine facts")

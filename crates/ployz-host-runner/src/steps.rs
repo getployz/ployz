@@ -6,6 +6,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
@@ -34,6 +35,7 @@ const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
+const PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUPERNET";
 const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +64,7 @@ impl HostRunnerStepPlan {
 pub enum HostRunnerStep {
     VerifyHost(HostPrerequisite),
     PrepareDataplaneHost,
-    PrepareContainerRuntime(ContainerRuntime),
+    PrepareContainerRuntime(ContainerRuntime, MachineEndpointSupernet),
     VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
     WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentStep),
@@ -105,7 +107,7 @@ impl HostRunnerStepLabel {
         match step {
             HostRunnerStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
             HostRunnerStep::PrepareDataplaneHost => Self::PrepareDataplaneHost,
-            HostRunnerStep::PrepareContainerRuntime(runtime) => {
+            HostRunnerStep::PrepareContainerRuntime(runtime, _) => {
                 Self::PrepareContainerRuntime(*runtime)
             }
             HostRunnerStep::VerifyContainerRuntime(runtime) => {
@@ -195,6 +197,7 @@ pub struct HostRunnerJoinMaterial {
     trusted_ca_pem: NatsCaCertificatePem,
     recovery_key_wrapped: WrappedCaKey,
     core_seeds_wrapped: WrappedCoreSeeds,
+    dataplane_endpoint_supernet: MachineEndpointSupernet,
 }
 
 impl HostRunnerJoinMaterial {
@@ -203,13 +206,14 @@ impl HostRunnerJoinMaterial {
         join_bundle: &MachineJoinBundle,
         secret_delivery: &MachineJoinSecretDelivery,
     ) -> Result<Self, JoinMaterialError> {
-        Self::new(
+        Self::new_with_supernet(
             machine_id,
             join_bundle.material.cluster_name.as_str(),
             secret_delivery.nats_credentials.clone(),
             join_bundle.material.trusted_nats.ca_pem.clone(),
             join_bundle.material.recovery_key_wrapped.clone(),
             join_bundle.material.core_seeds_wrapped.clone(),
+            join_bundle.material.dataplane_endpoint_supernet.clone(),
         )
     }
 
@@ -221,10 +225,31 @@ impl HostRunnerJoinMaterial {
         recovery_key_wrapped: WrappedCaKey,
         core_seeds_wrapped: WrappedCoreSeeds,
     ) -> Result<Self, JoinMaterialError> {
-        let redacted = RedactedJoinMaterial::new(
+        Self::new_with_supernet(
+            machine_id,
+            cluster_name,
+            nats_credentials,
+            trusted_ca_pem,
+            recovery_key_wrapped,
+            core_seeds_wrapped,
+            MachineEndpointSupernet::default_v1(),
+        )
+    }
+
+    pub fn new_with_supernet(
+        machine_id: MachineId,
+        cluster_name: impl Into<String>,
+        nats_credentials: NatsUserSeed,
+        trusted_ca_pem: NatsCaCertificatePem,
+        recovery_key_wrapped: WrappedCaKey,
+        core_seeds_wrapped: WrappedCoreSeeds,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
+    ) -> Result<Self, JoinMaterialError> {
+        let redacted = RedactedJoinMaterial::new_with_supernet(
             machine_id,
             cluster_name,
             ca_pem_sha256(trusted_ca_pem.as_str()),
+            dataplane_endpoint_supernet.clone(),
         )?;
         Ok(Self {
             redacted,
@@ -232,6 +257,7 @@ impl HostRunnerJoinMaterial {
             trusted_ca_pem,
             recovery_key_wrapped,
             core_seeds_wrapped,
+            dataplane_endpoint_supernet,
         })
     }
 
@@ -267,6 +293,11 @@ impl HostRunnerJoinMaterial {
     pub fn core_seeds_wrapped(&self) -> &WrappedCoreSeeds {
         &self.core_seeds_wrapped
     }
+
+    #[must_use]
+    pub const fn dataplane_endpoint_supernet(&self) -> &MachineEndpointSupernet {
+        &self.dataplane_endpoint_supernet
+    }
 }
 
 /// Human-diffable digest of the trusted cluster CA certificate.
@@ -281,6 +312,7 @@ pub struct RedactedJoinMaterial {
     pub machine_id: MachineId,
     pub cluster_name: String,
     pub trusted_nats_ca_sha256: String,
+    pub dataplane_endpoint_supernet: MachineEndpointSupernet,
 }
 
 impl RedactedJoinMaterial {
@@ -288,6 +320,20 @@ impl RedactedJoinMaterial {
         machine_id: MachineId,
         cluster_name: impl Into<String>,
         trusted_nats_ca_sha256: impl Into<String>,
+    ) -> Result<Self, JoinMaterialError> {
+        Self::new_with_supernet(
+            machine_id,
+            cluster_name,
+            trusted_nats_ca_sha256,
+            MachineEndpointSupernet::default_v1(),
+        )
+    }
+
+    pub fn new_with_supernet(
+        machine_id: MachineId,
+        cluster_name: impl Into<String>,
+        trusted_nats_ca_sha256: impl Into<String>,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
     ) -> Result<Self, JoinMaterialError> {
         let cluster_name = line_value(JoinMaterialField::ClusterName, cluster_name.into())?;
         let trusted_nats_ca_sha256 = line_value(
@@ -299,6 +345,7 @@ impl RedactedJoinMaterial {
             machine_id,
             cluster_name,
             trusted_nats_ca_sha256,
+            dataplane_endpoint_supernet,
         })
     }
 }
@@ -387,6 +434,7 @@ impl HostRunnerJoinTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstMachineInstallTarget {
     pub machine_id: MachineId,
+    pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub nats_server_artifact: ArtifactTarget,
@@ -443,8 +491,12 @@ impl FirstMachineInstallTarget {
                 .to_path_buf(),
         )
         .with_ebpf_ctl_path(dataplane_artifacts.ebpf_ctl.install_path().to_path_buf());
+        let dataplane_endpoint_supernet = MachineEndpointSupernet::default_v1();
+        let role_environment =
+            role_environment.with_dataplane_endpoint_supernet(dataplane_endpoint_supernet.clone());
         Self {
             machine_id,
+            dataplane_endpoint_supernet,
             ployzd_artifact,
             dataplane_artifacts,
             nats_server_artifact,
@@ -546,6 +598,18 @@ impl FirstMachineInstallTarget {
         self.machine_public_ip = Some(public_ip);
         self
     }
+
+    #[must_use]
+    pub fn with_dataplane_endpoint_supernet(
+        mut self,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
+    ) -> Self {
+        self.role_environment = self
+            .role_environment
+            .with_dataplane_endpoint_supernet(dataplane_endpoint_supernet.clone());
+        self.dataplane_endpoint_supernet = dataplane_endpoint_supernet;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -601,6 +665,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     ebpf_bytecode_path: Option<PathBuf>,
     ebpf_ctl_path: Option<PathBuf>,
     seed_from_mirror: Option<PathBuf>,
+    dataplane_endpoint_supernet: Option<MachineEndpointSupernet>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -621,6 +686,7 @@ impl PloyzdRoleEnvironmentTarget {
             ebpf_bytecode_path: None,
             ebpf_ctl_path: None,
             seed_from_mirror: None,
+            dataplane_endpoint_supernet: None,
         }
     }
 
@@ -703,6 +769,15 @@ impl PloyzdRoleEnvironmentTarget {
     }
 
     #[must_use]
+    pub fn with_dataplane_endpoint_supernet(
+        mut self,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
+    ) -> Self {
+        self.dataplane_endpoint_supernet = Some(dataplane_endpoint_supernet);
+        self
+    }
+
+    #[must_use]
     pub fn render_for_role(&self, role: &DaemonProcessRole) -> String {
         let mut output = format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str());
         output.push_str("PLOYZ_NATS_CA_FILE=");
@@ -735,6 +810,14 @@ impl PloyzdRoleEnvironmentTarget {
             output.push_str(PLOYZ_SEED_FROM_MIRROR_ENV);
             output.push('=');
             output.push_str(&path.display().to_string());
+            output.push('\n');
+        }
+        if matches!(role, DaemonProcessRole::Control)
+            && let Some(supernet) = &self.dataplane_endpoint_supernet
+        {
+            output.push_str(PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV);
+            output.push('=');
+            output.push_str(&supernet.as_string());
             output.push('\n');
         }
         if matches!(role, DaemonProcessRole::Gateway) {
@@ -825,7 +908,10 @@ fn host_runner_join_material_steps(target: &HostRunnerJoinTarget) -> Vec<HostRun
 fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunnerStep> {
     let mut steps = vec![
         HostRunnerStep::PrepareDataplaneHost,
-        HostRunnerStep::PrepareContainerRuntime(ContainerRuntime::Docker),
+        HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            target.material.dataplane_endpoint_supernet().clone(),
+        ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
     ];
@@ -864,6 +950,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorePromoteTarget {
     pub machine_id: MachineId,
+    pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub nats_server_artifact: ArtifactTarget,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
@@ -895,6 +982,7 @@ impl CorePromoteTarget {
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
         core_seeds_wrapped: WrappedCoreSeeds,
+        dataplane_endpoint_supernet: MachineEndpointSupernet,
         machine_public_ip: Option<IpAddr>,
         seed_from_mirror: PathBuf,
         machine_join_template_file: AbsoluteInstallPath,
@@ -915,9 +1003,11 @@ impl CorePromoteTarget {
             RoleNatsCredentials::cluster(&nats_material),
         )
         .with_seed_from_mirror(seed_from_mirror)
+        .with_dataplane_endpoint_supernet(dataplane_endpoint_supernet.clone())
         .with_machine_join_template_file(machine_join_template_file.clone());
         Self {
             machine_id,
+            dataplane_endpoint_supernet,
             nats_server_artifact,
             ployzd_artifact,
             dataplane_artifacts,
@@ -983,6 +1073,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
                 join_bundle: MachineJoinBundle {
                     material: MachineJoinMaterial {
                         cluster_name: target.machine_join_cluster_name,
+                        dataplane_endpoint_supernet: target.dataplane_endpoint_supernet.clone(),
                         runtime_nats_url: target.machine_join_runtime_nats_url,
                         trusted_nats: MachineJoinTrustedNats {
                             ca_pem: target.nats_identity.ca.clone(),
@@ -1021,7 +1112,10 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
     let mut steps = vec![
         HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         HostRunnerStep::PrepareDataplaneHost,
-        HostRunnerStep::PrepareContainerRuntime(ContainerRuntime::Docker),
+        HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            target.dataplane_endpoint_supernet.clone(),
+        ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone()),
@@ -1056,6 +1150,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
             join_bundle: MachineJoinBundle {
                 material: MachineJoinMaterial {
                     cluster_name: target.machine_join_cluster_name.clone(),
+                    dataplane_endpoint_supernet: target.dataplane_endpoint_supernet.clone(),
                     runtime_nats_url: target.machine_join_runtime_nats_url.clone(),
                     trusted_nats: MachineJoinTrustedNats {
                         ca_pem: target.nats_identity.ca.clone(),
@@ -1191,7 +1286,7 @@ impl HostRunnerStepFailureReason {
         match step {
             HostRunnerStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
             HostRunnerStep::PrepareDataplaneHost => Self::DataplaneHostPrepareFailed,
-            HostRunnerStep::PrepareContainerRuntime(_) => Self::ContainerRuntimePrepareFailed,
+            HostRunnerStep::PrepareContainerRuntime(_, _) => Self::ContainerRuntimePrepareFailed,
             HostRunnerStep::VerifyContainerRuntime(_) => Self::ContainerRuntimeVerifyFailed,
             HostRunnerStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
             HostRunnerStep::WritePloyzdRoleEnvironment(_) => Self::RoleEnvironmentWriteFailed,

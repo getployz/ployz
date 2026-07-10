@@ -35,6 +35,7 @@ impl MachineFactsSnapshot {
         containers: MachineContainerObservationSnapshot,
         endpoints: Option<MachineEndpointObservation>,
         disk_space: MachineDiskSpace,
+        platform: OciPlatform,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
         if containers.machine_id() != &machine_id {
@@ -63,7 +64,7 @@ impl MachineFactsSnapshot {
             containers,
             endpoints,
             disk_space,
-            platform: OciPlatform::current(),
+            platform,
             observed_at_unix_ms,
         })
     }
@@ -103,7 +104,7 @@ impl MachineFactsSnapshot {
         observation: ManagedContainerObservation,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
-        Self::try_new_with_platform(
+        Self::try_new(
             self.machine_id.clone(),
             self.containers
                 .with_container_replaced(observation)
@@ -120,7 +121,7 @@ impl MachineFactsSnapshot {
         container_id: &ContainerId,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
-        Self::try_new_with_platform(
+        Self::try_new(
             self.machine_id.clone(),
             self.containers
                 .with_container_removed(container_id)
@@ -130,25 +131,6 @@ impl MachineFactsSnapshot {
             self.platform.clone(),
             observed_at_unix_ms,
         )
-    }
-
-    pub fn try_new_with_platform(
-        machine_id: MachineId,
-        containers: MachineContainerObservationSnapshot,
-        endpoints: Option<MachineEndpointObservation>,
-        disk_space: MachineDiskSpace,
-        platform: OciPlatform,
-        observed_at_unix_ms: u64,
-    ) -> Result<Self, MachineFactsSnapshotError> {
-        let mut facts = Self::try_new(
-            machine_id,
-            containers,
-            endpoints,
-            disk_space,
-            observed_at_unix_ms,
-        )?;
-        facts.platform = platform;
-        Ok(facts)
     }
 }
 
@@ -216,7 +198,7 @@ impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
     type Error = MachineFactsSnapshotError;
 
     fn try_from(value: MachineFactsSnapshotWire) -> Result<Self, Self::Error> {
-        Self::try_new_with_platform(
+        Self::try_new(
             value.machine_id,
             value.containers,
             value.endpoints,

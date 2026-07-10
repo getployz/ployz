@@ -28,30 +28,12 @@ impl DataplanePrepareRequest {
         plan: &DeployPlan,
         dataplane_members: &[DataplaneMember],
     ) -> Self {
-        Self::for_deploy_plan_with_additional(
-            operation_id,
-            plan,
-            dataplane_members,
-            std::iter::empty(),
-        )
-    }
-
-    #[must_use]
-    pub fn for_deploy_plan_with_additional(
-        operation_id: OperationId,
-        plan: &DeployPlan,
-        dataplane_members: &[DataplaneMember],
-        additional_machines: impl IntoIterator<Item = MachineId>,
-    ) -> Self {
         let machines = sorted_unique_machines(
-            plan.target_machines()
-                .into_iter()
-                .chain(
-                    dataplane_members
-                        .iter()
-                        .map(|member| member.machine_id.clone()),
-                )
-                .chain(additional_machines),
+            plan.target_machines().into_iter().chain(
+                dataplane_members
+                    .iter()
+                    .map(|member| member.machine_id.clone()),
+            ),
         );
         let membership = machines
             .into_iter()

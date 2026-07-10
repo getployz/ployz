@@ -1,17 +1,21 @@
 //! Machine-local image push and inspection handlers.
 
+use super::protocol::MachineImagePull;
 use super::response::{failure_message, machine_domain_error, machine_success};
 use crate::adapters::containerd_content::{ContainerdContentStore, ContentIngest, ContentLease};
 use crate::adapters::docker::runner::DockerManagedContainerRunner;
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
-    IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, IMAGE_MESH_REGISTRY_PORT,
-    ImageBlobCheckOk, ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk,
-    ImageBlobPushOutcome, ImageBlobPushRequest, ImageBlobPushResponse, ImageInspectOk,
-    ImageInspectRequest, ImageInspectResponse, ImageManifestPushOk, ImageManifestPushRequest,
-    ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId, OciDigest, OciPlatform,
+    IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckOk,
+    ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
+    ImageBlobPushRequest, ImageBlobPushResponse, ImageEnsureOk, ImageEnsureRequest,
+    ImageEnsureResponse, ImageInspectOk, ImageInspectRequest, ImageInspectResponse,
+    ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse, ImageRpcDomainError,
+    ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest,
+    OciPlatform,
 };
+use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -21,12 +25,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const UPLOAD_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
-#[derive(Clone)]
-pub(crate) enum ImageServiceState {
-    Available(Box<AvailableImageService>),
-    Unavailable,
-}
+const MAX_UPLOAD_SESSIONS: usize = 16;
 
 #[derive(Clone)]
 pub(crate) struct AvailableImageService {
@@ -89,15 +88,15 @@ struct OciImageConfig {
 
 pub(crate) async fn handle_image_blob_check(
     machine_id: MachineId,
-    state: ImageServiceState,
+    state: Option<AvailableImageService>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let Some(state) = available_state(machine_id.clone(), state) else {
-        return unavailable(machine_id, ImageEndpoint::BlobCheck);
+    let Some(state) = state else {
+        return unavailable(machine_id);
     };
     let request = match serde_json::from_slice::<ImageBlobCheckRequest>(&request.payload) {
         Ok(request) => request,
-        Err(error) => return invalid_request(machine_id, ImageEndpoint::BlobCheck, error),
+        Err(error) => return invalid_request(machine_id, error),
     };
     let mut present = Vec::new();
     for digest in request.digests {
@@ -107,7 +106,6 @@ pub(crate) async fn handle_image_blob_check(
             Err(error) => {
                 return image_error(
                     machine_id,
-                    ImageEndpoint::BlobCheck,
                     ImageRpcDomainError::StorageFailed {
                         message: failure_message(error.to_string()),
                     },
@@ -123,11 +121,11 @@ pub(crate) async fn handle_image_blob_check(
 
 pub(crate) async fn handle_image_blob_push(
     machine_id: MachineId,
-    state: ImageServiceState,
+    state: Option<AvailableImageService>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let Some(state) = available_state(machine_id.clone(), state) else {
-        return unavailable(machine_id, ImageEndpoint::BlobPush);
+    let Some(state) = state else {
+        return unavailable(machine_id);
     };
     if header(&request, IMAGE_BLOB_PUSH_ACTION_HEADER)
         .is_some_and(|value| value == IMAGE_BLOB_PUSH_ACTION_CHUNK)
@@ -136,7 +134,7 @@ pub(crate) async fn handle_image_blob_push(
     }
     let action = match serde_json::from_slice::<ImageBlobPushRequest>(&request.payload) {
         Ok(action) => action,
-        Err(error) => return invalid_request(machine_id, ImageEndpoint::BlobPush, error),
+        Err(error) => return invalid_request(machine_id, error),
     };
     match action {
         ImageBlobPushRequest::Begin { digest, total_size } => {
@@ -154,21 +152,33 @@ async fn begin_upload(
     digest: OciDigest,
     total_size: u64,
 ) -> NatsServiceResponse {
+    sweep_expired_uploads(state).await;
     let lease = match state.content.acquire_lease().await {
         Ok(lease) => lease,
         Err(error) => {
-            return storage_error(machine_id, ImageEndpoint::BlobPush, error.to_string());
+            return storage_error(machine_id, error.to_string());
         }
     };
     let upload_id =
         match ImageUploadId::try_new(format!("upload_{}", nuid::next().to_ascii_lowercase())) {
             Ok(upload_id) => upload_id,
             Err(error) => {
-                return storage_error(machine_id, ImageEndpoint::BlobPush, error.to_string());
+                return storage_error(machine_id, error.to_string());
             }
         };
     let ingest = ContentIngest::new(digest, total_size, lease);
-    state.uploads.lock().await.insert(
+    let mut uploads = state.uploads.lock().await;
+    if uploads.len() >= MAX_UPLOAD_SESSIONS {
+        drop(uploads);
+        let _ = state.content.release_lease(ingest.lease()).await;
+        return image_error(
+            machine_id,
+            ImageRpcDomainError::UploadBusy {
+                maximum: u16::try_from(MAX_UPLOAD_SESSIONS).unwrap_or(u16::MAX),
+            },
+        );
+    }
+    uploads.insert(
         upload_id.clone(),
         Arc::new(Mutex::new(UploadSession {
             ingest,
@@ -179,11 +189,28 @@ async fn begin_upload(
     );
     machine_success(ImageBlobPushResponse::Ok(ImageBlobPushOk {
         machine_id,
-        outcome: ImageBlobPushOutcome::Begun {
-            upload_id,
-            offset: 0,
-        },
+        outcome: ImageBlobPushOutcome::Begun { upload_id },
     }))
+}
+
+async fn sweep_expired_uploads(state: &AvailableImageService) {
+    let sessions = state
+        .uploads
+        .lock()
+        .await
+        .iter()
+        .map(|(upload_id, session)| (upload_id.clone(), Arc::clone(session)))
+        .collect::<Vec<_>>();
+    for (upload_id, session) in sessions {
+        let session = session.lock().await;
+        if Instant::now() < session.deadline {
+            continue;
+        }
+        let lease = session.ingest.lease();
+        drop(session);
+        state.uploads.lock().await.remove(&upload_id);
+        let _ = state.content.release_lease(lease).await;
+    }
 }
 
 async fn push_chunk(
@@ -194,7 +221,6 @@ async fn push_chunk(
     if request.payload.len() > IMAGE_BLOB_CHUNK_MAX_BYTES {
         return image_error(
             machine_id,
-            ImageEndpoint::BlobPush,
             ImageRpcDomainError::ChunkTooLarge {
                 size: u64::try_from(request.payload.len()).unwrap_or(u64::MAX),
                 maximum: u64::try_from(IMAGE_BLOB_CHUNK_MAX_BYTES).unwrap_or(u64::MAX),
@@ -207,14 +233,14 @@ async fn push_chunk(
         .and_then(|value| ImageUploadId::try_new(value).map_err(|_| "invalid upload id"))
     {
         Ok(upload_id) => upload_id,
-        Err(message) => return invalid_message(machine_id, ImageEndpoint::BlobPush, message),
+        Err(message) => return invalid_message(machine_id, message),
     };
     let offset = match header(&request, IMAGE_BLOB_PUSH_OFFSET_HEADER)
         .ok_or("missing chunk offset")
         .and_then(|value| value.parse::<u64>().map_err(|_| "invalid chunk offset"))
     {
         Ok(offset) => offset,
-        Err(message) => return invalid_message(machine_id, ImageEndpoint::BlobPush, message),
+        Err(message) => return invalid_message(machine_id, message),
     };
     let session = {
         let uploads = state.uploads.lock().await;
@@ -223,7 +249,6 @@ async fn push_chunk(
     let Some(session) = session else {
         return image_error(
             machine_id,
-            ImageEndpoint::BlobPush,
             ImageRpcDomainError::UploadNotFound { upload_id },
         );
     };
@@ -235,14 +260,17 @@ async fn push_chunk(
         let _ = state.content.release_lease(lease).await;
         return image_error(
             machine_id,
-            ImageEndpoint::BlobPush,
             ImageRpcDomainError::UploadNotFound { upload_id },
         );
+    }
+    if let Err(error) =
+        validate_chunk_bounds(session.ingest.total_size(), offset, request.payload.len())
+    {
+        return image_error(machine_id, error);
     }
     if offset < session.offset || session.pending.contains_key(&offset) {
         return image_error(
             machine_id,
-            ImageEndpoint::BlobPush,
             ImageRpcDomainError::OffsetMismatch {
                 expected: session.offset,
                 actual: offset,
@@ -261,7 +289,7 @@ async fn push_chunk(
             {
                 Ok(next_offset) => next_offset,
                 Err(error) => {
-                    return storage_error(machine_id, ImageEndpoint::BlobPush, error.to_string());
+                    return storage_error(machine_id, error.to_string());
                 }
             };
             session.offset = next_offset;
@@ -272,14 +300,29 @@ async fn push_chunk(
             bytes = pending;
         }
     }
-    let next_offset = session.offset;
     machine_success(ImageBlobPushResponse::Ok(ImageBlobPushOk {
         machine_id,
-        outcome: ImageBlobPushOutcome::ChunkAccepted {
-            upload_id,
-            next_offset,
-        },
+        outcome: ImageBlobPushOutcome::ChunkAccepted { upload_id },
     }))
+}
+
+fn validate_chunk_bounds(
+    total_size: u64,
+    offset: u64,
+    chunk_size: usize,
+) -> Result<(), ImageRpcDomainError> {
+    let size = u64::try_from(chunk_size).unwrap_or(u64::MAX);
+    if offset
+        .checked_add(size)
+        .is_some_and(|end| end <= total_size)
+    {
+        return Ok(());
+    }
+    Err(ImageRpcDomainError::ChunkOutOfBounds {
+        total_size,
+        offset,
+        size,
+    })
 }
 
 async fn commit_upload(
@@ -290,7 +333,6 @@ async fn commit_upload(
     let Some(session) = state.uploads.lock().await.remove(&upload_id) else {
         return image_error(
             machine_id,
-            ImageEndpoint::BlobPush,
             ImageRpcDomainError::UploadNotFound { upload_id },
         );
     };
@@ -301,7 +343,6 @@ async fn commit_upload(
         let _ = state.content.release_lease(lease).await;
         return image_error(
             machine_id,
-            ImageEndpoint::BlobPush,
             ImageRpcDomainError::UploadNotFound { upload_id },
         );
     }
@@ -310,7 +351,7 @@ async fn commit_upload(
         .commit_ingest(&session.ingest, session.offset)
         .await
     {
-        return storage_error(machine_id, ImageEndpoint::BlobPush, error.to_string());
+        return storage_error(machine_id, error.to_string());
     }
     let digest = session.ingest.digest().clone();
     let size = session.ingest.total_size();
@@ -327,32 +368,32 @@ async fn commit_upload(
 
 pub(crate) async fn handle_image_manifest_push(
     machine_id: MachineId,
-    state: ImageServiceState,
+    state: Option<AvailableImageService>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let Some(state) = available_state(machine_id.clone(), state) else {
-        return unavailable(machine_id, ImageEndpoint::ManifestPush);
+    let Some(state) = state else {
+        return unavailable(machine_id);
     };
     let request = match serde_json::from_slice::<ImageManifestPushRequest>(&request.payload) {
         Ok(request) => request,
-        Err(error) => return invalid_request(machine_id, ImageEndpoint::ManifestPush, error),
+        Err(error) => return invalid_request(machine_id, error),
     };
     let manifest = match parse_manifest(&request.manifest_bytes) {
         Ok(manifest) => manifest,
-        Err(message) => return invalid_message(machine_id, ImageEndpoint::ManifestPush, message),
+        Err(message) => return invalid_message(machine_id, message),
     };
     if let Some(response) = verify_manifest_content(&machine_id, &state, &manifest).await {
         return response;
     }
     let platform = match read_platform(&state, &manifest.config.digest).await {
         Ok(platform) => platform,
-        Err(error) => return image_error(machine_id, ImageEndpoint::ManifestPush, error),
+        Err(error) => return image_error(machine_id, error),
     };
     let manifest_digest = OciDigest::sha256(&request.manifest_bytes);
     let lease = match state.content.acquire_lease().await {
         Ok(lease) => lease,
         Err(error) => {
-            return storage_error(machine_id, ImageEndpoint::ManifestPush, error.to_string());
+            return storage_error(machine_id, error.to_string());
         }
     };
     let ingest = ContentIngest::new(
@@ -367,11 +408,11 @@ pub(crate) async fn handle_image_manifest_push(
     {
         Ok(offset) => offset,
         Err(error) => {
-            return storage_error(machine_id, ImageEndpoint::ManifestPush, error.to_string());
+            return storage_error(machine_id, error.to_string());
         }
     };
     if let Err(error) = state.content.commit_ingest(&ingest, offset).await {
-        return storage_error(machine_id, ImageEndpoint::ManifestPush, error.to_string());
+        return storage_error(machine_id, error.to_string());
     }
     state
         .committed_leases
@@ -389,83 +430,108 @@ pub(crate) async fn handle_image_manifest_push(
 
 pub(crate) async fn handle_image_inspect(
     machine_id: MachineId,
-    state: ImageServiceState,
+    state: Option<AvailableImageService>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let Some(state) = available_state(machine_id.clone(), state) else {
-        return unavailable(machine_id, ImageEndpoint::Inspect);
+    let Some(state) = state else {
+        return unavailable(machine_id);
     };
     let request = match serde_json::from_slice::<ImageInspectRequest>(&request.payload) {
         Ok(request) => request,
-        Err(error) => return invalid_request(machine_id, ImageEndpoint::Inspect, error),
+        Err(error) => return invalid_request(machine_id, error),
     };
-    let bytes = match state.content.read_blob(&request.manifest_digest).await {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            return image_error(
-                machine_id,
-                ImageEndpoint::Inspect,
-                ImageRpcDomainError::ImageMissing {
-                    digest: request.manifest_digest,
-                },
-            );
-        }
-        Err(error) => return storage_error(machine_id, ImageEndpoint::Inspect, error.to_string()),
+    let inspected = match inspect_content(&state, &request.manifest_digest, &request.image_id).await
+    {
+        Ok(inspected) => inspected,
+        Err(error) => return image_error(machine_id, error),
     };
-    let actual_manifest_digest = OciDigest::sha256(&bytes);
-    if actual_manifest_digest != request.manifest_digest {
-        return image_error(
-            machine_id,
-            ImageEndpoint::Inspect,
-            ImageRpcDomainError::DigestMismatch {
-                expected: request.manifest_digest,
-                actual: actual_manifest_digest,
-            },
-        );
+    machine_success(ImageInspectResponse::Ok(ImageInspectOk {
+        machine_id,
+        platform: inspected.platform,
+    }))
+}
+
+pub(crate) async fn handle_image_ensure(
+    machine_id: MachineId,
+    state: Option<AvailableImageService>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let Some(state) = state else {
+        return unavailable(machine_id);
+    };
+    let request = match serde_json::from_slice::<ImageEnsureRequest>(&request.payload) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(machine_id, error),
+    };
+    let inspected = match inspect_content(&state, &request.manifest_digest, &request.image_id).await
+    {
+        Ok(inspected) => inspected,
+        Err(error) => return image_error(machine_id, error),
+    };
+    let reference = MachineImagePull::MeshSeed {
+        seed_host: state.seed_host,
+        repository: request.repository,
+        manifest_digest: request.manifest_digest.clone(),
     }
-    let manifest = match parse_manifest(&bytes) {
-        Ok(manifest) => manifest,
-        Err(message) => return invalid_message(machine_id, ImageEndpoint::Inspect, message),
-    };
-    if manifest.config.digest != request.image_id {
-        return image_error(
-            machine_id,
-            ImageEndpoint::Inspect,
-            ImageRpcDomainError::ConfigMismatch {
-                expected: request.image_id,
-                actual: manifest.config.digest,
-            },
-        );
-    }
-    let platform = match read_platform(&state, &request.image_id).await {
-        Ok(platform) => platform,
-        Err(error) => return image_error(machine_id, ImageEndpoint::Inspect, error),
-    };
-    let reference = format!(
-        "{}:{}/{repository}@{manifest_digest}",
-        state.seed_host,
-        IMAGE_MESH_REGISTRY_PORT,
-        repository = request.repository,
-        manifest_digest = request.manifest_digest,
-    );
+    .reference();
     if let Err(error) = state.docker.pull_image(&reference).await {
         return image_error(
             machine_id,
-            ImageEndpoint::Inspect,
             ImageRpcDomainError::SelfPullFailed {
                 message: failure_message(runner_error_message(error)),
             },
         );
     }
-    if let Err(error) = release_manifest_leases(&state, &manifest, &request.manifest_digest).await {
-        return storage_error(machine_id, ImageEndpoint::Inspect, error);
+    if let Err(error) =
+        release_manifest_leases(&state, &inspected.manifest, &request.manifest_digest).await
+    {
+        return storage_error(machine_id, error);
     }
-    machine_success(ImageInspectResponse::Ok(ImageInspectOk {
+    machine_success(ImageEnsureResponse::Ok(ImageEnsureOk {
         machine_id,
-        manifest_digest: request.manifest_digest,
-        image_id: request.image_id,
-        platform,
+        platform: inspected.platform,
     }))
+}
+
+struct InspectedImage {
+    manifest: OciManifest,
+    platform: OciPlatform,
+}
+
+async fn inspect_content(
+    state: &AvailableImageService,
+    manifest_digest: &OciDigest,
+    image_id: &OciDigest,
+) -> Result<InspectedImage, ImageRpcDomainError> {
+    let bytes = state
+        .content
+        .read_blob(manifest_digest)
+        .await
+        .map_err(|error| ImageRpcDomainError::StorageFailed {
+            message: failure_message(error.to_string()),
+        })?
+        .ok_or_else(|| ImageRpcDomainError::ImageMissing {
+            digest: manifest_digest.clone(),
+        })?;
+    let actual_manifest_digest = OciDigest::sha256(&bytes);
+    if actual_manifest_digest != *manifest_digest {
+        return Err(ImageRpcDomainError::DigestMismatch {
+            expected: manifest_digest.clone(),
+            actual: actual_manifest_digest,
+        });
+    }
+    let manifest =
+        parse_manifest(&bytes).map_err(|message| ImageRpcDomainError::InvalidRequest {
+            message: failure_message(message),
+        })?;
+    if manifest.config.digest != *image_id {
+        return Err(ImageRpcDomainError::ConfigMismatch {
+            expected: image_id.clone(),
+            actual: manifest.config.digest,
+        });
+    }
+    let platform = read_platform(state, image_id).await?;
+    Ok(InspectedImage { manifest, platform })
 }
 
 fn parse_manifest(bytes: &[u8]) -> Result<OciManifest, &'static str> {
@@ -473,14 +539,10 @@ fn parse_manifest(bytes: &[u8]) -> Result<OciManifest, &'static str> {
     if manifest.schema_version != 2 {
         return Err("manifest schema version must be 2");
     }
-    if manifest.media_type != "application/vnd.oci.image.manifest.v1+json"
-        && manifest.media_type != "application/vnd.docker.distribution.manifest.v2+json"
-    {
+    if manifest.media_type != OCI_IMAGE_MANIFEST_MEDIA_TYPE {
         return Err("unsupported image manifest media type");
     }
-    if manifest.config.media_type != "application/vnd.oci.image.config.v1+json"
-        && manifest.config.media_type != "application/vnd.docker.container.image.v1+json"
-    {
+    if manifest.config.media_type != OCI_IMAGE_CONFIG_MEDIA_TYPE {
         return Err("unsupported image config media type");
     }
     Ok(manifest)
@@ -497,7 +559,6 @@ async fn verify_manifest_content(
             Ok(Some(info)) => {
                 return Some(image_error(
                     machine_id.clone(),
-                    ImageEndpoint::ManifestPush,
                     ImageRpcDomainError::InvalidRequest {
                         message: failure_message(format!(
                             "blob {} size mismatch: manifest {}, content {}",
@@ -509,18 +570,13 @@ async fn verify_manifest_content(
             Ok(None) => {
                 return Some(image_error(
                     machine_id.clone(),
-                    ImageEndpoint::ManifestPush,
                     ImageRpcDomainError::ImageMissing {
                         digest: descriptor.digest.clone(),
                     },
                 ));
             }
             Err(error) => {
-                return Some(storage_error(
-                    machine_id.clone(),
-                    ImageEndpoint::ManifestPush,
-                    error.to_string(),
-                ));
+                return Some(storage_error(machine_id.clone(), error.to_string()));
             }
         }
     }
@@ -596,99 +652,59 @@ fn runner_error_message(
     }
 }
 
-fn available_state(
-    _machine_id: MachineId,
-    state: ImageServiceState,
-) -> Option<AvailableImageService> {
-    match state {
-        ImageServiceState::Available(state) => Some(*state),
-        ImageServiceState::Unavailable => None,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ImageEndpoint {
-    BlobCheck,
-    BlobPush,
-    ManifestPush,
-    Inspect,
-}
-
-fn unavailable(machine_id: MachineId, endpoint: ImageEndpoint) -> NatsServiceResponse {
+fn unavailable(machine_id: MachineId) -> NatsServiceResponse {
     image_error(
         machine_id,
-        endpoint,
-        ImageRpcDomainError::StorageFailed {
+        ImageRpcDomainError::ServiceUnavailable {
             message: failure_message("image storage is unavailable"),
         },
     )
 }
 
-fn invalid_request(
-    machine_id: MachineId,
-    endpoint: ImageEndpoint,
-    error: serde_json::Error,
-) -> NatsServiceResponse {
-    invalid_message(machine_id, endpoint, &format!("invalid request: {error}"))
+fn invalid_request(machine_id: MachineId, error: serde_json::Error) -> NatsServiceResponse {
+    invalid_message(machine_id, &format!("invalid request: {error}"))
 }
 
-fn invalid_message(
-    machine_id: MachineId,
-    endpoint: ImageEndpoint,
-    message: &str,
-) -> NatsServiceResponse {
+fn invalid_message(machine_id: MachineId, message: &str) -> NatsServiceResponse {
     image_error(
         machine_id,
-        endpoint,
         ImageRpcDomainError::InvalidRequest {
             message: failure_message(message),
         },
     )
 }
 
-fn storage_error(
-    machine_id: MachineId,
-    endpoint: ImageEndpoint,
-    message: String,
-) -> NatsServiceResponse {
+fn storage_error(machine_id: MachineId, message: String) -> NatsServiceResponse {
     image_error(
         machine_id,
-        endpoint,
         ImageRpcDomainError::StorageFailed {
             message: failure_message(message),
         },
     )
 }
 
-fn image_error(
-    machine_id: MachineId,
-    endpoint: ImageEndpoint,
-    error: ImageRpcDomainError,
-) -> NatsServiceResponse {
-    match endpoint {
-        ImageEndpoint::BlobCheck => {
-            machine_domain_error(ImageBlobCheckResponse::DomainError { machine_id, error })
-        }
-        ImageEndpoint::BlobPush => {
-            machine_domain_error(ImageBlobPushResponse::DomainError { machine_id, error })
-        }
-        ImageEndpoint::ManifestPush => {
-            machine_domain_error(ImageManifestPushResponse::DomainError { machine_id, error })
-        }
-        ImageEndpoint::Inspect => {
-            machine_domain_error(ImageInspectResponse::DomainError { machine_id, error })
-        }
-    }
+fn image_error(machine_id: MachineId, error: ImageRpcDomainError) -> NatsServiceResponse {
+    machine_domain_error(MachineRpcResponse::<serde_json::Value, _>::DomainError {
+        machine_id,
+        error,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_manifest;
+    use super::{parse_manifest, validate_chunk_bounds};
 
     #[test]
     fn manifest_parser_rejects_manifest_lists() {
         let manifest_list = br#"{"schemaVersion":2,"manifests":[]}"#;
 
         assert!(parse_manifest(manifest_list).is_err());
+    }
+
+    #[test]
+    fn chunk_bounds_reject_data_past_the_declared_upload_size() {
+        assert!(validate_chunk_bounds(10, 8, 2).is_ok());
+        assert!(validate_chunk_bounds(10, 8, 3).is_err());
+        assert!(validate_chunk_bounds(10, u64::MAX, 1).is_err());
     }
 }

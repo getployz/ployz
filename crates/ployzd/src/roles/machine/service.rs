@@ -8,8 +8,8 @@ use super::containers::{
 use super::dataplane::handle_dataplane_prepare;
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
 use super::images::{
-    ImageServiceState, handle_image_blob_check, handle_image_blob_push, handle_image_inspect,
-    handle_image_manifest_push,
+    AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
+    handle_image_inspect, handle_image_manifest_push,
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
@@ -72,7 +72,7 @@ where
         preparer,
         log_reader,
         endpoint_cache,
-        ImageServiceState::Unavailable,
+        None,
     )
     .await
 }
@@ -84,7 +84,7 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, 
     preparer: P,
     log_reader: L,
     endpoint_cache: MachineEndpointCache,
-    image_state: ImageServiceState,
+    image_state: Option<AvailableImageService>,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
@@ -219,8 +219,16 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::ImageInspect,
-        image_state,
+        image_state.clone(),
         handle_image_inspect,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageEnsure,
+        image_state,
+        handle_image_ensure,
     )
     .await?;
 

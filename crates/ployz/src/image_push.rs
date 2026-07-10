@@ -13,8 +13,9 @@ use ployz_core::image::{
     IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckRequest,
     ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome, ImageBlobPushRequest,
     ImageBlobPushResponse, ImageManifestPushOk, ImageManifestPushRequest,
-    ImageManifestPushResponse, ImageRepository, ImageRpcDomainError, ImageUploadId, OciDigest,
-    OciPlatform,
+    ImageManifestPushResponse, ImageRepository, ImageRpcDomainError, ImageUploadId,
+    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OciDigest, OciPlatform,
 };
 use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::state::MachineLifecycle;
@@ -36,10 +37,8 @@ const LAYER_GZIP_LEVEL: u32 = 6;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImagePushReceipt {
     pub seed: MachineId,
-    pub requested_reference: ImageReference,
     pub manifest_digest: OciDigest,
     pub config_digest: OciDigest,
-    pub platform: OciPlatform,
     pub uploaded: BlobTransferReceipt,
     pub reused: BlobTransferReceipt,
 }
@@ -58,9 +57,9 @@ impl ImagePushReceipt {
     pub fn render(&self) -> String {
         format!(
             "pushed {} layers, {} bytes; {} layers already on {}\n",
-            self.uploaded.count,
+            self.uploaded.count(),
             self.uploaded.bytes,
-            self.reused.count,
+            self.reused.count(),
             self.seed.as_str(),
         )
     }
@@ -69,8 +68,14 @@ impl ImagePushReceipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobTransferReceipt {
     pub digests: Vec<OciDigest>,
-    pub count: usize,
     pub bytes: u64,
+}
+
+impl BlobTransferReceipt {
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.digests.len()
+    }
 }
 
 #[derive(Debug)]
@@ -96,13 +101,10 @@ enum PreparedBlobKind {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+#[serde(rename_all = "PascalCase")]
 struct DockerSaveManifestEntry {
     config: PathBuf,
-    repo_tags: Option<Vec<String>>,
     layers: Vec<PathBuf>,
-    #[serde(default)]
-    layer_sources: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -154,7 +156,7 @@ pub async fn push_local_image(
     client: &async_nats::Client,
     docker: &Docker,
     seed: &MachineId,
-    repository: ImageRepository,
+    _repository: ImageRepository,
     requested_reference: ImageReference,
 ) -> Result<ImagePushReceipt, ImagePushError> {
     let chunks = docker
@@ -165,6 +167,8 @@ pub async fn push_local_image(
         })
         .try_collect::<Vec<_>>()
         .await?;
+    // ponytail: v1 buffers the Docker export in memory; stream the tar conversion
+    // and RPC upload when whole-image memory becomes the limiting ceiling.
     let export_size = chunks.iter().try_fold(0_usize, |total, chunk| {
         total
             .checked_add(chunk.len())
@@ -180,7 +184,7 @@ pub async fn push_local_image(
         .iter()
         .map(|blob| blob.digest.clone())
         .collect::<Vec<_>>();
-    let present = blob_check(client, seed, repository.clone(), requested_digests).await?;
+    let present = blob_check(client, seed, requested_digests).await?;
     let present = present.into_iter().collect::<BTreeSet<_>>();
     let mut uploaded = Vec::new();
     let mut reused = Vec::new();
@@ -200,7 +204,6 @@ pub async fn push_local_image(
         client,
         seed,
         ImageManifestPushRequest {
-            repository,
             manifest_bytes: prepared.manifest_bytes,
         },
     )
@@ -224,10 +227,8 @@ pub async fn push_local_image(
     }
     Ok(ImagePushReceipt {
         seed: seed.clone(),
-        requested_reference,
         manifest_digest: pushed.manifest_digest,
         config_digest: pushed.image_id,
-        platform: pushed.platform,
         uploaded: transfer_receipt(uploaded)?,
         reused: transfer_receipt(reused)?,
     })
@@ -263,14 +264,7 @@ pub async fn prepare_deploy_images(
                 seed
             }
         };
-        let repository = ImageRepository::try_new(format!(
-            "ployz/{}/{}",
-            namespace_id.as_str(),
-            service.service_id.as_str()
-        ))
-        .map_err(|error| ImagePushError::InvalidRepository {
-            message: error.to_string(),
-        })?;
+        let repository = ImageRepository::for_service(namespace_id, &service.service_id);
         let receipt = push_local_image(
             &api.nats_client(),
             &docker,
@@ -286,8 +280,7 @@ pub async fn prepare_deploy_images(
 }
 
 async fn select_seed(api: &OperationApiClient) -> Result<MachineId, ImagePushError> {
-    let mut machines = api
-        .machine_list(&MachineListRequest {})
+    api.machine_list(&MachineListRequest {})
         .await
         .map_err(|error| ImagePushError::MachineList {
             message: error.to_string(),
@@ -296,11 +289,7 @@ async fn select_seed(api: &OperationApiClient) -> Result<MachineId, ImagePushErr
         .into_iter()
         .filter(|machine| machine.active.lifecycle == MachineLifecycle::Active)
         .map(|machine| machine.active.machine_id)
-        .collect::<Vec<_>>();
-    machines.sort();
-    machines
-        .into_iter()
-        .next()
+        .min()
         .ok_or(ImagePushError::NoActiveMachines)
 }
 
@@ -389,9 +378,9 @@ fn prepare_docker_save(bytes: &[u8]) -> Result<PreparedImage, ImagePushError> {
     })?;
     let manifest = OciManifest {
         schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json",
+        media_type: OCI_IMAGE_MANIFEST_MEDIA_TYPE,
         config: OciDescriptor {
-            media_type: "application/vnd.oci.image.config.v1+json",
+            media_type: OCI_IMAGE_CONFIG_MEDIA_TYPE,
             size: u64::try_from(config_size).map_err(|_| ImagePushError::ImageTooLarge)?,
             digest: &config_digest,
         },
@@ -399,7 +388,7 @@ fn prepare_docker_save(bytes: &[u8]) -> Result<PreparedImage, ImagePushError> {
             .iter()
             .map(|(digest, size)| {
                 Ok(OciDescriptor {
-                    media_type: "application/vnd.oci.image.layer.v1.tar+gzip",
+                    media_type: OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE,
                     size: u64::try_from(*size).map_err(|_| ImagePushError::ImageTooLarge)?,
                     digest,
                 })
@@ -410,7 +399,6 @@ fn prepare_docker_save(bytes: &[u8]) -> Result<PreparedImage, ImagePushError> {
         serde_json::to_vec(&manifest).map_err(|error| ImagePushError::InvalidDockerExport {
             message: format!("encode OCI manifest: {error}"),
         })?;
-    let _ = (&entry.repo_tags, &entry.layer_sources);
     Ok(PreparedImage {
         manifest_digest: OciDigest::sha256(&manifest_bytes),
         manifest_bytes,
@@ -440,16 +428,12 @@ fn deterministic_gzip(bytes: &[u8]) -> Result<Vec<u8>, ImagePushError> {
 async fn blob_check(
     client: &async_nats::Client,
     machine_id: &MachineId,
-    repository: ImageRepository,
     digests: Vec<OciDigest>,
 ) -> Result<Vec<OciDigest>, ImagePushError> {
     let response = request_json::<_, ImageBlobCheckResponse>(
         client,
         machine_service(machine_id, MachineServiceEndpoint::ImageBlobCheck),
-        &ImageBlobCheckRequest {
-            repository,
-            digests,
-        },
+        &ImageBlobCheckRequest { digests },
         PUSH_RPC_TIMEOUT,
     )
     .await
@@ -472,16 +456,11 @@ async fn push_blob(
         },
     )
     .await?;
-    let ImageBlobPushOutcome::Begun { upload_id, offset } = begun.outcome else {
+    let ImageBlobPushOutcome::Begun { upload_id } = begun.outcome else {
         return Err(ImagePushError::UnexpectedResponse {
             message: "blob begin returned the wrong outcome".to_owned(),
         });
     };
-    if offset != 0 {
-        return Err(ImagePushError::UnexpectedResponse {
-            message: format!("new blob upload began at offset {offset}"),
-        });
-    }
     stream::iter(blob.bytes.chunks(IMAGE_BLOB_CHUNK_MAX_BYTES).enumerate())
         .map(|(index, chunk)| {
             let upload_id = upload_id.clone();
@@ -628,7 +607,6 @@ fn transfer_receipt(blobs: Vec<(OciDigest, usize)>) -> Result<BlobTransferReceip
         total.checked_add(size).ok_or(ImagePushError::ImageTooLarge)
     })?;
     Ok(BlobTransferReceipt {
-        count: blobs.len(),
         digests: blobs.into_iter().map(|(digest, _)| digest).collect(),
         bytes,
     })

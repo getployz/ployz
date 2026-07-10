@@ -121,7 +121,7 @@ fn first_machine_can_authorize_cloud_user_public_key() {
             HostRunnerStep::WriteNatsAuthorizedUsers(users) => Some(users.render()),
             HostRunnerStep::VerifyHost(_)
             | HostRunnerStep::PrepareDataplaneHost
-            | HostRunnerStep::PrepareContainerRuntime(_)
+            | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)
             | HostRunnerStep::WriteNatsTlsMaterial(_)
@@ -222,7 +222,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
             HostRunnerStep::WriteNatsServerConfig(config) => Some(config.render_config()),
             HostRunnerStep::VerifyHost(_)
             | HostRunnerStep::PrepareDataplaneHost
-            | HostRunnerStep::PrepareContainerRuntime(_)
+            | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)
             | HostRunnerStep::WritePloyzdRoleEnvironment(_)

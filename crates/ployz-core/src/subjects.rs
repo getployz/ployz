@@ -302,6 +302,7 @@ pub enum MachineServiceEndpoint {
     ImageBlobPush,
     ImageManifestPush,
     ImageInspect,
+    ImageEnsure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +331,7 @@ impl MachineServiceEndpoint {
             Self::ImageBlobPush => "image.blob.push",
             Self::ImageManifestPush => "image.manifest.push",
             Self::ImageInspect => "image.inspect",
+            Self::ImageEnsure => "container.ensure_image",
         }
     }
 
@@ -351,7 +353,8 @@ impl MachineServiceEndpoint {
             | Self::DataplanePrepare
             | Self::SubstrateUpdate
             | Self::ImageBlobPush
-            | Self::ImageManifestPush => MachineServiceEndpointExecution::Command,
+            | Self::ImageManifestPush
+            | Self::ImageEnsure => MachineServiceEndpointExecution::Command,
         }
     }
 }

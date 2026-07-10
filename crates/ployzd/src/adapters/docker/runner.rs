@@ -925,7 +925,6 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -946,7 +945,6 @@ mod tests {
     fn create_body_sets_runtime_fields() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -969,7 +967,6 @@ mod tests {
     fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -1009,7 +1006,6 @@ mod tests {
 
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -1044,7 +1040,6 @@ mod tests {
         runtime.entrypoint = Some(ContainerEntrypoint::Clear);
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -1061,7 +1056,6 @@ mod tests {
     fn create_body_sets_default_stop_timeout() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -1084,7 +1078,6 @@ mod tests {
         }];
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
@@ -1130,7 +1123,6 @@ mod tests {
         // later route attach can reach it without recreation.
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
                 pull: MachineImagePull::Registry {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },

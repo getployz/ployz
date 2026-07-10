@@ -9,12 +9,9 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use ployz_core::image::OciDigest;
-use serde::Deserialize;
+use ployz_core::image::{ImageRepository, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -28,68 +25,29 @@ const DOCKER_CONTENT_DIGEST: HeaderName = HeaderName::from_static("docker-conten
 #[derive(Clone)]
 struct RegistryV2 {
     content: ContainerdContentStore,
-    health: Arc<RegistryV2HealthCounters>,
 }
 
 pub struct RunningRegistryV2 {
-    listen_addr: SocketAddr,
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<()>,
-    health: Arc<RegistryV2HealthCounters>,
 }
 
 impl RunningRegistryV2 {
-    pub async fn start(
-        listen_addr: SocketAddr,
-        content: ContainerdContentStore,
-    ) -> Result<Self, RegistryV2StartError> {
-        let listener =
-            TcpListener::bind(listen_addr)
-                .await
-                .map_err(|error| RegistryV2StartError::Bind {
-                    listen_addr,
-                    message: error.to_string(),
-                })?;
-        let listen_addr =
-            listener
-                .local_addr()
-                .map_err(|error| RegistryV2StartError::LocalAddress {
-                    message: error.to_string(),
-                })?;
-        let health = Arc::new(RegistryV2HealthCounters::default());
-        let registry = RegistryV2 {
-            content,
-            health: Arc::clone(&health),
-        };
-        health.bound.store(true, Ordering::Relaxed);
-        let (shutdown, mut shutdown_rx) = oneshot::channel();
-        let task =
-            tokio::spawn(async move { run_listener(listener, registry, &mut shutdown_rx).await });
-        Ok(Self {
-            listen_addr,
-            shutdown,
-            task,
-            health,
-        })
-    }
-
     #[must_use]
     pub fn spawn_retrying(listen_addr: SocketAddr, content: ContainerdContentStore) -> Self {
-        let health = Arc::new(RegistryV2HealthCounters::default());
-        let registry = RegistryV2 {
-            content,
-            health: Arc::clone(&health),
-        };
+        let registry = RegistryV2 { content };
         let (shutdown, mut shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             let listener = loop {
                 match TcpListener::bind(listen_addr).await {
-                    Ok(listener) => break listener,
-                    Err(_) => {
-                        registry
-                            .health
-                            .bind_failures
-                            .fetch_add(1, Ordering::Relaxed);
+                    Ok(listener) => {
+                        eprintln!("ployzd image registry listening at {listen_addr}");
+                        break listener;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "ployzd image registry bind failed at {listen_addr}: {error}; retrying"
+                        );
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_secs(1)) => {}
                             _ = &mut shutdown_rx => return,
@@ -97,25 +55,9 @@ impl RunningRegistryV2 {
                     }
                 }
             };
-            registry.health.bound.store(true, Ordering::Relaxed);
             run_listener(listener, registry, &mut shutdown_rx).await;
         });
-        Self {
-            listen_addr,
-            shutdown,
-            task,
-            health,
-        }
-    }
-
-    #[must_use]
-    pub const fn listen_addr(&self) -> SocketAddr {
-        self.listen_addr
-    }
-
-    #[must_use]
-    pub fn health(&self) -> RegistryV2Health {
-        self.health.snapshot()
+        Self { shutdown, task }
     }
 
     pub async fn shutdown(self) {
@@ -134,10 +76,8 @@ async fn run_listener(
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    registry.health.accepted.fetch_add(1, Ordering::Relaxed);
                     let registry = registry.clone();
                     connections.spawn(async move {
-                        let health = Arc::clone(&registry.health);
                         let registry_for_service = registry.clone();
                         let service = service_fn(move |request| {
                             let registry = registry_for_service.clone();
@@ -145,19 +85,25 @@ async fn run_listener(
                         });
                         let connection = http1::Builder::new()
                             .serve_connection(TokioIo::new(stream), service);
-                        if tokio::time::timeout(CONNECTION_TIMEOUT, connection).await.is_err() {
-                            health.connection_timeouts.fetch_add(1, Ordering::Relaxed);
+                        match tokio::time::timeout(CONNECTION_TIMEOUT, connection).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => eprintln!(
+                                "ployzd image registry connection failed: {error}"
+                            ),
+                            Err(_) => eprintln!(
+                                "ployzd image registry connection timed out"
+                            ),
                         }
                     });
                 }
-                Err(_) => {
-                    registry.health.accept_failures.fetch_add(1, Ordering::Relaxed);
+                Err(error) => {
+                    eprintln!("ployzd image registry accept failed: {error}");
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             },
             Some(result) = connections.join_next(), if !connections.is_empty() => {
-                if result.is_err() {
-                    registry.health.connection_failures.fetch_add(1, Ordering::Relaxed);
+                if let Err(error) = result {
+                    eprintln!("ployzd image registry connection task failed: {error}");
                 }
             }
             _ = &mut *shutdown_rx => break,
@@ -169,7 +115,6 @@ async fn run_listener(
 
 impl RegistryV2 {
     async fn handle(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        self.health.requests.fetch_add(1, Ordering::Relaxed);
         let method = request.method();
         if method != Method::GET && method != Method::HEAD {
             return empty_response(StatusCode::METHOD_NOT_ALLOWED);
@@ -194,7 +139,6 @@ impl RegistryV2 {
             Ok(Some(info)) => info,
             Ok(None) => return empty_response(StatusCode::NOT_FOUND),
             Err(_) => {
-                self.health.storage_failures.fetch_add(1, Ordering::Relaxed);
                 return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
@@ -210,14 +154,12 @@ impl RegistryV2 {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return empty_response(StatusCode::NOT_FOUND),
             Err(_) => {
-                self.health.storage_failures.fetch_add(1, Ordering::Relaxed);
                 return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
         let media_type = match kind {
             RegistryObjectKind::Blob => RegistryObjectKind::Blob.default_media_type(),
-            RegistryObjectKind::Manifest => manifest_media_type(&bytes)
-                .unwrap_or_else(|| RegistryObjectKind::Manifest.default_media_type()),
+            RegistryObjectKind::Manifest => OCI_IMAGE_MANIFEST_MEDIA_TYPE,
         };
         registry_response(
             StatusCode::OK,
@@ -239,7 +181,7 @@ impl RegistryObjectKind {
     const fn default_media_type(self) -> &'static str {
         match self {
             Self::Blob => "application/octet-stream",
-            Self::Manifest => "application/vnd.oci.image.manifest.v1+json",
+            Self::Manifest => OCI_IMAGE_MANIFEST_MEDIA_TYPE,
         }
     }
 }
@@ -268,49 +210,11 @@ fn parse_route(path: &str) -> Result<RegistryRoute, StatusCode> {
     } else {
         return Err(StatusCode::NOT_FOUND);
     };
-    if !valid_repository(repository) {
+    if ImageRepository::try_new(repository.to_owned()).is_err() {
         return Err(StatusCode::BAD_REQUEST);
     }
     let digest = OciDigest::try_new(digest.to_owned()).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(RegistryRoute::Read { kind, digest })
-}
-
-fn valid_repository(repository: &str) -> bool {
-    !repository.is_empty()
-        && repository.split('/').all(|component| {
-            component
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphanumeric)
-                && component
-                    .as_bytes()
-                    .last()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                && component.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'.' | b'_' | b'-')
-                })
-        })
-}
-
-#[derive(Deserialize)]
-struct ManifestMediaType {
-    #[serde(rename = "mediaType")]
-    media_type: String,
-}
-
-fn manifest_media_type(bytes: &[u8]) -> Option<&str> {
-    let manifest = serde_json::from_slice::<ManifestMediaType>(bytes).ok()?;
-    match manifest.media_type.as_str() {
-        "application/vnd.oci.image.manifest.v1+json" => {
-            Some("application/vnd.oci.image.manifest.v1+json")
-        }
-        "application/vnd.docker.distribution.manifest.v2+json" => {
-            Some("application/vnd.docker.distribution.manifest.v2+json")
-        }
-        _ => None,
-    }
 }
 
 fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
@@ -348,56 +252,6 @@ fn registry_response(
         response.headers_mut().insert(hyper::header::ETAG, value);
     }
     response
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegistryV2Health {
-    pub bound: bool,
-    pub bind_failures: u64,
-    pub accepted: u64,
-    pub requests: u64,
-    pub accept_failures: u64,
-    pub connection_failures: u64,
-    pub connection_timeouts: u64,
-    pub storage_failures: u64,
-}
-
-#[derive(Default)]
-struct RegistryV2HealthCounters {
-    bound: AtomicBool,
-    bind_failures: AtomicU64,
-    accepted: AtomicU64,
-    requests: AtomicU64,
-    accept_failures: AtomicU64,
-    connection_failures: AtomicU64,
-    connection_timeouts: AtomicU64,
-    storage_failures: AtomicU64,
-}
-
-impl RegistryV2HealthCounters {
-    fn snapshot(&self) -> RegistryV2Health {
-        RegistryV2Health {
-            bound: self.bound.load(Ordering::Relaxed),
-            bind_failures: self.bind_failures.load(Ordering::Relaxed),
-            accepted: self.accepted.load(Ordering::Relaxed),
-            requests: self.requests.load(Ordering::Relaxed),
-            accept_failures: self.accept_failures.load(Ordering::Relaxed),
-            connection_failures: self.connection_failures.load(Ordering::Relaxed),
-            connection_timeouts: self.connection_timeouts.load(Ordering::Relaxed),
-            storage_failures: self.storage_failures.load(Ordering::Relaxed),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum RegistryV2StartError {
-    #[error("failed to bind image registry at {listen_addr}: {message}")]
-    Bind {
-        listen_addr: SocketAddr,
-        message: String,
-    },
-    #[error("failed to read image registry local address: {message}")]
-    LocalAddress { message: String },
 }
 
 #[cfg(test)]
