@@ -25,7 +25,7 @@ use ployzd::operations::deploy::DeployMachineCandidates;
 use ployzd::operations::deploy::driver::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
-use ployzd::operations::log::OperationRepository;
+use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
@@ -42,7 +42,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request))
+        .submit_deploy(deploy_submit_command(&controllers, deploy_request).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -132,7 +132,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -163,7 +163,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         .await;
 
     let retry = controllers
-        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
         .await
         .expect("completed deploy retry adopts existing operation");
     assert!(
@@ -176,6 +176,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
             registry_credentials: Vec::new(),
             operation_id: operation_id("op_next"),
             idempotency_key: idempotency_key("idem_deploy_next"),
+            reservation_id: reserve_deploy(&controllers).await,
             target: deploy_request(1),
         })
         .await
@@ -192,7 +193,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     let controllers = operation_controllers(nats.client.clone()).await;
     let deploy_request = deploy_request(1);
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request))
+        .submit_deploy(deploy_submit_command(&controllers, deploy_request).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -266,7 +267,7 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
         endpoint_port: route_port(8080),
     });
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(request))
+        .submit_deploy(deploy_submit_command(&controllers, request).await)
         .await
         .expect("deploy operation accepted");
     let mut dataplane = RecordingWireGuardEbpf::ready();
@@ -323,7 +324,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(resolved_deploy_request(1)))
+        .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -397,7 +398,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(resolved_deploy_request(1)))
+        .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -470,6 +471,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             registry_credentials: Vec::new(),
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_first"),
+            reservation_id: reserve_deploy(&controllers).await,
             target: deploy_request(1),
         })
         .await
@@ -480,6 +482,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             registry_credentials: Vec::new(),
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
+            reservation_id: reserve_deploy(&controllers).await,
             target: deploy_request(1),
         })
         .await
@@ -504,6 +507,46 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
 }
 
 #[tokio::test]
+async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
+    let nats = test_nats().await;
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let older = reserve_deploy(&controllers).await;
+    let newer = reserve_deploy(&controllers).await;
+    controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
+            operation_id: operation_id("op_newer"),
+            idempotency_key: idempotency_key("idem_newer"),
+            reservation_id: newer,
+            target: deploy_request(1),
+        })
+        .await
+        .expect("newer deploy operation accepted");
+
+    let error = controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: Vec::new(),
+            operation_id: operation_id("op_older"),
+            idempotency_key: idempotency_key("idem_older"),
+            reservation_id: older,
+            target: deploy_request(1),
+        })
+        .await
+        .expect_err("older reservation is stale after newer admission");
+
+    assert!(matches!(
+        error,
+        SubmitCommandError::Submit(SubmitOperationError::StaleDeployReservation {
+            namespace_id: stale_namespace_id,
+            reservation_id,
+            last_committed_reservation_id,
+        }) if stale_namespace_id == namespace_id("default")
+            && reservation_id == older
+            && last_committed_reservation_id == newer
+    ));
+}
+
+#[tokio::test]
 async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation() {
     let nats = test_nats().await;
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -512,6 +555,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
             registry_credentials: Vec::new(),
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_deploy"),
+            reservation_id: reserve_deploy(&controllers).await,
             target: deploy_request(1),
         })
         .await
@@ -522,6 +566,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
             registry_credentials: Vec::new(),
             operation_id: operation_id("op_retry_candidate"),
             idempotency_key: idempotency_key("idem_deploy"),
+            reservation_id: reserve_deploy(&controllers).await,
             target: deploy_request(1),
         })
         .await
@@ -710,13 +755,27 @@ async fn operation_controllers(client: async_nats::Client) -> OperationControlle
     )
 }
 
-fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
+async fn deploy_submit_command(
+    controllers: &OperationControllers,
+    target: DeployRequest,
+) -> DeploySubmitCommand {
     DeploySubmitCommand {
         registry_credentials: Vec::new(),
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
+        reservation_id: reserve_deploy(controllers).await,
         target,
     }
+}
+
+async fn reserve_deploy(
+    controllers: &OperationControllers,
+) -> ployz_core::deploy::DeployReservationId {
+    controllers
+        .reserve_deploy(&namespace_id("default"))
+        .await
+        .expect("deploy reservation is issued")
+        .reservation_id
 }
 
 fn deploy_request(replicas: u16) -> DeployRequest {

@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal, Write};
 
 use ployz_core::ids::OperationId;
+use ployz_sdk_types::DeployReserveRequest;
 
 use crate::api_client::OperationApiClient;
 use crate::commands::deploy::{DeployCommand, DeployOutput};
@@ -23,6 +24,12 @@ pub(super) async fn execute_deploy(
         eprintln!("{warnings}");
     }
     let api = operation_api_client(config).await?;
+    let reservation = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: command.namespace_id.clone(),
+        })
+        .await
+        .map_err(api_error)?;
     let receipts = crate::image_push::prepare_deploy_images(
         &api,
         &mut command.services,
@@ -36,7 +43,7 @@ pub(super) async fn execute_deploy(
         .collect::<String>();
     let registry_credentials = crate::registry_auth::deploy_registry_credentials(&command.services)
         .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
-    let mut request = command.into_request();
+    let mut request = command.into_request(reservation.reservation_id);
     request.registry_credentials = registry_credentials;
     let accepted = api.deploy_submit(&request).await.map_err(api_error)?;
     if detach {

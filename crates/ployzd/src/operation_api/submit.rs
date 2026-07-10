@@ -14,8 +14,9 @@ use ployz_core::ops::EventSequence;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
-    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, DeploySubmitError,
-    DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
+    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, DeployReserveError,
+    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
     MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
     NamespaceRemoveError, NamespaceRemoveRequest, ServiceRestartError, ServiceRestartRequest,
     VolumeRemoveError, VolumeRemoveRequest,
@@ -44,16 +45,35 @@ impl From<DeploySubmitRequest> for DeploySubmitCommand {
     fn from(value: DeploySubmitRequest) -> Self {
         let DeploySubmitRequest {
             idempotency_key,
+            reservation_id,
             target,
             registry_credentials,
         } = value;
         Self {
             operation_id: mint_deploy_operation_id(),
             idempotency_key,
+            reservation_id,
             target,
             registry_credentials,
         }
     }
+}
+
+pub async fn deploy_reserve(
+    handlers: &OperationApiHandlers,
+    request: DeployReserveRequest,
+) -> Result<DeployReserved, DeployReserveError> {
+    handlers
+        .controllers
+        .reserve_deploy(&request.namespace_id)
+        .await
+        .map(|reservation| DeployReserved {
+            reservation_id: reservation.reservation_id,
+            expires_at: reservation.expires_at,
+        })
+        .map_err(|error| DeployReserveError::Unavailable {
+            message: error.to_string(),
+        })
 }
 
 fn mint_deploy_operation_id() -> OperationId {

@@ -53,7 +53,7 @@ use ployz_e2e::dind::{
 use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    DeployRegistryCredential, DeploySubmitRequest, MachineJoinRedeemError,
+    DeployRegistryCredential, DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot, MachineTestimony,
     NamespaceRemoveRequest, OpsListRequest, ServiceInspectRequest, VolumeListRequest,
     VolumeRemoveRequest, VolumeStatus,
@@ -287,14 +287,17 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
 
         let failed = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
-                idempotency_key: idempotency_key("idem_dind_convergence_failed"),
-                // The 0.4s outlives at least one 100ms health poll (so the
-                // container is sampled running) yet exits inside the 1.5s
-                // running-confirmation window, exercising the fast-exit race.
-                target: convergence_deploy_target("sleep 0.4; exit 42"),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_convergence_failed",
+                    // The 0.4s outlives at least one 100ms health poll (so the
+                    // container is sampled running) yet exits inside the 1.5s
+                    // running-confirmation window, exercising the fast-exit race.
+                    convergence_deploy_target("sleep 0.4; exit 42"),
+                )
+                .await,
+            )
             .await
             .expect("failing deploy submits");
         let failed_operation = failed.operation_id;
@@ -330,11 +333,14 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
 
         let retry = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
-                idempotency_key: idempotency_key("idem_dind_convergence_retry"),
-                target: convergence_deploy_target("sleep 600"),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_convergence_retry",
+                    convergence_deploy_target("sleep 600"),
+                )
+                .await,
+            )
             .await
             .expect("retry deploy submits");
         let retry_operation = retry.operation_id;
@@ -410,11 +416,14 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
 
         let success = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
-                idempotency_key: idempotency_key("idem_dind_pre_start_success"),
-                target: pre_start_deploy_target("pre_start_success", "echo ok > /data/marker"),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_pre_start_success",
+                    pre_start_deploy_target("pre_start_success", "echo ok > /data/marker"),
+                )
+                .await,
+            )
             .await
             .expect("pre-start deploy submits");
         let success_status =
@@ -453,11 +462,14 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
 
         let failed = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
-                idempotency_key: idempotency_key("idem_dind_pre_start_failure"),
-                target: pre_start_deploy_target("pre_start_failure", "exit 7"),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_pre_start_failure",
+                    pre_start_deploy_target("pre_start_failure", "exit 7"),
+                )
+                .await,
+            )
             .await
             .expect("failing pre-start deploy submits");
         let failed_status =
@@ -517,11 +529,14 @@ async fn scenario_services_start_in_depends_on_order() {
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
         let accepted = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
-                idempotency_key: idempotency_key("idem_dind_depends_on_order"),
-                target: depends_on_deploy_target(),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_depends_on_order",
+                    depends_on_deploy_target(),
+                )
+                .await,
+            )
             .await
             .expect("dependency deploy submits");
         let status =
@@ -925,6 +940,13 @@ async fn scenario_direct_push_multi_machine_deploy() {
             depends_on: Vec::new(),
             routes: Vec::new(),
         }];
+        let reservation = core
+            .api
+            .deploy_reserve(&DeployReserveRequest {
+                namespace_id: namespace.clone(),
+            })
+            .await
+            .expect("deploy reservation precedes image push");
         let receipts = prepare_deploy_images(&core.api, &mut services, false)
             .await
             .expect("local image pushes before deploy submit");
@@ -938,6 +960,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
             .deploy_submit(&DeploySubmitRequest {
                 registry_credentials: Vec::new(),
                 idempotency_key: idempotency_key("idem_dind_direct_push"),
+                reservation_id: reservation.reservation_id,
                 target: DeployRequest {
                     namespace_id: namespace,
                     services,
@@ -1063,6 +1086,13 @@ exit 1",
 
         let namespace = namespace_id("private_registry");
         let service = service_id("svc_private_registry");
+        let reservation = core
+            .api
+            .deploy_reserve(&DeployReserveRequest {
+                namespace_id: namespace.clone(),
+            })
+            .await
+            .expect("private registry deploy reservation is issued");
         let credential = RegistryCredential::try_new("alice", "s3cr3t")
             .expect("valid deploy-scoped registry credential");
         let accepted = core
@@ -1073,6 +1103,7 @@ exit 1",
                     credential,
                 }],
                 idempotency_key: idempotency_key("idem_dind_private_registry"),
+                reservation_id: reservation.reservation_id,
                 target: DeployRequest {
                     namespace_id: namespace.clone(),
                     services: vec![DeployServiceSpec {
@@ -1237,11 +1268,14 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
 
         let accepted = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                registry_credentials: Vec::new(),
-                idempotency_key: idempotency_key("idem_dind_internal_dns"),
-                target: internal_dns_deploy_target(),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_internal_dns",
+                    internal_dns_deploy_target(),
+                )
+                .await,
+            )
             .await
             .expect("internal DNS deploy submits");
         let status =
@@ -1409,15 +1443,33 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
 /// Deploys the baked workload image with one replica per machine and a
 /// route, through the host-side operator API client, and asserts the
 /// committed deploy event vocabulary, Docker reality, and HTTP service.
+async fn reserved_deploy_request(
+    core: &CoreContext,
+    idempotency: &str,
+    target: DeployRequest,
+) -> DeploySubmitRequest {
+    let reservation = core
+        .api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: target.namespace_id.clone(),
+        })
+        .await
+        .expect("deploy reservation is issued");
+    DeploySubmitRequest {
+        registry_credentials: Vec::new(),
+        idempotency_key: idempotency_key(idempotency),
+        reservation_id: reservation.reservation_id,
+        target,
+    }
+}
+
 async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     let cluster = &core.cluster;
     let accepted = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_deploy"),
-            target: smoke_deploy_target(),
-        })
+        .deploy_submit(
+            &reserved_deploy_request(core, "idem_dind_deploy", smoke_deploy_target()).await,
+        )
         .await
         .expect("deploy submits");
     let deploy_operation = accepted.operation_id;
@@ -1596,11 +1648,14 @@ async fn assert_overlay_http(
 async fn scenario_runtime_fields_deploy(core: &CoreContext) {
     let accepted = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_runtime_fields"),
-            target: runtime_fields_deploy_target(),
-        })
+        .deploy_submit(
+            &reserved_deploy_request(
+                core,
+                "idem_dind_runtime_fields",
+                runtime_fields_deploy_target(),
+            )
+            .await,
+        )
         .await
         .expect("runtime fields deploy submits");
     let deploy_operation = accepted.operation_id;
@@ -1673,11 +1728,14 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
 async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
     let accepted = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_failing_healthcheck"),
-            target: failing_healthcheck_deploy_target(),
-        })
+        .deploy_submit(
+            &reserved_deploy_request(
+                core,
+                "idem_dind_failing_healthcheck",
+                failing_healthcheck_deploy_target(),
+            )
+            .await,
+        )
         .await
         .expect("failing healthcheck deploy submits");
     let deploy_operation = accepted.operation_id;
@@ -1736,13 +1794,14 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
 async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
     let first = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_volume_first"),
-            target: volume_deploy_target(
-                "printf first > /data/marker; while true; do sleep 600; done",
-            ),
-        })
+        .deploy_submit(
+            &reserved_deploy_request(
+                core,
+                "idem_dind_volume_first",
+                volume_deploy_target("printf first > /data/marker; while true; do sleep 600; done"),
+            )
+            .await,
+        )
         .await
         .expect("first volume deploy submits");
     let first_status =
@@ -1762,13 +1821,13 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
 
     let second = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_volume_second"),
-            target: volume_deploy_target(
+        .deploy_submit(&reserved_deploy_request(
+            core,
+            "idem_dind_volume_second",
+            volume_deploy_target(
                 "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
             ),
-        })
+        ).await)
         .await
         .expect("second volume deploy submits");
     let second_status =
@@ -1820,11 +1879,14 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
 
     let drop_mount = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_volume_drop_mount"),
-            target: volume_deploy_target_without_mount(),
-        })
+        .deploy_submit(
+            &reserved_deploy_request(
+                core,
+                "idem_dind_volume_drop_mount",
+                volume_deploy_target_without_mount(),
+            )
+            .await,
+        )
         .await
         .expect("drop-volume deploy submits");
     let drop_mount_status =
@@ -1865,13 +1927,16 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
 
     let reattach = core
         .api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_dind_volume_reattach"),
-            target: volume_deploy_target(
-                "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
-            ),
-        })
+        .deploy_submit(
+            &reserved_deploy_request(
+                core,
+                "idem_dind_volume_reattach",
+                volume_deploy_target(
+                    "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
+                ),
+            )
+            .await,
+        )
         .await
         .expect("volume reattach deploy submits");
     let reattach_status =

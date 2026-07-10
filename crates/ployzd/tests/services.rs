@@ -1,7 +1,7 @@
 use ployz_core::subjects::{
-    INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD,
-    OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST, OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH,
-    OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST, OperationProgressScope,
+    INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE, OPERATOR_DEPLOY_SUBMIT,
+    OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST, OPERATOR_OPS_STATUS,
+    OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST, OperationProgressScope,
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
@@ -81,6 +81,11 @@ fn api_service_marks_mutations_as_operation_acceptors() {
         .iter()
         .find(|endpoint| endpoint.subject == OPERATOR_DEPLOY_SUBMIT)
         .expect("deploy.submit endpoint is registered");
+    let deploy_reserve = api
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == OPERATOR_DEPLOY_RESERVE)
+        .expect("deploy.reserve endpoint is registered");
     let machine_add = api
         .endpoints
         .iter()
@@ -92,6 +97,10 @@ fn api_service_marks_mutations_as_operation_acceptors() {
         .find(|endpoint| endpoint.subject == JOIN_MACHINE_REPORT)
         .expect("machine.report endpoint is registered");
     assert_eq!(deploy_submit.execution, EndpointExecution::AcceptsOperation);
+    assert_eq!(
+        deploy_reserve.execution,
+        EndpointExecution::MutatesOperation
+    );
     assert_eq!(machine_add.execution, EndpointExecution::AcceptsOperation);
     assert_eq!(
         machine_join_report.execution,

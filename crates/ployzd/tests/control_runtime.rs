@@ -31,14 +31,15 @@ use ployz_core::subjects::{
     machine_facts as machine_facts_subject, machine_service,
 };
 use ployz_nats::connect::connect_authenticated;
-use ployz_nats::operation_api_client::OperationApiClientError;
+use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_sdk_types::{
-    DeployRegistryCredential, DeploySubmitRequest, InitFirstMachineActivateRequest,
-    MachineAddError, MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome,
-    MachineJoinReportRequest, MachineListRequest, MachineTestimony, MachineUpdateError,
-    MachineUpdateRequest, OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest,
-    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
+    DeployRegistryCredential, DeployReserveRequest, DeploySubmitRequest,
+    InitFirstMachineActivateRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineTestimony,
+    MachineUpdateError, MachineUpdateRequest, OpsWatchRequest, RuntimeDerivedCollectionStatus,
+    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
+    VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::intent::lease_intent::LeaseIntentStore;
@@ -76,12 +77,10 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
+    let request =
+        reserved_deploy_request(&api, "idem_control_runtime", deploy_target("svc_api")).await;
     let accepted = api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_control_runtime"),
-            target: deploy_target("svc_api"),
-        })
+        .deploy_submit(&request)
         .await
         .expect("operation API accepts deploy");
 
@@ -517,14 +516,11 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     let api = nats.api();
     let credential = RegistryCredential::try_new("alice", "deploy-only-secret")
         .expect("valid registry credential");
-    let request = DeploySubmitRequest {
-        registry_credentials: vec![DeployRegistryCredential {
-            service_id: service_id("svc_api"),
-            credential: credential.clone(),
-        }],
-        idempotency_key: idempotency_key("idem_run"),
-        target: deploy_target("svc_api"),
-    };
+    let mut request = reserved_deploy_request(&api, "idem_run", deploy_target("svc_api")).await;
+    request.registry_credentials = vec![DeployRegistryCredential {
+        service_id: service_id("svc_api"),
+        credential: credential.clone(),
+    }];
 
     let accepted = api
         .deploy_submit(&request)
@@ -673,12 +669,10 @@ async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve(
     .await
     .expect("machine runtime starts");
     let api = nats.api();
+    let request =
+        reserved_deploy_request(&api, "idem_resolution_failure", deploy_target("svc_api")).await;
     let accepted = api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_resolution_failure"),
-            target: deploy_target("svc_api"),
-        })
+        .deploy_submit(&request)
         .await
         .expect("deploy submits before planning");
 
@@ -847,16 +841,14 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     let upstream = support::TestHttpUpstream::start("smoke").await;
     let api = nats.api();
 
+    let request = reserved_deploy_request(
+        &api,
+        "idem_routed",
+        deploy_target_with_route("svc_api", gateway.listen_addr().port(), upstream.port()),
+    )
+    .await;
     let accepted = api
-        .deploy_submit(&DeploySubmitRequest {
-            registry_credentials: Vec::new(),
-            idempotency_key: idempotency_key("idem_routed"),
-            target: deploy_target_with_route(
-                "svc_api",
-                gateway.listen_addr().port(),
-                upstream.port(),
-            ),
-        })
+        .deploy_submit(&request)
         .await
         .expect("operation API accepts routed deploy");
 
@@ -1102,6 +1094,25 @@ fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
 fn empty_machine_snapshot(value: &str) -> MachineContainerObservationSnapshot {
     MachineContainerObservationSnapshot::try_new(machine_id(value), [])
         .expect("empty machine snapshot is valid")
+}
+
+async fn reserved_deploy_request(
+    api: &OperationApiClient,
+    idempotency: &str,
+    target: DeployRequest,
+) -> DeploySubmitRequest {
+    let reservation = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: target.namespace_id.clone(),
+        })
+        .await
+        .expect("deploy reservation is issued");
+    DeploySubmitRequest {
+        registry_credentials: Vec::new(),
+        idempotency_key: idempotency_key(idempotency),
+        reservation_id: reservation.reservation_id,
+        target,
+    }
 }
 
 fn deploy_target(service_id: &str) -> DeployRequest {

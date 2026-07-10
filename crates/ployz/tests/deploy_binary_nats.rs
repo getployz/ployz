@@ -9,8 +9,9 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse,
-    operation_api::{DeploySubmitApi, OperationApiContract},
+    AcceptedOperation, DeployReservationExpiresAt, DeployReservationId, DeployReserveResponse,
+    DeployReserved, DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse,
+    operation_api::{DeployReserveApi, DeploySubmitApi, OperationApiContract},
 };
 use ployz_test_support::ids::{event_sequence, operation_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
@@ -21,16 +22,41 @@ async fn binary_deploy_calls_nats_service() {
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
-    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let spec = test_api_service(&[DeployReserveApi::ENDPOINT, DeploySubmitApi::ENDPOINT]);
+    let reserve_endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == DeployReserveApi::ENDPOINT.subject())
+        .expect("deploy reserve endpoint is present")
+        .clone();
+    let submit_endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == DeploySubmitApi::ENDPOINT.subject())
+        .expect("deploy submit endpoint is present")
+        .clone();
     let mut runtime = start_nats_service(client, &spec)
         .await
         .expect("service starts");
 
     runtime
-        .bind_endpoint(endpoint, |request| async move {
+        .bind_endpoint(&reserve_endpoint, |_request| async move {
+            let response: DeployReserveResponse = OperationApiResponse::Ok {
+                value: DeployReserved {
+                    reservation_id: DeployReservationId::first(),
+                    expires_at: DeployReservationExpiresAt::try_new(4_102_444_800)
+                        .expect("valid expiration"),
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("reserve endpoint binds");
+    runtime
+        .bind_endpoint(&submit_endpoint, |request| async move {
             let request: DeploySubmitRequest =
                 serde_json::from_slice(&request.payload).expect("deploy request decodes");
+            assert_eq!(request.reservation_id, DeployReservationId::first());
             assert!(
                 request
                     .idempotency_key
@@ -105,18 +131,24 @@ impl CliNatsEnv {
     }
 }
 
-fn test_api_service(endpoint: OperationApiEndpoint) -> NatsServiceSpec {
+fn test_api_service(endpoints: &[OperationApiEndpoint]) -> NatsServiceSpec {
     NatsServiceSpec::new(
         "plz-api.test",
         "plz-api",
         ServiceVersion::new(0, 1, 0),
         "test API service",
         ServiceMetadata::empty(),
-        vec![NatsServiceEndpointSpec::new(
-            endpoint.name(),
-            endpoint.subject(),
-            endpoint_execution(endpoint.execution()),
-        )],
+        endpoints
+            .iter()
+            .copied()
+            .map(|endpoint| {
+                NatsServiceEndpointSpec::new(
+                    endpoint.name(),
+                    endpoint.subject(),
+                    endpoint_execution(endpoint.execution()),
+                )
+            })
+            .collect(),
     )
 }
 

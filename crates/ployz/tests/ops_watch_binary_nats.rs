@@ -53,6 +53,9 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
                                 1,
                                 OperationEvent::DeploySubmitted {
                                     operation_id: operation_id("op_deploy"),
+                                    reservation_id: Some(
+                                        ployz_core::deploy::DeployReservationId::first(),
+                                    ),
                                     target: deploy_request(),
                                 },
                             )])

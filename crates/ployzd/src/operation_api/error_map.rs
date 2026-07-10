@@ -49,6 +49,21 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
             namespace_id,
             owner,
         },
+        SubmitCommandError::ReservationNotFound {
+            namespace_id: _,
+            reservation_id: _,
+        }
+        | SubmitCommandError::ReservationExpired {
+            namespace_id: _,
+            reservation_id: _,
+            expired_at: _,
+        }
+        | SubmitCommandError::Submit(SubmitOperationError::StaleDeployReservation { .. })
+        | SubmitCommandError::Submit(SubmitOperationError::DeployReservationAlreadyCommitted {
+            ..
+        }) => SubmitFailure::Unavailable {
+            message: corrupt("non-deploy submit returned deploy reservation failure"),
+        },
         SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
             SubmitFailure::InvalidDeployTarget
         }
@@ -103,6 +118,61 @@ pub(super) fn deploy_submit_error_from_submit_error(
     operation_id: OperationId,
     error: SubmitCommandError,
 ) -> DeploySubmitError {
+    let error = match error {
+        SubmitCommandError::ReservationNotFound {
+            namespace_id,
+            reservation_id,
+        } => {
+            return DeploySubmitError::ReservationNotFound {
+                operation_id,
+                namespace_id,
+                reservation_id,
+            };
+        }
+        SubmitCommandError::ReservationExpired {
+            namespace_id,
+            reservation_id,
+            expired_at,
+        } => {
+            return DeploySubmitError::ReservationExpired {
+                operation_id,
+                namespace_id,
+                reservation_id,
+                expired_at,
+            };
+        }
+        SubmitCommandError::Submit(SubmitOperationError::StaleDeployReservation {
+            namespace_id,
+            reservation_id,
+            last_committed_reservation_id,
+        }) => {
+            return DeploySubmitError::StaleReservation {
+                operation_id,
+                namespace_id,
+                reservation_id,
+                last_committed_reservation_id,
+            };
+        }
+        SubmitCommandError::Submit(SubmitOperationError::DeployReservationAlreadyCommitted {
+            namespace_id,
+            reservation_id,
+            owner_operation_id,
+        }) => {
+            return DeploySubmitError::ReservationAlreadyCommitted {
+                operation_id,
+                namespace_id,
+                reservation_id,
+                owner_operation_id,
+            };
+        }
+        error @ SubmitCommandError::Clock { .. }
+        | error @ SubmitCommandError::NamespaceBusy { .. }
+        | error @ SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget)
+        | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
+        | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
+            ..
+        }) => error,
+    };
     match submit_failure(error) {
         SubmitFailure::InvalidDeployTarget => DeploySubmitError::InvalidTarget {
             operation_id,

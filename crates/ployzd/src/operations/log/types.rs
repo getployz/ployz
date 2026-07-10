@@ -1,4 +1,4 @@
-use ployz_core::deploy::VolumeName;
+use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
@@ -38,7 +38,14 @@ pub struct MachineJoinIdentity {
 #[serde(deny_unknown_fields)]
 pub struct StoredDeployClaim {
     pub operation_id: OperationId,
+    pub reservation_id: DeployReservationId,
     pub target: ployz_core::deploy::DeployRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DeployOperationPayload {
+    pub(super) reservation_id: Option<DeployReservationId>,
+    pub(super) target: ployz_core::deploy::DeployRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -83,6 +90,7 @@ pub struct StoredMachineAddJoinToken {
 pub struct DeployOperationSubmission {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
+    pub reservation_id: DeployReservationId,
     pub target: ployz_core::deploy::DeployRequest,
 }
 
@@ -300,8 +308,20 @@ impl RecordOperationEventOutcome {
 #[derive(Debug)]
 pub enum SubmitOperationError {
     InvalidDeployTarget,
+    StaleDeployReservation {
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+        last_committed_reservation_id: DeployReservationId,
+    },
+    DeployReservationAlreadyCommitted {
+        namespace_id: NamespaceId,
+        reservation_id: DeployReservationId,
+        owner_operation_id: OperationId,
+    },
     StoreStatus(OperationStatusStoreError),
-    DuplicateSequenceMismatch { sequence: EventSequence },
+    DuplicateSequenceMismatch {
+        sequence: EventSequence,
+    },
 }
 
 #[derive(Debug)]
