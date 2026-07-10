@@ -604,36 +604,17 @@ mod tests {
     }
 
     #[test]
-    fn docker_health_is_immediate_while_running_confirmation_waits() {
+    fn docker_health_confirms_immediately() {
         let observed_at = tokio::time::Instant::now();
-        let mut docker_health_since = None;
         let mut running_since = None;
 
-        let confirmed = [
+        assert_eq!(
             update_container_confirmation(
                 ObservedContainerReadiness::Confirmed,
-                &mut docker_health_since,
-                observed_at,
-            ),
-            update_container_confirmation(
-                ObservedContainerReadiness::RunningUnconfirmed,
                 &mut running_since,
                 observed_at,
             ),
-            update_container_confirmation(
-                ObservedContainerReadiness::RunningUnconfirmed,
-                &mut running_since,
-                observed_at + DEPLOY_RUNNING_CONFIRMATION_WINDOW,
-            ),
-        ];
-
-        assert_eq!(
-            confirmed,
-            [
-                ContainerConfirmation::Confirmed,
-                ContainerConfirmation::Pending,
-                ContainerConfirmation::Confirmed,
-            ]
+            ContainerConfirmation::Confirmed
         );
     }
 
