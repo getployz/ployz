@@ -58,6 +58,10 @@ fn normalize_internal_name(name: &str) -> Option<InternalServiceName> {
     let labels = name.split('.').collect::<Vec<_>>();
     let normalized = match labels.as_slice() {
         [service] => format!("{service}.default.{INTERNAL_DNS_SUFFIX}"),
+        // A bare `<service>.internal` is ambiguous — a namespace named for the
+        // reserved suffix versus a suffix missing its namespace — so reject it
+        // and let the operator disambiguate with an explicit namespace.
+        [_, namespace] if namespace.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) => return None,
         [service, namespace] => format!("{service}.{namespace}.{INTERNAL_DNS_SUFFIX}"),
         [service, namespace, suffix] if suffix.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) => {
             format!("{service}.{namespace}.{INTERNAL_DNS_SUFFIX}")
@@ -131,6 +135,9 @@ mod tests {
     #[test]
     fn rejects_invalid_name() {
         assert!(normalize_internal_name("db.team-a.internal.extra").is_none());
+        // A two-label name ending in the reserved suffix is ambiguous.
+        assert!(normalize_internal_name("db.internal").is_none());
+        assert!(normalize_internal_name("db.Internal").is_none());
     }
 
     #[test]

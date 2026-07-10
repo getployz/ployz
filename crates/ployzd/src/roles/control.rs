@@ -23,9 +23,9 @@ use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
-use crate::roles::machine::client::NatsMachineDataplanePreparer;
 use crate::roles::machine::client::{
-    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
+    NatsMachineDataplanePreparer, NatsMachineFactsReader, NatsMachineLogsTailer,
+    NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
