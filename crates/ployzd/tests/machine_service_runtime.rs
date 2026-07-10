@@ -486,7 +486,7 @@ async fn machine_role_service_inspects_live_container() {
         .expect("flush machine service subscription");
     let client = NatsMachineContainerRuntime::new(nats.client);
 
-    let observation = client
+    let inspection = client
         .inspect_container(
             &machine_id("machine_a"),
             MachineContainerInspectRpcRequest {
@@ -494,8 +494,8 @@ async fn machine_role_service_inspects_live_container() {
             },
         )
         .await
-        .expect("inspect succeeds")
-        .expect("container exists");
+        .expect("inspect succeeds");
+    let observation = inspection.observation.expect("container exists");
 
     assert_eq!(observation.container_id, container_id("ctr_existing"));
     assert_eq!(
@@ -1877,6 +1877,7 @@ fn existing_container(
         ExistingManagedContainerState::Running {
             ip: None,
             health: ployz_core::machine_runtime::ContainerHealth::None,
+            started_at_unix_ms: None,
         },
     )
 }
@@ -1893,7 +1894,6 @@ fn existing_container_with_state(
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
-        started_at_unix_ms: None,
     }
 }
 

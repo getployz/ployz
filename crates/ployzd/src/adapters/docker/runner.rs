@@ -135,17 +135,22 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             })?;
 
         for container in &mut containers {
-            let ExistingManagedContainerState::Running { health, .. } = &mut container.state else {
+            let ExistingManagedContainerState::Running {
+                health,
+                started_at_unix_ms,
+                ..
+            } = &mut container.state
+            else {
                 continue;
             };
-            let (observed_health, started_at_unix_ms) =
+            let (observed_health, observed_started_at_unix_ms) =
                 docker_container_details(docker, &container.container_id)
                     .await
                     .map_err(|error| MachineContainerRunnerError::ListExisting {
                         message: error,
                     })?;
             *health = observed_health;
-            container.started_at_unix_ms = started_at_unix_ms;
+            *started_at_unix_ms = Some(observed_started_at_unix_ms);
         }
 
         Ok(containers)
@@ -585,6 +590,7 @@ fn docker_container_state(
         ContainerSummaryStateEnum::RUNNING => Ok(ExistingManagedContainerState::Running {
             ip: container_ip(network_settings)?,
             health: ContainerHealth::None,
+            started_at_unix_ms: None,
         }),
         ContainerSummaryStateEnum::CREATED | ContainerSummaryStateEnum::EXITED => {
             Ok(ExistingManagedContainerState::StartableStopped)
@@ -603,15 +609,17 @@ fn docker_container_state(
 async fn docker_container_details(
     docker: &Docker,
     container_id: &ContainerId,
-) -> Result<(ContainerHealth, Option<i64>), String> {
+) -> Result<(ContainerHealth, u64), String> {
     let inspect = docker
         .inspect_container(container_id.as_str(), None::<InspectContainerOptions>)
         .await
         .map_err(|error| error.to_string())?;
-    let state = inspect.state;
+    let state = inspect
+        .state
+        .ok_or_else(|| "Docker inspect omitted container state".to_owned())?;
     let health = match state
+        .health
         .as_ref()
-        .and_then(|state| state.health.as_ref())
         .and_then(|health| health.status)
         .unwrap_or(HealthStatusEnum::NONE)
     {
@@ -620,17 +628,17 @@ async fn docker_container_details(
         HealthStatusEnum::HEALTHY => ContainerHealth::Healthy,
         HealthStatusEnum::UNHEALTHY => ContainerHealth::Unhealthy,
     };
-    let started_at_unix_ms = state
-        .and_then(|state| state.started_at)
-        .map(|started_at| parse_docker_started_at(&started_at))
-        .transpose()?;
+    let started_at = state
+        .started_at
+        .ok_or_else(|| "Docker inspect omitted State.StartedAt".to_owned())?;
+    let started_at_unix_ms = parse_docker_started_at(&started_at)?;
     Ok((health, started_at_unix_ms))
 }
 
-fn parse_docker_started_at(started_at: &str) -> Result<i64, String> {
+fn parse_docker_started_at(started_at: &str) -> Result<u64, String> {
     let parsed = OffsetDateTime::parse(started_at, &Rfc3339)
         .map_err(|error| format!("invalid Docker StartedAt `{started_at}`: {error}"))?;
-    i64::try_from(parsed.unix_timestamp_nanos() / 1_000_000)
+    u64::try_from(parsed.unix_timestamp_nanos() / 1_000_000)
         .map_err(|_| format!("Docker StartedAt `{started_at}` is out of range"))
 }
 
@@ -881,7 +889,6 @@ fn existing_container_from_summary(
         health_status: health_status.or_else(|| summary.status.as_deref().and_then(status_health)),
         resolved_image_identity: summary.image_id,
         created_at_unix_seconds: summary.created,
-        started_at_unix_ms: None,
     })
 }
 
@@ -1277,11 +1284,11 @@ mod tests {
                 state: ExistingManagedContainerState::Running {
                     ip: None,
                     health: ContainerHealth::None,
+                    started_at_unix_ms: None,
                 },
                 health_status: None,
                 resolved_image_identity: None,
                 created_at_unix_seconds: None,
-                started_at_unix_ms: None,
             }
         );
     }
@@ -1328,6 +1335,7 @@ mod tests {
             ExistingManagedContainerState::Running {
                 ip: Some("10.42.0.9".parse().expect("valid endpoint ip")),
                 health: ContainerHealth::None,
+                started_at_unix_ms: None,
             }
         );
     }
@@ -1366,6 +1374,7 @@ mod tests {
             ExistingManagedContainerState::Running {
                 ip: Some("10.42.0.9".parse().expect("valid endpoint ip")),
                 health: ContainerHealth::None,
+                started_at_unix_ms: None,
             }
         );
     }
@@ -1395,6 +1404,7 @@ mod tests {
             ExistingManagedContainerState::Running {
                 ip: None,
                 health: ContainerHealth::None,
+                started_at_unix_ms: None,
             }
         );
     }

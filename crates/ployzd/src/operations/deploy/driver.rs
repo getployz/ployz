@@ -18,7 +18,9 @@ use crate::roles::machine::client::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
     NatsMachineFactsReader,
 };
-use crate::roles::machine::protocol::MachineContainerInspectRpcRequest;
+use crate::roles::machine::protocol::{
+    MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
+};
 use crate::tasks::TaskRegistry;
 use ployz_core::deploy::DeployRouteTarget;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
@@ -26,7 +28,7 @@ use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
 };
 use ployz_core::subjects::INTENT_CHANGED;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -423,7 +425,11 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
         loop {
             let mut all_confirmed = true;
             for container in containers {
-                let observation = self
+                let MachineContainerInspectRpcOk {
+                    observation,
+                    observed_at_unix_ms,
+                    ..
+                } = self
                     .runtime
                     .inspect_container(
                         &container.machine_id,
@@ -437,7 +443,7 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
                     Some(observation) => observed_container_readiness(
                         observation,
                         container.requires_docker_healthcheck,
-                        current_unix_ms(),
+                        observed_at_unix_ms,
                     ),
                     None => ObservedContainerReadiness::Pending,
                 };
@@ -462,20 +468,24 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
 fn observed_container_readiness(
     observation: &ployz_core::machine_runtime::ManagedContainerObservation,
     requires_docker_healthcheck: bool,
-    observed_at_unix_ms: i64,
+    observed_at_unix_ms: u64,
 ) -> ObservedContainerReadiness {
     match &observation.state {
-        ContainerRuntimeState::Running { health, .. } => match health {
+        ContainerRuntimeState::Running {
+            health,
+            started_at_unix_ms,
+            ..
+        } => match health {
             ContainerHealth::Starting => ObservedContainerReadiness::Pending,
             ContainerHealth::Healthy => ObservedContainerReadiness::Confirmed,
             ContainerHealth::Unhealthy => ObservedContainerReadiness::Failed("unhealthy"),
             ContainerHealth::None if requires_docker_healthcheck => {
                 ObservedContainerReadiness::Pending
             }
-            ContainerHealth::None => match observation.started_at_unix_ms {
+            ContainerHealth::None => match started_at_unix_ms {
                 Some(started_at_unix_ms)
-                    if observed_at_unix_ms.saturating_sub(started_at_unix_ms)
-                        >= DEPLOY_RUNNING_CONFIRMATION_WINDOW.as_millis() as i64 =>
+                    if observed_at_unix_ms.saturating_sub(*started_at_unix_ms)
+                        >= DEPLOY_RUNNING_CONFIRMATION_WINDOW.as_millis() as u64 =>
                 {
                     ObservedContainerReadiness::Confirmed
                 }
@@ -491,13 +501,6 @@ enum ObservedContainerReadiness {
     Confirmed,
     Pending,
     Failed(&'static str),
-}
-
-fn current_unix_ms() -> i64 {
-    let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-        return 0;
-    };
-    i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn unhealthy_container(
@@ -547,7 +550,11 @@ mod tests {
             "ctr_1",
             ContainerRuntimeState::running_unroutable(),
         );
-        observation.started_at_unix_ms = Some(1_000);
+        observation.state = ContainerRuntimeState::Running {
+            ip: None,
+            health: ContainerHealth::None,
+            started_at_unix_ms: Some(1_000),
+        };
 
         assert_eq!(
             observed_container_readiness(&observation, false, 2_500),
@@ -565,6 +572,7 @@ mod tests {
                     ContainerRuntimeState::Running {
                         ip: None,
                         health: ContainerHealth::Healthy,
+                        started_at_unix_ms: None,
                     },
                 ),
                 false,
@@ -617,6 +625,7 @@ mod tests {
                         ContainerRuntimeState::Running {
                             ip: None,
                             health: ContainerHealth::Healthy,
+                            started_at_unix_ms: None,
                         },
                     ),
                     requires_docker_healthcheck,
@@ -649,6 +658,7 @@ mod tests {
                     ContainerRuntimeState::Running {
                         ip: None,
                         health: ContainerHealth::Starting,
+                        started_at_unix_ms: None,
                     }
                 ),
                 true,
@@ -664,6 +674,7 @@ mod tests {
                     ContainerRuntimeState::Running {
                         ip: None,
                         health: ContainerHealth::Unhealthy,
+                        started_at_unix_ms: None,
                     }
                 ),
                 true,
@@ -693,7 +704,6 @@ mod tests {
             health_status: None,
             resolved_image_identity: None,
             created_at_unix_seconds: None,
-            started_at_unix_ms: None,
         }
     }
 

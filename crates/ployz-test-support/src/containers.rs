@@ -92,7 +92,6 @@ pub fn observation(machine: &str, container: &str) -> ManagedContainerObservatio
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
-        started_at_unix_ms: None,
     }
 }
 
@@ -105,7 +104,6 @@ pub struct ManagedContainerObservationBuilder {
     health_status: Option<ManagedContainerHealthStatus>,
     resolved_image_identity: Option<String>,
     created_at_unix_seconds: Option<i64>,
-    started_at_unix_ms: Option<i64>,
 }
 
 impl ManagedContainerObservationBuilder {
@@ -161,12 +159,6 @@ impl ManagedContainerObservationBuilder {
     }
 
     #[must_use]
-    pub const fn started_at_unix_ms(mut self, started_at_unix_ms: i64) -> Self {
-        self.started_at_unix_ms = Some(started_at_unix_ms);
-        self
-    }
-
-    #[must_use]
     pub fn build(self) -> ManagedContainerObservation {
         ManagedContainerObservation {
             machine_id: machine_id(&self.machine_id),
@@ -176,7 +168,6 @@ impl ManagedContainerObservationBuilder {
             health_status: self.health_status,
             resolved_image_identity: self.resolved_image_identity,
             created_at_unix_seconds: self.created_at_unix_seconds,
-            started_at_unix_ms: self.started_at_unix_ms,
         }
     }
 }

@@ -123,6 +123,7 @@ fn existing_container(
         ExistingManagedContainerState::Running {
             ip: None,
             health: ployz_core::machine_runtime::ContainerHealth::None,
+            started_at_unix_ms: None,
         },
     )
 }
@@ -139,7 +140,6 @@ fn existing_container_with_state(
         health_status: None,
         resolved_image_identity: None,
         created_at_unix_seconds: None,
-        started_at_unix_ms: None,
     }
 }
 

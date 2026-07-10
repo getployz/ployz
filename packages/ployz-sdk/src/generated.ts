@@ -178,7 +178,7 @@ export type ContainerRuntimeState = { "state": "running",
  * port is route state, not container state (ADR 0023), so the
  * observation carries only the IP gateways dial.
  */
-ip?: string | null, health: ContainerHealth, } | { "state": "exited" };
+ip?: string | null, health: ContainerHealth, started_at_unix_ms?: number | null, } | { "state": "exited" };
 
 export type ContainerHealth = "none" | "starting" | "healthy" | "unhealthy";
 
@@ -186,7 +186,7 @@ export type ManagedContainerHealthStatus = "starting" | "healthy" | "unhealthy";
 
 export type ManagedContainerIdentity = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, };
 
-export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, state: ContainerRuntimeState, health_status?: ManagedContainerHealthStatus | null, resolved_image_identity?: string | null, created_at_unix_seconds?: number | null, started_at_unix_ms?: number | null, };
+export type ManagedContainerObservation = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, state: ContainerRuntimeState, health_status?: ManagedContainerHealthStatus | null, resolved_image_identity?: string | null, created_at_unix_seconds?: number | null, };
 
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
