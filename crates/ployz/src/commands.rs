@@ -11,6 +11,7 @@ pub mod init;
 pub mod logs;
 pub mod machine;
 pub mod namespace;
+pub mod network;
 pub mod ops;
 pub mod role_policy;
 pub mod service;
@@ -37,6 +38,9 @@ pub enum PloyzctlCommand {
     MachineLifecycle(machine::MachineLifecycleCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
+    NetworkStatus(network::NetworkStatusCommand),
+    NetworkResolve(network::NetworkResolveCommand),
+    NetworkRepair(network::NetworkRepairCommand),
     ServiceList(service::ServiceListCommand),
     ServiceInspect(service::ServiceInspectCommand),
     ServiceRestart(service::ServiceRestartCommand),
@@ -102,6 +106,10 @@ enum CommandCli {
         #[command(subcommand)]
         command: MachineCli,
     },
+    Network {
+        #[command(subcommand)]
+        command: NetworkCli,
+    },
     Service {
         #[command(subcommand)]
         command: ServiceCli,
@@ -161,6 +169,13 @@ enum ServiceCli {
     List(service::EmptyCli),
     Inspect(service::ServiceInspectCli),
     Restart(service::ServiceRestartCli),
+}
+
+#[derive(Debug, Subcommand)]
+enum NetworkCli {
+    Status(network::EmptyCli),
+    Resolve(network::NetworkResolveCli),
+    Repair(network::NetworkRepairCli),
 }
 
 #[derive(Debug, Subcommand)]
@@ -226,6 +241,17 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             )),
             MachineCli::Inspect(command) => {
                 machine::machine_inspect_command(command).map(PloyzctlCommand::MachineInspect)
+            }
+        },
+        CommandCli::Network { command } => match command {
+            NetworkCli::Status(command) => Ok(PloyzctlCommand::NetworkStatus(
+                network::network_status_command(command),
+            )),
+            NetworkCli::Resolve(command) => Ok(PloyzctlCommand::NetworkResolve(
+                network::network_resolve_command(command),
+            )),
+            NetworkCli::Repair(command) => {
+                network::network_repair_command(command).map(PloyzctlCommand::NetworkRepair)
             }
         },
         CommandCli::Service { command } => match command {

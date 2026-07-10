@@ -2,7 +2,8 @@ use super::{
     CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
     MachineUpdatePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
-    ServiceRestartOperationSubmission, ServiceRestartPayload,
+    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
+    ServiceRestartPayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -257,5 +258,29 @@ impl OperationAction for NamespaceRemoveOperationSubmission {
             payload.namespace_id.clone(),
             sequence,
         )
+    }
+}
+
+impl OperationAction for NetworkRepairOperationSubmission {
+    type Payload = NetworkRepairPayload;
+    const KIND: OperationKind = OperationKind::NetworkRepair;
+
+    fn submitted_event(operation_id: OperationId, _payload: Self::Payload) -> OperationEvent {
+        OperationEvent::NetworkRepairSubmitted { operation_id }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::NetworkRepairSubmitted { operation_id } = event else {
+            return None;
+        };
+        Some((operation_id, NetworkRepairPayload))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        _payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::network_repair_accepted(operation_id, sequence)
     }
 }

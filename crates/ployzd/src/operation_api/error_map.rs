@@ -63,21 +63,21 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     }
 }
 
-/// Submit outcome for machine-scoped operations, which have no deploy target
-/// and take no namespace lock: those two failures can only mean a corrupt
+/// Submit outcome for unfenced operations, which have no deploy target and
+/// take no namespace lock: those two failures can only mean a corrupt
 /// record and render as corrupt-record evidence, leaving each caller only the
 /// wrapping into its own error type.
-pub(super) enum MachineSubmitFailure {
+pub(super) enum UnfencedSubmitFailure {
     Unavailable { message: String },
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
 
-pub(super) fn machine_submit_failure(
+pub(super) fn unfenced_submit_failure(
     operation: &str,
     error: SubmitCommandError,
-) -> MachineSubmitFailure {
+) -> UnfencedSubmitFailure {
     match submit_failure(error) {
-        SubmitFailure::InvalidDeployTarget => MachineSubmitFailure::Unavailable {
+        SubmitFailure::InvalidDeployTarget => UnfencedSubmitFailure::Unavailable {
             message: corrupt(format_args!(
                 "{operation} submit returned deploy target failure"
             )),
@@ -85,16 +85,16 @@ pub(super) fn machine_submit_failure(
         SubmitFailure::ResourceBusy {
             namespace_id,
             owner,
-        } => MachineSubmitFailure::Unavailable {
+        } => UnfencedSubmitFailure::Unavailable {
             message: corrupt(format_args!(
                 "{operation} submit returned namespace lock {} owned by {}",
                 namespace_id.as_str(),
                 owner.as_str()
             )),
         },
-        SubmitFailure::Unavailable { message } => MachineSubmitFailure::Unavailable { message },
+        SubmitFailure::Unavailable { message } => UnfencedSubmitFailure::Unavailable { message },
         SubmitFailure::DuplicateSequenceMismatch { sequence } => {
-            MachineSubmitFailure::DuplicateSequenceMismatch { sequence }
+            UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence }
         }
     }
 }
@@ -146,12 +146,12 @@ pub(super) fn machine_add_error_from_submit_error(
         }
         MachineAddSubmitCommandError::Submit(error) => error,
     };
-    match machine_submit_failure("machine-add", submit) {
-        MachineSubmitFailure::Unavailable { message } => MachineAddError::Unavailable {
+    match unfenced_submit_failure("machine-add", submit) {
+        UnfencedSubmitFailure::Unavailable { message } => MachineAddError::Unavailable {
             operation_id,
             message,
         },
-        MachineSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+        UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
             MachineAddError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,

@@ -19,6 +19,7 @@ pub mod roles {
     pub mod control;
     pub mod dns {
         mod internal;
+        pub(crate) mod records;
         pub use internal::InternalResolverHealth;
         pub mod process;
         pub mod projection;
@@ -40,6 +41,7 @@ pub mod operations {
     pub mod machine_lifecycle;
     pub mod machine_update;
     pub mod namespace_remove;
+    pub mod network_repair;
     pub mod service_restart;
 }
 pub mod core_store;

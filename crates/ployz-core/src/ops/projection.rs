@@ -11,6 +11,7 @@ use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
+use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
 use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
 
@@ -87,6 +88,7 @@ pub enum ProjectionOperationState {
     MachineUpdate(MachineUpdateOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
     CoreReplace(CoreReplaceOperationState),
+    NetworkRepair(NetworkRepairOperationState),
     ServiceRestart(ServiceRestartOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
 }
@@ -101,6 +103,7 @@ impl ProjectionOperationState {
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
             Self::CoreReplace(_) => OperationKind::CoreReplace,
+            Self::NetworkRepair(_) => OperationKind::NetworkRepair,
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
         }
@@ -115,6 +118,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::NamespaceRemove => "namespace-remove",
     }
@@ -322,6 +326,12 @@ pub fn project_operation_event(
                 event,
                 event_sequence,
             )
+        }
+        ClassifiedOperationEvent::NetworkRepair { event, .. } => {
+            let OperationStatus::NetworkRepair { id, state, .. } = current else {
+                return Err(kind_mismatch(current, OperationKind::NetworkRepair));
+            };
+            network_repair::project_event(id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::ServiceRestart { event, .. } => {
             let OperationStatus::ServiceRestart {

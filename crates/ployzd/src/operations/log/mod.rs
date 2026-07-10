@@ -26,6 +26,7 @@ mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
 mod namespace_remove;
+mod network_repair;
 mod operation;
 mod service_restart;
 mod types;

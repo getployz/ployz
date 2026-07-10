@@ -52,6 +52,7 @@ pub use ployz_core::ops::{
     MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
+    NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairRunningStage,
     NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationKind, OperationStatus, OperationStatusSnapshot,

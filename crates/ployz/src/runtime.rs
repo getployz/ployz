@@ -334,6 +334,39 @@ pub async fn execute_command(
             )
             .await
         }
+        PloyzctlCommand::NetworkStatus(command) => {
+            render_api_call(
+                config,
+                async |api| api.machine_list(&command.into_request()).await,
+                |result| {
+                    crate::commands::network::NetworkStatusOutput::from_result(result).render()
+                },
+            )
+            .await
+        }
+        PloyzctlCommand::NetworkResolve(command) => {
+            render_api_call(
+                config,
+                async |api| api.network_resolve(&command.into_request()).await,
+                |result| crate::commands::network::NetworkResolveOutput::new(result).render(),
+            )
+            .await
+        }
+        PloyzctlCommand::NetworkRepair(command) => {
+            let detach = command.detach;
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .network_repair(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            if detach {
+                return Ok(PloyzctlExecutionOutput::stdout(
+                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                        .render(),
+                ));
+            }
+            watch_accepted_operation(&api, accepted.operation_id, config).await
+        }
         PloyzctlCommand::ServiceList(command) => {
             render_api_call(
                 config,

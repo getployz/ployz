@@ -9,11 +9,13 @@ use crate::{
     MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
     MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
-    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, OperationStatusSnapshot,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
+    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
+    OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest,
+    RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceRestartError, ServiceRestartRequest,
+    ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -44,6 +46,8 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::CoreReplaceReportApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
+            $crate::operation_api::NetworkResolveApi,
+            $crate::operation_api::NetworkRepairApi,
             $crate::operation_api::MachineJoinRedeemApi,
             $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::ServiceListApi,
@@ -199,6 +203,30 @@ impl OperationApiContract for MachineInspectApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineInspect;
     const RESPONSE_ALIAS: &'static str = "MachineInspectResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkResolveApi;
+
+impl OperationApiContract for NetworkResolveApi {
+    type Request = NetworkResolveRequest;
+    type Success = NetworkResolveResult;
+    type Error = NetworkResolveError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::NetworkResolve;
+    const RESPONSE_ALIAS: &'static str = "NetworkResolveResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkRepairApi;
+
+impl OperationApiContract for NetworkRepairApi {
+    type Request = NetworkRepairRequest;
+    type Success = AcceptedOperation;
+    type Error = NetworkRepairError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::NetworkRepair;
+    const RESPONSE_ALIAS: &'static str = "NetworkRepairResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

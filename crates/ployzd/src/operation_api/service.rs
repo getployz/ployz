@@ -3,8 +3,8 @@
 use crate::operation_api::{
     OperationApiHandlers, core_replace, core_replace_report, deploy_submit,
     init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
-    machine_join_report, machine_resume, machine_update, namespace_remove, ops_list, ops_status,
-    ops_watch, service_restart,
+    machine_join_report, machine_resume, machine_update, namespace_remove, network_repair,
+    ops_list, ops_status, ops_watch, service_restart,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -18,8 +18,9 @@ use ployz_sdk_types::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, OperationApiContract, OpsListApi,
+        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        ServiceRestartApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -146,6 +147,22 @@ async fn bind_operation_endpoint(
                 |handlers, request| async move {
                     handlers.machine_query().inspect(&request.machine_id).await
                 },
+            )
+            .await
+        }
+        OperationApiEndpoint::NetworkResolve => {
+            bind_operation_contract::<NetworkResolveApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { handlers.network_query().resolve(request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::NetworkRepair => {
+            bind_operation_contract::<NetworkRepairApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { network_repair(&handlers, request).await },
             )
             .await
         }

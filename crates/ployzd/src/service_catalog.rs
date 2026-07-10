@@ -32,6 +32,8 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::CoreReplaceReport,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
+    OperationApiEndpoint::NetworkResolve,
+    OperationApiEndpoint::NetworkRepair,
     OperationApiEndpoint::MachineJoinRedeem,
     OperationApiEndpoint::MachineJoinReport,
     OperationApiEndpoint::ServiceList,

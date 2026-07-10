@@ -1,7 +1,10 @@
 //! NATS subject construction helpers.
 
 use crate::ids::{MachineId, NamespaceId, OperationId};
-use crate::ops::{DeployRunningStage, NamespaceRemoveRunningStage, ServiceRestartRunningStage};
+use crate::ops::{
+    DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage,
+    ServiceRestartRunningStage,
+};
 
 pub const OPERATION_PROGRESS_SCOPE: &str = "plz.v1.progress.>";
 
@@ -25,6 +28,8 @@ pub const OPERATOR_MACHINE_ADD: &str = "plz.v1.rpc.operator.command.machine.add"
 pub const OPERATOR_MACHINE_UPDATE: &str = "plz.v1.rpc.operator.command.machine.update";
 pub const OPERATOR_MACHINE_LIST: &str = "plz.v1.rpc.operator.query.machine.list";
 pub const OPERATOR_MACHINE_INSPECT: &str = "plz.v1.rpc.operator.query.machine.inspect";
+pub const OPERATOR_NETWORK_RESOLVE: &str = "plz.v1.rpc.operator.query.network.resolve";
+pub const OPERATOR_NETWORK_REPAIR: &str = "plz.v1.rpc.operator.command.network.repair";
 pub const JOIN_MACHINE_REDEEM: &str = "plz.v1.rpc.join.command.machine.redeem";
 pub const JOIN_MACHINE_REPORT: &str = "plz.v1.rpc.join.command.machine.report";
 pub const OPERATOR_SERVICE_LIST: &str = "plz.v1.rpc.operator.query.service.list";
@@ -47,6 +52,8 @@ pub enum OperationApiEndpoint {
     MachineResume,
     MachineList,
     MachineInspect,
+    NetworkResolve,
+    NetworkRepair,
     MachineJoinRedeem,
     MachineJoinReport,
     ServiceList,
@@ -81,6 +88,8 @@ impl OperationApiEndpoint {
             Self::MachineResume => "machine.resume",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
+            Self::NetworkResolve => "network.resolve",
+            Self::NetworkRepair => "network.repair",
             Self::MachineJoinRedeem => "machine.redeem",
             Self::MachineJoinReport => "machine.report",
             Self::ServiceList => "service.list",
@@ -108,6 +117,8 @@ impl OperationApiEndpoint {
             Self::MachineResume => OPERATOR_MACHINE_RESUME,
             Self::MachineList => OPERATOR_MACHINE_LIST,
             Self::MachineInspect => OPERATOR_MACHINE_INSPECT,
+            Self::NetworkResolve => OPERATOR_NETWORK_RESOLVE,
+            Self::NetworkRepair => OPERATOR_NETWORK_REPAIR,
             Self::MachineJoinRedeem => JOIN_MACHINE_REDEEM,
             Self::MachineJoinReport => JOIN_MACHINE_REPORT,
             Self::ServiceList => OPERATOR_SERVICE_LIST,
@@ -132,6 +143,7 @@ impl OperationApiEndpoint {
             | Self::MachineUpdate
             | Self::MachineDrain
             | Self::MachineResume
+            | Self::NetworkRepair
             | Self::ServiceRestart
             | Self::NamespaceRemove
             | Self::CoreReplace => OperationApiEndpointExecution::AcceptsOperation,
@@ -141,6 +153,7 @@ impl OperationApiEndpoint {
             | Self::CoreReplaceReport => OperationApiEndpointExecution::MutatesOperation,
             Self::MachineList
             | Self::MachineInspect
+            | Self::NetworkResolve
             | Self::ServiceList
             | Self::ServiceInspect
             | Self::RuntimeSnapshot
@@ -266,6 +279,15 @@ impl ServiceRestartRunningStage {
         match self {
             Self::RestartingContainers => "restarting_containers",
             Self::WaitingForHealth => "waiting_for_health",
+        }
+    }
+}
+
+impl NetworkRepairRunningStage {
+    #[must_use]
+    pub const fn as_subject(&self) -> &'static str {
+        match self {
+            Self::PreparingDataplane => "preparing_dataplane",
         }
     }
 }

@@ -22,14 +22,15 @@ use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
+use super::network_repair::{NetworkRepairEvent, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployRunningStage, MachineAddOperationState, MachineLifecycleFailure,
     MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
-    NamespaceRemoveRunningStage, OperationKind, RouteTarget, ServiceRestartFailure,
-    ServiceRestartRunningStage,
+    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub enum OperationSubject {
     MachineAdd { machine_id: MachineId },
     MachineUpdate { machine_id: MachineId },
     CoreReplace { machine_id: MachineId },
+    NetworkRepair,
     ServiceRestart { service_id: ServiceId },
     NamespaceRemove { namespace_id: NamespaceId },
 }
@@ -187,6 +189,20 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: CoreReplaceFailure,
     },
+    NetworkRepairSubmitted {
+        operation_id: OperationId,
+    },
+    NetworkRepairRunning {
+        operation_id: OperationId,
+        stage: NetworkRepairRunningStage,
+    },
+    NetworkRepairCompleted {
+        operation_id: OperationId,
+    },
+    NetworkRepairFailed {
+        operation_id: OperationId,
+        failure: NetworkRepairFailure,
+    },
     ServiceRestartSubmitted {
         operation_id: OperationId,
         namespace_id: NamespaceId,
@@ -273,6 +289,10 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { operation_id, .. }
             | Self::CoreReplaceCompleted { operation_id, .. }
             | Self::CoreReplaceFailed { operation_id, .. }
+            | Self::NetworkRepairSubmitted { operation_id }
+            | Self::NetworkRepairRunning { operation_id, .. }
+            | Self::NetworkRepairCompleted { operation_id }
+            | Self::NetworkRepairFailed { operation_id, .. }
             | Self::ServiceRestartSubmitted { operation_id, .. }
             | Self::ServiceRestartRunning { operation_id, .. }
             | Self::ServiceRestartContainerRestarted { operation_id, .. }
@@ -325,6 +345,10 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::NetworkRepairSubmitted { .. }
+            | Self::NetworkRepairRunning { .. }
+            | Self::NetworkRepairCompleted { .. }
+            | Self::NetworkRepairFailed { .. }
             | Self::ServiceRestartSubmitted { .. }
             | Self::ServiceRestartRunning { .. }
             | Self::ServiceRestartContainerRestarted { .. }
@@ -393,6 +417,10 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::NetworkRepairSubmitted { .. }
+            | Self::NetworkRepairRunning { .. }
+            | Self::NetworkRepairCompleted { .. }
+            | Self::NetworkRepairFailed { .. }
             | Self::ServiceRestartSubmitted { .. }
             | Self::ServiceRestartRunning { .. }
             | Self::ServiceRestartContainerRestarted { .. }
@@ -455,6 +483,12 @@ impl OperationEvent {
             Self::CoreReplaceSubmitted { .. } => "core.replace.submitted".to_owned(),
             Self::CoreReplaceCompleted { .. } => "core.replace.completed".to_owned(),
             Self::CoreReplaceFailed { .. } => "core.replace.failed".to_owned(),
+            Self::NetworkRepairSubmitted { .. } => "network.repair.submitted".to_owned(),
+            Self::NetworkRepairRunning { stage, .. } => {
+                format!("network.repair.running.{}", stage.as_subject())
+            }
+            Self::NetworkRepairCompleted { .. } => "network.repair.completed".to_owned(),
+            Self::NetworkRepairFailed { .. } => "network.repair.failed".to_owned(),
             Self::ServiceRestartSubmitted { .. } => "service.restart.submitted".to_owned(),
             Self::ServiceRestartRunning { stage, .. } => {
                 format!("service.restart.running.{}", stage.as_subject())
@@ -544,6 +578,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: CoreReplaceEvent,
     },
+    NetworkRepair {
+        operation_id: OperationId,
+        event: NetworkRepairEvent,
+    },
     ServiceRestart {
         operation_id: OperationId,
         event: ServiceRestartEvent,
@@ -563,6 +601,7 @@ impl ClassifiedOperationEvent {
             | Self::MachineUpdate { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
+            | Self::NetworkRepair { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
         }
@@ -835,6 +874,28 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: CoreReplaceTransition::Failed { failure },
                 },
             },
+            OperationEvent::NetworkRepairSubmitted { operation_id } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Submitted,
+            },
+            OperationEvent::NetworkRepairRunning {
+                operation_id,
+                stage,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Transition(NetworkRepairTransition::Running { stage }),
+            },
+            OperationEvent::NetworkRepairCompleted { operation_id } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Transition(NetworkRepairTransition::Completed),
+            },
+            OperationEvent::NetworkRepairFailed {
+                operation_id,
+                failure,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Transition(NetworkRepairTransition::Failed { failure }),
+            },
             OperationEvent::ServiceRestartSubmitted {
                 operation_id,
                 namespace_id,
@@ -952,6 +1013,12 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::CoreReplace => Self::CoreReplace {
                     operation_id,
                     event: CoreReplaceEvent::Cancelled(reason),
+                },
+                OperationKind::NetworkRepair => Self::NetworkRepair {
+                    operation_id,
+                    event: NetworkRepairEvent::Transition(NetworkRepairTransition::Cancelled {
+                        reason,
+                    }),
                 },
                 OperationKind::ServiceRestart => Self::ServiceRestart {
                     operation_id,

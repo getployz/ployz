@@ -23,21 +23,23 @@ use ployz_sdk_types::{
     MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
     ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, NamespaceId,
     NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
-    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId, ServiceInspectError,
-    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
-    ServiceRestartError, ServiceRestartRequest, ServiceSnapshot, SubjectTokenError,
+    NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
+    NetworkResolveResult, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    SubjectTokenError,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, DeploySubmitApi, InitFirstMachineActivateApi,
         LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineUpdateApi, NamespaceRemoveApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi,
+        MachineListApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -423,6 +425,14 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
     );
+    assert_contract::<
+        NetworkResolveApi,
+        NetworkResolveRequest,
+        NetworkResolveResult,
+        NetworkResolveError,
+    >();
+    assert_contract::<NetworkRepairApi, NetworkRepairRequest, AcceptedOperation, NetworkRepairError>(
+    );
     assert_contract::<ServiceListApi, ServiceListRequest, ServiceListResult, ServiceListError>();
     assert_contract::<ServiceInspectApi, ServiceInspectRequest, ServiceSnapshot, ServiceInspectError>(
     );
@@ -487,6 +497,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::CoreReplaceReport,
             OperationApiEndpoint::MachineList,
             OperationApiEndpoint::MachineInspect,
+            OperationApiEndpoint::NetworkResolve,
+            OperationApiEndpoint::NetworkRepair,
             OperationApiEndpoint::MachineJoinRedeem,
             OperationApiEndpoint::MachineJoinReport,
             OperationApiEndpoint::ServiceList,
@@ -608,6 +620,24 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineSnapshot".to_owned(),
                 "MachineInspectError".to_owned(),
                 "MachineInspectResponse",
+            ),
+            (
+                "network.resolve",
+                "plz.v1.rpc.operator.query.network.resolve",
+                OperationApiEndpointExecution::Query,
+                "NetworkResolveRequest".to_owned(),
+                "NetworkResolveResult".to_owned(),
+                "NetworkResolveError".to_owned(),
+                "NetworkResolveResponse",
+            ),
+            (
+                "network.repair",
+                "plz.v1.rpc.operator.command.network.repair",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "NetworkRepairRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "NetworkRepairError".to_owned(),
+                "NetworkRepairResponse",
             ),
             (
                 "machine.redeem",

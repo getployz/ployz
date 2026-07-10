@@ -24,6 +24,7 @@ mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
 mod namespace_remove;
+mod network_repair;
 mod projection;
 mod replay;
 mod routes;
@@ -53,6 +54,10 @@ pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
     NamespaceRemoveTransition, project_namespace_remove_transition,
 };
+pub use network_repair::{
+    NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairRunningStage,
+    NetworkRepairTransition, project_network_repair_transition,
+};
 pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
@@ -79,6 +84,7 @@ pub enum OperationKind {
     MachineUpdate,
     MachineLifecycle,
     CoreReplace,
+    NetworkRepair,
     ServiceRestart,
     NamespaceRemove,
 }
@@ -131,6 +137,11 @@ pub enum OperationStatus {
         machine_id: MachineId,
         successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
         state: CoreReplaceOperationState,
+        last_event_sequence: EventSequence,
+    },
+    NetworkRepair {
+        id: OperationId,
+        state: NetworkRepairOperationState,
         last_event_sequence: EventSequence,
     },
     ServiceRestart {
@@ -273,6 +284,15 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn network_repair_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
+        Self::NetworkRepair {
+            id,
+            state: NetworkRepairOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub fn namespace_remove_accepted(
         id: OperationId,
         namespace_id: NamespaceId,
@@ -295,6 +315,7 @@ impl OperationStatus {
             Self::MachineUpdate { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
+            Self::NetworkRepair { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
         }

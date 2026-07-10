@@ -4,9 +4,9 @@ use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
     MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
-    NamespaceRemoveOperationSubmission, OperationRepository, OperationStatusStoreError,
-    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
-    SubmitOperationError,
+    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
+    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
+    SubmitMachineAddError, SubmitOperationError,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
@@ -81,6 +81,11 @@ pub struct ServiceRestartSubmitCommand {
 pub struct NamespaceRemoveSubmitCommand {
     pub operation_id: OperationId,
     pub namespace_id: NamespaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkRepairSubmitCommand {
+    pub operation_id: OperationId,
 }
 
 /// Bootstrap material available at submit time.
@@ -288,6 +293,18 @@ impl OperationControllers {
                 operation_id: command.operation_id,
                 machine_id: command.machine_id,
                 successor_nats_url: command.successor_nats_url,
+            })
+            .await?)
+    }
+
+    pub async fn submit_network_repair(
+        &self,
+        command: NetworkRepairSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedNetworkRepairSubmission, SubmitCommandError> {
+        Ok(self
+            .repository
+            .submit_network_repair(NetworkRepairOperationSubmission {
+                operation_id: command.operation_id,
             })
             .await?)
     }
