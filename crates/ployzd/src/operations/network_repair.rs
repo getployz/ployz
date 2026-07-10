@@ -6,7 +6,7 @@ use crate::operation_api::admission::OperationControllers;
 use crate::operations::log::{
     AcceptedNetworkRepairSubmission, OperationStatusStoreError, RecordOperationEventError,
 };
-use crate::roles::dns::service::{DnsStatusRpcOk, DnsStatusRpcRequest};
+use crate::roles::dns::protocol::{DnsStatusRpcOk, DnsStatusRpcRequest};
 use crate::roles::machine::client::{
     MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineDataplanePreparer,
     NatsMachineFactsReader, unavailable_reason,
@@ -646,11 +646,13 @@ fn stale_machine_ids(
         .filter(|machine_id| {
             let previous = baseline
                 .iter()
-                .find(|watermark| watermark.machine_id == **machine_id)
-                .map(|watermark| watermark.generation);
+                .find(|watermark| watermark.machine_id == **machine_id);
             !observed.iter().any(|watermark| {
                 watermark.machine_id == **machine_id
-                    && previous.is_none_or(|generation| watermark.generation > generation)
+                    && previous.is_none_or(|previous| {
+                        watermark.resolver_cache_incarnation != previous.resolver_cache_incarnation
+                            || watermark.generation > previous.generation
+                    })
             })
         })
         .cloned()
@@ -734,7 +736,9 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 mod tests {
     use super::*;
     use futures_util::future;
-    use ployz_core::internal_dns::InternalDnsFactGeneration;
+    use ployz_core::internal_dns::{
+        InternalDnsFactGeneration, InternalDnsResolverCacheIncarnation,
+    };
     use ployz_nats::service_runtime::NatsServiceRequestFailure;
 
     fn machine_id(value: &str) -> MachineId {
@@ -874,14 +878,64 @@ mod tests {
         assert_eq!(problem, None);
     }
 
+    #[test]
+    fn dns_refresh_accepts_first_snapshot_from_new_resolver_cache_incarnation() {
+        let baseline = DnsRefreshBaseline {
+            resolver_machine_id: machine_id("machine_b"),
+            fact_watermarks: vec![fact_watermark_in_incarnation(
+                "machine_a",
+                42,
+                "cache_before_restart",
+                3,
+            )],
+        };
+        let problem = dns_refresh_problem(
+            &machine_id("machine_b"),
+            Ok(DnsStatusRpcOk {
+                machine_id: machine_id("machine_b"),
+                value: InternalDnsStatus {
+                    resolver: InternalDnsResolverStatus::Serving {
+                        bound: "10.198.2.1:53".parse().expect("resolver address"),
+                    },
+                    fact_watermarks: vec![fact_watermark_in_incarnation(
+                        "machine_a",
+                        1,
+                        "cache_after_restart",
+                        1,
+                    )],
+                },
+            }),
+            &[machine_id("machine_a")],
+            &baseline,
+        );
+
+        assert_eq!(problem, None);
+    }
+
     fn fact_watermark(
         machine_id_value: &str,
         observed_at_unix_ms: u64,
         generation: u64,
     ) -> InternalDnsFactWatermark {
+        fact_watermark_in_incarnation(
+            machine_id_value,
+            observed_at_unix_ms,
+            "cache_test",
+            generation,
+        )
+    }
+
+    fn fact_watermark_in_incarnation(
+        machine_id_value: &str,
+        observed_at_unix_ms: u64,
+        incarnation: &str,
+        generation: u64,
+    ) -> InternalDnsFactWatermark {
         InternalDnsFactWatermark {
             machine_id: machine_id(machine_id_value),
             observed_at_unix_ms,
+            resolver_cache_incarnation: InternalDnsResolverCacheIncarnation::try_new(incarnation)
+                .expect("incarnation"),
             generation: InternalDnsFactGeneration::try_new(generation).expect("generation"),
         }
     }

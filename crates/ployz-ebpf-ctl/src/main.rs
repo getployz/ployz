@@ -10,7 +10,7 @@ const DEFAULT_PIN_PATH: &str = ployz_ebpf_common::DEFAULT_PIN_PATH;
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
         Ok(EbpfCtlOutcome::Completed) => ExitCode::SUCCESS,
-        #[cfg(any(target_os = "linux", test))]
+        #[cfg(target_os = "linux")]
         Ok(EbpfCtlOutcome::Detached { message }) => {
             eprintln!("{message}");
             ExitCode::from(ployz_ebpf_common::EBPF_STATUS_DETACHED_EXIT_CODE)
@@ -25,25 +25,10 @@ fn main() -> ExitCode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EbpfCtlOutcome {
     Completed,
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(target_os = "linux")]
     Detached {
         message: String,
     },
-}
-
-#[cfg(any(target_os = "linux", test))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnsureAttachedAction {
-    Keep,
-    Replace,
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn ensure_attached_action(status: &EbpfCtlOutcome) -> EnsureAttachedAction {
-    match status {
-        EbpfCtlOutcome::Completed => EnsureAttachedAction::Keep,
-        EbpfCtlOutcome::Detached { .. } => EnsureAttachedAction::Replace,
-    }
 }
 
 fn run(args: Vec<String>) -> Result<EbpfCtlOutcome, String> {
@@ -285,10 +270,7 @@ fn subnet_to_key(subnet: ipnet::Ipv4Net) -> ployz_ebpf_common::RouteKey {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{
-        EbpfCtlOutcome, EnsureAttachedAction, ensure_attached_action, subnet_to_key,
-        tc_filter_has_program, validate_bytecode,
-    };
+    use super::{EbpfCtlOutcome, subnet_to_key, tc_filter_has_program, validate_bytecode};
     use aya::Ebpf;
     use aya::programs::tc::{NlOptions, TcAttachOptions};
     use aya::programs::{SchedClassifier, TcAttachType};
@@ -386,9 +368,9 @@ mod linux {
         pin_path: &str,
     ) -> Result<(), String> {
         validate_bytecode(bytecode)?;
-        match ensure_attached_action(&attachment_status(bridge, pin_path)?) {
-            EnsureAttachedAction::Keep => Ok(()),
-            EnsureAttachedAction::Replace => {
+        match attachment_status(bridge, pin_path)? {
+            EbpfCtlOutcome::Completed => Ok(()),
+            EbpfCtlOutcome::Detached { .. } => {
                 detach_program_if_present(bridge, TcAttachType::Egress, "ployz_egress")?;
                 detach_program_if_present(bridge, TcAttachType::Ingress, "ployz_ingress")?;
                 remove_ployz_tc_pins(pin_path)?;
@@ -594,25 +576,5 @@ mod tests {
     #[test]
     fn tc_filter_status_rejects_malformed_json() {
         assert!(tc_filter_has_program(b"not-json", "ployz_ingress").is_err());
-    }
-
-    #[test]
-    fn ensure_attached_keeps_a_complete_attachment() {
-        assert_eq!(
-            ensure_attached_action(&EbpfCtlOutcome::Completed),
-            EnsureAttachedAction::Keep
-        );
-    }
-
-    #[test]
-    fn ensure_attached_replaces_a_detached_attachment() {
-        let status = EbpfCtlOutcome::Detached {
-            message: "ployz_ingress is not attached".to_owned(),
-        };
-
-        assert_eq!(
-            ensure_attached_action(&status),
-            EnsureAttachedAction::Replace
-        );
     }
 }

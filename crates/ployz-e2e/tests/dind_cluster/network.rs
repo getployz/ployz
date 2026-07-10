@@ -45,6 +45,7 @@ async fn scenario_network_status_resolve_and_repair() {
                 .api
                 .network_status(&NetworkStatusRequest {
                     mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                    snapshot: None,
                     cursor: None,
                 })
                 .await
@@ -162,6 +163,7 @@ async fn scenario_network_status_resolve_and_repair() {
             .api
             .network_status(&NetworkStatusRequest {
                 mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                snapshot: None,
                 cursor: None,
             })
             .await
@@ -201,6 +203,7 @@ async fn scenario_network_status_resolve_and_repair() {
                 .api
                 .network_status(&NetworkStatusRequest {
                     mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                    snapshot: None,
                     cursor: None,
                 })
                 .await

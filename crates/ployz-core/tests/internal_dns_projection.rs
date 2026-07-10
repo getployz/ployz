@@ -124,6 +124,30 @@ fn internal_service_name_from_ids_rejects_dns_labels_over_63_bytes() {
     assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
 }
 
+#[test]
+fn internal_service_name_from_ids_rejects_noncanonical_service_id_case() {
+    let service_id = ServiceId::try_new("Database").expect("service id");
+    let namespace_id = NamespaceId::try_new("default").expect("namespace id");
+
+    assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
+}
+
+#[test]
+fn internal_service_name_from_ids_rejects_noncanonical_namespace_id_case() {
+    let service_id = ServiceId::try_new("database").expect("service id");
+    let namespace_id = NamespaceId::try_new("Default").expect("namespace id");
+
+    assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
+}
+
+#[test]
+fn internal_service_name_query_parsing_canonicalizes_ascii_case() {
+    let name = InternalServiceName::try_new("Database.Default.INTERNAL")
+        .expect("operator query is case-insensitive");
+
+    assert_eq!(name.as_str(), "database.default.internal");
+}
+
 fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
     IntentSnapshot {
         epoch: ControlPlaneEpoch::initial(),

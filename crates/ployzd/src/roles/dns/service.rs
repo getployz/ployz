@@ -1,46 +1,21 @@
 //! Machine-scoped query service owned by the DNS role.
 
-use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
+use crate::fact_cache::FactCache;
+use crate::roles::dns::InternalResolverHealth;
+use crate::roles::dns::internal::query_bound_resolver;
+use crate::roles::dns::protocol::{
+    DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
+};
+use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName};
+use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
     decode_json_request, start_nats_service,
 };
-use serde::{Deserialize, Serialize};
-
-use crate::fact_cache::FactCache;
-use crate::roles::dns::InternalResolverHealth;
-use crate::roles::dns::internal::query_bound_resolver;
-use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DnsResolveRpcRequest {
-    pub name: InternalServiceName,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DnsResolveRpcOk {
-    pub machine_id: MachineId,
-    pub name: InternalServiceName,
-    pub addresses: Vec<Ipv4Addr>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DnsStatusRpcRequest {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DnsStatusRpcOk {
-    pub machine_id: MachineId,
-    pub value: InternalDnsStatus,
-}
 
 pub(crate) async fn start_dns_role_service(
     client: async_nats::Client,
@@ -157,11 +132,9 @@ mod tests {
     use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
     use ployz_test_support::ids::machine_id;
 
-    use super::{
-        DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest, resolve_from_bound_resolver,
-        status_from_local_cache,
-    };
+    use super::{resolve_from_bound_resolver, status_from_local_cache};
     use crate::fact_cache::FactCache;
+    use crate::roles::dns::protocol::{DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest};
 
     #[tokio::test]
     async fn unconfigured_resolver_is_unavailable() {

@@ -29,20 +29,23 @@ pub(super) async fn status(
         .await?
         .with_request_timeout(timeout);
     let mut request = command.into_request();
-    let mut result = ployz_sdk_types::NetworkStatusResult {
-        machines: Vec::new(),
-        next_cursor: None,
-    };
+    let mut machines = Vec::new();
     loop {
         let page = api.network_status(&request).await.map_err(api_error)?;
-        result.machines.extend(page.machines);
-        let Some(next_cursor) = page.next_cursor else {
+        let ployz_sdk_types::NetworkStatusResult {
+            snapshot,
+            machines: page_machines,
+            next_cursor,
+        } = page;
+        machines.extend(page_machines);
+        let Some(next_cursor) = next_cursor else {
             break;
         };
+        request.snapshot = Some(snapshot);
         request.cursor = Some(next_cursor);
     }
     Ok(PloyzctlExecutionOutput::stdout(
-        NetworkStatusOutput::from_result(result).render(),
+        NetworkStatusOutput { machines }.render(),
     ))
 }
 

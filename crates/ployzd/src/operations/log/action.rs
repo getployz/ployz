@@ -275,9 +275,10 @@ impl OperationAction for NetworkRepairOperationSubmission {
     const KIND: OperationKind = OperationKind::NetworkRepair;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        let NetworkRepairPayload { target_machine_id } = payload;
         OperationEvent::NetworkRepairSubmitted {
             operation_id,
-            target_machine_id: payload.target_machine_id,
+            target_machine_id,
         }
     }
 

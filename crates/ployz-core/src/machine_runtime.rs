@@ -24,9 +24,17 @@ pub struct MachineFactsRefreshConfirmation {
 
 impl From<&MachineFactsSnapshot> for MachineFactsRefreshConfirmation {
     fn from(facts: &MachineFactsSnapshot) -> Self {
+        let MachineFactsSnapshot {
+            machine_id,
+            containers: _,
+            endpoints: _,
+            disk_space: _,
+            platform: _,
+            observed_at_unix_ms,
+        } = facts;
         Self {
-            machine_id: facts.machine_id().clone(),
-            observed_at_unix_ms: facts.observed_at_unix_ms(),
+            machine_id: machine_id.clone(),
+            observed_at_unix_ms: *observed_at_unix_ms,
         }
     }
 }

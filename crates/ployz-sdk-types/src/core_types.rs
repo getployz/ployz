@@ -40,8 +40,8 @@ pub use ployz_core::install::{
     MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
 pub use ployz_core::internal_dns::{
-    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverStatus,
-    InternalDnsStatus, InternalServiceName, InternalServiceNameError,
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
+    InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::machine::{
     ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,

@@ -197,10 +197,11 @@ pub(super) async fn probe_wireguard_path_mtu(
 pub(super) async fn probe_wireguard_rtt(
     wg_ifname: &str,
     peer_gateway: Ipv4Addr,
-) -> Result<String, String> {
+) -> Result<u64, String> {
     let output = run_wireguard_ping(wg_ifname, peer_gateway, None).await?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        parse_ping_rtt_micros(&String::from_utf8_lossy(&output.stdout))
+            .ok_or_else(|| "peer RTT probe returned no RTT".to_owned())
     } else {
         Err(format!(
             "peer RTT probe failed: {}",
@@ -213,8 +214,15 @@ pub(super) async fn probe_wireguard_rtt(
 pub(super) async fn probe_wireguard_rtt(
     _wg_ifname: &str,
     _peer_gateway: Ipv4Addr,
-) -> Result<String, String> {
+) -> Result<u64, String> {
     Err("WireGuard RTT probing is supported only on Linux".to_owned())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_ping_rtt_micros(output: &str) -> Option<u64> {
+    let value = output.split("time=").nth(1)?.split_whitespace().next()?;
+    let millis = value.trim_end_matches("ms").parse::<f64>().ok()?;
+    Some((millis * 1_000.0).round() as u64)
 }
 
 async fn probe_path_mtu<F, Fut>(configured_mtu: u32, mut probe: F) -> Result<u32, String>
@@ -526,6 +534,14 @@ mod tests {
             .expect_err("minimum MTU must answer");
 
         assert!(error.contains("1280-byte"));
+    }
+
+    #[test]
+    fn ping_rtt_parser_returns_typed_microseconds() {
+        assert_eq!(
+            parse_ping_rtt_micros("64 bytes from 10.198.2.254: icmp_seq=1 ttl=64 time=1.234 ms"),
+            Some(1_234)
+        );
     }
 
     #[test]

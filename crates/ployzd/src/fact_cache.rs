@@ -2,7 +2,9 @@
 
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, MachineId};
-use ployz_core::internal_dns::{InternalDnsFactGeneration, InternalDnsFactWatermark};
+use ployz_core::internal_dns::{
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
+};
 use ployz_core::machine_runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerObservation,
@@ -13,9 +15,22 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FactCache {
+    resolver_cache_incarnation: InternalDnsResolverCacheIncarnation,
     state: Arc<RwLock<RuntimeFactsState>>,
+}
+
+impl Default for FactCache {
+    fn default() -> Self {
+        Self {
+            resolver_cache_incarnation: InternalDnsResolverCacheIncarnation::try_new(
+                nuid::next().to_ascii_lowercase(),
+            )
+            .expect("NUID is a valid resolver cache incarnation"),
+            state: Arc::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -43,6 +58,7 @@ impl FactCache {
             .or_insert_with(|| InternalDnsFactWatermark {
                 machine_id: machine_id.clone(),
                 observed_at_unix_ms,
+                resolver_cache_incarnation: self.resolver_cache_incarnation.clone(),
                 generation: InternalDnsFactGeneration::first(),
             });
         state.machine_facts.insert(machine_id, facts);
@@ -383,6 +399,27 @@ mod tests {
             panic!("expected one watermark");
         };
         assert_eq!(watermark.generation.get(), 2);
+    }
+
+    #[test]
+    fn separate_fact_caches_have_distinct_incarnations() {
+        let first = FactCache::default();
+        let second = FactCache::default();
+
+        assert_ne!(
+            first.resolver_cache_incarnation,
+            second.resolver_cache_incarnation
+        );
+    }
+
+    #[test]
+    fn cloned_fact_cache_preserves_incarnation() {
+        let cache = FactCache::default();
+
+        assert_eq!(
+            cache.resolver_cache_incarnation,
+            cache.clone().resolver_cache_incarnation
+        );
     }
 
     #[test]

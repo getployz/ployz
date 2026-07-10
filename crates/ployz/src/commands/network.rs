@@ -24,6 +24,7 @@ impl NetworkStatusCommand {
     pub const fn into_request(self) -> NetworkStatusRequest {
         NetworkStatusRequest {
             mode: self.mode,
+            snapshot: None,
             cursor: None,
         }
     }
@@ -118,6 +119,7 @@ impl NetworkStatusOutput {
     #[must_use]
     pub fn from_result(result: NetworkStatusResult) -> Self {
         let NetworkStatusResult {
+            snapshot: _,
             machines,
             next_cursor: _,
         } = result;

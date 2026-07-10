@@ -12,12 +12,14 @@ use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveError,
     NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkResolveResult,
-    NetworkStatusError, NetworkStatusMachine, NetworkStatusRequest, NetworkStatusResult,
+    NetworkStatusError, NetworkStatusIntentFingerprint, NetworkStatusMachine, NetworkStatusRequest,
+    NetworkStatusResult,
 };
+use sha2::{Digest, Sha256};
 
 use crate::intent::service::NatsIntentReader;
 use crate::machine_runtime::MachineRequestFailure;
-use crate::roles::dns::service::{
+use crate::roles::dns::protocol::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
 };
 use crate::roles::machine::client::{
@@ -30,40 +32,6 @@ use crate::roles::machine::protocol::{
 
 const NETWORK_PROBE_GATHER_TIMEOUT: Duration = Duration::from_secs(60);
 const NETWORK_STATUS_PAGE_SIZE: usize = 8;
-
-enum NetworkRequestFailure {
-    NoAnswer,
-    TimedOut,
-    RequestFailed { message: String },
-    ProtocolFailed { message: String },
-    DecodeFailed { message: String },
-}
-
-fn network_request_failure(error: NatsJsonServiceRequestError) -> NetworkRequestFailure {
-    match unavailable_reason(error).into_request_failure() {
-        MachineRequestFailure::NoAnswer => NetworkRequestFailure::NoAnswer,
-        MachineRequestFailure::TimedOut => NetworkRequestFailure::TimedOut,
-        MachineRequestFailure::RequestFailed { message } => NetworkRequestFailure::RequestFailed {
-            message: message.to_string(),
-        },
-        MachineRequestFailure::WrongResponder { actual_machine_id } => {
-            NetworkRequestFailure::RequestFailed {
-                message: format!(
-                    "machine runtime replied for a different machine: {}",
-                    actual_machine_id.as_str()
-                ),
-            }
-        }
-        MachineRequestFailure::ProtocolFailed { message } => {
-            NetworkRequestFailure::ProtocolFailed {
-                message: message.to_string(),
-            }
-        }
-        MachineRequestFailure::DecodeFailed { message } => NetworkRequestFailure::DecodeFailed {
-            message: message.to_string(),
-        },
-    }
-}
 
 #[derive(Clone)]
 pub struct NetworkQueryService {
@@ -118,15 +86,21 @@ impl NetworkQueryService {
                 .map_err(|error| NetworkStatusError::Unavailable {
                     message: error.to_string(),
                 })?;
-        let gather_timeout = match request.mode {
+        let NetworkStatusRequest {
+            mode,
+            snapshot,
+            cursor,
+        } = request;
+        let gather_timeout = match mode {
             NetworkStatusMode::Snapshot => DEFAULT_MACHINE_RPC_TIMEOUT,
             NetworkStatusMode::ProbePathMtu => NETWORK_PROBE_GATHER_TIMEOUT,
         };
-        let (page, next_cursor) =
-            network_status_page(intent.active_machines, request.cursor.as_ref());
-        let machines =
-            gather_network_status(&self.client, gather_timeout, request.mode, page).await;
+        let (current, active_machines) = network_status_intent(intent.active_machines)?;
+        validate_network_status_page(snapshot.as_ref(), cursor.as_ref(), &current)?;
+        let (page, next_cursor) = network_status_page(active_machines, cursor.as_ref());
+        let machines = gather_network_status(&self.client, gather_timeout, mode, page).await;
         Ok(NetworkStatusResult {
+            snapshot: current,
             machines,
             next_cursor,
         })
@@ -134,10 +108,9 @@ impl NetworkQueryService {
 }
 
 fn network_status_page(
-    mut active_machines: Vec<ActiveMachineState>,
+    active_machines: Vec<ActiveMachineState>,
     cursor: Option<&MachineId>,
 ) -> (Vec<ActiveMachineState>, Option<MachineId>) {
-    active_machines.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     let start = cursor.map_or(0, |cursor| {
         active_machines.partition_point(|machine| machine.machine_id <= *cursor)
     });
@@ -153,6 +126,46 @@ fn network_status_page(
         None
     };
     (page, next_cursor)
+}
+
+fn network_status_intent(
+    mut active_machines: Vec<ActiveMachineState>,
+) -> Result<(NetworkStatusIntentFingerprint, Vec<ActiveMachineState>), NetworkStatusError> {
+    active_machines.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    let encoded =
+        serde_json::to_vec(&active_machines).map_err(|error| NetworkStatusError::Unavailable {
+            message: format!("failed to encode network status intent: {error}"),
+        })?;
+    let fingerprint =
+        NetworkStatusIntentFingerprint::try_new(format!("{:x}", Sha256::digest(encoded))).map_err(
+            |error| NetworkStatusError::Unavailable {
+                message: error.to_string(),
+            },
+        )?;
+    Ok((fingerprint, active_machines))
+}
+
+fn validate_network_status_page(
+    requested: Option<&NetworkStatusIntentFingerprint>,
+    cursor: Option<&MachineId>,
+    current: &NetworkStatusIntentFingerprint,
+) -> Result<(), NetworkStatusError> {
+    if requested.is_none()
+        && let Some(cursor) = cursor
+    {
+        return Err(NetworkStatusError::MissingSnapshotForCursor {
+            cursor: cursor.clone(),
+        });
+    }
+    if let Some(requested) = requested
+        && requested != current
+    {
+        return Err(NetworkStatusError::SnapshotChanged {
+            requested: requested.clone(),
+            current: current.clone(),
+        });
+    }
+    Ok(())
 }
 
 async fn gather_network_status(
@@ -278,17 +291,26 @@ fn dns_status_testimony(
         Ok(DnsStatusRpcOk { machine_id, .. }) => NetworkInternalDnsTestimony::WrongResponder {
             actual_machine_id: machine_id,
         },
-        Err(error) => match network_request_failure(error) {
-            NetworkRequestFailure::NoAnswer => NetworkInternalDnsTestimony::NoAnswer,
-            NetworkRequestFailure::TimedOut => NetworkInternalDnsTestimony::TimedOut,
-            NetworkRequestFailure::RequestFailed { message } => {
-                NetworkInternalDnsTestimony::RequestFailed { message }
+        Err(error) => match unavailable_reason(error).into_request_failure() {
+            MachineRequestFailure::NoAnswer => NetworkInternalDnsTestimony::NoAnswer,
+            MachineRequestFailure::TimedOut => NetworkInternalDnsTestimony::TimedOut,
+            MachineRequestFailure::WrongResponder { actual_machine_id } => {
+                NetworkInternalDnsTestimony::WrongResponder { actual_machine_id }
             }
-            NetworkRequestFailure::ProtocolFailed { message } => {
-                NetworkInternalDnsTestimony::ProtocolFailed { message }
+            MachineRequestFailure::RequestFailed { message } => {
+                NetworkInternalDnsTestimony::RequestFailed {
+                    message: message.as_str().to_owned(),
+                }
             }
-            NetworkRequestFailure::DecodeFailed { message } => {
-                NetworkInternalDnsTestimony::DecodeFailed { message }
+            MachineRequestFailure::ProtocolFailed { message } => {
+                NetworkInternalDnsTestimony::ProtocolFailed {
+                    message: message.as_str().to_owned(),
+                }
+            }
+            MachineRequestFailure::DecodeFailed { message } => {
+                NetworkInternalDnsTestimony::DecodeFailed {
+                    message: message.as_str().to_owned(),
+                }
             }
         },
     }
@@ -298,25 +320,31 @@ fn dns_resolve_error_testimony(
     machine_id: MachineId,
     error: NatsJsonServiceRequestError,
 ) -> NetworkResolveMachineTestimony {
-    match network_request_failure(error) {
-        NetworkRequestFailure::NoAnswer => NetworkResolveMachineTestimony::NoAnswer { machine_id },
-        NetworkRequestFailure::TimedOut => NetworkResolveMachineTestimony::TimedOut { machine_id },
-        NetworkRequestFailure::RequestFailed { message } => {
+    match unavailable_reason(error).into_request_failure() {
+        MachineRequestFailure::NoAnswer => NetworkResolveMachineTestimony::NoAnswer { machine_id },
+        MachineRequestFailure::TimedOut => NetworkResolveMachineTestimony::TimedOut { machine_id },
+        MachineRequestFailure::WrongResponder { actual_machine_id } => {
+            NetworkResolveMachineTestimony::WrongResponder {
+                machine_id,
+                actual_machine_id,
+            }
+        }
+        MachineRequestFailure::RequestFailed { message } => {
             NetworkResolveMachineTestimony::RequestFailed {
                 machine_id,
-                message,
+                message: message.as_str().to_owned(),
             }
         }
-        NetworkRequestFailure::ProtocolFailed { message } => {
+        MachineRequestFailure::ProtocolFailed { message } => {
             NetworkResolveMachineTestimony::ProtocolFailed {
                 machine_id,
-                message,
+                message: message.as_str().to_owned(),
             }
         }
-        NetworkRequestFailure::DecodeFailed { message } => {
+        MachineRequestFailure::DecodeFailed { message } => {
             NetworkResolveMachineTestimony::DecodeFailed {
                 machine_id,
-                message,
+                message: message.as_str().to_owned(),
             }
         }
     }
@@ -348,17 +376,26 @@ fn dataplane_testimony(
             error: MachineDataplaneStatusDomainError::ReadFailed { message },
             ..
         }) => NetworkDataplaneTestimony::ReadFailed { message },
-        Err(error) => match network_request_failure(error) {
-            NetworkRequestFailure::NoAnswer => NetworkDataplaneTestimony::NoAnswer,
-            NetworkRequestFailure::TimedOut => NetworkDataplaneTestimony::TimedOut,
-            NetworkRequestFailure::RequestFailed { message } => {
-                NetworkDataplaneTestimony::RequestFailed { message }
+        Err(error) => match unavailable_reason(error).into_request_failure() {
+            MachineRequestFailure::NoAnswer => NetworkDataplaneTestimony::NoAnswer,
+            MachineRequestFailure::TimedOut => NetworkDataplaneTestimony::TimedOut,
+            MachineRequestFailure::WrongResponder { actual_machine_id } => {
+                NetworkDataplaneTestimony::WrongResponder { actual_machine_id }
             }
-            NetworkRequestFailure::ProtocolFailed { message } => {
-                NetworkDataplaneTestimony::ProtocolFailed { message }
+            MachineRequestFailure::RequestFailed { message } => {
+                NetworkDataplaneTestimony::RequestFailed {
+                    message: message.as_str().to_owned(),
+                }
             }
-            NetworkRequestFailure::DecodeFailed { message } => {
-                NetworkDataplaneTestimony::DecodeFailed { message }
+            MachineRequestFailure::ProtocolFailed { message } => {
+                NetworkDataplaneTestimony::ProtocolFailed {
+                    message: message.as_str().to_owned(),
+                }
+            }
+            MachineRequestFailure::DecodeFailed { message } => {
+                NetworkDataplaneTestimony::DecodeFailed {
+                    message: message.as_str().to_owned(),
+                }
             }
         },
     }
@@ -397,6 +434,7 @@ mod tests {
     use ployz_nats::service_runtime::{NatsJsonServiceRequestError, NatsServiceRequestFailure};
     use ployz_sdk_types::{
         NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
+        NetworkStatusError,
     };
     use ployz_test_support::{
         containers,
@@ -406,12 +444,13 @@ mod tests {
 
     use super::{
         dataplane_testimony, dns_resolve_error_testimony, dns_resolve_testimony,
-        dns_status_testimony, gather_dns_answers, gather_network_status, network_status_page,
-        normalize_internal_name,
+        dns_status_testimony, gather_dns_answers, gather_network_status, network_status_intent,
+        network_status_page, normalize_internal_name, validate_network_status_page,
     };
     use crate::fact_cache::FactCache;
     use crate::roles::dns::InternalResolverHealth;
-    use crate::roles::dns::service::{DnsResolveRpcOk, DnsStatusRpcOk, start_dns_role_service};
+    use crate::roles::dns::protocol::{DnsResolveRpcOk, DnsStatusRpcOk};
+    use crate::roles::dns::service::start_dns_role_service;
     use crate::roles::machine::protocol::{
         MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
         MachineDataplaneStatusRpcResponse, MachineRpcResponse,
@@ -445,7 +484,7 @@ mod tests {
 
     #[test]
     fn status_pages_intended_machines_in_lexicographic_order() {
-        let machines = (0..10)
+        let unsorted = (0..10)
             .rev()
             .map(|index| {
                 active_machine(
@@ -454,6 +493,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+        let (_, machines) = network_status_intent(unsorted).expect("network status intent");
 
         let (first, next_cursor) = network_status_page(machines.clone(), None);
         assert_eq!(
@@ -483,6 +523,46 @@ mod tests {
             ["machine_08", "machine_09"]
         );
         assert_eq!(next_cursor, None);
+    }
+
+    #[test]
+    fn changed_intent_snapshot_rejects_a_continuation() {
+        let (requested, _) =
+            network_status_intent(vec![active_machine("machine_a", "10.198.1.0/24")])
+                .expect("initial network status intent");
+        let (current, _) = network_status_intent(vec![
+            active_machine("machine_a", "10.198.1.0/24"),
+            active_machine("machine_b", "10.198.2.0/24"),
+        ])
+        .expect("changed network status intent");
+
+        let error = validate_network_status_page(
+            Some(&requested),
+            Some(&machine_id("machine_a")),
+            &current,
+        )
+        .expect_err("changed intent must reject the continuation");
+
+        assert_eq!(
+            error,
+            NetworkStatusError::SnapshotChanged { requested, current }
+        );
+    }
+
+    #[test]
+    fn cursor_without_intent_snapshot_is_rejected() {
+        let (current, _) =
+            network_status_intent(vec![active_machine("machine_a", "10.198.1.0/24")])
+                .expect("network status intent");
+        let cursor = machine_id("machine_a");
+
+        let error = validate_network_status_page(None, Some(&cursor), &current)
+            .expect_err("cursor without snapshot must be rejected");
+
+        assert_eq!(
+            error,
+            NetworkStatusError::MissingSnapshotForCursor { cursor }
+        );
     }
 
     #[test]

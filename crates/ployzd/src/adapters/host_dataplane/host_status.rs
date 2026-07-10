@@ -109,12 +109,7 @@ async fn peer_status(
                 match tokio::time::timeout_at(deadline, probe_wireguard_rtt(wg_ifname, target))
                     .await
                 {
-                    Ok(Ok(output)) => parse_ping_rtt_micros(&output).map_or_else(
-                        || WireGuardRttStatus::Unavailable {
-                            message: "ping returned no RTT".to_owned(),
-                        },
-                        |micros| WireGuardRttStatus::Measured { micros },
-                    ),
+                    Ok(Ok(micros)) => WireGuardRttStatus::Measured { micros },
                     Ok(Err(message)) => WireGuardRttStatus::Unavailable { message },
                     Err(_) => WireGuardRttStatus::Unavailable {
                         message: "peer RTT probe exceeded the network status budget".to_owned(),
@@ -190,12 +185,6 @@ fn peer_endpoint_subnet(value: Option<String>) -> WireGuardPeerEndpointSubnet {
     )
 }
 
-fn parse_ping_rtt_micros(output: &str) -> Option<u64> {
-    let value = output.split("time=").nth(1)?.split_whitespace().next()?;
-    let millis = value.trim_end_matches("ms").parse::<f64>().ok()?;
-    Some((millis * 1_000.0).round() as u64)
-}
-
 async fn read_interface_mtu(ifname: &str) -> Result<u32, String> {
     getifs::interfaces()
         .map_err(|source| source.to_string())?
@@ -228,14 +217,6 @@ mod tests {
             status,
             WireGuardPeerEndpointSubnet::Invalid { value, .. } if value == "not-a-subnet"
         ));
-    }
-
-    #[test]
-    fn parses_ping_rtt() {
-        assert_eq!(
-            parse_ping_rtt_micros("64 bytes from 10.198.2.254: icmp_seq=1 ttl=64 time=1.234 ms"),
-            Some(1_234)
-        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -23,6 +23,7 @@ pub mod roles {
         pub use internal::InternalResolverHealth;
         pub mod process;
         pub mod projection;
+        pub(crate) mod protocol;
         pub(crate) mod service;
         pub mod source;
     }

@@ -15,16 +15,65 @@ pub struct NetworkStatusRequest {
     pub mode: NetworkStatusMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub snapshot: Option<NetworkStatusIntentFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub cursor: Option<MachineId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkStatusResult {
+    pub snapshot: NetworkStatusIntentFingerprint,
     pub machines: Vec<NetworkStatusMachine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub next_cursor: Option<MachineId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(type = "Brand<string, \"NetworkStatusIntentFingerprint\">")]
+#[serde(try_from = "String", into = "String")]
+pub struct NetworkStatusIntentFingerprint(String);
+
+impl NetworkStatusIntentFingerprint {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, NetworkStatusIntentFingerprintError> {
+        let value = value.into();
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(NetworkStatusIntentFingerprintError::Invalid { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for NetworkStatusIntentFingerprint {
+    type Error = NetworkStatusIntentFingerprintError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NetworkStatusIntentFingerprint> for String {
+    fn from(value: NetworkStatusIntentFingerprint) -> Self {
+        let NetworkStatusIntentFingerprint(value) = value;
+        value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NetworkStatusIntentFingerprintError {
+    #[error("network status intent fingerprint {value:?} must be 64 lowercase hex characters")]
+    Invalid { value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -65,6 +114,17 @@ pub enum NetworkInternalDnsTestimony {
 pub enum NetworkStatusError {
     #[error("network status unavailable: {message}")]
     Unavailable { message: String },
+    #[error(
+        "network status intent changed between pages (requested {}, current {})",
+        .requested.as_str(),
+        .current.as_str()
+    )]
+    SnapshotChanged {
+        requested: NetworkStatusIntentFingerprint,
+        current: NetworkStatusIntentFingerprint,
+    },
+    #[error("network status cursor {} requires a snapshot fingerprint", .cursor.as_str())]
+    MissingSnapshotForCursor { cursor: MachineId },
 }
 
 pub type NetworkStatusResponse = OperationApiResponse<NetworkStatusResult, NetworkStatusError>;

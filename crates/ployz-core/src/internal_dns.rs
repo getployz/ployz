@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Serialize};
 
 use crate::dataplane::INTERNAL_DNS_SUFFIX;
-use crate::ids::{MachineId, NamespaceId, ServiceId};
+use crate::ids::{MachineId, NamespaceId, ServiceId, SubjectToken, SubjectTokenError};
 use crate::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
 use crate::state::IntentSnapshot;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
@@ -36,7 +36,29 @@ pub enum InternalDnsResolverStatus {
 pub struct InternalDnsFactWatermark {
     pub machine_id: MachineId,
     pub observed_at_unix_ms: u64,
+    pub resolver_cache_incarnation: InternalDnsResolverCacheIncarnation,
     pub generation: InternalDnsFactGeneration,
+}
+
+/// An opaque identity minted for one resolver fact-cache lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"InternalDnsResolverCacheIncarnation\">")
+)]
+#[serde(transparent)]
+pub struct InternalDnsResolverCacheIncarnation(SubjectToken);
+
+impl InternalDnsResolverCacheIncarnation {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
+        Ok(Self(SubjectToken::try_new(value)?))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 positive_u64_wire_newtype! {
@@ -75,12 +97,24 @@ impl InternalServiceName {
         service_id: &ServiceId,
         namespace_id: &NamespaceId,
     ) -> Result<Self, InternalServiceNameError> {
-        Self::try_new(format!(
+        let name = format!(
             "{}.{}.{}",
             service_id.as_str(),
             namespace_id.as_str(),
             INTERNAL_DNS_SUFFIX
-        ))
+        );
+        if service_id
+            .as_str()
+            .bytes()
+            .any(|byte| byte.is_ascii_uppercase())
+            || namespace_id
+                .as_str()
+                .bytes()
+                .any(|byte| byte.is_ascii_uppercase())
+        {
+            return Err(InternalServiceNameError { name });
+        }
+        Self::try_new(name)
     }
 
     /// Parses an exact three-label internal service name.
@@ -132,7 +166,8 @@ impl TryFrom<String> for InternalServiceName {
 
 impl From<InternalServiceName> for String {
     fn from(name: InternalServiceName) -> Self {
-        name.0
+        let InternalServiceName(name) = name;
+        name
     }
 }
 
