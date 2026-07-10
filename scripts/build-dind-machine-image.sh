@@ -57,7 +57,7 @@ build_linux_artifacts() {
     bash -c 'set -euo pipefail
 export PATH="/usr/local/cargo/bin:${PATH}"
 apt-get update
-apt-get install -y --no-install-recommends cmake
+apt-get install -y --no-install-recommends cmake protobuf-compiler
 rm -rf /var/lib/apt/lists/*
 cargo build --release --target-dir /target "$@"' \
     bash "${package_args[@]}"
