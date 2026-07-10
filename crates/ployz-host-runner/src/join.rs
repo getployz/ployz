@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
+use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
@@ -55,11 +56,12 @@ pub enum JoinTokenFileError {
 #[must_use]
 pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
     format!(
-        "machine_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_ca_sha256={}\n",
+        "machine_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet={}\n",
         material.machine_id.as_str(),
         material.cluster_name,
         "[redacted]",
         material.trusted_nats_ca_sha256,
+        material.dataplane_endpoint_supernet.as_string(),
     )
     .into_bytes()
 }
@@ -73,6 +75,16 @@ pub fn parse_machine_id_from_join_material(contents: &str) -> Option<MachineId> 
         .lines()
         .find_map(|line| line.strip_prefix("machine_id="))?;
     MachineId::try_new(value).ok()
+}
+
+#[must_use]
+pub fn parse_dataplane_endpoint_supernet_from_join_material(
+    contents: &str,
+) -> Option<MachineEndpointSupernet> {
+    let value = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("dataplane_endpoint_supernet="))?;
+    MachineEndpointSupernet::try_new(value).ok()
 }
 
 #[cfg(test)]

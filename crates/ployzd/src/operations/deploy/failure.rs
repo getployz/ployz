@@ -99,7 +99,7 @@ where
     .await;
 
     Err(DeployExecutionError::Failed {
-        failure: failure.operation_failure,
+        failure: Box::new(failure.operation_failure),
         source: Box::new(failure.source),
         failure_record_error,
     })
@@ -154,6 +154,9 @@ pub enum DeployExecutionError {
         service_id: ServiceId,
     },
     StepId(SubjectTokenError),
+    InvalidImagePull {
+        message: String,
+    },
     StepTimedOut {
         step: DeployExecutionStep,
         timeout: Duration,
@@ -161,6 +164,9 @@ pub enum DeployExecutionError {
     RecordTransition(DeployOperationRecordError),
     RecordEvidence(DeployOperationRecordError),
     PrepareDataplane(DataplanePrepareError),
+    EnsureImage {
+        failure: Box<DeployOperationFailure>,
+    },
     RunContainer(MachineContainerRuntimeError),
     PreStartHook(PreStartHookRuntimeError),
     PreStartHookExited {
@@ -172,7 +178,7 @@ pub enum DeployExecutionError {
     WaitHealthy(DeployHealthCheckError),
     CommitNamespaceState(NamespaceCommitError),
     Failed {
-        failure: DeployOperationFailure,
+        failure: Box<DeployOperationFailure>,
         source: Box<DeployExecutionError>,
         failure_record_error: Option<DeployFailureRecordError>,
     },
@@ -532,6 +538,11 @@ impl DeployExecutionError {
                 namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message("deploy planning failed"),
             },
+            Self::InvalidImagePull { message } => DeployOperationFailure::PlanningFailed {
+                service_id: failure_service_id(command),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(message.clone()),
+            },
             Self::StepTimedOut { step, timeout } => {
                 step.deploy_timeout_failure(command, *timeout, retained_artifacts)
             }
@@ -539,6 +550,7 @@ impl DeployExecutionError {
                 Self::record_failure(command, retained_artifacts)
             }
             Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
+            Self::EnsureImage { failure } => (**failure).clone(),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::PreStartHook(error) => error.deploy_failure(retained_artifacts),
             Self::PreStartHookExited {
@@ -569,7 +581,7 @@ impl DeployExecutionError {
             }
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
             Self::CommitNamespaceState(error) => error.deploy_failure(retained_artifacts),
-            Self::Failed { failure, .. } => failure.clone(),
+            Self::Failed { failure, .. } => (**failure).clone(),
         }
     }
 }
@@ -672,6 +684,12 @@ pub enum DeployFailureRecordError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineContainerRuntimeError {
+    ImagePullFailed {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        namespace_revision_entry_id: ployz_core::ids::NamespaceRevisionEntryId,
+        message: FailureMessage,
+    },
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
@@ -727,6 +745,19 @@ impl MachineContainerRuntimeError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
+            Self::ImagePullFailed {
+                machine_id,
+                service_id,
+                namespace_revision_entry_id,
+                message,
+            } => DeployOperationFailure::ArtifactUnavailable {
+                service_id: service_id.clone(),
+                namespace_revision_entry_id: namespace_revision_entry_id.clone(),
+                reason: ployz_core::ops::ArtifactUnavailableReason::ImagePullFailed {
+                    machine_id: machine_id.clone(),
+                    message: message.clone(),
+                },
+            },
             Self::Unavailable { machine_id, reason } => {
                 DeployOperationFailure::RuntimeUnavailable {
                     machine_id: machine_id.clone(),
@@ -943,7 +974,11 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         DeployOperationFailure::PlanningFailed { .. }
         | DeployOperationFailure::AutoDnsWithoutLease { .. }
         | DeployOperationFailure::NoUsableMachines { .. }
-        | DeployOperationFailure::ArtifactUnavailable { .. } => return,
+        | DeployOperationFailure::ArtifactUnavailable { .. }
+        | DeployOperationFailure::ImageMissingOnSeed { .. }
+        | DeployOperationFailure::ImageDigestMismatch { .. }
+        | DeployOperationFailure::SeedUnavailable { .. }
+        | DeployOperationFailure::UnsupportedTargetPlatform { .. } => return,
     };
 
     for artifact in artifacts {

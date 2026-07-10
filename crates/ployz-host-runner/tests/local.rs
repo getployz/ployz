@@ -136,7 +136,7 @@ fn local_effects_install_first_machine_process_units() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_DATAPLANE_ENDPOINT_SUPERNET=10.198.0.0/16\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
             join_seed = root.join("nats/join.seed").display(),
@@ -202,7 +202,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_DATAPLANE_ENDPOINT_SUPERNET=10.198.0.0/16\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
             join_seed = root.join("nats/join.seed").display(),
@@ -252,7 +252,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={template}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_JOIN_NKEY_SEED_FILE={join_seed}\nPLOYZ_DATAPLANE_ENDPOINT_SUPERNET=10.198.0.0/16\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={template}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
             join_seed = root.join("nats/join.seed").display(),
@@ -412,6 +412,151 @@ fn local_effects_start_docker_service_when_daemon_is_stopped() {
 }
 
 #[test]
+fn local_effects_reject_stopped_classic_store_before_writing_daemon_config() {
+    let root = temp_dir("ployz-host-runner-local-docker-stopped-classic");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            docker_running: false,
+            containerd_snapshotter: false,
+            ..RecordingRunner::root_linux()
+        },
+    );
+
+    let result = effects.apply_step(&HostRunnerStep::PrepareContainerRuntime(
+        ContainerRuntime::Docker,
+        ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+    ));
+
+    assert!(matches!(
+        result,
+        Err(error)
+            if error.reason()
+                == Some(HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported)
+    ));
+    assert!(!daemon_config.exists());
+    assert_eq!(effects.runner().docker_install_runs, 0);
+}
+
+#[test]
+fn local_effects_merge_required_docker_daemon_settings() {
+    let root = temp_dir("ployz-host-runner-local-docker-config");
+    let systemd_dir = root.join("systemd");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(daemon_config.parent().expect("config has parent"))
+        .expect("docker config dir can be created");
+    fs::write(
+        &daemon_config,
+        br#"{"log-level":"warn","features":{"cdi":true},"insecure-registries":["192.0.2.0/24"]}"#,
+    )
+    .expect("docker config can be written");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, HostRunnerPlanTerminal::Completed);
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon_config).expect("docker config can be read"))
+            .expect("docker config is JSON");
+    assert_eq!(config.get("log-level"), Some(&serde_json::json!("warn")));
+    let features = config
+        .get("features")
+        .and_then(serde_json::Value::as_object)
+        .expect("Docker features are an object");
+    assert_eq!(features.get("cdi"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        features.get("containerd-snapshotter"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        config.get("insecure-registries"),
+        Some(&serde_json::json!(["192.0.2.0/24", "10.198.0.0/16"]))
+    );
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&vec!["restart".to_owned(), "docker".to_owned(),])
+    );
+}
+
+#[test]
+fn local_effects_use_configured_supernet_without_restarting_unchanged_docker() {
+    let root = temp_dir("ployz-host-runner-local-docker-custom-supernet");
+    let systemd_dir = root.join("systemd");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(daemon_config.parent().expect("config has parent"))
+        .expect("docker config dir can be created");
+    fs::write(
+        &daemon_config,
+        br#"{"features":{"containerd-snapshotter":true},"insecure-registries":["10.77.0.0/16"]}"#,
+    )
+    .expect("docker config can be written");
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::try_new("10.77.0.0/16")
+                .expect("valid custom supernet"),
+        ))
+        .expect("unchanged Docker config is accepted");
+
+    assert!(
+        !effects
+            .runner()
+            .systemctl_calls
+            .contains(&vec!["restart".to_owned(), "docker".to_owned(),])
+    );
+}
+
+#[test]
+fn local_effects_reject_running_docker_classic_store() {
+    let root = temp_dir("ployz-host-runner-local-docker-classic-store");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            containerd_snapshotter: false,
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            reason: HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported,
+            message,
+            ..
+        })) if message.as_str().contains("classic image store")
+    ));
+}
+
+#[test]
 fn local_effects_install_docker_when_runtime_is_missing() {
     let root = temp_dir("ployz-host-runner-local-docker-missing");
     let systemd_dir = root.join("systemd");
@@ -514,8 +659,8 @@ fn local_effects_report_docker_info_failure_after_install_as_verify_failure() {
     assert!(matches!(
         execution.terminal.failure(),
         Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
-            step: HostRunnerStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
-            reason: HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed,
+            step: HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+            reason: HostRunnerStepFailureReason::ContainerRuntimePrepareFailed,
             message,
         })) if message.as_str() == "simulated docker info failure"
     ));
@@ -811,7 +956,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         )
         .expect("join material is stored"),
         format!(
-            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
+            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet=10.198.0.0/16\n",
             ployz_host_runner::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -873,6 +1018,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     assert_eq!(
         effects.runner().systemctl_calls,
         vec![
+            vec!["restart".to_owned(), "docker".to_owned()],
             vec!["daemon-reload".to_owned()],
             vec![
                 "enable".to_owned(),
@@ -924,7 +1070,7 @@ fn local_effects_store_redacted_join_material() {
         )
         .expect("join material is stored"),
         format!(
-            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
+            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet=10.198.0.0/16\n",
             ployz_host_runner::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -1030,6 +1176,7 @@ struct RecordingRunner {
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
     force_docker_info_failure: bool,
+    containerd_snapshotter: bool,
     systemctl_calls: Vec<Vec<String>>,
     fail_systemctl: Option<Vec<String>>,
     downloads: Vec<RecordedDownload>,
@@ -1049,6 +1196,7 @@ impl RecordingRunner {
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
             force_docker_info_failure: false,
+            containerd_snapshotter: true,
             systemctl_calls: Vec::new(),
             fail_systemctl: None,
             downloads: Vec::new(),
@@ -1107,6 +1255,19 @@ impl HostRunnerCommandRunner for RecordingRunner {
             return Ok(());
         }
         Err(failure_message("simulated docker info failure"))
+    }
+
+    fn docker_is_installed(&mut self) -> bool {
+        self.docker_installed
+    }
+
+    fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+        self.docker_info()?;
+        Ok(self.containerd_snapshotter)
+    }
+
+    fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+        Ok(true)
     }
 
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
@@ -1168,6 +1329,7 @@ fn local_config(root: &Path, systemd_dir: &Path) -> HostRunnerLocalConfig {
     HostRunnerLocalConfig {
         systemd_dir: systemd_dir.to_path_buf(),
         state_dir: root.join("state"),
+        docker_daemon_config: root.join("etc/docker/daemon.json"),
     }
 }
 

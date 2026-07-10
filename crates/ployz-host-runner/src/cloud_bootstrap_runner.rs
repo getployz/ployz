@@ -423,6 +423,7 @@ fn build_cloud_founder_install_spec(
     Ok(FirstMachineInstallSpec {
         machine_id: MachineId::try_new(format!("cloud_founder_{suffix}"))
             .map_err(|error| error.to_string())?,
+        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway: GatewayRole::Install,
         dns: DnsRole::Install,
         machine_public_ip: Some(public_ip_from_runtime_nats_url(&founder.runtime_nats_url)?),
@@ -519,6 +520,7 @@ fn run_cloud_joiner_bootstrap(
         HostRunnerLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
+            docker_daemon_config: "/etc/docker/daemon.json".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );

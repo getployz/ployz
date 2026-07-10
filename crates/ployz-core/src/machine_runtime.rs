@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
 };
+use crate::image::OciPlatform;
 use crate::state::MachineEndpointObservation;
 
 /// How often each machine refreshes machine-owned observations. Operation
@@ -24,6 +25,7 @@ pub struct MachineFactsSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
     disk_space: MachineDiskSpace,
+    platform: OciPlatform,
     observed_at_unix_ms: u64,
 }
 
@@ -33,6 +35,7 @@ impl MachineFactsSnapshot {
         containers: MachineContainerObservationSnapshot,
         endpoints: Option<MachineEndpointObservation>,
         disk_space: MachineDiskSpace,
+        platform: OciPlatform,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
         if containers.machine_id() != &machine_id {
@@ -61,6 +64,7 @@ impl MachineFactsSnapshot {
             containers,
             endpoints,
             disk_space,
+            platform,
             observed_at_unix_ms,
         })
     }
@@ -86,6 +90,11 @@ impl MachineFactsSnapshot {
     }
 
     #[must_use]
+    pub const fn platform(&self) -> &OciPlatform {
+        &self.platform
+    }
+
+    #[must_use]
     pub const fn observed_at_unix_ms(&self) -> u64 {
         self.observed_at_unix_ms
     }
@@ -102,6 +111,7 @@ impl MachineFactsSnapshot {
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
             self.endpoints.clone(),
             self.disk_space,
+            self.platform.clone(),
             observed_at_unix_ms,
         )
     }
@@ -118,6 +128,7 @@ impl MachineFactsSnapshot {
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
             self.endpoints.clone(),
             self.disk_space,
+            self.platform.clone(),
             observed_at_unix_ms,
         )
     }
@@ -179,6 +190,7 @@ struct MachineFactsSnapshotWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
     disk_space: MachineDiskSpace,
+    platform: OciPlatform,
     observed_at_unix_ms: u64,
 }
 
@@ -191,6 +203,7 @@ impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
             value.containers,
             value.endpoints,
             value.disk_space,
+            value.platform,
             value.observed_at_unix_ms,
         )
     }
@@ -203,6 +216,7 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
             containers: value.containers,
             endpoints: value.endpoints,
             disk_space: value.disk_space,
+            platform: value.platform,
             observed_at_unix_ms: value.observed_at_unix_ms,
         }
     }

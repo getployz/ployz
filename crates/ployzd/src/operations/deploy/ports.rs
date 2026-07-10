@@ -2,11 +2,13 @@ use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
 use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use std::future::Future;
 
+use crate::roles::machine::client::MachineImageEnsureError;
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
@@ -34,6 +36,12 @@ pub trait DeployOperationRecorder {
 }
 
 pub trait MachineContainerRuntime {
+    fn ensure_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ImageEnsureRequest,
+    ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
+
     fn ensure_endpoint_network(
         &mut self,
         machine_id: &MachineId,

@@ -302,6 +302,7 @@ impl TestNats {
             snapshot,
             None,
             test_disk_space(),
+            ployz_core::image::OciPlatform::current(),
             1,
         )
         .expect("machine facts are valid");

@@ -186,9 +186,10 @@ impl RunningNatsService {
                     let health = Arc::clone(&health);
                     async move {
                         let payload = request.message.payload.to_vec();
+                        let headers = request.message.headers.clone();
                         let response = match timeout(
                             policy.request_timeout,
-                            handler(NatsServiceRequest { payload }),
+                            handler(NatsServiceRequest { payload, headers }),
                         )
                         .await
                         {
@@ -324,6 +325,7 @@ impl NatsServiceHealthCounters {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsServiceRequest {
     pub payload: Vec<u8>,
+    pub headers: Option<async_nats::HeaderMap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

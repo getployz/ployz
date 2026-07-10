@@ -15,6 +15,7 @@ use crate::security::NatsPrincipal;
 use crate::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
     OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, PENDING_MACHINE_JOINS_CHANGED,
     gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
     machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
@@ -110,6 +111,8 @@ fn api_service_client_publications() -> SubjectPermissions {
     SubjectPermissions::allowing([
         OPERATOR_RPC_QUERY_SCOPE.to_owned(),
         OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
+        OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
+        OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
     ])
 }
 

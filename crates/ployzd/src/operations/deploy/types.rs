@@ -1,16 +1,18 @@
-use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
+use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlan, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
+    DeployCleanupContainer, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
     StepId,
 };
+use ployz_core::image::OciPlatform;
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteTarget,
 };
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
@@ -23,6 +25,7 @@ pub struct DeployExecutionCommand {
     pub(super) route_binding_removals: Vec<RouteTarget>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) dataplane_members: Vec<DataplaneMember>,
     pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub(super) step_timeout: Duration,
@@ -70,6 +73,11 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    pub fn machine_platform(&self, machine_id: &MachineId) -> Option<&OciPlatform> {
+        self.machine_platforms.get(machine_id)
+    }
+
+    #[must_use]
     pub fn dataplane_machines(&self) -> Vec<MachineId> {
         self.dataplane_members
             .iter()
@@ -90,15 +98,6 @@ impl DeployExecutionCommand {
         } else {
             self.step_timeout
         }
-    }
-
-    #[must_use]
-    pub fn dataplane_prepare_request(&self, plan: &DeployPlan) -> DataplanePrepareRequest {
-        DataplanePrepareRequest::for_deploy_plan(
-            self.operation_id.clone(),
-            plan,
-            &self.dataplane_members,
-        )
     }
 }
 

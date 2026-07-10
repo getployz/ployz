@@ -8,6 +8,7 @@
 
 pub mod adapters {
     pub(crate) mod atomic_file;
+    pub mod containerd_content;
     pub mod credentials;
     pub mod docker;
     pub mod host_dataplane;

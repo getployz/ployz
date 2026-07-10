@@ -8,6 +8,7 @@ use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
 };
+use crate::image::OciDigest;
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
@@ -56,6 +57,7 @@ impl DeployRequest {
                 namespace_revision_entry_id: service
                     .namespace_revision_entry_id(&self.namespace_id),
                 image: service.image.clone(),
+                image_source: service.image_source.clone(),
                 replicas: service.replicas,
                 runtime: service.runtime.clone(),
                 pre_start: service.pre_start.clone(),
@@ -72,6 +74,11 @@ impl DeployRequest {
 pub struct DeployServiceSpec {
     pub service_id: ServiceId,
     pub image: ImageReference,
+    #[serde(
+        default = "registry_image_source",
+        skip_serializing_if = "ImageSource::is_registry"
+    )]
+    pub image_source: ImageSource,
     pub replicas: ReplicaCount,
     pub runtime: ContainerRuntimeSpec,
     // Pre-start hooks and dependencies guide planning and execution, not container identity.
@@ -92,7 +99,7 @@ pub struct PreStartHook {
 
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v6";
+        "ployz.namespace_revision_entry.v7";
     const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v4";
 
     #[must_use]
@@ -100,7 +107,13 @@ impl DeployServiceSpec {
         &self,
         namespace_id: &NamespaceId,
     ) -> NamespaceRevisionEntryId {
-        namespace_revision_entry_id_for(namespace_id, &self.service_id, &self.image, &self.runtime)
+        namespace_revision_entry_id_for(
+            namespace_id,
+            &self.service_id,
+            &self.image,
+            &self.image_source,
+            &self.runtime,
+        )
     }
 }
 
@@ -197,6 +210,7 @@ pub fn namespace_revision_entry_id_for(
     namespace_id: &NamespaceId,
     service_id: &ServiceId,
     image: &ImageReference,
+    image_source: &ImageSource,
     runtime: &ContainerRuntimeSpec,
 ) -> NamespaceRevisionEntryId {
     let mut hasher = Sha256::new();
@@ -212,10 +226,39 @@ pub fn namespace_revision_entry_id_for(
     );
     hash_frame(&mut hasher, "service_id", service_id.as_str().as_bytes());
     hash_frame(&mut hasher, "image", image.as_str().as_bytes());
+    match image_source {
+        ImageSource::Registry => {}
+        ImageSource::PushedToSeed { image_id, .. } => {
+            hash_frame(&mut hasher, "image_id", image_id.as_str().as_bytes());
+        }
+    }
     hash_runtime_spec(&mut hasher, runtime);
     let digest = hasher.finalize();
     NamespaceRevisionEntryId::try_new(format!("{digest:x}"))
         .expect("sha256 hex digest is a subject token")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageSource {
+    Registry,
+    PushedToSeed {
+        seed: MachineId,
+        manifest_digest: OciDigest,
+        image_id: OciDigest,
+    },
+}
+
+impl ImageSource {
+    #[must_use]
+    pub const fn is_registry(&self) -> bool {
+        matches!(self, Self::Registry)
+    }
+}
+
+fn registry_image_source() -> ImageSource {
+    ImageSource::Registry
 }
 
 fn hash_runtime_spec(hasher: &mut Sha256, runtime: &ContainerRuntimeSpec) {
@@ -379,6 +422,7 @@ pub struct DeployServiceRequest {
     pub namespace_revision_id: NamespaceRevisionId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub image: ImageReference,
+    pub image_source: ImageSource,
     pub replicas: ReplicaCount,
     pub runtime: ContainerRuntimeSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]

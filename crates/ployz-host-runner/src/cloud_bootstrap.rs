@@ -534,6 +534,8 @@ mod tests {
         MachineJoinBundle {
             material: MachineJoinMaterial {
                 cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+                dataplane_endpoint_supernet:
+                    ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                     .expect("valid runtime nats url"),
                 trusted_nats: MachineJoinTrustedNats {

@@ -190,6 +190,7 @@ fn gateway_machine_facts(machine_id_value: &str, address: [u8; 4]) -> MachineFac
             mesh_endpoints: Vec::new(),
         }),
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("machine facts are valid")

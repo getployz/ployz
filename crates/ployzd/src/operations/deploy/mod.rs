@@ -3,13 +3,14 @@
 pub mod driver;
 mod facts;
 mod failure;
+mod images;
 mod ports;
 mod preparation;
 mod types;
 
 use ployz_core::deploy::{
-    ContainerRestartPolicy, DeployPlan, DeployPlanStep, DeployPlanningInput, ReplicaSlot,
-    plan_namespace_deploy,
+    ContainerRestartPolicy, DeployPlan, DeployPlanStep, DeployPlanningInput, ImageSource,
+    ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine_runtime::ManagedContainerKind;
@@ -27,6 +28,7 @@ pub use failure::{
     PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
+use images::{dataplane_prepare_request, ensure_images, machine_image_pull};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
     NamespaceCommitError, NamespaceStateCommitter,
@@ -166,6 +168,7 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
+    let dataplane_request = dataplane_prepare_request(command, &plan);
     if !plan.volume_pin_commits.is_empty() {
         commit_volume_pins(command, &plan, &mut *ports.namespace_state)
             .await
@@ -179,16 +182,39 @@ where
         )
         .await
         .map_err(|source| run.fail(source))?;
-        ensure_endpoint_networks(command, &plan, &mut *ports.machine_runtime)
+        ensure_endpoint_networks(command, &dataplane_request, &mut *ports.machine_runtime)
             .await
             .map_err(|source| run.fail(source))?;
-        let dataplane = prepare_dataplane(command, &plan, &mut *ports.dataplane)
-            .await
-            .map_err(|source| run.fail(source))?;
+        let dataplane =
+            prepare_dataplane(command, dataplane_request.clone(), &mut *ports.dataplane)
+                .await
+                .map_err(|source| run.fail(source))?;
         record_evidence(
             command,
             &mut *ports.recorder,
             DeployEvidence::DataplanePrepared { report: dataplane },
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+    }
+    if command.services().iter().any(|service| {
+        matches!(
+            &service.request.image_source,
+            ImageSource::PushedToSeed { .. }
+        )
+    }) {
+        record_running_stage(
+            command,
+            &mut *ports.recorder,
+            DeployRunningStage::EnsuringImages,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+        ensure_images(
+            command,
+            &plan,
+            &mut *ports.recorder,
+            &mut *ports.machine_runtime,
         )
         .await
         .map_err(|source| run.fail(source))?;
@@ -212,9 +238,15 @@ where
             }));
         };
         if let Some(pre_start) = &service_plan.pre_start {
-            run_pre_start_hook(command, service, pre_start, &mut *ports.machine_runtime)
-                .await
-                .map_err(|source| run.fail(source))?;
+            run_pre_start_hook(
+                command,
+                service,
+                pre_start,
+                &dataplane_request.membership,
+                &mut *ports.machine_runtime,
+            )
+            .await
+            .map_err(|source| run.fail(source))?;
         }
         for step in &service_plan.steps {
             match step {
@@ -246,6 +278,7 @@ where
                             service,
                             machine_id,
                             *slot,
+                            &dataplane_request.membership,
                         ),
                     )
                     .await;
@@ -363,6 +396,7 @@ async fn run_pre_start_hook<N>(
     command: &DeployExecutionCommand,
     service: &DeployServiceExecutionCommand,
     step: &ployz_core::deploy::PreStartHookStep,
+    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
 where
@@ -387,7 +421,7 @@ where
         kind: ManagedContainerKind::Predeploy,
     };
     let request = MachineContainerRunHookRpcRequest {
-        image: service.request.image.clone(),
+        pull: machine_image_pull(service, dataplane_members)?,
         runtime,
         container: identity.clone(),
         timeout_millis: hook_execution_timeout(command).as_millis() as u64,
@@ -627,6 +661,7 @@ fn cleanup_evidence(cleanup: &[DeployCleanupResult]) -> DeployEvidence {
 
 fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessage {
     match error {
+        MachineContainerRuntimeError::ImagePullFailed { message, .. } => message,
         MachineContainerRuntimeError::Unavailable { reason, .. } => reason.failure_message(),
         MachineContainerRuntimeError::OperationStepAmbiguous { .. } => {
             FailureMessage::try_new("cleanup found multiple operation-step containers")
@@ -772,13 +807,12 @@ where
 
 async fn prepare_dataplane<D>(
     command: &DeployExecutionCommand,
-    plan: &DeployPlan,
+    request: ployz_core::dataplane::DataplanePrepareRequest,
     dataplane: &mut D,
 ) -> Result<ployz_core::dataplane::PloyzNativeMeshPrepareReport, DeployExecutionError>
 where
     D: DataplanePreparer,
 {
-    let request = command.dataplane_prepare_request(plan);
     with_step_timeout(
         command,
         DeployExecutionStep::PrepareDataplane {
@@ -791,15 +825,14 @@ where
 
 async fn ensure_endpoint_networks<N>(
     command: &DeployExecutionCommand,
-    plan: &DeployPlan,
+    request: &ployz_core::dataplane::DataplanePrepareRequest,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
 where
     N: MachineContainerRuntime,
 {
-    let request = command.dataplane_prepare_request(plan);
-    for member in request.membership {
-        let machine_id = member.machine_id;
+    for member in &request.membership {
+        let machine_id = &member.machine_id;
         let network_request = MachineEnsureEndpointNetworkRpcRequest {
             operation_id: command.operation_id.clone(),
         };
@@ -810,7 +843,7 @@ where
             },
             async {
                 machine_runtime
-                    .ensure_endpoint_network(&machine_id, network_request)
+                    .ensure_endpoint_network(machine_id, network_request)
                     .await
                     .map_err(DeployExecutionError::RunContainer)
             },
@@ -893,6 +926,7 @@ async fn run_deploy_step<N>(
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
+    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
 ) -> Result<(DeployContainer, RunContainerDisposition), DeployExecutionError>
 where
     N: MachineContainerRuntime,
@@ -900,7 +934,7 @@ where
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
-        image: service.request.image.clone(),
+        pull: machine_image_pull(service, dataplane_members)?,
         runtime: service.request.runtime.clone(),
         container: ManagedContainerIdentity {
             namespace_id: service.request.namespace_id.clone(),

@@ -162,6 +162,10 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateReport),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageBlobCheck),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageBlobPush),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageManifestPush),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
         ],
     )
 }
@@ -203,6 +207,10 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
         MachineServiceEndpoint::SubstrateReport => "machine.substrate.report",
         MachineServiceEndpoint::LogsTail => "machine.logs.tail",
+        MachineServiceEndpoint::ImageBlobCheck => "machine.image.blob.check",
+        MachineServiceEndpoint::ImageBlobPush => "machine.image.blob.push",
+        MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
+        MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
     }
 }
 

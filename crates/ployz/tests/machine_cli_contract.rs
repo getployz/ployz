@@ -246,6 +246,8 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
             cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
+            ),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
                 .expect("valid runtime NATS URL"),
             trusted_nats: MachineJoinTrustedNats {

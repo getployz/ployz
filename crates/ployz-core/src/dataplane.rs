@@ -216,6 +216,20 @@ impl MachineEndpointSubnet {
         self.0.to_string()
     }
 
+    /// The subnet's last host (`.254`): the machine's own WireGuard address
+    /// in its endpoint /24, assigned by the dataplane as the mesh-reachable
+    /// host identity (see `wireguard_host_cidr`) — the image registry and any
+    /// machine-addressed mesh listener bind here.
+    #[must_use]
+    pub fn host_address(&self) -> Ipv4Addr {
+        let IpNet::V4(subnet) = self.0 else {
+            unreachable!("machine endpoint subnet construction accepts only IPv4")
+        };
+        let mut octets = subnet.network().octets();
+        octets[3] = 254;
+        Ipv4Addr::from(octets)
+    }
+
     /// The subnet's first host: Docker assigns it as the `ployz` bridge
     /// gateway, so it is the machine-local resolver's bind address.
     #[must_use]
@@ -482,7 +496,9 @@ pub fn default_endpoint_subnet(machine_id: &MachineId) -> String {
     let octet = trailing_machine_number(machine_id.as_str())
         .map(|number| ((number.saturating_sub(1)) % 254 + 1) as u8)
         .unwrap_or_else(|| stable_machine_octet(machine_id.as_str()));
-    format!("10.42.{octet}.0/24")
+    let supernet = MachineEndpointSupernet::default_v1();
+    let [first, second, _, _] = supernet.0.network().octets();
+    format!("{first}.{second}.{octet}.0/24")
 }
 
 /// The endpoint bridge's gateway address for a `/24` endpoint subnet: the
@@ -721,11 +737,11 @@ mod tests {
     fn default_endpoint_subnet_uses_trailing_machine_number() {
         assert_eq!(
             default_endpoint_subnet(&machine_id("edge_2")),
-            "10.42.2.0/24"
+            "10.198.2.0/24"
         );
         assert_eq!(
             default_endpoint_subnet(&machine_id("machine_255")),
-            "10.42.1.0/24"
+            "10.198.1.0/24"
         );
     }
 
@@ -783,12 +799,12 @@ mod tests {
             vec![
                 DataplaneMember {
                     machine_id: machine_id("core_1"),
-                    endpoint_subnet: MachineEndpointSubnet::try_new("10.42.1.0/24")
+                    endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                         .expect("valid subnet"),
                 },
                 DataplaneMember {
                     machine_id: machine_id("edge_2"),
-                    endpoint_subnet: MachineEndpointSubnet::try_new("10.42.2.0/24")
+                    endpoint_subnet: MachineEndpointSubnet::try_new("10.198.2.0/24")
                         .expect("valid subnet"),
                 }
             ]

@@ -177,7 +177,7 @@ fn machine_role_derives_endpoint_subnet_from_machine_id() {
     let DaemonProcessConfig::Machine(config) = config else {
         panic!("machine role should produce machine config");
     };
-    assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.42.2.0/24");
+    assert_eq!(config.ployz_native_mesh.endpoint_subnet, "10.198.2.0/24");
 }
 
 #[test]

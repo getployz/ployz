@@ -17,7 +17,9 @@
 
 mod support;
 
+use futures_util::StreamExt;
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
+use ployz::image_push::{prepare_deploy_images, push_local_image};
 use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
@@ -40,8 +42,9 @@ use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
+use ployz_e2e::bollard::body_full;
 use ployz_e2e::bollard::query_parameters::{
-    ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
+    BuildImageOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
 };
 use ployz_e2e::dind::{
     self, DindCluster, DindClusterSpec, DindMachine, DindMachineRole, MACHINE_NATS_PORT,
@@ -63,7 +66,7 @@ use ployzd::adapters::docker::labels::{
     CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
     SERVICE_ID_LABEL,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use support::dind::assert::{
@@ -132,6 +135,17 @@ async fn boots_machine_image() {
         assert!(
             matches!(&inner_docker, Ok(outcome) if outcome.success()),
             "inner docker not ready: {inner_docker:?}"
+        );
+
+        let nested_workload = exec_in_container(
+            &docker,
+            &cluster.core().container_id,
+            &["docker", "run", "--rm", WORKLOAD_IMAGE, "true"],
+        )
+        .await;
+        assert!(
+            matches!(&nested_workload, Ok(outcome) if outcome.success()),
+            "inner docker cannot start a workload: {nested_workload:?}"
         );
 
         let artifacts = exec_in_container(
@@ -846,6 +860,210 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
     })
     .await;
 
+    finish(core).await;
+}
+
+/// A host-only image crosses the operator NATS connection once, then every
+/// selected machine pulls its pinned manifest from the seed over the mesh.
+#[tokio::test]
+async fn scenario_direct_push_multi_machine_deploy() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 2).await;
+    with_evidence(&core.cluster, async {
+        for edge in core.cluster.edges() {
+            add_and_join_edge(&core, edge).await;
+        }
+        for machine in [
+            machine_id("core_1"),
+            machine_id("edge_2"),
+            machine_id("edge_3"),
+        ] {
+            wait_for_machine_observations(&core, &machine).await;
+        }
+
+        let tag = format!("ployz-e2e-push:{}", core.cluster.run_id().as_str());
+        build_derived_image(
+            &docker,
+            &tag,
+            WORKLOAD_IMAGE,
+            "ployz-marker",
+            core.cluster.run_id().as_str(),
+        )
+        .await;
+        for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+            let absent = core
+                .exec_on(machine, &["docker", "image", "inspect", &tag])
+                .await;
+            assert!(
+                !absent.success(),
+                "operator-only image unexpectedly exists on {}",
+                machine.name
+            );
+        }
+
+        let namespace = namespace_id("direct_push");
+        let mut services = vec![DeployServiceSpec {
+            service_id: service_id("svc_direct_push"),
+            image: ImageReference::try_new(&tag).expect("valid pushed image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
+            replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }];
+        let receipts = prepare_deploy_images(&core.api, &mut services, false)
+            .await
+            .expect("local image pushes before deploy submit");
+        let [receipt] = receipts.as_slice() else {
+            panic!("one local image must produce one push receipt: {receipts:?}");
+        };
+        assert_eq!(receipt.seed, machine_id("core_1"));
+
+        let accepted = core
+            .api
+            .deploy_submit(&DeploySubmitRequest {
+                idempotency_key: idempotency_key("idem_dind_direct_push"),
+                target: DeployRequest {
+                    namespace_id: namespace,
+                    services,
+                },
+            })
+            .await
+            .expect("direct-push deploy submits");
+        let status =
+            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                &status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "direct-push deploy did not complete: {status:?}"
+        );
+        let events = terminal_operation_events(&core, &accepted.operation_id).await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            OperationEvent::DeployImageAvailabilityVerified {
+                seed,
+                manifest_digest,
+                ..
+            } if seed == &receipt.seed && manifest_digest == &receipt.manifest_digest
+        )));
+
+        let mut running = 0_usize;
+        let mut running_machines = BTreeSet::new();
+        for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
+            for container in managed_workload_containers(&core, machine)
+                .await
+                .into_iter()
+                .filter(|container| {
+                    container.labels.get(NAMESPACE_ID_LABEL).map(String::as_str)
+                        == Some("direct_push")
+                })
+            {
+                let marker = core
+                    .exec_on(
+                        machine,
+                        &[
+                            "docker",
+                            "exec",
+                            &container.id,
+                            "cat",
+                            "/usr/share/nginx/html/ployz-marker",
+                        ],
+                    )
+                    .await;
+                assert!(
+                    marker.success() && marker.stdout.trim() == core.cluster.run_id().as_str(),
+                    "pushed marker differs on {}: {marker:?}",
+                    machine.name
+                );
+                running += 1;
+                running_machines.insert(machine.name.clone());
+            }
+        }
+        assert_eq!(running, 2, "two pushed-image replicas must be running");
+        assert_eq!(
+            running_machines.len(),
+            2,
+            "pushed-image replicas must run on two distinct machines: {running_machines:?}"
+        );
+        assert!(
+            running_machines
+                .iter()
+                .any(|machine| machine != receipt.seed.as_str()),
+            "at least one pushed-image replica must run away from seed {}: {running_machines:?}",
+            receipt.seed.as_str()
+        );
+    })
+    .await;
+    finish(core).await;
+}
+
+/// A second image derived from the first reuses every parent layer and sends
+/// only its newly-added layer to the seed.
+#[tokio::test]
+async fn scenario_repush_transfers_only_new_layers() {
+    if !dind::e2e_enabled() {
+        return;
+    }
+    let docker = dind::connect_docker().expect("connect to Docker daemon");
+    let core = init_core_cluster(&docker, 0).await;
+    with_evidence(&core.cluster, async {
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        let suffix = core.cluster.run_id().as_str();
+        let tag_a = format!("ployz-e2e-repush-a:{suffix}");
+        let tag_b = format!("ployz-e2e-repush-b:{suffix}");
+        build_derived_image(&docker, &tag_a, WORKLOAD_IMAGE, "layer-a", suffix).await;
+        build_derived_image(&docker, &tag_b, &tag_a, "layer-b", suffix).await;
+        let first = push_local_image(
+            &core.api.nats_client(),
+            &docker,
+            &machine_id("core_1"),
+            ImageReference::try_new(&tag_a).expect("valid first image reference"),
+        )
+        .await
+        .expect("first image pushes");
+        let second = push_local_image(
+            &core.api.nats_client(),
+            &docker,
+            &machine_id("core_1"),
+            ImageReference::try_new(&tag_b).expect("valid second image reference"),
+        )
+        .await
+        .expect("derived image pushes");
+
+        let first_layers = first
+            .uploaded
+            .digests
+            .iter()
+            .chain(first.reused.digests.iter())
+            .collect::<std::collections::BTreeSet<_>>();
+        let reused = second
+            .reused
+            .digests
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            first_layers.is_subset(&reused),
+            "derived image must reuse every parent layer: first={first:?} second={second:?}"
+        );
+        assert_eq!(
+            second.uploaded.count(),
+            1,
+            "derived image must upload exactly its new layer: {second:?}"
+        );
+    })
+    .await;
     finish(core).await;
 }
 
@@ -1594,6 +1812,53 @@ async fn assert_volume_status(core: &CoreContext, expected: VolumeStatus) {
     assert_eq!(volume.status, expected);
 }
 
+async fn build_derived_image(
+    docker: &ployz_e2e::bollard::Docker,
+    tag: &str,
+    base: &str,
+    marker_name: &str,
+    marker_contents: &str,
+) {
+    let dockerfile =
+        format!("FROM {base}\nCOPY {marker_name} /usr/share/nginx/html/{marker_name}\n");
+    let mut context = tar::Builder::new(Vec::new());
+    append_build_file(&mut context, "Dockerfile", dockerfile.as_bytes());
+    append_build_file(&mut context, marker_name, marker_contents.as_bytes());
+    let context = context.into_inner().expect("finish image build context");
+    let options = BuildImageOptionsBuilder::default()
+        .dockerfile("Dockerfile")
+        .t(tag)
+        .rm(true)
+        .build();
+    let mut build = docker.build_image(options, None, Some(body_full(context.into())));
+    while let Some(message) = build.next().await {
+        let message = message.expect("host Docker image build request succeeds");
+        if let Some(error) = message.error_detail {
+            panic!(
+                "host Docker image build failed: {}",
+                error.message.as_deref().unwrap_or("unknown build error")
+            );
+        }
+    }
+    docker
+        .inspect_image(tag)
+        .await
+        .unwrap_or_else(|error| panic!("built host image {tag} is missing: {error}"));
+}
+
+fn append_build_file(context: &mut tar::Builder<Vec<u8>>, path: &str, contents: &[u8]) {
+    let mut header = tar::Header::new_gnu();
+    header
+        .set_path(path)
+        .expect("valid image build context path");
+    header.set_size(u64::try_from(contents.len()).expect("build context file size fits u64"));
+    header.set_mode(0o644);
+    header.set_cksum();
+    context
+        .append(&header, contents)
+        .expect("append image build context file");
+}
+
 /// The smoke service: the baked workload image, one replica per machine,
 /// routed on every gateway's listen port.
 fn smoke_deploy_target() -> DeployRequest {
@@ -1602,6 +1867,7 @@ fn smoke_deploy_target() -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(2).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -1625,6 +1891,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 service_id: service_id("server"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
@@ -1635,6 +1902,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 service_id: service_id("client"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(2).expect("valid replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
@@ -1651,6 +1919,7 @@ fn runtime_fields_deploy_target() -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_runtime"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: runtime_fields_spec(),
             pre_start: None,
@@ -1721,6 +1990,7 @@ fn failing_healthcheck_deploy_target() -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_bad_health"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
             pre_start: None,
@@ -1749,6 +2019,7 @@ fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_hooked"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
             pre_start: Some(PreStartHook {
@@ -1784,6 +2055,7 @@ fn depends_on_deploy_target() -> DeployRequest {
             DeployServiceSpec {
                 service_id: service_id("b"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: sleeper(),
                 pre_start: None,
@@ -1793,6 +2065,7 @@ fn depends_on_deploy_target() -> DeployRequest {
             DeployServiceSpec {
                 service_id: service_id("a"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: sleeper(),
                 pre_start: None,
@@ -1850,6 +2123,7 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_converge"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
             pre_start: None,

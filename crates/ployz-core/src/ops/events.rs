@@ -7,6 +7,7 @@ use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest, VolumeName};
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
+use crate::image::OciDigest;
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
@@ -94,6 +95,12 @@ pub enum OperationEvent {
     DeployDataplanePrepared {
         operation_id: OperationId,
         report: PloyzNativeMeshPrepareReport,
+    },
+    DeployImageAvailabilityVerified {
+        operation_id: OperationId,
+        service_id: ServiceId,
+        seed: MachineId,
+        manifest_digest: OciDigest,
     },
     DeployContainerStarted {
         operation_id: OperationId,
@@ -300,6 +307,7 @@ impl OperationEvent {
             | Self::DeployPlanCreated { operation_id, .. }
             | Self::DeployRunning { operation_id, .. }
             | Self::DeployDataplanePrepared { operation_id, .. }
+            | Self::DeployImageAvailabilityVerified { operation_id, .. }
             | Self::DeployContainerStarted { operation_id, .. }
             | Self::DeployHealthCheckStarted { operation_id }
             | Self::DeployCleanupFinished { operation_id, .. }
@@ -360,6 +368,7 @@ impl OperationEvent {
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
             Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
+            | Self::DeployImageAvailabilityVerified { .. }
             | Self::DeployContainerStarted { .. }
             | Self::DeployRunning { .. }
             | Self::DeployCompleted { .. }
@@ -419,6 +428,16 @@ impl OperationEvent {
                     report: report.clone(),
                 })
             }
+            Self::DeployImageAvailabilityVerified {
+                service_id,
+                seed,
+                manifest_digest,
+                ..
+            } => Some(DeployEvidence::ImageAvailabilityVerified {
+                service_id: service_id.clone(),
+                seed: seed.clone(),
+                manifest_digest: manifest_digest.clone(),
+            }),
             Self::DeployContainerStarted {
                 machine_id,
                 container_id,
@@ -585,6 +604,19 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::DataplanePrepared { report }),
+            },
+            OperationEvent::DeployImageAvailabilityVerified {
+                operation_id,
+                service_id,
+                seed,
+                manifest_digest,
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::ImageAvailabilityVerified {
+                    service_id,
+                    seed,
+                    manifest_digest,
+                }),
             },
             OperationEvent::DeployContainerStarted {
                 operation_id,

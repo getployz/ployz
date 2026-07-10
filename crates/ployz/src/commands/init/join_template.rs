@@ -46,6 +46,8 @@ pub(crate) fn machine_join_template_command(
             material: MachineJoinMaterial {
                 cluster_name: MachineJoinClusterName::try_new(parsed.cluster)
                     .map_err(|error| invalid_value("--cluster", error))?,
+                dataplane_endpoint_supernet:
+                    ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(parsed.runtime_nats_url)
                     .map_err(|error| invalid_value("--runtime-nats-url", error))?,
                 trusted_nats: MachineJoinTrustedNats {

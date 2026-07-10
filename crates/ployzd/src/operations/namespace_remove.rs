@@ -378,6 +378,16 @@ fn remove_failure_from_runtime_error(
     fallback_container_id: &ContainerId,
 ) -> NamespaceRemoveFailure {
     match error {
+        MachineContainerRuntimeError::ImagePullFailed {
+            machine_id,
+            message,
+            ..
+        } => NamespaceRemoveFailure::ContainerRemoveFailed {
+            machine_id,
+            container_id: fallback_container_id.clone(),
+            message,
+            inspect_hint: inspect_hint(fallback_container_id),
+        },
         MachineContainerRuntimeError::Unavailable { machine_id, reason } => {
             NamespaceRemoveFailure::MachineUnavailable {
                 machine_id,
