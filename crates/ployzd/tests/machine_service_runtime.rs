@@ -190,6 +190,7 @@ async fn machine_role_service_creates_missing_container() {
         state.creates(),
         vec![CreateManagedContainer {
             pull: MachineImagePull::Registry {
+                credential: None,
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
@@ -379,6 +380,7 @@ async fn machine_role_service_creates_when_sibling_service_uses_same_operation_s
         state.creates(),
         vec![CreateManagedContainer {
             pull: MachineImagePull::Registry {
+                credential: None,
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
@@ -1470,6 +1472,16 @@ impl MachineContainerRunner for RecordingRunner {
         Ok(())
     }
 
+    async fn resolve_registry_image(
+        &self,
+        reference: &ployz_core::deploy::ImageReference,
+        _credential: Option<&ployz_core::deploy::RegistryCredential>,
+    ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
+        Ok(ployz_core::image::OciDigest::sha256(
+            reference.as_str().as_bytes(),
+        ))
+    }
+
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
@@ -1815,6 +1827,7 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         pull: MachineImagePull::Registry {
+            credential: None,
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
@@ -1828,6 +1841,7 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
     container.kind = ManagedContainerKind::Predeploy;
     MachineContainerRunHookRpcRequest {
         pull: MachineImagePull::Registry {
+            credential: None,
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),

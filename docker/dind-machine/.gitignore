@@ -1,2 +1,3 @@
 # Build-time artifact produced by scripts/build-dind-machine-image.sh.
 nginx.tar
+registry.tar

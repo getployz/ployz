@@ -64,7 +64,8 @@ use crate::{
     OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
     OpsStatusResponse, OpsWatchError, OpsWatchResponse, PidsLimit, PloyzNativeMeshComponent,
     PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, PreStartHook,
-    PreStartHookFailure, PreStartHookStep, PublicUrlMode, ReplayedOperationEvent, ReplicaCount,
+    PreStartHookFailure, PreStartHookStep, PublicUrlMode, RegistryCredential,
+    RegistryCredentialSecret, RegistryCredentialUsername, ReplayedOperationEvent, ReplicaCount,
     ReplicaSlot, RetainedArtifact, RouteBindingState, RouteCutoverFailureReason, RouteHostname,
     RoutePort, RouteTarget, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
     RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
@@ -165,6 +166,9 @@ macro_rules! exported_types {
             NamespaceRevisionEntryId,
             ImageReference,
             ImageSource,
+            RegistryCredentialSecret,
+            RegistryCredentialUsername,
+            RegistryCredential,
             OciDigest,
             OciPlatform,
             ReplicaCount,
@@ -596,6 +600,7 @@ pub fn operation_contract_fixture() -> Value {
 
     json!({
         "deploy_submit_request": value(DeploySubmitRequest {
+            registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
                 .expect("valid idempotency key"),
             reservation_id: DeployReservationId::first(),

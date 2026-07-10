@@ -27,15 +27,16 @@ pub(crate) use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
 use ployzd::operations::deploy::{
-    DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
+    DataplanePreparer, DeployExecutionFacts, DeployExecutionInput, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
     NamespaceCommitError, NamespaceStateCommitter, PreStartHookRuntimeError,
-    prepare_deploy_execution_command,
 };
+use ployzd::roles::machine::client::MachineImageResolveError;
 use ployzd::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
 };
@@ -117,6 +118,7 @@ impl DeployOperationRecorder for RecordingOperations {
     ) -> Result<(), DeployOperationRecordError> {
         assert_eq!(recorded_operation_id, &operation_id("op_123"));
         match evidence {
+            DeployEvidence::ImageResolved { .. } => {}
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {
                     replica_count: plan
@@ -163,6 +165,7 @@ impl DeployOperationRecorder for RecordingOperations {
 }
 
 pub(super) struct RecordingRuntime {
+    pub(super) resolutions: Vec<(MachineId, MachineContainerResolveImageRpcRequest)>,
     pub(super) endpoint_networks: Vec<(MachineId, MachineEnsureEndpointNetworkRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
@@ -453,6 +456,7 @@ impl DeployContainerForAssert {
 impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -472,6 +476,7 @@ impl RecordingRuntime {
 
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -491,6 +496,7 @@ impl RecordingRuntime {
 
     pub(super) fn starting_existing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -510,6 +516,7 @@ impl RecordingRuntime {
 
     pub(super) fn failing_after_first_container() -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -529,6 +536,7 @@ impl RecordingRuntime {
 
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
+            resolutions: Vec::new(),
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
@@ -569,6 +577,16 @@ impl RecordingRuntime {
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
+    async fn resolve_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerResolveImageRpcRequest,
+    ) -> Result<ployz_core::image::OciDigest, MachineImageResolveError> {
+        let digest = ployz_core::image::OciDigest::sha256(request.reference.as_str().as_bytes());
+        self.resolutions.push((machine_id.clone(), request));
+        Ok(digest)
+    }
+
     async fn ensure_image(
         &mut self,
         machine_id: &MachineId,
@@ -751,7 +769,7 @@ impl MachineContainerRuntime for RecordingRuntime {
     }
 }
 
-pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
+pub(super) fn deploy_command(replicas: u16) -> DeployExecutionInput {
     prepared_deploy_command(
         replicas,
         vec![machine_id("machine_a"), machine_id("machine_b")],
@@ -759,7 +777,32 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
     )
 }
 
-pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionCommand {
+pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.image = resolved_registry_image(service.image.as_str());
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            namespace_cleanup_candidates: Vec::new(),
+            observed_machines: Vec::new(),
+            managed_lease: None,
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
+pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionInput {
     let mut request = target_deploy_request(replicas);
     let [service] = request.services.as_mut_slice() else {
         panic!("fixture has one service");
@@ -773,7 +816,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
         retries: None,
         start_period: None,
     });
-    prepare_deploy_execution_command(
+    deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
@@ -792,7 +835,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
     )
 }
 
-pub(super) fn deploy_command_with_pre_start() -> DeployExecutionCommand {
+pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
     let mut request = target_deploy_request(1);
     let [service] = request.services.as_mut_slice() else {
         panic!("target deploy request declares one service");
@@ -818,7 +861,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionCommand {
         ])
         .expect("valid hook command"),
     });
-    prepare_deploy_execution_command(
+    deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
@@ -837,8 +880,8 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionCommand {
     )
 }
 
-pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
-    prepare_deploy_execution_command(
+pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
+    deploy_execution_input(
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
@@ -876,7 +919,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
     )
 }
 
-pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecutionCommand {
+pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecutionInput {
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         services: vec![DeployServiceSpec {
@@ -906,7 +949,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
         os: "linux".to_owned(),
         architecture: "amd64".to_owned(),
     };
-    prepare_deploy_execution_command(
+    deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
@@ -936,11 +979,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
     )
 }
 
-pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployExecutionCommand {
+pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployExecutionInput {
     prepared_deploy_command(replicas, Vec::new(), Vec::new())
 }
 
-pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionCommand {
+pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInput {
     let mut request = target_deploy_request(replicas);
     let [service] = request.services.as_mut_slice() else {
         panic!("deploy request fixture has one service");
@@ -949,7 +992,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionComm
         volume_name: volume_name("postgres_data"),
         target: ContainerMountPath::try_new("/var/lib/postgresql/data").expect("valid mount path"),
     }];
-    prepare_deploy_execution_command(
+    deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
@@ -972,7 +1015,7 @@ pub(super) fn deploy_command_with_existing_container(
     replicas: u16,
     machine_id: &str,
     container_id: &str,
-) -> DeployExecutionCommand {
+) -> DeployExecutionInput {
     let snapshot = MachineContainerObservationSnapshot::try_new(
         self::machine_id(machine_id),
         [observed_service_container_with_entry(
@@ -993,7 +1036,7 @@ pub(super) fn deploy_command_replacing_old_container(
     replicas: u16,
     machine_id: &str,
     container_id: &str,
-) -> DeployExecutionCommand {
+) -> DeployExecutionInput {
     let snapshot = MachineContainerObservationSnapshot::try_new(
         self::machine_id(machine_id),
         [observed_service_container(
@@ -1026,12 +1069,25 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
     }
 }
 
+fn deploy_execution_input(
+    operation_id: OperationId,
+    request: DeployRequest,
+    facts: DeployExecutionFacts,
+) -> DeployExecutionInput {
+    DeployExecutionInput::new(
+        operation_id,
+        request,
+        facts,
+        std::collections::BTreeMap::new(),
+    )
+}
+
 fn prepared_deploy_command(
     replicas: u16,
     eligible_machines: Vec<MachineId>,
     observed_machines: Vec<MachineContainerObservationSnapshot>,
-) -> DeployExecutionCommand {
-    prepare_deploy_execution_command(
+) -> DeployExecutionInput {
+    deploy_execution_input(
         operation_id("op_123"),
         target_deploy_request(replicas),
         DeployExecutionFacts {
@@ -1053,7 +1109,7 @@ fn prepared_deploy_command(
 pub(super) fn empty_deploy_command_with_running_container(
     machine_id: &str,
     container_id: &str,
-) -> DeployExecutionCommand {
+) -> DeployExecutionInput {
     let snapshot = MachineContainerObservationSnapshot::try_new(
         self::machine_id(machine_id),
         [observed_service_container(
@@ -1065,7 +1121,7 @@ pub(super) fn empty_deploy_command_with_running_container(
     .expect("valid machine observation snapshot");
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(std::slice::from_ref(&snapshot));
-    prepare_deploy_execution_command(
+    deploy_execution_input(
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
@@ -1141,17 +1197,31 @@ pub(super) fn active_service_running() -> DeployRunningStage {
 }
 
 pub(super) fn target_namespace_revision_id(replicas: u16) -> NamespaceRevisionId {
-    target_deploy_request(replicas).namespace_revision_id()
+    let mut request = target_deploy_request(replicas);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("target deploy fixture has one service");
+    };
+    service.image = resolved_registry_image("registry.example/api:rev_2");
+    request.namespace_revision_id()
 }
 
 pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     ployz_core::deploy::namespace_revision_entry_id_for(
         &namespace_id("default"),
         &service_id("svc_api"),
-        &image("registry.example/api:rev_2"),
+        &resolved_registry_image("registry.example/api:rev_2"),
         &ployz_core::deploy::ImageSource::Registry,
         &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
     )
+}
+
+pub(super) fn resolved_registry_image(value: &str) -> ImageReference {
+    let requested = image(value);
+    requested
+        .with_digest(&ployz_core::image::OciDigest::sha256(
+            requested.as_str().as_bytes(),
+        ))
+        .expect("fixture image accepts deterministic digest")
 }
 
 pub(super) fn image(value: &str) -> ImageReference {

@@ -12,7 +12,7 @@ use ployz_core::ops::{
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::operations::deploy::{
-    DataplanePreparer, DeployCleanupResult, DeployExecutionCommand, DeployExecutionError,
+    DataplanePreparer, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
     MachineContainerRuntimeError, NamespaceStateCommitter, execute_deploy_operation,
@@ -45,7 +45,7 @@ fn assert_deploy_event_order(
 }
 
 async fn execute_deploy<R, D, N, H, S>(
-    command: DeployExecutionCommand,
+    command: DeployExecutionInput,
     ports: DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
@@ -123,6 +123,13 @@ async fn deploy_worker_runs_containers_then_completes() {
         ]
     );
     assert_eq!(runtime.requests.len(), 2);
+    assert!(runtime.requests.iter().all(|(_, request)| matches!(
+        &request.pull,
+        ployzd::roles::machine::protocol::MachineImagePull::Registry {
+            reference,
+            credential: None,
+        } if reference == &resolved_registry_image("registry.example/api:rev_2")
+    )));
     assert_eq!(
         runtime.endpoint_networks,
         vec![
@@ -156,7 +163,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             namespace_id: namespace_id("default"),
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: target_namespace_revision_entry_id(),
-            image: image("registry.example/api:rev_2"),
+            image: resolved_registry_image("registry.example/api:rev_2"),
             desired_replicas: ReplicaCount::try_new(2).expect("valid replica count"),
             volume_names: Vec::new(),
         }]
@@ -180,6 +187,30 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn digest_pinned_registry_image_skips_resolution() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        pinned_deploy_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("pinned deploy succeeds");
+
+    assert!(runtime.resolutions.is_empty());
 }
 
 #[tokio::test]

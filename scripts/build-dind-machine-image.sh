@@ -23,6 +23,7 @@ BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
 EBPF_BUILDER_IMAGE="${PLOYZ_DIND_EBPF_BUILDER_IMAGE:-ployz-dind-ebpf-builder:rust-1.91-bookworm-v1}"
 NATS_SERVER_VERSION="${PLOYZ_DIND_NATS_SERVER_VERSION:-2.14.2}"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
+REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
 TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
 EBPF_TARGET_DIR="${PLOYZ_DIND_EBPF_TARGET_DIR:-/tmp/ployz-dind-ebpf-target}"
 CARGO_REGISTRY_DIR="${PLOYZ_DIND_CARGO_REGISTRY_DIR:-/tmp/ployz-dind-cargo-registry}"
@@ -114,8 +115,11 @@ install -m 0644 "${bytecode}" /target/release/ployz-ebpf-tc'
 
 bake_workload_tarball() {
   docker pull --platform "$(docker_platform)" "${WORKLOAD_IMAGE}"
+  docker pull --platform "$(docker_platform)" "${REGISTRY_IMAGE}"
   rm -f "${CONTEXT_DIR}/nginx.tar"
+  rm -f "${CONTEXT_DIR}/registry.tar"
   docker save -o "${CONTEXT_DIR}/nginx.tar" "${WORKLOAD_IMAGE}"
+  docker save -o "${CONTEXT_DIR}/registry.tar" "${REGISTRY_IMAGE}"
 }
 
 build_machine_image() {

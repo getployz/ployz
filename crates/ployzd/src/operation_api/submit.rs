@@ -43,11 +43,18 @@ pub fn owned_operation(
 
 impl From<DeploySubmitRequest> for DeploySubmitCommand {
     fn from(value: DeploySubmitRequest) -> Self {
+        let DeploySubmitRequest {
+            idempotency_key,
+            reservation_id,
+            target,
+            registry_credentials,
+        } = value;
         Self {
             operation_id: mint_deploy_operation_id(),
-            idempotency_key: value.idempotency_key,
-            reservation_id: value.reservation_id,
-            target: value.target,
+            idempotency_key,
+            reservation_id,
+            target,
+            registry_credentials,
         }
     }
 }
@@ -89,12 +96,14 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
+    validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
-    let accepted = handlers
+    let accepted_execution = handlers
         .controllers
         .submit_deploy(command)
         .await
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
+    let accepted = &accepted_execution.submission;
     let scope = OperationProgressScope::Namespace {
         namespace_id: accepted.target.namespace_id.clone(),
     };
@@ -103,9 +112,87 @@ pub async fn deploy_submit(
         scope,
         accepted.start_sequence,
     );
-    handlers.deploy_driver.start(accepted);
+    handlers.deploy_driver.start(accepted_execution);
 
     Ok(operation)
+}
+
+fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
+    for service_id in command.registry_credentials.keys() {
+        let Some(service) = command
+            .target
+            .services
+            .iter()
+            .find(|service| service.service_id == *service_id)
+        else {
+            return Err(invalid_registry_credential(
+                command,
+                service_id,
+                "does not name a service in the deploy target",
+            ));
+        };
+        if !matches!(service.image_source, ImageSource::Registry) {
+            return Err(invalid_registry_credential(
+                command,
+                service_id,
+                "belongs to a pushed image",
+            ));
+        }
+    }
+
+    for service in &command.target.services {
+        let ImageSource::PushedToSeed {
+            manifest_digest, ..
+        } = &service.image_source
+        else {
+            continue;
+        };
+        let Some(pinned_digest) = service.image.pinned_digest() else {
+            return Err(invalid_pushed_image(
+                command,
+                service,
+                "must be digest-pinned",
+            ));
+        };
+        if &pinned_digest != manifest_digest {
+            return Err(invalid_pushed_image(
+                command,
+                service,
+                "digest must match its pushed manifest digest",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn invalid_pushed_image(
+    command: &DeploySubmitCommand,
+    service: &ployz_core::deploy::DeployServiceSpec,
+    reason: &str,
+) -> DeploySubmitError {
+    DeploySubmitError::InvalidTarget {
+        operation_id: command.operation_id.clone(),
+        message: ployz_core::ops::FailureMessage::try_new(format!(
+            "pushed image for service {} {reason}",
+            service.service_id.as_str()
+        ))
+        .expect("generated pushed image failure message is non-empty"),
+    }
+}
+
+fn invalid_registry_credential(
+    command: &DeploySubmitCommand,
+    service_id: &ployz_core::ids::ServiceId,
+    reason: &str,
+) -> DeploySubmitError {
+    DeploySubmitError::InvalidTarget {
+        operation_id: command.operation_id.clone(),
+        message: ployz_core::ops::FailureMessage::try_new(format!(
+            "registry credential for service {} {reason}",
+            service_id.as_str()
+        ))
+        .expect("generated registry credential failure message is non-empty"),
+    }
 }
 
 async fn validate_pushed_image_seeds(
@@ -585,4 +672,61 @@ async fn machine_add_bootstrap_material(
     request: &MachineAddRequest,
 ) -> Result<MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError> {
     controllers.issue_machine_add_bootstrap_material(&request.operation_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use ployz_core::deploy::{
+        ContainerRuntimeSpec, DeployRequest, DeployReservationId, DeployServiceSpec,
+        ImageReference, ImageSource, ReplicaCount,
+    };
+    use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+    use ployz_core::image::OciDigest;
+    use ployz_core::ops::OperationIdempotencyKey;
+    use ployz_sdk_types::DeploySubmitError;
+
+    use crate::operation_api::admission::DeploySubmitCommand;
+
+    use super::validate_registry_credentials;
+
+    #[test]
+    fn pushed_image_digest_must_match_the_manifest_digest() {
+        let manifest_digest = OciDigest::sha256(b"manifest");
+        let image = ImageReference::try_new("local/api:latest")
+            .expect("valid image")
+            .with_digest(&OciDigest::sha256(b"different"))
+            .expect("image accepts digest");
+        let command = DeploySubmitCommand {
+            operation_id: OperationId::try_new("op_test").expect("valid operation id"),
+            idempotency_key: OperationIdempotencyKey::try_new("idem_test")
+                .expect("valid idempotency key"),
+            reservation_id: DeployReservationId::first(),
+            target: DeployRequest {
+                namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+                services: vec![DeployServiceSpec {
+                    service_id: ServiceId::try_new("api").expect("valid service id"),
+                    image,
+                    image_source: ImageSource::PushedToSeed {
+                        seed: MachineId::try_new("machine_a").expect("valid machine id"),
+                        manifest_digest,
+                        image_id: OciDigest::sha256(b"image"),
+                    },
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                    runtime: ContainerRuntimeSpec::image_defaults(),
+                    pre_start: None,
+                    depends_on: Vec::new(),
+                    routes: Vec::new(),
+                }],
+            },
+            registry_credentials: BTreeMap::new(),
+        };
+
+        assert!(matches!(
+            validate_registry_credentials(&command),
+            Err(DeploySubmitError::InvalidTarget { message, .. })
+                if message.as_str().contains("must match its pushed manifest digest")
+        ));
+    }
 }

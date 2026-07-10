@@ -1,12 +1,11 @@
 use ployz_core::dataplane::{DataplaneProviderFailure, PloyzNativeMeshComponent};
+use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, ServiceId};
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployOperationFailure, HealthCheckFailure,
     PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
-
-use super::deploy_render::DeployTree;
 
 pub(crate) struct DeployFailureContainerEvidence<'a> {
     pub machine_id: &'a MachineId,
@@ -48,6 +47,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
             | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
+            | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { machine_id, .. }
             | DeployOperationFailure::PreStartHookFailed { machine_id, .. } => {
                 push_unique(&mut machines, machine_id);
@@ -196,6 +196,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
+            | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
@@ -217,7 +218,8 @@ impl<'a> DeployFailureView<'a> {
 
     pub(crate) const fn image_failure_service(&self) -> Option<&'a ServiceId> {
         match self.failure {
-            DeployOperationFailure::ArtifactUnavailable { service_id, .. }
+            DeployOperationFailure::ImageResolutionFailed { service_id, .. }
+            | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
@@ -245,6 +247,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
+            | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
@@ -266,6 +269,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::AutoDnsWithoutLease { message, .. } => Some(message.as_str()),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
@@ -287,6 +291,7 @@ impl<'a> DeployFailureView<'a> {
         match self.failure {
             DeployOperationFailure::PlanningFailed { service_id, .. }
             | DeployOperationFailure::AutoDnsWithoutLease { service_id, .. }
+            | DeployOperationFailure::ImageResolutionFailed { service_id, .. }
             | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
@@ -326,7 +331,15 @@ fn push_unique<'a>(machines: &mut Vec<&'a MachineId>, machine_id: &'a MachineId)
     }
 }
 
-pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure) -> String {
+fn requested_image<'a>(target: &'a DeployRequest, service_id: &ServiceId) -> Option<&'a str> {
+    target
+        .services
+        .iter()
+        .find(|service| &service.service_id == service_id)
+        .map(|service| service.image.as_str())
+}
+
+pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFailure) -> String {
     match failure {
         DeployOperationFailure::NoUsableMachines { reasons } => {
             let details = reasons
@@ -351,12 +364,21 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             format!("deploy planning failed: {}", message.as_str())
         }
         DeployOperationFailure::AutoDnsWithoutLease { message, .. } => message.as_str().to_owned(),
+        DeployOperationFailure::ImageResolutionFailed {
+            image,
+            machine_id,
+            message,
+            ..
+        } => format!(
+            "image {} could not be resolved by {}: {}",
+            image.as_str(),
+            machine_id.as_str(),
+            message.as_str()
+        ),
         DeployOperationFailure::ArtifactUnavailable {
             service_id, reason, ..
         } => {
-            let image = tree
-                .requested_image(service_id)
-                .unwrap_or("requested image");
+            let image = requested_image(target, service_id).unwrap_or("requested image");
             match reason {
                 ArtifactUnavailableReason::BundleMissing
                 | ArtifactUnavailableReason::BundleUnreadable { .. }
@@ -372,8 +394,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             manifest_digest,
         } => format!(
             "image {} manifest {} is missing from seed {}",
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             manifest_digest.as_str(),
             seed.as_str()
         ),
@@ -384,8 +405,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             actual,
         } => format!(
             "image {} digest mismatch on seed {}: expected {}, got {}",
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             seed.as_str(),
             expected.as_str(),
             actual.as_str()
@@ -397,8 +417,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
         } => format!(
             "image seed {} unavailable for {}: {}",
             seed.as_str(),
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             message.as_str()
         ),
         DeployOperationFailure::UnsupportedTargetPlatform {
@@ -408,8 +427,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
             target_platform,
         } => format!(
             "image {} platform {}/{} is incompatible with {} platform {}/{}",
-            tree.requested_image(service_id)
-                .unwrap_or("requested image"),
+            requested_image(target, service_id).unwrap_or("requested image"),
             image_platform.os,
             image_platform.architecture,
             machine_id.as_str(),

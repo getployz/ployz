@@ -5,7 +5,7 @@ use ployz_core::dataplane::{
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
     WireGuardReady,
 };
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference};
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
@@ -115,6 +115,40 @@ pub type MachineContainerInspectRpcResponse =
     MachineRpcResponse<MachineContainerInspectRpcOk, MachineContainerInspectDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineContainerResolveImageRpcRequest {
+    pub reference: ImageReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<RegistryCredential>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineContainerResolveImageRpcOk {
+    pub machine_id: MachineId,
+    pub digest: OciDigest,
+}
+
+impl MachineRpcResponder for MachineContainerResolveImageRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self {
+            machine_id,
+            digest: _,
+        } = self;
+        machine_id
+    }
+}
+
+pub type MachineContainerResolveImageRpcResponse =
+    MachineRpcResponse<MachineContainerResolveImageRpcOk, MachineContainerResolveImageDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineContainerResolveImageDomainError {
+    ResolveFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineContainerInspectDomainError {
     InspectFailed {
@@ -138,6 +172,8 @@ pub struct MachineContainerRunRpcRequest {
 pub enum MachineImagePull {
     Registry {
         reference: ImageReference,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<RegistryCredential>,
     },
     MeshSeed {
         seed_host: std::net::Ipv4Addr,
@@ -150,7 +186,10 @@ impl MachineImagePull {
     #[must_use]
     pub fn reference(&self) -> String {
         match self {
-            Self::Registry { reference } => reference.as_str().to_owned(),
+            Self::Registry {
+                reference,
+                credential: _,
+            } => reference.as_str().to_owned(),
             Self::MeshSeed {
                 seed_host,
                 repository,
@@ -986,6 +1025,7 @@ mod tests {
     fn container_run_hook_wire_shape_is_pinned() {
         let request = MachineContainerRunHookRpcRequest {
             pull: MachineImagePull::Registry {
+                credential: None,
                 reference: ImageReference::try_new("registry.example/api:rev_2")
                     .expect("valid image"),
             },

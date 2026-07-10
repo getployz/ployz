@@ -53,6 +53,13 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .subscribe(INTENT_CHANGED)
         .await
         .expect("subscribe intent changes");
+    let resolved_request = resolved_deploy_request(1);
+    let resolved_entry_id = resolved_request
+        .service_requests()
+        .into_iter()
+        .next()
+        .expect("resolved fixture has one service")
+        .namespace_revision_entry_id;
 
     let outcome = run_deploy_operation(
         accepted,
@@ -75,7 +82,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     .expect("accepted deploy runs");
     assert_eq!(
         outcome.namespace_revision_id,
-        target_namespace_revision_id(1)
+        resolved_request.namespace_revision_id()
     );
     tokio::time::timeout(Duration::from_secs(1), intent_changed.next())
         .await
@@ -100,7 +107,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             })
             .expect("serving target committed")
             .namespace_revision_entry_id,
-        target_namespace_revision_entry_id()
+        resolved_entry_id
     );
     assert!(matches!(
         controllers
@@ -160,12 +167,13 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         .await
         .expect("completed deploy retry adopts existing operation");
     assert!(
-        !retry.should_start_execution,
+        !retry.submission.should_start_execution,
         "completed retry must not spawn execution"
     );
 
     let next = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_next"),
             idempotency_key: idempotency_key("idem_deploy_next"),
             reservation_id: reserve_deploy(&controllers).await,
@@ -173,7 +181,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         })
         .await
         .expect("next deploy can acquire the namespace");
-    assert!(next.should_start_execution);
+    assert!(next.submission.should_start_execution);
 }
 
 #[tokio::test]
@@ -316,7 +324,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     let intent_reader = intent_reader(&nats.client, Duration::from_millis(200));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
+        .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -390,7 +398,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
-        .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
+        .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
@@ -460,6 +468,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
     let controllers = operation_controllers(nats.client.clone()).await;
     controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_first"),
             reservation_id: reserve_deploy(&controllers).await,
@@ -470,6 +479,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
 
     let error = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
             reservation_id: reserve_deploy(&controllers).await,
@@ -504,6 +514,7 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
     let newer = reserve_deploy(&controllers).await;
     controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_newer"),
             idempotency_key: idempotency_key("idem_newer"),
             reservation_id: newer,
@@ -514,6 +525,7 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
 
     let error = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_older"),
             idempotency_key: idempotency_key("idem_older"),
             reservation_id: older,
@@ -540,6 +552,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
     let controllers = operation_controllers(nats.client.clone()).await;
     let first = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_deploy"),
             reservation_id: reserve_deploy(&controllers).await,
@@ -550,6 +563,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
 
     let retry = controllers
         .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
             operation_id: operation_id("op_retry_candidate"),
             idempotency_key: idempotency_key("idem_deploy"),
             reservation_id: reserve_deploy(&controllers).await,
@@ -558,9 +572,12 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
         .await
         .expect("retry deploy operation accepted");
 
-    assert_eq!(first.operation_id, operation_id("op_first"));
-    assert_eq!(retry.operation_id, operation_id("op_first"));
-    assert_eq!(retry.start_sequence, first.start_sequence);
+    assert_eq!(first.submission.operation_id, operation_id("op_first"));
+    assert_eq!(retry.submission.operation_id, operation_id("op_first"));
+    assert_eq!(
+        retry.submission.start_sequence,
+        first.submission.start_sequence
+    );
 }
 
 struct TestNats {
@@ -746,6 +763,7 @@ async fn deploy_submit_command(
     target: DeployRequest,
 ) -> DeploySubmitCommand {
     DeploySubmitCommand {
+        registry_credentials: std::collections::BTreeMap::new(),
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
         reservation_id: reserve_deploy(controllers).await,
@@ -777,4 +795,17 @@ fn deploy_request(replicas: u16) -> DeployRequest {
             routes: Vec::new(),
         }],
     }
+}
+
+fn resolved_deploy_request(replicas: u16) -> DeployRequest {
+    let mut request = deploy_request(replicas);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    let digest = ployz_core::image::OciDigest::sha256(service.image.as_str().as_bytes());
+    service.image = service
+        .image
+        .with_digest(&digest)
+        .expect("fixture image accepts a digest");
+    request
 }

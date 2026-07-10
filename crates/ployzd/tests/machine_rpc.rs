@@ -59,6 +59,7 @@ async fn nats_machine_runtime_calls_container_run_service() {
             .as_slice(),
         [MachineContainerRunRpcRequest {
             pull: MachineImagePull::Registry {
+                credential: None,
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
@@ -627,6 +628,7 @@ async fn test_nats() -> TestNats {
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         pull: MachineImagePull::Registry {
+            credential: None,
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),

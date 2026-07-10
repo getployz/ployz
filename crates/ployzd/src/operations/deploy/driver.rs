@@ -2,13 +2,12 @@
 
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
-use crate::operation_api::admission::OperationControllers;
+use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
-    DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionOutcome,
-    DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError, DeployHealthChecker,
-    DeployMachineCandidates, MachineContainerRuntime, NamespaceCommitError,
+    DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionInput,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
+    DeployHealthChecker, DeployMachineCandidates, MachineContainerRuntime, NamespaceCommitError,
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
-    prepare_deploy_execution_command,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -37,7 +36,7 @@ const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DEPLOY_RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_millis(1_500);
 
 pub async fn run_deploy_operation<D, N, H>(
-    accepted: AcceptedDeploySubmission,
+    accepted_execution: AcceptedDeployExecution,
     machine_candidates: DeployMachineCandidates,
     stores: DeployOperationStores,
     ports: DeployOperationPorts<'_, D, N, H>,
@@ -48,6 +47,10 @@ where
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
 {
+    let AcceptedDeployExecution {
+        submission: accepted,
+        registry_credentials,
+    } = accepted_execution;
     let DeployOperationStores {
         intent_change_client,
         namespace_intent,
@@ -110,12 +113,16 @@ where
             failure_record_error,
         });
     }
-    let command =
-        prepare_deploy_execution_command(accepted.operation_id.clone(), request.clone(), facts);
+    let input = DeployExecutionInput::new(
+        accepted.operation_id.clone(),
+        request,
+        facts,
+        registry_credentials,
+    );
     let mut recorder = controllers;
     let mut namespace_state = NamespaceIntentCommitter::new(intent_change_client, namespace_intent);
     execute_deploy_operation(
-        command,
+        input,
         DeployExecutionPorts {
             recorder: &mut recorder,
             dataplane,
@@ -321,8 +328,8 @@ impl DeployOperationDriver {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedDeploySubmission) {
-        if !accepted.should_start_execution {
+    pub fn start(&self, accepted: AcceptedDeployExecution) {
+        if !accepted.submission.should_start_execution {
             return;
         }
 
@@ -334,9 +341,9 @@ impl DeployOperationDriver {
 
     pub async fn run(
         self,
-        accepted: AcceptedDeploySubmission,
+        accepted: AcceptedDeployExecution,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
-        if !claim_deploy_execution(&self.controllers, &accepted.operation_id).await? {
+        if !claim_deploy_execution(&self.controllers, &accepted.submission.operation_id).await? {
             return Err(DeployOperationRunError::AlreadyStarted);
         }
 
@@ -354,8 +361,8 @@ impl DeployOperationDriver {
         let intent_reader =
             NatsIntentReader::new(self.client.clone()).with_request_timeout(self.step_timeout);
 
-        let namespace_id = accepted.target.namespace_id.clone();
-        let operation_id = accepted.operation_id.clone();
+        let namespace_id = accepted.submission.target.namespace_id.clone();
+        let operation_id = accepted.submission.operation_id.clone();
         let namespace_intent = self.namespace_intent.clone();
         let controllers = self.controllers.clone();
         let result = run_deploy_operation(

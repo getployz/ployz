@@ -34,6 +34,7 @@ impl DeployCommand {
     #[must_use]
     pub fn into_request(self, reservation_id: DeployReservationId) -> DeploySubmitRequest {
         DeploySubmitRequest {
+            registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: self.idempotency_key,
             reservation_id,
             target: DeployRequest {

@@ -257,6 +257,12 @@ pub async fn prepare_deploy_images(
         };
         let receipt =
             push_local_image(&api.nats_client(), &docker, seed, service.image.clone()).await?;
+        service.image = service
+            .image
+            .with_digest(&receipt.manifest_digest)
+            .map_err(|error| ImagePushError::UnexpectedResponse {
+                message: error.to_string(),
+            })?;
         service.image_source = receipt.image_source();
         receipts.push(receipt);
     }

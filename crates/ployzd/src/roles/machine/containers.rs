@@ -8,7 +8,9 @@ use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerInspectRpcResponse,
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
-    MachineContainerRemoveRpcResponse, MachineContainerRestartDomainError,
+    MachineContainerRemoveRpcResponse, MachineContainerResolveImageDomainError,
+    MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
+    MachineContainerResolveImageRpcResponse, MachineContainerRestartDomainError,
     MachineContainerRestartRpcRequest, MachineContainerRestartRpcResponse, MachineContainerRpcOk,
     MachineContainerRunDomainError, MachineContainerRunHookDomainError,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest,
@@ -411,6 +413,41 @@ where
                 },
             }),
         },
+    }
+}
+
+pub(crate) async fn handle_container_resolve_image<R>(
+    machine_id: MachineId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineContainerResolveImageRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match runner
+        .resolve_registry_image(&request.reference, request.credential.as_ref())
+        .await
+    {
+        Ok(digest) => machine_success(MachineContainerResolveImageRpcResponse::Ok(
+            MachineContainerResolveImageRpcOk { machine_id, digest },
+        )),
+        Err(MachineContainerRunnerError::ImagePull { message }) => {
+            let message = match request.credential.as_ref() {
+                Some(credential) => credential.redact_secret_in(message),
+                None => message,
+            };
+            machine_domain_error(MachineContainerResolveImageRpcResponse::DomainError {
+                machine_id,
+                error: MachineContainerResolveImageDomainError::ResolveFailed {
+                    message: failure_message(message),
+                },
+            })
+        }
+        Err(error) => runner_error(error),
     }
 }
 

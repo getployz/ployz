@@ -2,8 +2,9 @@
 
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
-    handle_container_restart, handle_container_run, handle_container_run_hook,
-    handle_container_stop, handle_ensure_endpoint_network, handle_volume_remove,
+    handle_container_resolve_image, handle_container_restart, handle_container_run,
+    handle_container_run_hook, handle_container_stop, handle_ensure_endpoint_network,
+    handle_volume_remove,
 };
 use super::dataplane::{handle_dataplane_mtu_probe, handle_dataplane_prepare};
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
@@ -135,6 +136,14 @@ where
         MachineServiceEndpoint::ContainerInspect,
         runner.clone(),
         handle_container_inspect,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ContainerResolveImage,
+        runner.clone(),
+        handle_container_resolve_image,
     )
     .await?;
     bind_machine_endpoint(

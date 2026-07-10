@@ -28,13 +28,16 @@ pub use failure::{
     PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
-use images::{dataplane_prepare_request, ensure_images, machine_image_pull};
+use images::{
+    dataplane_prepare_request, ensure_images, machine_image_pull, resolve_registry_images,
+};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
     NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
-    DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
+    DeployExecutionFacts, DeployExecutionInput, namespace_cleanup_candidates,
+    prepare_deploy_execution_command,
 };
 
 use crate::roles::machine::protocol::{
@@ -50,7 +53,7 @@ pub use types::{
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, S>(
-    command: DeployExecutionCommand,
+    input: DeployExecutionInput,
     ports: DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
@@ -60,8 +63,55 @@ where
     H: DeployHealthChecker,
     S: NamespaceStateCommitter,
 {
+    let DeployExecutionInput {
+        operation_id,
+        mut request,
+        facts,
+        registry_credentials,
+    } = input;
+    let provisional_command = preparation::prepare_deploy_execution_command_with_credentials(
+        operation_id.clone(),
+        request.clone(),
+        facts.clone(),
+        &registry_credentials,
+    );
+    if let Err(source) = record_stage(
+        &provisional_command,
+        &mut *ports.recorder,
+        DeployTransition::Planning,
+    )
+    .await
+    {
+        return fail_deploy(
+            provisional_command.clone(),
+            &mut *ports.recorder,
+            DeployExecutionFailure::new(&provisional_command, source, &[]),
+        )
+        .await;
+    }
+    if let Err(source) = resolve_registry_images(
+        &provisional_command,
+        &mut request,
+        &mut *ports.recorder,
+        &mut *ports.machine_runtime,
+    )
+    .await
+    {
+        return fail_deploy(
+            provisional_command.clone(),
+            &mut *ports.recorder,
+            DeployExecutionFailure::new(&provisional_command, source, &[]),
+        )
+        .await;
+    }
+    let command = preparation::prepare_deploy_execution_command_with_credentials(
+        operation_id,
+        request,
+        facts,
+        &registry_credentials,
+    );
     let mut ports = ports;
-    match execute_deploy(&command, &mut ports).await {
+    match execute_deploy_after_planning(&command, &mut ports).await {
         Ok(outcome) => Ok(outcome),
         Err(mut failure) => {
             let stop_artifacts = stop_retained_containers(
@@ -128,7 +178,7 @@ impl<'a> DeployRun<'a> {
     }
 }
 
-async fn execute_deploy<R, D, N, H, S>(
+async fn execute_deploy_after_planning<R, D, N, H, S>(
     command: &DeployExecutionCommand,
     ports: &mut DeployExecutionPorts<'_, R, D, N, H, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
@@ -141,26 +191,7 @@ where
 {
     let mut containers = Vec::new();
     let mut run = DeployRun::new(command);
-    record_stage(command, &mut *ports.recorder, DeployTransition::Planning)
-        .await
-        .map_err(|source| run.fail(source))?;
-    let plan = plan_namespace_deploy(
-        command.request.namespace_id.clone(),
-        command.request.namespace_revision_id(),
-        command
-            .services()
-            .iter()
-            .map(|service| DeployPlanningInput {
-                request: service.request.clone(),
-                eligible_machines: service.eligible_machines.clone(),
-                existing_replicas: service.existing_replicas.clone(),
-                cleanup_candidates: service.cleanup_candidates.clone(),
-                volume_pins: service.volume_pins.clone(),
-            })
-            .collect(),
-        command.namespace_cleanup_candidates().to_vec(),
-    )
-    .map_err(|source| run.fail(source.into()))?;
+    let plan = deploy_plan(command).map_err(|source| run.fail(source))?;
     record_evidence(
         command,
         &mut *ports.recorder,
@@ -390,6 +421,28 @@ where
     };
 
     Ok(outcome)
+}
+
+pub(super) fn deploy_plan(
+    command: &DeployExecutionCommand,
+) -> Result<DeployPlan, DeployExecutionError> {
+    plan_namespace_deploy(
+        command.request.namespace_id.clone(),
+        command.request.namespace_revision_id(),
+        command
+            .services()
+            .iter()
+            .map(|service| DeployPlanningInput {
+                request: service.request.clone(),
+                eligible_machines: service.eligible_machines.clone(),
+                existing_replicas: service.existing_replicas.clone(),
+                cleanup_candidates: service.cleanup_candidates.clone(),
+                volume_pins: service.volume_pins.clone(),
+            })
+            .collect(),
+        command.namespace_cleanup_candidates().to_vec(),
+    )
+    .map_err(DeployExecutionError::from)
 }
 
 async fn run_pre_start_hook<N>(
