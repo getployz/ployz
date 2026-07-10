@@ -474,6 +474,16 @@ impl MachineContainerRunner for StaticRunner {
             message: "not used".to_owned(),
         })
     }
+
+    async fn remove_volume(
+        &self,
+        docker_volume_name: &str,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Err(MachineContainerRunnerError::RemoveVolume {
+            docker_volume_name: docker_volume_name.to_owned(),
+            message: "not used".to_owned(),
+        })
+    }
 }
 
 fn existing_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {

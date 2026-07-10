@@ -1,6 +1,10 @@
 //! Read-only query services behind the operation API: machine, service,
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
+mod volume;
+
+pub use volume::VolumeQueryService;
+
 use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;

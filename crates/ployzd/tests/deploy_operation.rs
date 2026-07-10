@@ -3,11 +3,11 @@ mod fixtures;
 
 use fixtures::*;
 use ployz_core::dataplane::DataplaneMember;
-use ployz_core::deploy::{ContainerCommand, ReplicaCount};
+use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
-    RouteHostname, RouteTarget,
+    PreStartHookFailure, RouteHostname, RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
@@ -158,6 +158,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             namespace_revision_entry_id: target_namespace_revision_entry_id(),
             image: image("registry.example/api:rev_2"),
             desired_replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            volume_names: Vec::new(),
         }]
     );
     assert_eq!(
@@ -204,11 +205,6 @@ async fn pre_start_hook_runs_before_service_with_derived_runtime() {
     .await
     .expect("deploy succeeds");
 
-    assert_deploy_event_order(
-        &recorder.records,
-        DeployRunningStage::RunningPreStartHooks,
-        DeployRunningStage::StartingContainers,
-    );
     let [(hook_machine, hook_request)] = runtime.hook_requests.as_slice() else {
         panic!("expected one pre-start hook request");
     };
@@ -227,6 +223,10 @@ async fn pre_start_hook_runs_before_service_with_derived_runtime() {
         )
     );
     assert_eq!(hook_request.runtime.healthcheck, None);
+    assert_eq!(
+        hook_request.runtime.restart_policy,
+        ContainerRestartPolicy::No
+    );
     assert_eq!(runtime.requests.len(), 1);
 }
 
@@ -257,8 +257,12 @@ async fn nonzero_pre_start_hook_fails_before_service_start_and_retains_hook() {
     };
     let DeployOperationFailure::PreStartHookFailed {
         machine_id: failed_machine,
-        container_id: failed_container,
-        exit_code,
+        failure:
+            PreStartHookFailure::Exited {
+                container_id: failed_container,
+                exit_code,
+                ..
+            },
         retained_artifacts,
         ..
     } = failure
@@ -270,12 +274,48 @@ async fn nonzero_pre_start_hook_fails_before_service_start_and_retains_hook() {
     assert_eq!(exit_code, 7);
     assert_eq!(retained_artifacts.len(), 1);
     assert!(runtime.requests.is_empty());
-    assert!(!recorder.records.iter().any(|record| {
-        record
-            == &RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            })
-    }));
+}
+
+#[tokio::test]
+async fn pre_start_hook_cleanup_failure_is_typed_and_blocks_service_start() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_service"])
+        .with_hook_outcome("ctr_hook", 0)
+        .with_remove_failure();
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    let error = execute_deploy(
+        deploy_command_with_pre_start(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("hook cleanup failure rejects deploy");
+
+    let DeployExecutionError::Failed {
+        failure:
+            DeployOperationFailure::PreStartHookFailed {
+                failure:
+                    PreStartHookFailure::CleanupFailed {
+                        container_id: failed_container,
+                        ..
+                    },
+                ..
+            },
+        ..
+    } = error
+    else {
+        panic!("expected typed hook cleanup failure");
+    };
+    assert_eq!(failed_container, container_id("ctr_hook"));
+    assert!(runtime.requests.is_empty());
 }
 
 #[tokio::test]

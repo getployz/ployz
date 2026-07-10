@@ -1,7 +1,7 @@
 use super::facts::{current_unix_ms, observation_state};
 use super::response::{
-    container_start_error, failure_message, inspect_hint, machine_domain_error, machine_success,
-    runner_error,
+    container_start_error, failure_message, inspect_hint, log_hint, machine_domain_error,
+    machine_success, runner_error,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
@@ -12,11 +12,12 @@ use crate::roles::machine::protocol::{
     MachineContainerRunDomainError, MachineContainerRunHookDomainError,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest,
     MachineContainerRunHookRpcResponse, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerRunRpcResponse,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineEnsureEndpointNetworkDomainError,
-    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
-    MachineEnsureEndpointNetworkRpcResponse, MachineRunContainerOutcome,
+    MachineContainerRunRpcResponse, MachineContainerStopDomainError,
+    MachineContainerStopRpcRequest, MachineContainerStopRpcResponse,
+    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
+    MachineEnsureEndpointNetworkRpcRequest, MachineEnsureEndpointNetworkRpcResponse,
+    MachineRunContainerOutcome, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -223,7 +224,8 @@ where
                 | Err(error @ MachineContainerRunnerError::Wait { .. })
                 | Err(error @ MachineContainerRunnerError::Stop { .. })
                 | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. }) => {
+                | Err(error @ MachineContainerRunnerError::Remove { .. })
+                | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
                     return runner_error(error);
                 }
             };
@@ -257,64 +259,67 @@ where
     };
 
     let timeout = Duration::from_millis(request.timeout_millis.max(1));
-    let exit_code = match tokio::time::timeout(
-        timeout,
-        state.runner.wait_managed_container(&container_id),
-    )
-    .await
-    {
-        Ok(Ok(exit_code)) => exit_code,
-        Ok(Err(MachineContainerRunnerError::Wait { message, .. })) => {
-            return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
-                machine_id,
-                error: MachineContainerRunHookDomainError::WaitFailed {
-                    container_id: container_id.clone(),
-                    message: failure_message(format!("hook container wait failed: {message}")),
-                    log_hint: log_hint(&container_id),
-                },
-            });
-        }
-        Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
-        | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
-        | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
-        | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
-        | Ok(Err(error @ MachineContainerRunnerError::Stop { .. }))
-        | Ok(Err(error @ MachineContainerRunnerError::Restart { .. }))
-        | Ok(Err(error @ MachineContainerRunnerError::Remove { .. })) => {
-            return runner_error(error);
-        }
-        Err(_) => {
-            let message = match state
-                .runner
-                .stop_managed_container(&container_id, &identity)
-                .await
-            {
-                Ok(()) => format!("hook timed out after {}ms and was stopped", timeout.as_millis()),
-                Err(MachineContainerRunnerError::Stop { message, .. }) => format!(
-                    "hook timed out after {}ms and could not be stopped: {message}",
-                    timeout.as_millis()
-                ),
-                Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                | Err(error @ MachineContainerRunnerError::Create { .. })
-                | Err(error @ MachineContainerRunnerError::Start { .. })
-                | Err(error @ MachineContainerRunnerError::Wait { .. })
-                | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. }) => {
-                    return runner_error(error);
-                }
-            };
-            return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
-                machine_id,
-                error: MachineContainerRunHookDomainError::TimedOut {
-                    container_id: container_id.clone(),
-                    timeout_millis: request.timeout_millis,
-                    message: failure_message(message),
-                    inspect_hint: inspect_hint(&container_id),
-                },
-            });
-        }
-    };
+    let exit_code =
+        match tokio::time::timeout(timeout, state.runner.wait_managed_container(&container_id))
+            .await
+        {
+            Ok(Ok(exit_code)) => exit_code,
+            Ok(Err(MachineContainerRunnerError::Wait { message, .. })) => {
+                return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineContainerRunHookDomainError::WaitFailed {
+                        container_id: container_id.clone(),
+                        message: failure_message(format!("hook container wait failed: {message}")),
+                        log_hint: log_hint(&container_id),
+                    },
+                });
+            }
+            Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::Stop { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::Restart { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::Remove { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::RemoveVolume { .. })) => {
+                return runner_error(error);
+            }
+            Err(_) => {
+                let message = match state
+                    .runner
+                    .stop_managed_container(&container_id, &identity)
+                    .await
+                {
+                    Ok(()) => format!(
+                        "hook timed out after {}ms and was stopped",
+                        timeout.as_millis()
+                    ),
+                    Err(MachineContainerRunnerError::Stop { message, .. }) => format!(
+                        "hook timed out after {}ms and could not be stopped: {message}",
+                        timeout.as_millis()
+                    ),
+                    Err(error @ MachineContainerRunnerError::ListExisting { .. })
+                    | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+                    | Err(error @ MachineContainerRunnerError::Create { .. })
+                    | Err(error @ MachineContainerRunnerError::Start { .. })
+                    | Err(error @ MachineContainerRunnerError::Wait { .. })
+                    | Err(error @ MachineContainerRunnerError::Restart { .. })
+                    | Err(error @ MachineContainerRunnerError::Remove { .. })
+                    | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
+                        return runner_error(error);
+                    }
+                };
+                return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineContainerRunHookDomainError::TimedOut {
+                        container_id: container_id.clone(),
+                        timeout_millis: request.timeout_millis,
+                        message: failure_message(message),
+                        inspect_hint: inspect_hint(&container_id),
+                    },
+                });
+            }
+        };
 
     machine_success(MachineContainerRunHookRpcResponse::Ok(
         MachineContainerRunHookRpcOk {
@@ -347,13 +352,9 @@ fn hook_start_error(
         | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }
-        | MachineContainerRunnerError::Remove { .. }) => runner_error(error),
+        | MachineContainerRunnerError::Remove { .. }
+        | MachineContainerRunnerError::RemoveVolume { .. }) => runner_error(error),
     }
-}
-
-fn log_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
-    ployz_core::ops::OperatorHint::try_new(format!("ployzctl logs {}", container_id.as_str()))
-        .expect("generated log hint is non-empty")
 }
 
 pub(crate) async fn handle_container_inspect<R>(
@@ -437,6 +438,35 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
+        Err(error) => runner_error(error),
+    }
+}
+
+pub(crate) async fn handle_volume_remove<R>(
+    machine_id: MachineId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineVolumeRemoveRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    match runner.remove_volume(&request.docker_volume_name).await {
+        Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+            MachineVolumeRemoveRpcOk { machine_id },
+        )),
+        Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
+            machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                machine_id,
+                error: MachineVolumeRemoveDomainError::RemoveFailed {
+                    message: failure_message(format!("volume remove failed: {message}")),
+                },
+            })
+        }
         Err(error) => runner_error(error),
     }
 }

@@ -151,11 +151,7 @@ pub fn namespace_revision_id_for(
         dependencies.sort();
         dependencies.dedup();
         for dependency in dependencies {
-            hash_frame(
-                &mut hasher,
-                "depends_on",
-                dependency.as_str().as_bytes(),
-            );
+            hash_frame(&mut hasher, "depends_on", dependency.as_str().as_bytes());
         }
 
         let mut routes = service.routes.iter().collect::<Vec<_>>();

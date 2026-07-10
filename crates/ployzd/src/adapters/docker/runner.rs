@@ -18,7 +18,7 @@ use bollard::models::{
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, InspectNetworkOptions,
     ListContainersOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
-    RestartContainerOptions, StopContainerOptionsBuilder,
+    RemoveVolumeOptionsBuilder, RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::dataplane::{INTERNAL_DNS_SUFFIX, endpoint_bridge_gateway_ipv4};
@@ -262,9 +262,34 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             .await
         {
             Ok(()) => Ok(()),
-            Err(error) if is_container_missing(&error) => Ok(()),
+            Err(error) if is_docker_object_missing(&error) => Ok(()),
             Err(error) => Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    async fn remove_volume(
+        &self,
+        docker_volume_name: &str,
+    ) -> Result<(), MachineContainerRunnerError> {
+        let docker =
+            self.docker()
+                .await
+                .map_err(|error| MachineContainerRunnerError::RemoveVolume {
+                    docker_volume_name: docker_volume_name.to_owned(),
+                    message: error.to_string(),
+                })?;
+        let options = RemoveVolumeOptionsBuilder::new().force(true).build();
+        match docker
+            .remove_volume(docker_volume_name, Some(options))
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) if is_docker_object_missing(&error) => Ok(()),
+            Err(error) => Err(MachineContainerRunnerError::RemoveVolume {
+                docker_volume_name: docker_volume_name.to_owned(),
                 message: error.to_string(),
             }),
         }
@@ -313,7 +338,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             .await
         {
             Ok(()) => Ok(()),
-            Err(error) if is_container_missing(&error) => Ok(()),
+            Err(error) if is_docker_object_missing(&error) => Ok(()),
             Err(error) => Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
@@ -405,7 +430,7 @@ impl MachineLogReader for DockerManagedContainerRunner {
                     }
                     output.extend_from_slice(bytes);
                 }
-                Err(error) if is_container_missing(&error) => {
+                Err(error) if is_docker_object_missing(&error) => {
                     return Err(MachineLogReaderError::NotFound {
                         container_id: container_id.clone(),
                     });
@@ -536,7 +561,7 @@ fn is_network_already_exists(error: &BollardError) -> bool {
     )
 }
 
-fn is_container_missing(error: &BollardError) -> bool {
+fn is_docker_object_missing(error: &BollardError) -> bool {
     matches!(
         error,
         BollardError::DockerResponseServerError {
@@ -687,7 +712,7 @@ fn create_body(
         labels: Some(hashmap_from_btree(labels::render(&command.identity))),
         host_config: Some(HostConfig {
             network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
-            mounts: docker_volume_mounts(&command.identity, &runtime.volume_mounts),
+            mounts: docker_volume_mounts(&command.identity.namespace_id, &runtime.volume_mounts),
             restart_policy,
             cap_add,
             cap_drop,
@@ -712,7 +737,7 @@ fn create_body(
 }
 
 fn docker_volume_mounts(
-    identity: &ManagedContainerIdentity,
+    namespace_id: &ployz_core::ids::NamespaceId,
     mounts: &[ployz_core::deploy::ServiceVolumeMount],
 ) -> Option<Vec<Mount>> {
     if mounts.is_empty() {
@@ -723,7 +748,7 @@ fn docker_volume_mounts(
             .iter()
             .map(|mount| Mount {
                 target: Some(mount.target.as_str().to_owned()),
-                source: Some(docker_volume_name(identity, &mount.volume_name)),
+                source: Some(docker_volume_name(namespace_id, &mount.volume_name)),
                 typ: Some(MountType::VOLUME),
                 read_only: None,
                 consistency: None,
@@ -736,11 +761,11 @@ fn docker_volume_mounts(
     )
 }
 
-fn docker_volume_name(
-    identity: &ManagedContainerIdentity,
+pub(crate) fn docker_volume_name(
+    namespace_id: &ployz_core::ids::NamespaceId,
     volume_name: &ployz_core::deploy::VolumeName,
 ) -> String {
-    let namespace_id = identity.namespace_id.as_str();
+    let namespace_id = namespace_id.as_str();
     let volume_name = volume_name.as_str();
     format!(
         "ployz-n{}-{}-v{}-{}",
@@ -1117,10 +1142,8 @@ mod tests {
 
     #[test]
     fn docker_volume_names_are_framed_to_avoid_collisions() {
-        let mut left = managed_identity();
-        left.namespace_id = namespace_id("a-b");
-        let mut right = managed_identity();
-        right.namespace_id = namespace_id("a");
+        let left = namespace_id("a-b");
+        let right = namespace_id("a");
 
         assert_ne!(
             docker_volume_name(&left, &volume_name("c")),

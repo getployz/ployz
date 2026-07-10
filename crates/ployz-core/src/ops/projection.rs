@@ -13,6 +13,7 @@ use super::machine_update::{self, MachineUpdateOperationState};
 use super::managed_lease::{self, ManagedLeaseOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
+use super::volume_remove::{self, VolumeRemoveOperationState};
 use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +94,7 @@ pub enum ProjectionOperationState {
     ServiceRestart(ServiceRestartOperationState),
     ManagedLease(ManagedLeaseOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
+    VolumeRemove(VolumeRemoveOperationState),
 }
 
 impl ProjectionOperationState {
@@ -108,6 +110,7 @@ impl ProjectionOperationState {
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
             Self::ManagedLease(_) => OperationKind::ManagedLease,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
+            Self::VolumeRemove(_) => OperationKind::VolumeRemove,
         }
     }
 }
@@ -123,6 +126,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedLease => "managed-lease",
         OperationKind::NamespaceRemove => "namespace-remove",
+        OperationKind::VolumeRemove => "volume-remove",
     }
 }
 
@@ -370,6 +374,26 @@ pub fn project_operation_event(
                 return Err(kind_mismatch(current, OperationKind::NamespaceRemove));
             };
             namespace_remove::project_event(id, namespace_id, state, event, event_sequence)
+        }
+        ClassifiedOperationEvent::VolumeRemove { event, .. } => {
+            let OperationStatus::VolumeRemove {
+                id,
+                namespace_id,
+                volume_name,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::VolumeRemove));
+            };
+            volume_remove::project_event(
+                id,
+                namespace_id,
+                volume_name,
+                state,
+                event,
+                event_sequence,
+            )
         }
     }
 }

@@ -46,6 +46,7 @@ pub fn serving_target_entry_in(namespace: &str, service: &str, entry: &str) -> S
         namespace_revision_entry_id: namespace_revision_entry_id(entry),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         desired_replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        volume_names: Vec::new(),
     }
 }
 

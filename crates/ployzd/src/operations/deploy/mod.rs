@@ -24,11 +24,12 @@ pub use facts::{
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
     DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
-    NamespaceCommitError, NamespaceStateCommitter, PreStartHookOutcome,
+    NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
     DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
@@ -206,7 +207,9 @@ where
             .iter()
             .find(|service| service.request.service_id == service_plan.service_id)
         else {
-            continue;
+            return Err(run.fail(DeployExecutionError::PlanInconsistent {
+                service_id: service_plan.service_id.clone(),
+            }));
         };
         if let Some(pre_start) = &service_plan.pre_start {
             run_pre_start_hook(command, service, pre_start, &mut *ports.machine_runtime)
@@ -366,7 +369,7 @@ where
     N: MachineContainerRuntime,
 {
     let Some(pre_start) = &service.request.pre_start else {
-        return Err(DeployExecutionError::PreStartHookPlanInconsistent {
+        return Err(DeployExecutionError::PlanInconsistent {
             service_id: service.request.service_id.clone(),
         });
     };
@@ -398,12 +401,12 @@ where
             machine_runtime
                 .run_pre_start_hook(&step.machine_id, request)
                 .await
-                .map_err(DeployExecutionError::RunContainer)
+                .map_err(DeployExecutionError::PreStartHook)
         },
     )
     .await?;
     if outcome.exit_code != 0 {
-        return Err(DeployExecutionError::PreStartHook {
+        return Err(DeployExecutionError::PreStartHookExited {
             machine_id: step.machine_id.clone(),
             container_id: outcome.container_id,
             exit_code: outcome.exit_code,
@@ -415,7 +418,7 @@ where
         });
     }
     machine_runtime
-        .remove_container(
+        .remove_pre_start_hook(
             &step.machine_id,
             MachineContainerRemoveRpcRequest {
                 operation_id: command.operation_id.clone(),
@@ -424,14 +427,18 @@ where
             },
         )
         .await
-        .map_err(DeployExecutionError::RunContainer)?;
+        .map_err(DeployExecutionError::PreStartHook)?;
     Ok(())
 }
 
 fn hook_execution_timeout(command: &DeployExecutionCommand) -> std::time::Duration {
     let millis = command.step_timeout().as_millis();
-    let bounded = millis.saturating_mul(9).checked_div(10).unwrap_or(1).max(1);
-    std::time::Duration::from_millis(u64::try_from(bounded).unwrap_or(u64::MAX))
+    let bounded = millis.saturating_mul(9).div_euclid(10).max(1);
+    let bounded = match u64::try_from(bounded) {
+        Ok(bounded) => bounded,
+        Err(_) => u64::MAX,
+    };
+    std::time::Duration::from_millis(bounded)
 }
 
 async fn cleanup_superseded_containers<N>(
@@ -631,9 +638,6 @@ fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessag
         MachineContainerRuntimeError::CreatedContainerStartFailed { message, .. }
         | MachineContainerRuntimeError::ExistingContainerStartFailed { message, .. }
         | MachineContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
-        | MachineContainerRuntimeError::PreStartHookCreateFailed { message, .. }
-        | MachineContainerRuntimeError::PreStartHookStartFailed { message, .. }
-        | MachineContainerRuntimeError::PreStartHookWaitFailed { message, .. }
         | MachineContainerRuntimeError::StopContainerFailed { message, .. }
         | MachineContainerRuntimeError::RestartContainerFailed { message, .. }
         | MachineContainerRuntimeError::RemoveContainerFailed { message, .. } => message,

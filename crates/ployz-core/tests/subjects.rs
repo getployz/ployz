@@ -123,6 +123,10 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.command.machine_7.container.remove"
     );
     assert_eq!(
+        machine_service(&machine_id, MachineServiceEndpoint::VolumeRemove),
+        "plz.v1.rpc.machine.command.machine_7.volume.remove"
+    );
+    assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::DataplanePrepare),
         "plz.v1.rpc.machine.command.machine_7.dataplane.prepare"
     );

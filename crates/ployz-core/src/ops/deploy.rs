@@ -187,9 +187,7 @@ pub enum DeployOperationFailure {
     },
     PreStartHookFailed {
         machine_id: MachineId,
-        container_id: ContainerId,
-        exit_code: i64,
-        message: FailureMessage,
+        failure: PreStartHookFailure,
         retained_artifacts: Vec<RetainedArtifact>,
     },
     HealthCheckFailed {
@@ -205,6 +203,50 @@ pub enum DeployOperationFailure {
         route: RouteTarget,
         reason: RouteCutoverFailureReason,
         retained_artifacts: Vec<RetainedArtifact>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PreStartHookFailure {
+    RuntimeUnavailable {
+        message: FailureMessage,
+    },
+    OperationStepAmbiguous {
+        operation_id: OperationId,
+        step_id: crate::ids::StepId,
+        container_ids: Vec<ContainerId>,
+    },
+    CreateFailed {
+        message: FailureMessage,
+    },
+    StartFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    WaitFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    TimedOut {
+        container_id: ContainerId,
+        timeout_millis: u64,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    Exited {
+        container_id: ContainerId,
+        exit_code: i64,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    CleanupFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
     },
 }
 

@@ -280,6 +280,35 @@ pub enum MachineContainerRemoveDomainError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineVolumeRemoveRpcRequest {
+    pub operation_id: OperationId,
+    pub docker_volume_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineVolumeRemoveRpcOk {
+    pub machine_id: MachineId,
+}
+
+impl MachineRpcResponder for MachineVolumeRemoveRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id } = self;
+        machine_id
+    }
+}
+
+pub type MachineVolumeRemoveRpcResponse =
+    MachineRpcResponse<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineVolumeRemoveDomainError {
+    RemoveFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineContainerRestartRpcRequest {
     pub operation_id: OperationId,
     pub container_id: ContainerId,
@@ -787,6 +816,7 @@ mod tests {
                 step_id: StepId::try_new("pre_start").expect("valid step id"),
                 kind: ployz_core::machine_runtime::ManagedContainerKind::Predeploy,
             },
+            timeout_millis: 1_000,
         };
         let request_json = json!({
             "image": "registry.example/api:rev_2",
@@ -804,6 +834,7 @@ mod tests {
                 "step_id": "pre_start",
                 "kind": "predeploy",
             },
+            "timeout_millis": 1000,
         });
         assert_eq!(
             serde_json::to_value(&request).expect("request serializes"),
@@ -815,13 +846,13 @@ mod tests {
             request
         );
 
-        let response = MachineContainerRunHookRpcResponse::Completed {
+        let response = MachineContainerRunHookRpcResponse::Ok(MachineContainerRunHookRpcOk {
             machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_hook"),
             exit_code: 7,
-        };
+        });
         let response_json = json!({
-            "status": "completed",
+            "status": "ok",
             "machine_id": "machine_a",
             "container_id": "ctr_hook",
             "exit_code": 7,

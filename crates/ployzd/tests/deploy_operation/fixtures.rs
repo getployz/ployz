@@ -30,12 +30,12 @@ use ployzd::operations::deploy::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    NamespaceCommitError, NamespaceStateCommitter, PreStartHookOutcome,
+    NamespaceCommitError, NamespaceStateCommitter, PreStartHookRuntimeError,
     prepare_deploy_execution_command,
 };
 use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
 };
@@ -164,7 +164,7 @@ pub(super) struct RecordingRuntime {
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     containers: Vec<ContainerId>,
-    hook_outcomes: Vec<PreStartHookOutcome>,
+    hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
     fail_endpoint_network: bool,
     reuse_existing: bool,
@@ -547,10 +547,8 @@ impl RecordingRuntime {
     }
 
     pub(super) fn with_hook_outcome(mut self, container_id: &str, exit_code: i64) -> Self {
-        self.hook_outcomes.push(PreStartHookOutcome {
-            container_id: self::container_id(container_id),
-            exit_code,
-        });
+        self.hook_outcomes
+            .push((self::container_id(container_id), exit_code));
         self
     }
 
@@ -629,17 +627,43 @@ impl MachineContainerRuntime for RecordingRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerRunHookRpcRequest,
-    ) -> Result<PreStartHookOutcome, MachineContainerRuntimeError> {
+    ) -> Result<MachineContainerRunHookRpcOk, PreStartHookRuntimeError> {
         self.hook_requests.push((machine_id.clone(), request));
-        let Some(outcome) = self.hook_outcomes.pop() else {
-            return Err(MachineContainerRuntimeError::Unavailable {
+        let Some((container_id, exit_code)) = self.hook_outcomes.pop() else {
+            return Err(PreStartHookRuntimeError::Unavailable {
                 machine_id: machine_id.clone(),
                 reason: MachineRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic missing hook outcome".to_owned(),
                 },
             });
         };
-        Ok(outcome)
+        Ok(MachineContainerRunHookRpcOk {
+            machine_id: machine_id.clone(),
+            container_id,
+            exit_code,
+        })
+    }
+
+    async fn remove_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> Result<(), PreStartHookRuntimeError> {
+        let container_id = request.container_id.clone();
+        self.removals.push((machine_id.clone(), request));
+        if self.fail_remove {
+            return Err(PreStartHookRuntimeError::CleanupFailed {
+                machine_id: machine_id.clone(),
+                container_id: container_id.clone(),
+                message: runtime_failure_message("hook container remove failed: busy"),
+                inspect_hint: OperatorHint::try_new(format!(
+                    "ployz container inspect {}",
+                    container_id.as_str()
+                ))
+                .expect("valid inspect hint"),
+            });
+        }
+        Ok(())
     }
 
     async fn remove_container(

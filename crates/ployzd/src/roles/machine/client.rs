@@ -2,7 +2,7 @@
 
 use crate::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    PreStartHookOutcome,
+    PreStartHookRuntimeError,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
@@ -18,7 +18,8 @@ use crate::roles::machine::protocol::{
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
-    MachineSubstrateUpdateRpcRequest,
+    MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
@@ -128,6 +129,20 @@ pub enum MachineContainerInspectError {
     Unavailable {
         machine_id: MachineId,
         reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineVolumeRemoveError {
+    #[error("machine {} volume remove unavailable: {}", machine_id.as_str(), message.as_str())]
+    Unavailable {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    #[error("machine {} volume remove failed: {}", machine_id.as_str(), message.as_str())]
+    RemoveFailed {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
     },
 }
 
@@ -451,6 +466,34 @@ impl NatsMachineContainerRuntime {
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
     }
+
+    pub async fn remove_volume(
+        &self,
+        machine_id: &MachineId,
+        request: MachineVolumeRemoveRpcRequest,
+    ) -> Result<(), MachineVolumeRemoveError> {
+        call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::VolumeRemove,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineVolumeRemoveError::Unavailable {
+                machine_id: machine_id.clone(),
+                message: reason.failure_message(),
+            },
+            MachineCallError::Domain(MachineVolumeRemoveDomainError::RemoveFailed { message }) => {
+                MachineVolumeRemoveError::RemoveFailed {
+                    machine_id: machine_id.clone(),
+                    message,
+                }
+            }
+        })
+    }
 }
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
@@ -502,7 +545,7 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
         &mut self,
         machine_id: &MachineId,
         request: MachineContainerRunHookRpcRequest,
-    ) -> Result<PreStartHookOutcome, MachineContainerRuntimeError> {
+    ) -> Result<MachineContainerRunHookRpcOk, PreStartHookRuntimeError> {
         call_machine::<MachineContainerRunHookRpcOk, MachineContainerRunHookDomainError>(
             &self.client,
             self.request_timeout,
@@ -511,15 +554,44 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
             &request,
         )
         .await
-        .map(|ok| PreStartHookOutcome {
-            container_id: ok.container_id,
-            exit_code: ok.exit_code,
-        })
         .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                container_runtime_unavailable(machine_id, reason)
-            }
+            MachineCallError::Unavailable(reason) => PreStartHookRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    async fn remove_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> Result<(), PreStartHookRuntimeError> {
+        call_machine::<MachineContainerRpcOk, MachineContainerRemoveDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerRemove,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => PreStartHookRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineContainerRemoveDomainError::RemoveFailed {
+                container_id,
+                message,
+                inspect_hint,
+            }) => PreStartHookRuntimeError::CleanupFailed {
+                machine_id: machine_id.clone(),
+                container_id,
+                message,
+                inspect_hint,
+            },
         })
     }
 
@@ -678,29 +750,27 @@ impl MachineContainerRunDomainError {
 }
 
 impl MachineContainerRunHookDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
+    fn into_runtime_error(self, machine_id: MachineId) -> PreStartHookRuntimeError {
         match self {
             Self::OperationStepAmbiguous {
                 operation_id,
                 step_id,
                 container_ids,
-            } => MachineContainerRuntimeError::OperationStepAmbiguous {
+            } => PreStartHookRuntimeError::OperationStepAmbiguous {
                 machine_id,
                 operation_id,
                 step_id,
                 container_ids,
             },
-            Self::CreateFailed { message } => {
-                MachineContainerRuntimeError::PreStartHookCreateFailed {
-                    machine_id,
-                    message,
-                }
-            }
+            Self::CreateFailed { message } => PreStartHookRuntimeError::CreateFailed {
+                machine_id,
+                message,
+            },
             Self::StartFailed {
                 container_id,
                 message,
                 inspect_hint,
-            } => MachineContainerRuntimeError::PreStartHookStartFailed {
+            } => PreStartHookRuntimeError::StartFailed {
                 machine_id,
                 container_id,
                 message,
@@ -710,7 +780,7 @@ impl MachineContainerRunHookDomainError {
                 container_id,
                 message,
                 log_hint,
-            } => MachineContainerRuntimeError::PreStartHookWaitFailed {
+            } => PreStartHookRuntimeError::WaitFailed {
                 machine_id,
                 container_id,
                 message,
@@ -718,12 +788,13 @@ impl MachineContainerRunHookDomainError {
             },
             Self::TimedOut {
                 container_id,
+                timeout_millis,
                 message,
                 inspect_hint,
-                ..
-            } => MachineContainerRuntimeError::PreStartHookStartFailed {
+            } => PreStartHookRuntimeError::TimedOut {
                 machine_id,
                 container_id,
+                timeout_millis,
                 message,
                 inspect_hint,
             },

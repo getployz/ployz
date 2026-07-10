@@ -17,11 +17,11 @@ pub use ployz_core::deploy::{
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
     ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
     DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
-    DeployServiceRequest, DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError,
-    HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand, ImageReference,
-    ImageReferenceError, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook,
-    PreStartHookStep, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment,
-    ServiceVolumeMount, StopGracePeriod, VolumeName, VolumeNameError,
+    DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError,
+    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
+    ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount,
+    StopGracePeriod, VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -59,12 +59,13 @@ pub use ployz_core::ops::{
     OperationStatusSnapshot, OperationSubject, OperatorHint, ReplayedOperationEvent,
     RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort,
     RoutePortError, RouteTarget, ServiceRestartFailure, ServiceRestartOperationState,
-    ServiceRestartRunningStage, UnusableMachine,
+    ServiceRestartRunningStage, UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState,
+    VolumeRemoveRunningStage,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,
     CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
-    DeployOperationFailure, DeployOperationState, DeployRunningStage,
+    DeployOperationFailure, DeployOperationState, DeployRunningStage, PreStartHookFailure,
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;

@@ -17,7 +17,7 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
 use ployzd::operations::deploy::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason, PreStartHookOutcome,
+    MachineRuntimeUnavailableReason,
 };
 use ployzd::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
@@ -26,14 +26,16 @@ use ployzd::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
     MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
-    MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcRequest,
-    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcOk,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
     MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcRequest,
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
-    MachineSubstrateReportRpcResponse,
+    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
 };
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -219,11 +221,23 @@ async fn machine_role_service_removes_successful_hook_container() {
 
     assert_eq!(
         outcome,
-        PreStartHookOutcome {
+        MachineContainerRunHookRpcOk {
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_hook"),
             exit_code: 0,
         }
     );
+    client
+        .remove_pre_start_hook(
+            &machine_id("machine_a"),
+            MachineContainerRemoveRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_hook"),
+                expected_identity: hook_request().container,
+            },
+        )
+        .await
+        .expect("hook cleanup succeeds");
     assert_eq!(state.removes(), vec![container_id("ctr_hook")]);
 }
 
@@ -252,6 +266,40 @@ async fn machine_role_service_retains_failed_hook_container() {
 
     assert_eq!(outcome.exit_code, 7);
     assert!(state.removes().is_empty());
+}
+
+#[tokio::test]
+async fn machine_role_service_recovers_completed_hook_without_rerunning_it() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone())
+            .with_existing(existing_container_with_state(
+                "ctr_hook",
+                hook_request().container,
+                ExistingManagedContainerState::NotStartable {
+                    description: "exited".to_owned(),
+                },
+            ))
+            .with_wait_exit_code(0),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let outcome = client
+        .run_pre_start_hook(&machine_id("machine_a"), hook_request())
+        .await
+        .expect("completed hook is recovered");
+
+    assert_eq!(outcome.container_id, container_id("ctr_hook"));
+    assert!(state.creates().is_empty());
+    assert!(state.starts().is_empty());
 }
 
 #[tokio::test]
@@ -636,6 +684,51 @@ async fn machine_role_service_removes_container() {
         })
     );
     assert_eq!(state.removes(), vec![container_id("ctr_old")]);
+}
+
+#[tokio::test]
+async fn machine_role_service_removes_volume() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+
+    let response = request_json::<_, MachineVolumeRemoveRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::VolumeRemove,
+        ),
+        &MachineVolumeRemoveRpcRequest {
+            operation_id: operation_id("op_123"),
+            docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine service responds");
+
+    assert_eq!(
+        response,
+        MachineVolumeRemoveRpcResponse::Ok(MachineVolumeRemoveRpcOk {
+            machine_id: machine_id("machine_a"),
+        })
+    );
+    assert_eq!(
+        state.volume_removes(),
+        vec!["ployz-n4-prod-v4-data".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -1173,6 +1266,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn volume_removes(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_removes
+            .clone()
+    }
+
     fn stops(&self) -> Vec<ContainerId> {
         self.inner
             .lock()
@@ -1190,6 +1291,7 @@ struct RecordingRunnerInner {
     restarts: Vec<ContainerId>,
     stops: Vec<ContainerId>,
     removes: Vec<ContainerId>,
+    volume_removes: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -1358,6 +1460,19 @@ impl MachineContainerRunner for RecordingRunner {
             .expect("recording runner lock is not poisoned")
             .removes
             .push(container_id.clone());
+        Ok(())
+    }
+
+    async fn remove_volume(
+        &self,
+        docker_volume_name: &str,
+    ) -> Result<(), MachineContainerRunnerError> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_removes
+            .push(docker_volume_name.to_owned());
         Ok(())
     }
 
@@ -1609,6 +1724,7 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
         image: image("registry.example/api:rev_2"),
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container,
+        timeout_millis: 1_000,
     }
 }
 

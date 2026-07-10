@@ -5,8 +5,8 @@ use ployz_core::deploy::{
     DeployServicePlan, DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica,
     HealthcheckShellCommand, ImageReference, PreStartHook, PreStartHookStep, ReplicaCount,
     ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -316,6 +316,38 @@ fn service_dependencies_reorder_namespace_plan_stably() {
             .map(|service| service.service_id.clone())
             .collect::<Vec<_>>(),
         vec![service_id("svc_api"), service_id("svc_worker")]
+    );
+}
+
+#[test]
+fn unknown_service_dependency_fails_planning() {
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    api.request.depends_on = vec![service_id("svc_missing")];
+
+    assert_eq!(
+        plan_namespace_deploy(
+            namespace_id("default"),
+            namespace_revision_id("rev_1"),
+            vec![api],
+            Vec::new(),
+        ),
+        Err(DeployPlanError::UnknownServiceDependency {
+            service_id: service_id("svc_api"),
+            dependency: service_id("svc_missing"),
+        })
+    );
+}
+
+#[test]
+fn namespace_revision_identity_includes_hooks_and_dependencies() {
+    let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+    let mut changed = base.clone();
+    changed.pre_start = Some(pre_start_hook());
+    changed.depends_on = vec![service_id("svc_database")];
+
+    assert_ne!(
+        namespace_revision_id_for(&namespace_id("default"), &[base]),
+        namespace_revision_id_for(&namespace_id("default"), &[changed])
     );
 }
 

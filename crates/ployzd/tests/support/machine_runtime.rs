@@ -176,6 +176,13 @@ impl MachineContainerRunner for ObservingContainerRunner {
         Ok(())
     }
 
+    async fn remove_volume(
+        &self,
+        _docker_volume_name: &str,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Ok(())
+    }
+
     async fn stop_managed_container(
         &self,
         container_id: &ContainerId,

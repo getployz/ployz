@@ -520,61 +520,60 @@ fn parse_pre_start(
     let Some(value) = value else {
         return Ok(None);
     };
-    let command = match value {
-        Value::String(command) => {
-            parse_hook_command(ComposeCommand::Shell(command), path).map_err(|error| vec![error])?
-        }
-        Value::Sequence(command) => {
-            parse_hook_command(ComposeCommand::Exec(command), path).map_err(|error| vec![error])?
-        }
-        Value::Mapping(mapping) => {
-            let mut findings = mapping
-                .keys()
-                .filter_map(Value::as_str)
-                .filter(|key| *key != "command")
-                .map(|key| ComposeFinding::unknown(path.field(key)))
-                .collect::<Vec<_>>();
-            let Some(command) = mapping.get(Value::String("command".to_owned())) else {
-                findings.push(ComposeFinding::invalid(
-                    path.clone(),
-                    "pre_start mapping needs command",
-                ));
-                return Err(findings);
-            };
-            let command = match command {
-                Value::String(command) => parse_hook_command(
-                    ComposeCommand::Shell(command.clone()),
-                    &path.field("command"),
-                ),
-                Value::Sequence(command) => parse_hook_command(
-                    ComposeCommand::Exec(command.clone()),
-                    &path.field("command"),
-                ),
-                Value::Null
-                | Value::Bool(_)
-                | Value::Number(_)
-                | Value::Mapping(_)
-                | Value::Tagged(_) => Err(ComposeFinding::invalid(
+    let command =
+        match value {
+            Value::String(command) => parse_hook_command(ComposeCommand::Shell(command), path)
+                .map_err(|error| vec![error])?,
+            Value::Sequence(command) => parse_hook_command(ComposeCommand::Exec(command), path)
+                .map_err(|error| vec![error])?,
+            Value::Mapping(mapping) => {
+                let mut findings = mapping
+                    .keys()
+                    .filter_map(Value::as_str)
+                    .filter(|key| *key != "command")
+                    .map(|key| ComposeFinding::unknown(path.field(key)))
+                    .collect::<Vec<_>>();
+                let Some(command) = mapping.get(Value::String("command".to_owned())) else {
+                    findings.push(ComposeFinding::invalid(
+                        path.clone(),
+                        "pre_start mapping needs command",
+                    ));
+                    return Err(findings);
+                };
+                let command = match command {
+                    Value::String(command) => parse_hook_command(
+                        ComposeCommand::Shell(command.clone()),
+                        &path.field("command"),
+                    ),
+                    Value::Sequence(command) => parse_hook_command(
+                        ComposeCommand::Exec(command.clone()),
+                        &path.field("command"),
+                    ),
+                    Value::Null
+                    | Value::Bool(_)
+                    | Value::Number(_)
+                    | Value::Mapping(_)
+                    | Value::Tagged(_) => Err(ComposeFinding::invalid(
                         path.field("command"),
                         "hook command must be a string or list",
                     )),
-            };
-            match command {
-                Ok(command) if findings.is_empty() => command,
-                Ok(_) => return Err(findings),
-                Err(error) => {
-                    findings.push(error);
-                    return Err(findings);
+                };
+                match command {
+                    Ok(command) if findings.is_empty() => command,
+                    Ok(_) => return Err(findings),
+                    Err(error) => {
+                        findings.push(error);
+                        return Err(findings);
+                    }
                 }
             }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Tagged(_) => {
-            return Err(vec![ComposeFinding::invalid(
-                path.clone(),
-                "pre_start must be a string, list, or mapping",
-            )]);
-        }
-    };
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Tagged(_) => {
+                return Err(vec![ComposeFinding::invalid(
+                    path.clone(),
+                    "pre_start must be a string, list, or mapping",
+                )]);
+            }
+        };
     Ok(Some(PreStartHook { command }))
 }
 
@@ -1758,7 +1757,7 @@ fn protocol_port(protocol: RouteProtocol) -> RoutePort {
 mod tests {
     use ployz_core::deploy::{ContainerEntrypoint, StopGracePeriod};
 
-    use super::{parse_compose_duration, parse_depends_on};
+    use super::{parse_compose_duration, parse_depends_on, parse_pre_start};
     use crate::compose::diagnostics::{ComposePath, UnsupportedFieldMode};
     use crate::compose::{ComposeInput, parse_deploy_file};
 
@@ -1774,6 +1773,31 @@ mod tests {
         assert_eq!(first.path.render(), "depends_on[0]");
         assert_eq!(second.path.render(), "depends_on[1]");
         assert_eq!(third.path.render(), "depends_on[2]");
+    }
+
+    #[test]
+    fn depends_on_rejects_non_ordering_options() {
+        let value = serde_yaml::from_str("database: { condition: service_healthy, restart: true }")
+            .expect("valid yaml");
+        let findings = parse_depends_on(Some(value), &ComposePath::root().field("depends_on"))
+            .expect_err("non-ordering dependency options are rejected");
+
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].path.render(), "depends_on.database.condition");
+        assert_eq!(findings[1].path.render(), "depends_on.database.restart");
+    }
+
+    #[test]
+    fn pre_start_mapping_rejects_unknown_options() {
+        let value =
+            serde_yaml::from_str("{ command: 'echo ready', user: root }").expect("valid yaml");
+        let findings = parse_pre_start(Some(value), &ComposePath::root().field("pre_start"))
+            .expect_err("unknown hook option is rejected");
+
+        let [finding] = findings.as_slice() else {
+            panic!("expected one hook finding");
+        };
+        assert_eq!(finding.path.render(), "pre_start.user");
     }
 
     #[test]

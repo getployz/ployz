@@ -9,6 +9,7 @@ use futures_util::StreamExt;
 use ployz_core::cert::{ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
+    VolumeName,
 };
 use ployz_core::ids::{MachineId, NamespaceRevisionEntryId};
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
@@ -22,7 +23,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    RouteBindingState,
+    RouteBindingState, VolumePinState,
 };
 use ployz_core::subjects::{
     MachineServiceEndpoint, OperationApiEndpoint, gateway_status,
@@ -35,7 +36,8 @@ use ployz_sdk_types::{
     DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError, MachineAddRequest,
     MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
     MachineTestimony, MachineUpdateError, MachineUpdateRequest, RuntimeDerivedCollectionStatus,
-    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest,
+    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
+    VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::intent::lease_intent::LeaseIntentStore;
@@ -332,10 +334,20 @@ async fn control_runtime_serves_active_service_queries() {
             .expect("open core store"),
     );
     let runtime = nats.start_control(&config).await;
+    let mut serving_target = serving_target_entry("svc_api", "entry_2");
+    serving_target.volume_names = vec![VolumeName::try_new("data").expect("valid volume name")];
     namespace_intent
-        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_2"))
+        .replace_serving_target_entry(serving_target)
         .await
         .expect("service state stores");
+    namespace_intent
+        .replace_volume_pin(VolumePinState {
+            namespace_id: namespace_id("default"),
+            volume_name: VolumeName::try_new("data").expect("valid volume name"),
+            machine_id: machine_id("core_1"),
+        })
+        .await
+        .expect("volume pin stores");
     let api = nats.api();
 
     let listed = api
@@ -350,6 +362,16 @@ async fn control_runtime_serves_active_service_queries() {
         service.active.namespace_revision_entry_id,
         namespace_revision_entry_id("entry_2")
     );
+
+    let volumes = api
+        .volume_list(&VolumeListRequest {})
+        .await
+        .expect("volumes list");
+    let [volume] = volumes.volumes.as_slice() else {
+        panic!("expected one listed volume, got {:?}", volumes.volumes);
+    };
+    assert_eq!(volume.volume_name.as_str(), "data");
+    assert_eq!(volume.status, VolumeStatus::InUse);
 
     let inspected = api
         .service_inspect(&ServiceInspectRequest {
