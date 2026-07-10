@@ -49,10 +49,11 @@ fn internal_dns_projection_returns_sorted_unique_running_service_ipv4_addresses(
         1,
     )
     .expect("machine facts");
-    let name = InternalServiceName::new(
+    let name = InternalServiceName::try_from_ids(
         &ServiceId::try_new("db").expect("service id"),
         &NamespaceId::try_new("default").expect("namespace id"),
-    );
+    )
+    .expect("internal service name");
 
     assert_eq!(
         internal_dns_records(&[facts]),
@@ -69,4 +70,12 @@ fn internal_service_name_deserialization_rejects_invalid_names() {
         .expect_err("missing namespace is invalid");
 
     assert!(error.to_string().contains("internal service name"));
+}
+
+#[test]
+fn internal_service_name_from_ids_rejects_dns_labels_over_63_bytes() {
+    let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
+    let namespace_id = NamespaceId::try_new("default").expect("namespace id");
+
+    assert!(InternalServiceName::try_from_ids(&service_id, &namespace_id).is_err());
 }

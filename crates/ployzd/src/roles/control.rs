@@ -243,7 +243,8 @@ pub async fn start_control_process_with_client_and_reload(
             .clone()
             .with_request_timeout(config.deploy_step_timeout),
         NatsMachineDataplanePreparer::new(client.clone())
-            .with_request_timeout(config.deploy_step_timeout),
+            .with_request_timeout(config.deploy_step_timeout)
+            .with_mesh_lock(controllers.mesh_lock()),
         NatsMachineFactsReader::new(client.clone())
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),

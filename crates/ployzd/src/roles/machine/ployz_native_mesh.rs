@@ -60,6 +60,10 @@ impl NatsMachineDataplanePreparer {
         request: DataplanePrepareRequest,
         targets: &[MachineId],
     ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
+        let _mesh_guard = match &self.mesh_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
         let request = self
             .ployz_native_mesh_prepare_request(request)
             .await

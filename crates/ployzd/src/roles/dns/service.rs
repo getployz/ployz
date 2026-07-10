@@ -176,10 +176,11 @@ mod tests {
     #[tokio::test]
     async fn unconfigured_resolver_is_unavailable() {
         let dns_machine_id = machine_id("dns_a");
-        let name = InternalServiceName::new(
+        let name = InternalServiceName::try_from_ids(
             &ServiceId::try_new("web").expect("service id"),
             &NamespaceId::try_new("team-a").expect("namespace id"),
-        );
+        )
+        .expect("internal service name");
 
         let response = resolve_from_bound_resolver(
             dns_machine_id.clone(),

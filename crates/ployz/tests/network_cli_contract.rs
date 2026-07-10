@@ -181,10 +181,11 @@ fn network_status_renders_internal_dns_failures() {
 
 #[test]
 fn network_resolve_marks_consistent_and_divergent_answer_sets() {
-    let name = InternalServiceName::new(
+    let name = InternalServiceName::try_from_ids(
         &ServiceId::try_new("web").expect("service id"),
         &NamespaceId::try_new("team-a").expect("namespace id"),
-    );
+    )
+    .expect("internal service name");
     let testimony = |machine: &str, last_octet| NetworkResolveMachineTestimony::Answered {
         machine_id: machine_id(machine),
         addresses: vec![Ipv4Addr::new(10, 42, 1, last_octet)],
@@ -206,10 +207,11 @@ fn network_resolve_marks_consistent_and_divergent_answer_sets() {
 
 #[test]
 fn network_resolve_renders_typed_failures() {
-    let name = InternalServiceName::new(
+    let name = InternalServiceName::try_from_ids(
         &ServiceId::try_new("web").expect("service id"),
         &NamespaceId::try_new("team-a").expect("namespace id"),
-    );
+    )
+    .expect("internal service name");
     let output = NetworkResolveOutput::new(NetworkResolveResult {
         name,
         machines: vec![
