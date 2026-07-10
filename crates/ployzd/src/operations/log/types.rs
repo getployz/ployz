@@ -1,3 +1,4 @@
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
@@ -167,6 +168,19 @@ pub(super) struct NamespaceRemovePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeRemoveOperationSubmission {
+    pub operation_id: OperationId,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VolumeRemovePayload {
+    pub(super) namespace_id: NamespaceId,
+    pub(super) volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -222,6 +236,15 @@ pub struct AcceptedNamespaceRemoveSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
     pub namespace_id: NamespaceId,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedVolumeRemoveSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
     pub should_start_execution: bool,
 }
 
@@ -303,6 +326,7 @@ pub type RecordDeployTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;
 pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
+pub type RecordVolumeRemoveTransitionError = RecordOperationEventError;
 pub type RecordManagedLeaseTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;

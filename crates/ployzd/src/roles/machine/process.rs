@@ -515,6 +515,16 @@ mod tests {
             })
         }
 
+        async fn remove_volume(
+            &self,
+            docker_volume_name: &str,
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::RemoveVolume {
+                docker_volume_name: docker_volume_name.to_owned(),
+                message: "not used".to_owned(),
+            })
+        }
+
         async fn restart_managed_container(
             &self,
             container_id: &ContainerId,
@@ -582,6 +592,16 @@ mod tests {
         ) -> Result<(), MachineContainerRunnerError> {
             Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
+
+        async fn remove_volume(
+            &self,
+            docker_volume_name: &str,
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::RemoveVolume {
+                docker_volume_name: docker_volume_name.to_owned(),
                 message: "not used".to_owned(),
             })
         }
