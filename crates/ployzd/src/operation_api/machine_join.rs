@@ -3,18 +3,16 @@
 //! truth (record-then-activate).
 
 use crate::adapters::nats_authorization::MintRequest;
-use crate::operations::deploy::DataplanePreparer;
 use crate::operations::log::{
     MachineJoinRedemption, RecordMachineJoinReportError, RedeemMachineJoinTokenError,
 };
-use crate::roles::machine::client::NatsMachineDataplanePreparer;
-use ployz_core::dataplane::{DataplanePrepareRequest, endpoint_bridge_gateway_ipv4};
+use ployz_core::dataplane::{MachineEndpointSubnet, MachineEndpointSupernet};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, MachineAddFailure, MachineName,
-    RawJoinToken, active_machine_from_completed_add,
+    MachineAddFailure, MachineName, RawJoinToken, active_machine_from_completed_add,
 };
-use ployz_core::ops::{MachineAddOperationState, OperationStatus};
+use ployz_core::ops::OperationStatus;
+use ployz_core::state::ActiveMachineState;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -23,6 +21,7 @@ use ployz_sdk_types::{
 };
 
 use super::OperationApiHandlers;
+use super::connectivity_proof;
 use super::error_map::{
     completed_machine_add_operation_id, corrupt, machine_join_redeem_error_from_repository_error,
     machine_join_report_error,
@@ -84,15 +83,8 @@ pub async fn machine_join_report(
     let mut outcome = request.outcome;
     let result = match outcome.clone() {
         MachineJoinReportOutcome::Completed => {
-            match connectivity_proof_for_completed_join(handlers, &raw_token).await? {
-                Some(failure) => {
-                    let MachineAddFailure::ConnectivityProofFailed { evidence } = &failure else {
-                        return Err(MachineJoinReportError::Unavailable {
-                            message: corrupt(
-                                "connectivity gate produced a non-connectivity failure",
-                            ),
-                        });
-                    };
+            match connectivity_proof::prove_completed_join(handlers, &raw_token).await? {
+                Some(evidence) => {
                     outcome = MachineJoinReportOutcome::Failed {
                         failure: MachineJoinReportFailure::ConnectivityProofFailed {
                             evidence: evidence.clone(),
@@ -101,7 +93,10 @@ pub async fn machine_join_report(
                     handlers
                         .controllers
                         .repository()
-                        .record_machine_join_failed(&raw_token, failure)
+                        .record_machine_join_failed(
+                            &raw_token,
+                            MachineAddFailure::ConnectivityProofFailed { evidence },
+                        )
                         .await
                 }
                 None => {
@@ -279,6 +274,18 @@ async fn allocate_endpoint_subnet(
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
         })?;
+    endpoint_subnet_for_roster(
+        handlers.dataplane_endpoint_supernet(),
+        &machines,
+        machine_id,
+    )
+}
+
+pub(super) fn endpoint_subnet_for_roster(
+    endpoint_supernet: &MachineEndpointSupernet,
+    machines: &[ActiveMachineState],
+    machine_id: &MachineId,
+) -> Result<MachineEndpointSubnet, MachineJoinReportError> {
     if let Some(machine) = machines
         .iter()
         .find(|machine| machine.machine_id == *machine_id)
@@ -297,9 +304,10 @@ async fn allocate_endpoint_subnet(
     {
         return Ok(derived);
     }
-    let assigned = machines.into_iter().map(|machine| machine.endpoint_subnet);
-    handlers
-        .dataplane_endpoint_supernet()
+    let assigned = machines
+        .iter()
+        .map(|machine| machine.endpoint_subnet.clone());
+    endpoint_supernet
         .allocate_next(assigned)
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
@@ -317,136 +325,6 @@ fn machine_add_failure_from_join_report_failure(
             ployz_core::machine::MachineAddFailure::ConnectivityProofFailed { evidence }
         }
     }
-}
-
-async fn connectivity_proof_for_completed_join(
-    handlers: &OperationApiHandlers,
-    raw_token: &RawJoinToken,
-) -> Result<Option<MachineAddFailure>, MachineJoinReportError> {
-    let target = handlers
-        .controllers
-        .repository()
-        .machine_join_report_target(raw_token)
-        .await
-        .map_err(machine_join_report_error)?;
-    let status = handlers
-        .controllers
-        .repository()
-        .get(&target.operation_id)
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })?
-        .ok_or(MachineJoinReportError::Unavailable {
-            message: corrupt("missing machine-add operation before connectivity proof"),
-        })?;
-    let OperationStatus::MachineAdd {
-        id: operation_id,
-        machine_id,
-        state,
-        ..
-    } = status
-    else {
-        return Err(MachineJoinReportError::Unavailable {
-            message: corrupt("joined operation is not machine-add"),
-        });
-    };
-    match state {
-        MachineAddOperationState::Joining { .. } => {
-            prove_overlay_connectivity(handlers, operation_id, machine_id).await
-        }
-        MachineAddOperationState::Pending { .. }
-        | MachineAddOperationState::Completed
-        | MachineAddOperationState::Failed { .. }
-        | MachineAddOperationState::Cancelled { .. } => Ok(None),
-    }
-}
-
-async fn prove_overlay_connectivity(
-    handlers: &OperationApiHandlers,
-    operation_id: OperationId,
-    joining_machine_id: MachineId,
-) -> Result<Option<MachineAddFailure>, MachineJoinReportError> {
-    let existing_machines = handlers
-        .machine_roster
-        .active_machines()
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })?;
-    if existing_machines.is_empty() {
-        return Ok(None);
-    }
-
-    let joining_subnet = allocate_endpoint_subnet(handlers, &joining_machine_id).await?;
-    let mut machine_ids = existing_machines
-        .iter()
-        .map(|machine| machine.machine_id.clone())
-        .collect::<Vec<_>>();
-    machine_ids.push(joining_machine_id.clone());
-    let mut prepare_request =
-        DataplanePrepareRequest::for_machines(operation_id.clone(), machine_ids.clone());
-    for member in &mut prepare_request.membership {
-        if member.machine_id == joining_machine_id {
-            member.endpoint_subnet = joining_subnet.clone();
-            continue;
-        }
-        let Some(machine) = existing_machines
-            .iter()
-            .find(|machine| machine.machine_id == member.machine_id)
-        else {
-            return Err(MachineJoinReportError::Unavailable {
-                message: corrupt("dataplane membership is missing an active machine"),
-            });
-        };
-        member.endpoint_subnet = machine.endpoint_subnet.clone();
-    }
-
-    let mut preparer = NatsMachineDataplanePreparer::new(handlers.intent_change_client.clone())
-        .with_facts_reader(handlers.facts_reader.clone())
-        .with_request_timeout(handlers.deploy_driver.step_timeout());
-    preparer
-        .prepare_dataplane(prepare_request)
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: format!("dataplane prepare failed: {error:?}"),
-        })?;
-
-    let mut peers = Vec::with_capacity(existing_machines.len());
-    for machine in existing_machines {
-        let subnet = machine.endpoint_subnet.as_string();
-        let Some(gateway) = endpoint_bridge_gateway_ipv4(&subnet) else {
-            return Err(MachineJoinReportError::Unavailable {
-                message: corrupt("active machine endpoint subnet has no IPv4 bridge gateway"),
-            });
-        };
-        peers.push((machine.machine_id, gateway));
-    }
-    let targets = peers.iter().map(|(_, gateway)| *gateway).collect();
-    let unreachable = preparer
-        .probe_overlay(operation_id, &joining_machine_id, machine_ids, targets)
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: format!("overlay connectivity probe failed: {error:?}"),
-        })?;
-    Ok(connectivity_proof_failure(&peers, &unreachable))
-}
-
-fn connectivity_proof_failure(
-    peers: &[(MachineId, std::net::Ipv4Addr)],
-    unreachable: &[std::net::Ipv4Addr],
-) -> Option<MachineAddFailure> {
-    let unreachable_peers = peers
-        .iter()
-        .filter(|(_, gateway)| unreachable.contains(gateway))
-        .map(|(machine_id, gateway)| ConnectivityProofUnreachablePeer {
-            machine_id: machine_id.clone(),
-            gateway: *gateway,
-        })
-        .collect::<Vec<_>>();
-    ConnectivityProofEvidence::try_new(unreachable_peers)
-        .ok()
-        .map(|evidence| MachineAddFailure::ConnectivityProofFailed { evidence })
 }
 
 fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeemed {
@@ -467,34 +345,5 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         joined_at: joined.joined_at,
         last_event_sequence: joined.last_event_sequence,
         result,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn non_empty_probe_result_becomes_machine_add_connectivity_failure() {
-        let gateway = "10.198.1.1".parse().expect("valid gateway");
-
-        let failure = connectivity_proof_failure(&[(machine_id("core_1"), gateway)], &[gateway]);
-
-        assert_eq!(
-            failure,
-            Some(MachineAddFailure::ConnectivityProofFailed {
-                evidence: ConnectivityProofEvidence::try_new(vec![
-                    ConnectivityProofUnreachablePeer {
-                        machine_id: machine_id("core_1"),
-                        gateway,
-                    },
-                ])
-                .expect("non-empty connectivity evidence"),
-            })
-        );
-    }
-
-    fn machine_id(value: &str) -> MachineId {
-        MachineId::try_new(value).expect("valid machine id")
     }
 }

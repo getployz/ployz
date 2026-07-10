@@ -168,9 +168,9 @@ pub enum MachineAddFailure {
     CredentialEvidenceWriteFailed { message: FailureMessage },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ConnectivityProofEvidenceWire")]
 pub struct ConnectivityProofEvidence {
     unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
 }
@@ -223,19 +223,17 @@ pub enum ConnectivityProofEvidenceError {
     Empty,
 }
 
-impl<'de> Deserialize<'de> for ConnectivityProofEvidence {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct WireEvidence {
-            unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
-        }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectivityProofEvidenceWire {
+    unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
+}
 
-        let wire = WireEvidence::deserialize(deserializer)?;
-        Self::try_new(wire.unreachable_peers).map_err(serde::de::Error::custom)
+impl TryFrom<ConnectivityProofEvidenceWire> for ConnectivityProofEvidence {
+    type Error = ConnectivityProofEvidenceError;
+
+    fn try_from(wire: ConnectivityProofEvidenceWire) -> Result<Self, Self::Error> {
+        Self::try_new(wire.unreachable_peers)
     }
 }
 

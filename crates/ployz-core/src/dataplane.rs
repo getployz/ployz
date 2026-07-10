@@ -6,12 +6,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::deploy::DeployPlan;
 use crate::ids::{MachineId, OperationId};
 use crate::ops::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
+pub const OVERLAY_CONNECTIVITY_PROOF_BUDGET: Duration = Duration::from_secs(45);
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 
@@ -22,6 +24,14 @@ pub struct DataplanePrepareRequest {
 }
 
 impl DataplanePrepareRequest {
+    #[must_use]
+    pub const fn for_members(operation_id: OperationId, membership: Vec<DataplaneMember>) -> Self {
+        Self {
+            operation_id,
+            membership,
+        }
+    }
+
     #[must_use]
     pub fn for_deploy_plan(
         operation_id: OperationId,
@@ -788,6 +798,20 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn dataplane_prepare_request_for_members_preserves_explicit_membership() {
+        let membership = vec![DataplaneMember {
+            machine_id: machine_id("core_1"),
+            endpoint_subnet: MachineEndpointSubnet::try_new("10.198.27.0/24")
+                .expect("valid subnet"),
+        }];
+
+        let request =
+            DataplanePrepareRequest::for_members(operation_id("op_1"), membership.clone());
+
+        assert_eq!(request.membership, membership);
     }
 
     #[test]

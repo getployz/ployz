@@ -10,15 +10,19 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
-    DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshComponent,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshPrepareRequest,
-    WireGuardEbpfPrepareError, WireGuardEbpfPrepareReportError, WireGuardPeer,
-    WireGuardPeerEndpoint, WireGuardPublicKey,
+    DataplaneMember, DataplanePrepareError, DataplanePrepareRequest,
+    OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshPrepareRequest, WireGuardEbpfPrepareError,
+    WireGuardEbpfPrepareReportError, WireGuardPeer, WireGuardPeerEndpoint, WireGuardPublicKey,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
+use std::time::Duration;
+
+const OVERLAY_CONNECTIVITY_PROBE_RPC_TIMEOUT: Duration =
+    OVERLAY_CONNECTIVITY_PROOF_BUDGET.saturating_add(Duration::from_secs(15));
 
 impl DataplanePreparer for NatsMachineDataplanePreparer {
     async fn prepare_dataplane(
@@ -52,7 +56,13 @@ impl NatsMachineDataplanePreparer {
                 targets: targets.clone(),
             },
         );
-        let response = request_machine_dataplane(self, machine_id, &request).await?;
+        let response = request_machine_dataplane_with_timeout(
+            self,
+            machine_id,
+            &request,
+            OVERLAY_CONNECTIVITY_PROBE_RPC_TIMEOUT,
+        )
+        .await?;
         match response {
             MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { unreachable, .. } => {
                 if unreachable.iter().all(|target| targets.contains(target)) {
@@ -324,9 +334,19 @@ async fn request_machine_dataplane(
     machine_id: &MachineId,
     request: &MachineDataplanePrepareRpcRequest,
 ) -> Result<MachinePloyzNativeMeshPrepareRpcOk, WireGuardEbpfPrepareError> {
+    request_machine_dataplane_with_timeout(preparer, machine_id, request, preparer.request_timeout)
+        .await
+}
+
+async fn request_machine_dataplane_with_timeout(
+    preparer: &NatsMachineDataplanePreparer,
+    machine_id: &MachineId,
+    request: &MachineDataplanePrepareRpcRequest,
+    request_timeout: Duration,
+) -> Result<MachinePloyzNativeMeshPrepareRpcOk, WireGuardEbpfPrepareError> {
     call_machine::<MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareDomainError>(
         &preparer.client,
-        preparer.request_timeout,
+        request_timeout,
         machine_id,
         MachineServiceEndpoint::DataplanePrepare,
         request,

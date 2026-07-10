@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use crate::cli::HostRunnerStartup;
@@ -35,6 +36,8 @@ use crate::runtime::{
     PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_URL_ENV, REDEEM_MATERIAL_ATTEMPTS,
     REDEEM_MATERIAL_RETRY_DELAY, failure_message, failure_summary,
 };
+
+const JOIN_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) fn run_start_command(startup: HostRunnerStartup) -> ExitCode {
     if let Some(join) = &startup.join {
@@ -225,6 +228,7 @@ impl JoinReporter {
                 .await
                 .map_err(|error| failure_message(&error.to_string()))?;
             let reported = OperationApiClient::new(client)
+                .with_request_timeout(JOIN_REPORT_REQUEST_TIMEOUT)
                 .machine_join_report(&request)
                 .await
                 .map_err(|error| {

@@ -1,9 +1,11 @@
 //! Host WireGuard/eBPF readiness for machine-local dataplane preparation.
 
+use futures_util::future::join_all;
 use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, PloyzNativeMeshComponent,
-    PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
+    PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
+    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
 use std::net::Ipv4Addr;
@@ -266,19 +268,39 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
     }
 
     async fn probe_overlay(&self, targets: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
-        let mut unreachable = Vec::new();
-        for target in targets {
-            let mut ping = tokio::process::Command::new("ping");
-            ping.args(["-c1", "-W2"]).arg(target.to_string());
-            let reached = matches!(
-                tokio::time::timeout(self.command_timeout, ping.status()).await,
-                Ok(Ok(status)) if status.success()
-            );
-            if !reached {
-                unreachable.push(*target);
-            }
-        }
-        unreachable
+        let reached = targets
+            .iter()
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect::<Vec<_>>();
+        let probes = targets
+            .iter()
+            .copied()
+            .zip(&reached)
+            .map(|(target, reached)| {
+                let reached = Arc::clone(reached);
+                async move {
+                    loop {
+                        let mut ping = tokio::process::Command::new("ping");
+                        ping.kill_on_drop(true);
+                        ping.args(["-c1", "-W1"]).arg(target.to_string());
+                        if matches!(
+                            tokio::time::timeout(self.command_timeout, ping.status()).await,
+                            Ok(Ok(status)) if status.success()
+                        ) {
+                            reached.store(true, Ordering::Release);
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            });
+        let _ = tokio::time::timeout(OVERLAY_CONNECTIVITY_PROOF_BUDGET, join_all(probes)).await;
+        targets
+            .iter()
+            .copied()
+            .zip(reached)
+            .filter_map(|(target, reached)| (!reached.load(Ordering::Acquire)).then_some(target))
+            .collect()
     }
 }
 

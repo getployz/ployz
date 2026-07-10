@@ -9,8 +9,8 @@ use crate::operation_api::{
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_runtime::{
-    NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
-    decode_json_request, start_nats_service,
+    EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
+    RunningNatsService, decode_json_request, start_nats_service,
 };
 use ployz_sdk_types::{
     OperationApiResponse,
@@ -25,6 +25,9 @@ use ployz_sdk_types::{
 use serde::{Serialize, de::DeserializeOwned};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
+
+const MACHINE_JOIN_REPORT_HANDLER_TIMEOUT: Duration = Duration::from_secs(105);
 
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
@@ -199,9 +202,14 @@ async fn bind_operation_endpoint(
             .await
         }
         OperationApiEndpoint::MachineJoinReport => {
-            bind_operation_contract::<MachineJoinReportApi, _, _>(
+            let policy = EndpointExecutionPolicy {
+                request_timeout: MACHINE_JOIN_REPORT_HANDLER_TIMEOUT,
+                ..EndpointExecutionPolicy::default()
+            };
+            bind_operation_contract_with_policy::<MachineJoinReportApi, _, _>(
                 runtime,
                 handlers,
+                policy,
                 |handlers, request| async move { machine_join_report(&handlers, request).await },
             )
             .await
@@ -248,10 +256,33 @@ where
     H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
     F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
 {
+    bind_operation_contract_with_policy::<C, _, _>(
+        runtime,
+        handlers,
+        EndpointExecutionPolicy::default(),
+        handler,
+    )
+    .await
+}
+
+async fn bind_operation_contract_with_policy<C, H, F>(
+    runtime: &mut RunningNatsService,
+    handlers: Arc<OperationApiHandlers>,
+    policy: EndpointExecutionPolicy,
+    handler: H,
+) -> Result<(), ApiServiceError>
+where
+    C: OperationApiContract + 'static,
+    C::Request: DeserializeOwned + 'static,
+    C::Success: Serialize + 'static,
+    C::Error: Serialize + 'static,
+    H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
+    F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
+{
     let spec = api_endpoint_spec(C::ENDPOINT);
     let handler = Arc::new(handler);
     runtime
-        .bind_endpoint(&spec, move |request| {
+        .bind_endpoint_with_policy(&spec, policy, move |request| {
             let handlers = Arc::clone(&handlers);
             let handler = Arc::clone(&handler);
             operation_api_response::<C, _, _>(request, {

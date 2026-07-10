@@ -410,12 +410,6 @@ impl NatsMachineDataplanePreparer {
         self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
         self
     }
-
-    #[must_use]
-    pub fn with_facts_reader(mut self, facts_reader: NatsMachineFactsReader) -> Self {
-        self.facts_reader = facts_reader;
-        self
-    }
 }
 
 impl NatsMachineContainerRuntime {

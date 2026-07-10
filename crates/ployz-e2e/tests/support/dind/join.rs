@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use ployz::commands::machine::MachineAddOutput;
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_e2e::dind::{ARTIFACTS_MOUNT_PATH, DindMachine, shell_quote, write_file_in_container};
+use ployz_e2e::dind::{
+    ARTIFACTS_MOUNT_PATH, DindMachine, ExecOutcome, shell_quote, write_file_in_container,
+};
 use ployz_sdk_types::MachineAddAccepted;
 
 use super::formation::{CoreContext, sha256_of};
@@ -121,6 +123,23 @@ pub async fn write_installer_wrapper(docker: &ployz_e2e::bollard::Docker, machin
 /// Runs the real `scripts/ployz.sh` join flow on the edge machine with
 /// exactly the material the product printed.
 pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &InstallLine) {
+    let join = run_edge_join_outcome(core, edge, install).await;
+    assert!(
+        join.success(),
+        "edge join failed (exit {}): {}\n{}",
+        join.exit_code,
+        join.stdout,
+        join.stderr
+    );
+}
+
+/// Runs the real edge join and returns its command outcome so failure-path
+/// scenarios can assert the product's terminal behavior.
+pub async fn run_edge_join_outcome(
+    core: &CoreContext,
+    edge: &DindMachine,
+    install: &InstallLine,
+) -> ExecOutcome {
     let ployz_sh = std::fs::read_to_string(repo_path("scripts/ployz.sh"))
         .expect("read scripts/ployz.sh from the repo");
     write_file_in_container(
@@ -134,11 +153,10 @@ pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &Ins
     .expect("write ployz.sh into edge");
 
     let ployz_sha = sha256_of(&core.docker, edge, &format!("{ARTIFACTS_MOUNT_PATH}/ployz")).await;
-    let join = core
-        .exec_sh(
-            edge,
-            &format!(
-                "ca_file=\"$(mktemp)\"; \
+    core.exec_sh(
+        edge,
+        &format!(
+            "ca_file=\"$(mktemp)\"; \
                  trap 'rm -f \"$ca_file\"' EXIT; \
                  printf '%s' {} | base64 -d > \"$ca_file\"; \
                  PLOYZ_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz \
@@ -146,20 +164,13 @@ pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &Ins
                  sh /tmp/ployz.sh && \
                  PLOYZ_NATS_URL={} PLOYZ_NATS_CA_FILE=\"$ca_file\" PLOYZ_JOIN_NKEY_SEED={} \
                  ployz host bootstrap join --join-token {}",
-                shell_quote(&install.nats_ca_b64),
-                shell_quote(&install.nats_url),
-                shell_quote(&install.join_seed),
-                shell_quote(&install.join_token),
-            ),
-        )
-        .await;
-    assert!(
-        join.success(),
-        "edge join failed (exit {}): {}\n{}",
-        join.exit_code,
-        join.stdout,
-        join.stderr
-    );
+            shell_quote(&install.nats_ca_b64),
+            shell_quote(&install.nats_url),
+            shell_quote(&install.join_seed),
+            shell_quote(&install.join_token),
+        ),
+    )
+    .await
 }
 
 fn repo_path(relative: &str) -> PathBuf {
