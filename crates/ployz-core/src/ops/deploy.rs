@@ -27,6 +27,7 @@ use super::{EventSequence, OperationKind, OperationStatus};
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
     PreparingDataplane,
+    RunningPreStartHooks,
     StartingContainers,
     WaitingForHealth,
     RouteCutover,
@@ -180,6 +181,13 @@ pub enum DeployOperationFailure {
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
+    PreStartHookFailed {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        exit_code: i64,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
     HealthCheckFailed {
         health_check: HealthCheckFailure,
         retained_artifacts: Vec<RetainedArtifact>,
@@ -218,6 +226,7 @@ impl DeployOperationFailure {
             Self::DataplanePrepareTimedOut { .. } => DeployFailureClass::Timeout,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
+            Self::PreStartHookFailed { .. } => DeployFailureClass::PreStartHookFailed,
             Self::HealthCheckFailed { health_check, .. } => match health_check {
                 HealthCheckFailure::ProbeFailed { .. } => DeployFailureClass::HealthGateFailed,
                 HealthCheckFailure::TimedOut { .. } => DeployFailureClass::Timeout,
@@ -254,6 +263,9 @@ impl DeployOperationFailure {
                 retained_artifacts, ..
             }
             | Self::ContainerStartFailed {
+                retained_artifacts, ..
+            }
+            | Self::PreStartHookFailed {
                 retained_artifacts, ..
             }
             | Self::HealthCheckFailed {
@@ -779,11 +791,12 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
 fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::PreparingDataplane => 0,
-        DeployRunningStage::StartingContainers => 1,
-        DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::RouteCutover => 3,
-        DeployRunningStage::ServingTargetCommit => 4,
-        DeployRunningStage::RemovingSupersededContainers => 5,
+        DeployRunningStage::RunningPreStartHooks => 1,
+        DeployRunningStage::StartingContainers => 2,
+        DeployRunningStage::WaitingForHealth => 3,
+        DeployRunningStage::RouteCutover => 4,
+        DeployRunningStage::ServingTargetCommit => 5,
+        DeployRunningStage::RemovingSupersededContainers => 6,
     }
 }
 
@@ -791,6 +804,12 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
     matches!(
         (current, attempted),
         (
+            DeployRunningStage::PreparingDataplane,
+            DeployRunningStage::RunningPreStartHooks
+        ) | (
+            DeployRunningStage::RunningPreStartHooks,
+            DeployRunningStage::StartingContainers
+        ) | (
             DeployRunningStage::PreparingDataplane,
             DeployRunningStage::StartingContainers
         ) | (

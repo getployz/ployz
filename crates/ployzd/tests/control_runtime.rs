@@ -870,6 +870,8 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             image: image("ghcr.io/acme/api:rev-2"),
             replicas: replicas(1),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

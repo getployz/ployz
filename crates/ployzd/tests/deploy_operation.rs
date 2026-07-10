@@ -3,7 +3,8 @@ mod fixtures;
 
 use fixtures::*;
 use ployz_core::dataplane::DataplaneMember;
-use ployz_core::deploy::ReplicaCount;
+use ployz_core::deploy::{ContainerCommand, ReplicaCount};
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
     RouteHostname, RouteTarget,
@@ -178,6 +179,103 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn pre_start_hook_runs_before_service_with_derived_runtime() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime =
+        RecordingRuntime::with_containers(["ctr_service"]).with_hook_outcome("ctr_hook", 0);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = deploy_command_with_pre_start();
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds");
+
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::RunningPreStartHooks,
+        DeployRunningStage::StartingContainers,
+    );
+    let [(hook_machine, hook_request)] = runtime.hook_requests.as_slice() else {
+        panic!("expected one pre-start hook request");
+    };
+    assert_eq!(hook_machine, &machine_id("machine_a"));
+    assert_eq!(hook_request.container.kind, ManagedContainerKind::Predeploy);
+    assert_eq!(hook_request.container.step_id.as_str(), "pre_start");
+    assert_eq!(
+        hook_request.runtime.command,
+        Some(
+            ContainerCommand::try_new(vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "echo ready".to_owned(),
+            ])
+            .expect("valid hook command")
+        )
+    );
+    assert_eq!(hook_request.runtime.healthcheck, None);
+    assert_eq!(runtime.requests.len(), 1);
+}
+
+#[tokio::test]
+async fn nonzero_pre_start_hook_fails_before_service_start_and_retains_hook() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime =
+        RecordingRuntime::with_containers(["ctr_service"]).with_hook_outcome("ctr_hook", 7);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    let error = execute_deploy(
+        deploy_command_with_pre_start(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("hook failure rejects deploy");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("expected recorded deploy failure");
+    };
+    let DeployOperationFailure::PreStartHookFailed {
+        machine_id: failed_machine,
+        container_id: failed_container,
+        exit_code,
+        retained_artifacts,
+        ..
+    } = failure
+    else {
+        panic!("expected pre-start hook failure");
+    };
+    assert_eq!(failed_machine, machine_id("machine_a"));
+    assert_eq!(failed_container, container_id("ctr_hook"));
+    assert_eq!(exit_code, 7);
+    assert_eq!(retained_artifacts.len(), 1);
+    assert!(runtime.requests.is_empty());
+    assert!(!recorder.records.iter().any(|record| {
+        record
+            == &RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::StartingContainers,
+            })
+    }));
 }
 
 #[tokio::test]

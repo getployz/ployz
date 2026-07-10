@@ -17,11 +17,11 @@ pub use ployz_core::deploy::{
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
     ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
     DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
-    DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError,
-    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ReplicaCount, ReplicaCountError,
-    ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
-    VolumeNameError,
+    DeployServiceRequest, DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError,
+    HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand, ImageReference,
+    ImageReferenceError, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook,
+    PreStartHookStep, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment,
+    ServiceVolumeMount, StopGracePeriod, VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,

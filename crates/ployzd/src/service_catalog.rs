@@ -150,6 +150,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerInspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRunHook),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRestart),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
@@ -188,6 +189,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         }
         MachineServiceEndpoint::ContainerInspect => "machine.container.inspect",
         MachineServiceEndpoint::ContainerRun => "machine.container.run",
+        MachineServiceEndpoint::ContainerRunHook => "machine.container.run_hook",
         MachineServiceEndpoint::ContainerRestart => "machine.container.restart",
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",

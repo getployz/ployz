@@ -35,6 +35,7 @@ pub(crate) struct ComposeService {
     pub cgroup_parent: Option<Value>,
     pub configs: Option<Value>,
     pub depends_on: Option<Value>,
+    pub pre_start: Option<Value>,
     pub devices: Option<Value>,
     pub dns: Option<Value>,
     pub dns_search: Option<Value>,
@@ -57,8 +58,6 @@ pub(crate) struct ComposeService {
     pub user: Option<Value>,
     pub volumes: Option<Value>,
     pub working_dir: Option<Value>,
-    #[serde(rename = "x-pre_deploy")]
-    pub x_pre_deploy: Option<Value>,
     #[serde(flatten)]
     pub unrecognized: BTreeMap<String, Value>,
 }

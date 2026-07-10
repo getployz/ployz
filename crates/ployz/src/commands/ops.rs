@@ -453,6 +453,7 @@ const fn deploy_completion_outcome(
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::PreparingDataplane => "running:preparing-dataplane",
+        DeployRunningStage::RunningPreStartHooks => "running:pre-start-hooks",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::RouteCutover => "running:route-cutover",
@@ -724,6 +725,7 @@ fn deploy_failure_service_id(failure: &DeployOperationFailure) -> Option<&Servic
         | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
         | DeployOperationFailure::RuntimeUnavailable { .. }
         | DeployOperationFailure::ContainerStartFailed { .. }
+        | DeployOperationFailure::PreStartHookFailed { .. }
         | DeployOperationFailure::HealthCheckFailed { .. }
         | DeployOperationFailure::RouteCutoverFailed { .. } => None,
     }
@@ -741,7 +743,8 @@ fn deploy_failure_machines(failure: &DeployOperationFailure) -> String {
         }
         DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
         | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
-        | DeployOperationFailure::ContainerStartFailed { machine_id, .. } => {
+        | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
+        | DeployOperationFailure::PreStartHookFailed { machine_id, .. } => {
             if !machines.contains(&machine_id) {
                 machines.push(machine_id);
             }

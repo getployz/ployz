@@ -13,8 +13,6 @@ services:
       - data:/data
     ports:
       - "8080:80"
-    x-pre_deploy:
-      - ./migrate.sh
     profiles:
       - prod
     mystery_option: true

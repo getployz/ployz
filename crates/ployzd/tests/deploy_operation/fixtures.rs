@@ -5,9 +5,10 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath, DeployCleanupContainer,
-    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, HealthcheckShellCommand,
-    ImageReference, ReplicaCount, ServiceVolumeMount, VolumeName,
+    ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
+    DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    HealthcheckShellCommand, ImageReference, PreStartHook, ReplicaCount, ServiceVolumeMount,
+    VolumeName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -29,12 +30,14 @@ use ployzd::operations::deploy::{
     DataplanePreparer, DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder,
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    NamespaceCommitError, NamespaceStateCommitter, prepare_deploy_execution_command,
+    NamespaceCommitError, NamespaceStateCommitter, PreStartHookOutcome,
+    prepare_deploy_execution_command,
 };
 use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkRpcRequest, MachineRunContainerOutcome,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineRunContainerOutcome,
 };
 use std::time::Duration;
 
@@ -157,9 +160,11 @@ impl DeployOperationRecorder for RecordingOperations {
 pub(super) struct RecordingRuntime {
     pub(super) endpoint_networks: Vec<(MachineId, MachineEnsureEndpointNetworkRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
+    pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     containers: Vec<ContainerId>,
+    hook_outcomes: Vec<PreStartHookOutcome>,
     fail_after_first: bool,
     fail_endpoint_network: bool,
     reuse_existing: bool,
@@ -445,9 +450,11 @@ impl RecordingRuntime {
         Self {
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
+            hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
+            hook_outcomes: Vec::new(),
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: false,
@@ -462,9 +469,11 @@ impl RecordingRuntime {
         Self {
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
+            hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
+            hook_outcomes: Vec::new(),
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: true,
@@ -479,9 +488,11 @@ impl RecordingRuntime {
         Self {
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
+            hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
+            hook_outcomes: Vec::new(),
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: false,
@@ -496,9 +507,11 @@ impl RecordingRuntime {
         Self {
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
+            hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: vec![container_id("ctr_1")],
+            hook_outcomes: Vec::new(),
             fail_after_first: true,
             fail_endpoint_network: false,
             reuse_existing: false,
@@ -513,9 +526,11 @@ impl RecordingRuntime {
         Self {
             endpoint_networks: Vec::new(),
             requests: Vec::new(),
+            hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
+            hook_outcomes: Vec::new(),
             fail_after_first: false,
             fail_endpoint_network: false,
             reuse_existing: false,
@@ -528,6 +543,14 @@ impl RecordingRuntime {
 
     pub(super) fn with_remove_failure(mut self) -> Self {
         self.fail_remove = true;
+        self
+    }
+
+    pub(super) fn with_hook_outcome(mut self, container_id: &str, exit_code: i64) -> Self {
+        self.hook_outcomes.push(PreStartHookOutcome {
+            container_id: self::container_id(container_id),
+            exit_code,
+        });
         self
     }
 
@@ -600,6 +623,23 @@ impl MachineContainerRuntime for RecordingRuntime {
         } else {
             Ok(MachineRunContainerOutcome::Created { container_id })
         }
+    }
+
+    async fn run_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRunHookRpcRequest,
+    ) -> Result<PreStartHookOutcome, MachineContainerRuntimeError> {
+        self.hook_requests.push((machine_id.clone(), request));
+        let Some(outcome) = self.hook_outcomes.pop() else {
+            return Err(MachineContainerRuntimeError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason: MachineRuntimeUnavailableReason::RequestFailed {
+                    message: "synthetic missing hook outcome".to_owned(),
+                },
+            });
+        };
+        Ok(outcome)
     }
 
     async fn remove_container(
@@ -704,6 +744,49 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
     )
 }
 
+pub(super) fn deploy_command_with_pre_start() -> DeployExecutionCommand {
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("target deploy request declares one service");
+    };
+    service.runtime.command = Some(
+        ContainerCommand::try_new(vec!["sleep".to_owned(), "600".to_owned()])
+            .expect("valid service command"),
+    );
+    service.runtime.healthcheck = Some(ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("true").expect("valid healthcheck"),
+        ),
+        interval: None,
+        timeout: None,
+        retries: None,
+        start_period: None,
+    });
+    service.pre_start = Some(PreStartHook {
+        command: ContainerCommand::try_new(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "echo ready".to_owned(),
+        ])
+        .expect("valid hook command"),
+    });
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            namespace_cleanup_candidates: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            observed_machines: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
 pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
     prepare_deploy_execution_command(
         operation_id("op_123"),
@@ -714,6 +797,8 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
                 image: image("registry.example/api:rev_2"),
                 replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
                 routes: vec![DeployRoute {
                     target: DeployRouteTarget::Hostname {
                         hostname: RouteHostname::try_new("api.example.com")
@@ -818,6 +903,8 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
             image: image("registry.example/api:rev_2"),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

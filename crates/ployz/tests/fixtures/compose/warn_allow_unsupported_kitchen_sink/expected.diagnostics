@@ -3,4 +3,3 @@ services.web.deploy.update_config  warning  unsupported (planned)  update order 
 services.web.mystery_option  warning  unknown field  remove it or pass --allow-unsupported
 services.web.profiles  warning  unsupported (planned)  profile resolution is deferred; remove it or pass --allow-unsupported
 services.web.volumes  warning  unsupported (planned)  volumes are not deployed yet; remove it or pass --allow-unsupported
-services.web.x-pre_deploy  warning  unsupported (planned)  pre-start hooks are not deployed yet; remove it or pass --allow-unsupported

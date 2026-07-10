@@ -57,6 +57,8 @@ fn sdk_exports_core_wire_types() {
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     };
@@ -180,6 +182,8 @@ fn sdk_exports_operation_api_wire_types() {
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
                 routes: Vec::new(),
             }],
         },

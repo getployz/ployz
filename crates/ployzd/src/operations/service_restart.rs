@@ -454,6 +454,26 @@ fn restart_failure_from_runtime_error(
                 inspect_hint: inspect_hint(fallback_container_id),
             }
         }
+        MachineContainerRuntimeError::PreStartHookCreateFailed {
+            machine_id,
+            message,
+        } => ServiceRestartFailure::ContainerRestartFailed {
+            machine_id,
+            container_id: fallback_container_id.clone(),
+            message,
+            inspect_hint: inspect_hint(fallback_container_id),
+        },
+        MachineContainerRuntimeError::PreStartHookWaitFailed {
+            machine_id,
+            container_id,
+            message,
+            log_hint: _,
+        } => ServiceRestartFailure::ContainerRestartFailed {
+            machine_id,
+            inspect_hint: inspect_hint(&container_id),
+            container_id,
+            message,
+        },
         MachineContainerRuntimeError::CreatedContainerStartFailed {
             machine_id,
             container_id,
@@ -467,6 +487,12 @@ fn restart_failure_from_runtime_error(
             inspect_hint,
         }
         | MachineContainerRuntimeError::OperationStepContainerNotStartable {
+            machine_id,
+            container_id,
+            message,
+            inspect_hint,
+        }
+        | MachineContainerRuntimeError::PreStartHookStartFailed {
             machine_id,
             container_id,
             message,

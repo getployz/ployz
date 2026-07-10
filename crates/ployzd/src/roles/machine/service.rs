@@ -2,8 +2,8 @@
 
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
-    handle_container_restart, handle_container_run, handle_container_stop,
-    handle_ensure_endpoint_network,
+    handle_container_restart, handle_container_run, handle_container_run_hook,
+    handle_container_stop, handle_ensure_endpoint_network,
 };
 use super::dataplane::handle_dataplane_prepare;
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
@@ -18,10 +18,15 @@ use ployz_core::dataplane::{
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
-    NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
-    start_nats_service,
+    EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
+    RunningNatsService, start_nats_service,
 };
 use std::future::Future;
+use std::time::Duration;
+
+// Hooks may legitimately outlive the default service-handler budget. The deploy
+// caller owns the shorter operation timeout; this bound prevents an endless wait.
+const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub use super::facts::MachineFactsReadError;
 
@@ -105,6 +110,22 @@ where
         handle_container_run,
     )
     .await?;
+    let hook_spec = machine_endpoint_spec(&machine_id, MachineServiceEndpoint::ContainerRunHook);
+    let hook_machine_id = machine_id.clone();
+    let hook_state = mutation_state.clone();
+    runtime
+        .bind_endpoint_with_policy(
+            &hook_spec,
+            EndpointExecutionPolicy {
+                request_timeout: PRE_START_HOOK_ENDPOINT_TIMEOUT,
+                ..EndpointExecutionPolicy::default()
+            },
+            move |request| {
+                handle_container_run_hook(hook_machine_id.clone(), hook_state.clone(), request)
+            },
+        )
+        .await
+        .map_err(MachineServiceError::Nats)?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,

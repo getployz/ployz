@@ -201,6 +201,8 @@ fn deploy_request() -> DeployRequest {
                 .expect("valid image reference"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

@@ -9,6 +9,7 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerFactDelta, ManagedContainerIdentity,
+    ManagedContainerKind,
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts, machine_service};
 use ployz_nats::service_runtime::request_json;
@@ -16,7 +17,7 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
 use ployzd::operations::deploy::{
     DataplanePreparer, MachineContainerRuntime, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason,
+    MachineRuntimeUnavailableReason, PreStartHookOutcome,
 };
 use ployzd::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineDataplanePreparer, NatsMachineFactsReader,
@@ -25,8 +26,8 @@ use ployzd::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
     MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
-    MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcRequest,
+    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineEnsureEndpointNetworkRpcRequest,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
@@ -191,6 +192,66 @@ async fn machine_role_service_creates_missing_container() {
             identity: managed_identity(),
         }]
     );
+}
+
+#[tokio::test]
+async fn machine_role_service_removes_successful_hook_container() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone())
+            .with_next_container("ctr_hook")
+            .with_wait_exit_code(0),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let outcome = client
+        .run_pre_start_hook(&machine_id("machine_a"), hook_request())
+        .await
+        .expect("hook run succeeds");
+
+    assert_eq!(
+        outcome,
+        PreStartHookOutcome {
+            container_id: container_id("ctr_hook"),
+            exit_code: 0,
+        }
+    );
+    assert_eq!(state.removes(), vec![container_id("ctr_hook")]);
+}
+
+#[tokio::test]
+async fn machine_role_service_retains_failed_hook_container() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone())
+            .with_next_container("ctr_hook")
+            .with_wait_exit_code(7),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let outcome = client
+        .run_pre_start_hook(&machine_id("machine_a"), hook_request())
+        .await
+        .expect("nonzero hook is a completed RPC");
+
+    assert_eq!(outcome.exit_code, 7);
+    assert!(state.removes().is_empty());
 }
 
 #[tokio::test]
@@ -1141,6 +1202,7 @@ struct RecordingRunner {
     restart_failure: Option<(ContainerId, String)>,
     stop_failure: Option<(ContainerId, String)>,
     remove_failure: Option<(ContainerId, String)>,
+    wait_exit_code: i64,
 }
 
 impl RecordingRunner {
@@ -1154,6 +1216,7 @@ impl RecordingRunner {
             restart_failure: None,
             stop_failure: None,
             remove_failure: None,
+            wait_exit_code: 0,
         }
     }
 
@@ -1200,6 +1263,11 @@ impl RecordingRunner {
 
     fn with_restart_failure(mut self, container_id: &str, message: &str) -> Self {
         self.restart_failure = Some((self::container_id(container_id), message.to_owned()));
+        self
+    }
+
+    fn with_wait_exit_code(mut self, exit_code: i64) -> Self {
+        self.wait_exit_code = exit_code;
         self
     }
 }
@@ -1261,6 +1329,13 @@ impl MachineContainerRunner for RecordingRunner {
             .starts
             .push(container_id.clone());
         Ok(())
+    }
+
+    async fn wait_managed_container(
+        &self,
+        _container_id: &ContainerId,
+    ) -> Result<i64, MachineContainerRunnerError> {
+        Ok(self.wait_exit_code)
     }
 
     async fn remove_managed_container(
@@ -1523,6 +1598,17 @@ fn run_request() -> MachineContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_container_spec(),
+    }
+}
+
+fn hook_request() -> MachineContainerRunHookRpcRequest {
+    let mut container = managed_container_spec();
+    container.step_id = ployz_core::ids::StepId::try_new("pre_start").expect("valid step id");
+    container.kind = ManagedContainerKind::Predeploy;
+    MachineContainerRunHookRpcRequest {
+        image: image("registry.example/api:rev_2"),
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        container,
     }
 }
 

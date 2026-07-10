@@ -6,7 +6,7 @@ use ployz_core::deploy::{
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRoute,
     DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
-    NanoCpus, PidsLimit, ReplicaCount, ServiceEnvironment, StopGracePeriod,
+    NanoCpus, PidsLimit, PreStartHook, ReplicaCount, ServiceEnvironment, StopGracePeriod,
 };
 use ployz_core::ids::ServiceId;
 use ployz_core::ops::{RouteHostname, RoutePort};
@@ -54,6 +54,7 @@ pub(crate) fn classify_service(
         cgroup_parent,
         configs,
         depends_on,
+        pre_start,
         devices,
         dns,
         dns_search,
@@ -76,7 +77,6 @@ pub(crate) fn classify_service(
         user,
         volumes,
         working_dir,
-        x_pre_deploy,
         unrecognized,
     } = service;
     let service_path = ComposePath::root().field("services").field(&name);
@@ -101,13 +101,6 @@ pub(crate) fn classify_service(
         "configs",
         configs,
         KnownUnsupported::Configs,
-    );
-    push_if_some(
-        &mut findings,
-        &service_path,
-        "depends_on",
-        depends_on,
-        KnownUnsupported::DependsOn,
     );
     push_if_some(
         &mut findings,
@@ -243,13 +236,6 @@ pub(crate) fn classify_service(
         working_dir,
         KnownUnsupported::WorkingDir,
     );
-    push_if_some(
-        &mut findings,
-        &service_path,
-        "x-pre_deploy",
-        x_pre_deploy,
-        KnownUnsupported::XPreDeploy,
-    );
     classify_unrecognized(&mut findings, &service_path, unrecognized);
 
     let deploy_runtime = parse_deploy_runtime(deploy, &service_path, &mut findings);
@@ -290,6 +276,8 @@ pub(crate) fn classify_service(
     let cap_add = parse_capabilities(cap_add, &service_path.field("cap_add"));
     let cap_drop = parse_capabilities(cap_drop, &service_path.field("cap_drop"));
     let routes = parse_routes(x_route, x_ports, &service_path);
+    let depends_on = parse_depends_on(depends_on, &service_path.field("depends_on"));
+    let pre_start = parse_pre_start(pre_start, &service_path.field("pre_start"));
 
     let mut service_valid = true;
     let service_id = match service_id {
@@ -379,6 +367,22 @@ pub(crate) fn classify_service(
             Vec::new()
         }
     };
+    let depends_on = match depends_on {
+        Ok(depends_on) => depends_on,
+        Err(mut dependency_findings) => {
+            findings.append(&mut dependency_findings);
+            service_valid = false;
+            Vec::new()
+        }
+    };
+    let pre_start = match pre_start {
+        Ok(pre_start) => pre_start,
+        Err(finding) => {
+            findings.push(finding);
+            service_valid = false;
+            None
+        }
+    };
 
     let spec = if service_valid && deploy_valid {
         Some(DeployServiceSpec {
@@ -397,12 +401,129 @@ pub(crate) fn classify_service(
                 cap_drop,
                 resources,
             },
+            pre_start,
+            depends_on,
             routes,
         })
     } else {
         None
     };
     (findings, spec)
+}
+
+fn parse_depends_on(
+    value: Option<Value>,
+    path: &ComposePath,
+) -> Result<Vec<ServiceId>, Vec<ComposeFinding>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut findings = Vec::new();
+    let mut names = Vec::new();
+    match value {
+        Value::Sequence(values) => {
+            for (index, value) in values.into_iter().enumerate() {
+                let item_path = path.index(index);
+                match value.as_str() {
+                    Some(name) => names.push((item_path, name.to_owned())),
+                    None => findings.push(ComposeFinding::invalid(
+                        item_path,
+                        "dependency names must be strings",
+                    )),
+                }
+            }
+        }
+        Value::Mapping(values) => {
+            for (key, _value) in values {
+                match key.as_str() {
+                    Some(name) => names.push((path.field(name), name.to_owned())),
+                    None => findings.push(ComposeFinding::invalid(
+                        path.clone(),
+                        "dependency keys must be strings",
+                    )),
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Tagged(_) => {
+            return Err(vec![ComposeFinding::invalid(
+                path.clone(),
+                "depends_on must be a list or mapping",
+            )]);
+        }
+    }
+
+    let mut service_ids = Vec::with_capacity(names.len());
+    for (name_path, name) in names {
+        match ServiceId::try_new(name) {
+            Ok(service_id) => service_ids.push(service_id),
+            Err(error) => findings.push(ComposeFinding::invalid(
+                name_path,
+                format!("invalid service id: {error}"),
+            )),
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(service_ids)
+    } else {
+        Err(findings)
+    }
+}
+
+fn parse_pre_start(
+    value: Option<Value>,
+    path: &ComposePath,
+) -> Result<Option<PreStartHook>, ComposeFinding> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let command = match value {
+        Value::String(command) => parse_hook_command(ComposeCommand::Shell(command), path)?,
+        Value::Sequence(command) => parse_hook_command(ComposeCommand::Exec(command), path)?,
+        Value::Mapping(mapping) => {
+            let Some(command) = mapping.get(Value::String("command".to_owned())) else {
+                return Err(ComposeFinding::invalid(
+                    path.clone(),
+                    "pre_start mapping needs command",
+                ));
+            };
+            match command {
+                Value::String(command) => parse_hook_command(
+                    ComposeCommand::Shell(command.clone()),
+                    &path.field("command"),
+                )?,
+                Value::Sequence(command) => parse_hook_command(
+                    ComposeCommand::Exec(command.clone()),
+                    &path.field("command"),
+                )?,
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::Mapping(_)
+                | Value::Tagged(_) => {
+                    return Err(ComposeFinding::invalid(
+                        path.field("command"),
+                        "hook command must be a string or list",
+                    ));
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Tagged(_) => {
+            return Err(ComposeFinding::invalid(
+                path.clone(),
+                "pre_start must be a string, list, or mapping",
+            ));
+        }
+    };
+    Ok(Some(PreStartHook { command }))
+}
+
+fn parse_hook_command(
+    command: ComposeCommand,
+    path: &ComposePath,
+) -> Result<ContainerCommand, ComposeFinding> {
+    parse_command(command, path)?
+        .ok_or_else(|| ComposeFinding::invalid(path.clone(), "hook command must not be empty"))
 }
 
 fn push_if_some(
@@ -1577,9 +1698,23 @@ fn protocol_port(protocol: RouteProtocol) -> RoutePort {
 mod tests {
     use ployz_core::deploy::{ContainerEntrypoint, StopGracePeriod};
 
-    use super::parse_compose_duration;
-    use crate::compose::diagnostics::UnsupportedFieldMode;
+    use super::{parse_compose_duration, parse_depends_on};
+    use crate::compose::diagnostics::{ComposePath, UnsupportedFieldMode};
     use crate::compose::{ComposeInput, parse_deploy_file};
+
+    #[test]
+    fn depends_on_reports_every_invalid_entry() {
+        let value = serde_yaml::from_str("[1, {}, 'bad id']").expect("valid yaml");
+        let findings = parse_depends_on(Some(value), &ComposePath::root().field("depends_on"))
+            .expect_err("dependencies are invalid");
+
+        let [first, second, third] = findings.as_slice() else {
+            panic!("expected three dependency findings");
+        };
+        assert_eq!(first.path.render(), "depends_on[0]");
+        assert_eq!(second.path.render(), "depends_on[1]");
+        assert_eq!(third.path.render(), "depends_on[2]");
+    }
 
     #[test]
     fn parses_runtime_fields() {

@@ -149,6 +149,9 @@ where
 #[derive(Debug)]
 pub enum DeployExecutionError {
     Plan(DeployPlanError),
+    PreStartHookPlanInconsistent {
+        service_id: ServiceId,
+    },
     StepId(SubjectTokenError),
     StepTimedOut {
         step: DeployExecutionStep,
@@ -158,6 +161,12 @@ pub enum DeployExecutionError {
     RecordEvidence(DeployOperationRecordError),
     PrepareDataplane(DataplanePrepareError),
     RunContainer(MachineContainerRuntimeError),
+    PreStartHook {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        exit_code: i64,
+        message: FailureMessage,
+    },
     WaitHealthy(DeployHealthCheckError),
     CommitNamespaceState(NamespaceCommitError),
     Failed {
@@ -173,6 +182,7 @@ pub enum DeployExecutionStep {
     EnsureEndpointNetwork { machine_id: MachineId },
     PrepareDataplane { machines: Vec<MachineId> },
     RunContainer { machine_id: MachineId },
+    RunPreStartHook { machine_id: MachineId },
     WaitHealthy,
     CommitVolumePins,
     CommitRoute { route: ployz_core::ops::RouteTarget },
@@ -195,6 +205,7 @@ impl DeployExecutionStep {
             Self::EnsureEndpointNetwork { .. } => "ensure_endpoint_network",
             Self::PrepareDataplane { .. } => "prepare_dataplane",
             Self::RunContainer { .. } => "run_container",
+            Self::RunPreStartHook { .. } => "run_pre_start_hook",
             Self::WaitHealthy => "wait_healthy",
             Self::CommitVolumePins => "commit_volume_pins",
             Self::CommitRoute { .. } => "commit_route",
@@ -221,6 +232,11 @@ impl DeployExecutionStep {
             Self::RunContainer { machine_id } => DeployOperationFailure::RuntimeUnavailable {
                 machine_id: machine_id.clone(),
                 message: timeout_failure_message("machine runtime", timeout),
+                retained_artifacts,
+            },
+            Self::RunPreStartHook { machine_id } => DeployOperationFailure::RuntimeUnavailable {
+                machine_id: machine_id.clone(),
+                message: timeout_failure_message("pre-start hook", timeout),
                 retained_artifacts,
             },
             Self::PrepareDataplane { machines } => {
@@ -316,6 +332,22 @@ impl DeployExecutionError {
                     message: failure_message("volume-backed service has conflicting volume pins"),
                 }
             }
+            Self::Plan(DeployPlanError::ServiceDependencyCycle { .. }) => {
+                DeployOperationFailure::PlanningFailed {
+                    service_id: failure_service_id(command),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    message: failure_message("service dependencies contain a cycle"),
+                }
+            }
+            Self::PreStartHookPlanInconsistent { service_id } => {
+                DeployOperationFailure::PlanningFailed {
+                    service_id: service_id.clone(),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    message: failure_message(
+                        "pre-start hook plan is inconsistent with its execution command",
+                    ),
+                }
+            }
             Self::StepId(_) => DeployOperationFailure::PlanningFailed {
                 service_id: failure_service_id(command),
                 namespace_revision_id: failure_namespace_revision_id(command),
@@ -329,6 +361,29 @@ impl DeployExecutionError {
             }
             Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
+            Self::PreStartHook {
+                machine_id,
+                container_id,
+                exit_code,
+                message,
+            } => {
+                let retained = RetainedArtifact::StartedContainer {
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    log_hint: log_hint(container_id),
+                };
+                let mut retained_artifacts = retained_artifacts;
+                if !retained_artifacts.contains(&retained) {
+                    retained_artifacts.push(retained);
+                }
+                DeployOperationFailure::PreStartHookFailed {
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    exit_code: *exit_code,
+                    message: message.clone(),
+                    retained_artifacts,
+                }
+            }
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
             Self::CommitNamespaceState(error) => error.deploy_failure(retained_artifacts),
             Self::Failed { failure, .. } => failure.clone(),
@@ -462,6 +517,22 @@ pub enum MachineContainerRuntimeError {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
+    PreStartHookCreateFailed {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    PreStartHookStartFailed {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    PreStartHookWaitFailed {
+        machine_id: MachineId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
     RemoveContainerFailed {
         machine_id: MachineId,
         container_id: ContainerId,
@@ -545,6 +616,56 @@ impl MachineContainerRuntimeError {
                 message: message.clone(),
                 retained_artifacts,
             },
+            Self::PreStartHookCreateFailed {
+                machine_id,
+                message,
+            } => DeployOperationFailure::RuntimeUnavailable {
+                machine_id: machine_id.clone(),
+                message: message.clone(),
+                retained_artifacts,
+            },
+            Self::PreStartHookStartFailed {
+                machine_id,
+                container_id,
+                message,
+                inspect_hint,
+            } => {
+                let mut retained_artifacts = retained_artifacts;
+                let retained = RetainedArtifact::CreatedContainer {
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    inspect_hint: inspect_hint.clone(),
+                };
+                if !retained_artifacts.contains(&retained) {
+                    retained_artifacts.push(retained);
+                }
+                DeployOperationFailure::RuntimeUnavailable {
+                    machine_id: machine_id.clone(),
+                    message: message.clone(),
+                    retained_artifacts,
+                }
+            }
+            Self::PreStartHookWaitFailed {
+                machine_id,
+                container_id,
+                message,
+                log_hint,
+            } => {
+                let mut retained_artifacts = retained_artifacts;
+                let retained = RetainedArtifact::StartedContainer {
+                    machine_id: machine_id.clone(),
+                    container_id: container_id.clone(),
+                    log_hint: log_hint.clone(),
+                };
+                if !retained_artifacts.contains(&retained) {
+                    retained_artifacts.push(retained);
+                }
+                DeployOperationFailure::RuntimeUnavailable {
+                    machine_id: machine_id.clone(),
+                    message: message.clone(),
+                    retained_artifacts,
+                }
+            }
             Self::RemoveContainerFailed {
                 machine_id,
                 message,
@@ -690,6 +811,9 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         | DeployOperationFailure::ContainerStartFailed {
             retained_artifacts, ..
         }
+        | DeployOperationFailure::PreStartHookFailed {
+            retained_artifacts, ..
+        }
         | DeployOperationFailure::HealthCheckFailed {
             retained_artifacts, ..
         }
@@ -713,6 +837,11 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message).expect("internal failure message is non-empty")
+}
+
+fn log_hint(container_id: &ContainerId) -> OperatorHint {
+    OperatorHint::try_new(format!("ployzctl logs {}", container_id.as_str()))
+        .expect("generated log hint is non-empty")
 }
 
 fn timeout_failure_message(scope: &'static str, timeout: Duration) -> FailureMessage {

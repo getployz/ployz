@@ -9,12 +9,13 @@ use crate::roles::machine::protocol::{
     MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
     MachineContainerRemoveRpcResponse, MachineContainerRestartDomainError,
     MachineContainerRestartRpcRequest, MachineContainerRestartRpcResponse, MachineContainerRpcOk,
-    MachineContainerRunDomainError, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
-    MachineContainerRunRpcResponse, MachineContainerStopDomainError,
-    MachineContainerStopRpcRequest, MachineContainerStopRpcResponse,
-    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineEnsureEndpointNetworkRpcResponse,
-    MachineRunContainerOutcome,
+    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
+    MachineContainerRunHookRpcRequest, MachineContainerRunHookRpcResponse,
+    MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
+    MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineContainerStopRpcResponse, MachineEnsureEndpointNetworkDomainError,
+    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
+    MachineEnsureEndpointNetworkRpcResponse, MachineRunContainerOutcome,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -173,6 +174,104 @@ where
             },
         }),
     }
+}
+
+pub(crate) async fn handle_container_run_hook<R>(
+    machine_id: MachineId,
+    state: MachineContainerState<R>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineContainerRunHookRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let identity = request.container;
+    let container_id = match state
+        .runner
+        .create_managed_container(CreateManagedContainer {
+            image: request.image,
+            runtime: request.runtime,
+            identity: identity.clone(),
+        })
+        .await
+    {
+        Ok(container_id) => container_id,
+        Err(MachineContainerRunnerError::Create { message }) => {
+            return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
+                machine_id,
+                error: MachineContainerRunHookDomainError::CreateFailed {
+                    message: failure_message(format!("hook container create failed: {message}")),
+                },
+            });
+        }
+        Err(error @ MachineContainerRunnerError::ListExisting { .. })
+        | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+        | Err(error @ MachineContainerRunnerError::Start { .. })
+        | Err(error @ MachineContainerRunnerError::Wait { .. })
+        | Err(error @ MachineContainerRunnerError::Stop { .. })
+        | Err(error @ MachineContainerRunnerError::Restart { .. })
+        | Err(error @ MachineContainerRunnerError::Remove { .. }) => return runner_error(error),
+    };
+    if let Err(error) = state.runner.start_managed_container(&container_id).await {
+        return match error {
+            MachineContainerRunnerError::Start { message, .. } => {
+                machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineContainerRunHookDomainError::StartFailed {
+                        container_id: container_id.clone(),
+                        message: failure_message(format!("hook container start failed: {message}")),
+                        inspect_hint: inspect_hint(&container_id),
+                    },
+                })
+            }
+            error @ MachineContainerRunnerError::ListExisting { .. }
+            | error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }
+            | error @ MachineContainerRunnerError::Create { .. }
+            | error @ MachineContainerRunnerError::Wait { .. }
+            | error @ MachineContainerRunnerError::Stop { .. }
+            | error @ MachineContainerRunnerError::Restart { .. }
+            | error @ MachineContainerRunnerError::Remove { .. } => runner_error(error),
+        };
+    }
+    let exit_code = match state.runner.wait_managed_container(&container_id).await {
+        Ok(exit_code) => exit_code,
+        Err(MachineContainerRunnerError::Wait { message, .. }) => {
+            return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
+                machine_id,
+                error: MachineContainerRunHookDomainError::WaitFailed {
+                    container_id: container_id.clone(),
+                    message: failure_message(format!("hook container wait failed: {message}")),
+                    log_hint: log_hint(&container_id),
+                },
+            });
+        }
+        Err(error @ MachineContainerRunnerError::ListExisting { .. })
+        | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+        | Err(error @ MachineContainerRunnerError::Create { .. })
+        | Err(error @ MachineContainerRunnerError::Start { .. })
+        | Err(error @ MachineContainerRunnerError::Stop { .. })
+        | Err(error @ MachineContainerRunnerError::Restart { .. })
+        | Err(error @ MachineContainerRunnerError::Remove { .. }) => return runner_error(error),
+    };
+    if exit_code == 0 {
+        let _ = state
+            .runner
+            .remove_managed_container(&container_id, &identity)
+            .await;
+    }
+    machine_success(MachineContainerRunHookRpcResponse::Completed {
+        machine_id,
+        container_id,
+        exit_code,
+    })
+}
+
+fn log_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
+    ployz_core::ops::OperatorHint::try_new(format!("ployzctl logs {}", container_id.as_str()))
+        .expect("generated log hint is non-empty")
 }
 
 pub(crate) async fn handle_container_inspect<R>(

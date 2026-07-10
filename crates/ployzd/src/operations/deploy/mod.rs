@@ -27,15 +27,16 @@ pub use failure::{
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
     DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
-    NamespaceCommitError, NamespaceStateCommitter,
+    NamespaceCommitError, NamespaceStateCommitter, PreStartHookOutcome,
 };
 pub use preparation::{
     DeployExecutionFacts, namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 
 use crate::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineContainerRemoveRpcRequest, MachineContainerRunHookRpcRequest,
+    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
+    MachineEnsureEndpointNetworkRpcRequest,
 };
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
@@ -189,6 +190,22 @@ where
         )
         .await
         .map_err(|source| run.fail(source))?;
+    }
+    if plan
+        .services
+        .iter()
+        .any(|service| service.pre_start.is_some())
+    {
+        record_running_stage(
+            command,
+            &mut *ports.recorder,
+            DeployRunningStage::RunningPreStartHooks,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+        run_pre_start_hooks(command, &plan, &mut *ports.machine_runtime)
+            .await
+            .map_err(|source| run.fail(source))?;
     }
     record_running_stage(
         command,
@@ -347,6 +364,77 @@ where
     };
 
     Ok(outcome)
+}
+
+async fn run_pre_start_hooks<N>(
+    command: &DeployExecutionCommand,
+    plan: &DeployPlan,
+    machine_runtime: &mut N,
+) -> Result<(), DeployExecutionError>
+where
+    N: MachineContainerRuntime,
+{
+    for service_plan in &plan.services {
+        let Some(step) = &service_plan.pre_start else {
+            continue;
+        };
+        let Some(service) = command
+            .services()
+            .iter()
+            .find(|service| service.request.service_id == service_plan.service_id)
+        else {
+            return Err(DeployExecutionError::PreStartHookPlanInconsistent {
+                service_id: service_plan.service_id.clone(),
+            });
+        };
+        let Some(pre_start) = &service.request.pre_start else {
+            return Err(DeployExecutionError::PreStartHookPlanInconsistent {
+                service_id: service_plan.service_id.clone(),
+            });
+        };
+        let step_id = StepId::try_new("pre_start").map_err(DeployExecutionError::StepId)?;
+        let mut runtime = service.request.runtime.clone();
+        runtime.command = Some(pre_start.command.clone());
+        runtime.healthcheck = None;
+        let request = MachineContainerRunHookRpcRequest {
+            image: service.request.image.clone(),
+            runtime,
+            container: ManagedContainerIdentity {
+                namespace_id: service.request.namespace_id.clone(),
+                service_id: service.request.service_id.clone(),
+                namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+                operation_id: command.operation_id.clone(),
+                step_id,
+                kind: ManagedContainerKind::Predeploy,
+            },
+        };
+        let outcome = with_step_timeout(
+            command,
+            DeployExecutionStep::RunPreStartHook {
+                machine_id: step.machine_id.clone(),
+            },
+            async {
+                machine_runtime
+                    .run_pre_start_hook(&step.machine_id, request)
+                    .await
+                    .map_err(DeployExecutionError::RunContainer)
+            },
+        )
+        .await?;
+        if outcome.exit_code != 0 {
+            return Err(DeployExecutionError::PreStartHook {
+                machine_id: step.machine_id.clone(),
+                container_id: outcome.container_id,
+                exit_code: outcome.exit_code,
+                message: FailureMessage::try_new(format!(
+                    "pre-start hook exited with code {}",
+                    outcome.exit_code
+                ))
+                .expect("generated hook failure message is non-empty"),
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn cleanup_superseded_containers<N>(
@@ -546,6 +634,9 @@ fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessag
         MachineContainerRuntimeError::CreatedContainerStartFailed { message, .. }
         | MachineContainerRuntimeError::ExistingContainerStartFailed { message, .. }
         | MachineContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
+        | MachineContainerRuntimeError::PreStartHookCreateFailed { message, .. }
+        | MachineContainerRuntimeError::PreStartHookStartFailed { message, .. }
+        | MachineContainerRuntimeError::PreStartHookWaitFailed { message, .. }
         | MachineContainerRuntimeError::StopContainerFailed { message, .. }
         | MachineContainerRuntimeError::RestartContainerFailed { message, .. }
         | MachineContainerRuntimeError::RemoveContainerFailed { message, .. } => message,

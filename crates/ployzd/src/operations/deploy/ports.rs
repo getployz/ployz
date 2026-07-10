@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
@@ -9,8 +9,9 @@ use std::future::Future;
 
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRestartRpcRequest,
-    MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkRpcRequest, MachineRunContainerOutcome,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
+    MachineRunContainerOutcome,
 };
 
 use super::{
@@ -45,6 +46,12 @@ pub trait MachineContainerRuntime {
         request: MachineContainerRunRpcRequest,
     ) -> impl Future<Output = Result<MachineRunContainerOutcome, MachineContainerRuntimeError>> + Send;
 
+    fn run_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRunHookRpcRequest,
+    ) -> impl Future<Output = Result<PreStartHookOutcome, MachineContainerRuntimeError>> + Send;
+
     fn remove_container(
         &mut self,
         machine_id: &MachineId,
@@ -62,6 +69,12 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
     ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreStartHookOutcome {
+    pub container_id: ContainerId,
+    pub exit_code: i64,
 }
 
 pub trait DataplanePreparer {

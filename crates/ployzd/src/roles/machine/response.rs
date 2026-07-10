@@ -32,6 +32,9 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
         MachineContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container start failed: {message}")),
         ),
+        MachineContainerRunnerError::Wait { message, .. } => NatsServiceResponse::transport_error(
+            NatsServiceError::internal(format!("container wait failed: {message}")),
+        ),
         MachineContainerRunnerError::Stop { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container stop failed: {message}")),
         ),
@@ -74,6 +77,7 @@ pub(crate) fn container_start_error(
         error @ (MachineContainerRunnerError::ListExisting { .. }
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
         | MachineContainerRunnerError::Create { .. }
+        | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }
         | MachineContainerRunnerError::Remove { .. }) => runner_error(error),

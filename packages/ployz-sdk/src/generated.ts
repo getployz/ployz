@@ -142,7 +142,11 @@ export type ContainerRuntimeSpec = { command: ContainerCommand | null, entrypoin
 
 export type DeployRequest = { namespace_id: NamespaceId, services: Array<DeployServiceSpec>, };
 
-export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, runtime: ContainerRuntimeSpec, routes?: Array<DeployRoute>, };
+export type DeployServiceRequest = { namespace_id: NamespaceId, service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, namespace_revision_entry_id: NamespaceRevisionEntryId, image: ImageReference, replicas: ReplicaCount, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceId>, routes?: Array<DeployRoute>, };
+
+export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, replicas: ReplicaCount, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceId>, routes?: Array<DeployRoute>, };
+
+export type PreStartHook = { command: ContainerCommand, };
 
 export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort, };
 
@@ -150,7 +154,9 @@ export type DeployRouteTarget = { "kind": "auto_hostname", port: RoutePort, } | 
 
 export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, services: Array<DeployServicePlan>, volume_pin_commits?: Array<VolumePinState>, cleanup_containers?: Array<DeployCleanupContainer>, };
 
-export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, };
+export type DeployServicePlan = { service_id: ServiceId, steps: Array<DeployPlanStep>, pre_start?: PreStartHookStep | null, };
+
+export type PreStartHookStep = { machine_id: MachineId, };
 
 export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, };
 
@@ -212,7 +218,7 @@ export type InstallRolePolicy = { gateway: GatewayRole, dns: DnsRole, };
 
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed", outcome: DeployCompletionOutcome, } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
-export type DeployRunningStage = "preparing_dataplane" | "starting_containers" | "waiting_for_health" | "route_cutover" | "serving_target_commit" | "removing_superseded_containers";
+export type DeployRunningStage = "preparing_dataplane" | "running_pre_start_hooks" | "starting_containers" | "waiting_for_health" | "route_cutover" | "serving_target_commit" | "removing_superseded_containers";
 
 export type DeployCompletionOutcome = "completed" | "completed_with_warnings" | "partially_completed" | "partially_completed_with_warnings";
 
@@ -298,7 +304,7 @@ export type DeployOperationFailure = { "kind": "no_usable_machines",
 /**
  * Why each known machine was rejected for placement.
  */
-reasons: Array<UnusableMachine>, } | { "kind": "planning_failed", service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "container_start_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", scope: ControlPlaneCommitScope, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+reasons: Array<UnusableMachine>, } | { "kind": "planning_failed", service_id: ServiceId, namespace_revision_id: NamespaceRevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, reason: ArtifactUnavailableReason, } | { "kind": "dataplane_unavailable", machine_id: MachineId, provider_failure: DataplaneProviderFailure, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "dataplane_prepare_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "container_start_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "pre_start_hook_failed", machine_id: MachineId, container_id: ContainerId, exit_code: number, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", scope: ControlPlaneCommitScope, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 

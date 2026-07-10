@@ -137,7 +137,6 @@ pub(crate) enum KnownUnsupported {
     Build,
     CgroupParent,
     Configs,
-    DependsOn,
     DeployMode,
     DeployPlacement,
     DeployResources,
@@ -165,7 +164,6 @@ pub(crate) enum KnownUnsupported {
     User,
     Volumes,
     WorkingDir,
-    XPreDeploy,
 }
 
 impl KnownUnsupported {
@@ -174,7 +172,6 @@ impl KnownUnsupported {
         match self {
             Self::Build
             | Self::Configs
-            | Self::DependsOn
             | Self::DeployMode
             | Self::DeployPlacement
             | Self::DeployResources
@@ -186,8 +183,7 @@ impl KnownUnsupported {
             | Self::Secrets
             | Self::TopLevelNetworks
             | Self::TopLevelVolumes
-            | Self::Volumes
-            | Self::XPreDeploy => "planned",
+            | Self::Volumes => "planned",
             Self::CgroupParent
             | Self::Devices
             | Self::Dns
@@ -216,7 +212,6 @@ impl KnownUnsupported {
             }
             Self::CgroupParent => "cgroup parent is not part of the deploy model",
             Self::Configs => "configs are not deployed yet",
-            Self::DependsOn => "service dependency phases are not imported yet",
             Self::DeployMode => "global deploy mode is not deployed yet",
             Self::DeployPlacement => "placement constraints are not deployed yet",
             Self::DeployResources => "resource reservations are not deployed yet",
@@ -239,7 +234,6 @@ impl KnownUnsupported {
             Self::User => "container user is not deployed yet",
             Self::Volumes => "volumes are not deployed yet",
             Self::WorkingDir => "working directory is not deployed yet",
-            Self::XPreDeploy => "pre-start hooks are not deployed yet",
         }
     }
 }
@@ -299,7 +293,6 @@ pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
         "build" => Some(KnownUnsupported::Build),
         "cgroup_parent" => Some(KnownUnsupported::CgroupParent),
         "configs" => Some(KnownUnsupported::Configs),
-        "depends_on" => Some(KnownUnsupported::DependsOn),
         "deploy.mode" => Some(KnownUnsupported::DeployMode),
         "deploy.placement" => Some(KnownUnsupported::DeployPlacement),
         "deploy.resources" => Some(KnownUnsupported::DeployResources),
@@ -325,7 +318,6 @@ pub(crate) fn classify_service_key(key: &str) -> Option<KnownUnsupported> {
         "user" => Some(KnownUnsupported::User),
         "volumes" => Some(KnownUnsupported::Volumes),
         "working_dir" => Some(KnownUnsupported::WorkingDir),
-        "x-pre_deploy" => Some(KnownUnsupported::XPreDeploy),
         _ => None,
     }
 }

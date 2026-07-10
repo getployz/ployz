@@ -107,6 +107,10 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.command.machine_7.container.run"
     );
     assert_eq!(
+        machine_service(&machine_id, MachineServiceEndpoint::ContainerRunHook),
+        "plz.v1.rpc.machine.command.machine_7.container.run_hook"
+    );
+    assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::FactsGet),
         "plz.v1.rpc.machine.query.machine_7.facts.get"
     );
