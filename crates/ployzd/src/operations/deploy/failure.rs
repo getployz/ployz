@@ -165,7 +165,7 @@ pub enum DeployExecutionError {
     RecordTransition(DeployOperationRecordError),
     RecordEvidence(DeployOperationRecordError),
     PrepareDataplane(DataplanePrepareError),
-    EnsureImage {
+    Image {
         failure: Box<DeployOperationFailure>,
     },
     RunContainer(MachineContainerRuntimeError),
@@ -551,7 +551,7 @@ impl DeployExecutionError {
                 Self::record_failure(command, retained_artifacts)
             }
             Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
-            Self::EnsureImage { failure } => (**failure).clone(),
+            Self::Image { failure } => (**failure).clone(),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::PreStartHook(error) => error.deploy_failure(retained_artifacts),
             Self::PreStartHookExited {
@@ -911,6 +911,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         } => retained_artifacts,
         DeployOperationFailure::PlanningFailed { .. }
         | DeployOperationFailure::AutoDnsWithoutLease { .. }
+        | DeployOperationFailure::ImageResolutionFailed { .. }
         | DeployOperationFailure::NoUsableMachines { .. }
         | DeployOperationFailure::ArtifactUnavailable { .. }
         | DeployOperationFailure::ImageMissingOnSeed { .. }

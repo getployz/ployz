@@ -798,6 +798,10 @@ pub enum PloyzctlExecutionError {
     ImagePush {
         source: crate::image_push::ImagePushError,
     },
+    #[error("registry credential lookup failed: {source}")]
+    RegistryAuth {
+        source: crate::registry_auth::RegistryAuthError,
+    },
     #[error("namespace rm {} was not confirmed", namespace_id.as_str())]
     NamespaceRemoveNotConfirmed {
         namespace_id: ployz_core::ids::NamespaceId,

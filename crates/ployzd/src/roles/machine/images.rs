@@ -500,7 +500,7 @@ pub(crate) async fn handle_image_ensure(
     }
     .reference();
     for attempt in 1..=SELF_PULL_ATTEMPTS {
-        match state.docker.pull_image(&reference).await {
+        match state.docker.pull_image(&reference, None).await {
             Ok(()) => break,
             Err(error) if attempt == SELF_PULL_ATTEMPTS => {
                 return image_error(

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::VolumeName;
-use crate::deploy::{DeployCleanupContainer, DeployPlan};
+use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
@@ -151,6 +151,12 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
+    ImageResolutionFailed {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        image: ImageReference,
+        message: FailureMessage,
+    },
     AutoDnsWithoutLease {
         service_id: ServiceId,
         namespace_revision_id: NamespaceRevisionId,
@@ -292,6 +298,7 @@ impl DeployOperationFailure {
                 DeployFailureClass::PreconditionRejected
             }
             Self::ArtifactUnavailable { .. }
+            | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
@@ -356,6 +363,7 @@ impl DeployOperationFailure {
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
             | Self::AutoDnsWithoutLease { .. }
+            | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
@@ -523,6 +531,13 @@ impl DeployTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
+    ImageResolved {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        requested: ImageReference,
+        resolved: ImageReference,
+        credential_supplied: bool,
+    },
     PlanCreated {
         plan: DeployPlan,
     },
@@ -549,6 +564,20 @@ impl DeployEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
+            Self::ImageResolved {
+                service_id,
+                machine_id,
+                requested,
+                resolved,
+                credential_supplied,
+            } => OperationEvent::DeployImageResolved {
+                operation_id: operation_id.clone(),
+                service_id: service_id.clone(),
+                machine_id: machine_id.clone(),
+                requested: requested.clone(),
+                resolved: resolved.clone(),
+                credential_supplied: *credential_supplied,
+            },
             Self::PlanCreated { plan } => OperationEvent::DeployPlanCreated {
                 operation_id: operation_id.clone(),
                 plan: plan.clone(),
@@ -606,7 +635,9 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
-        DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
+        DeployEvidence::ImageResolved { .. } | DeployEvidence::PlanCreated { .. } => {
+            EvidenceRequirement::Planning
+        }
         DeployEvidence::DataplanePrepared { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::PreparingDataplane)
         }

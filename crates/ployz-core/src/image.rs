@@ -75,6 +75,138 @@ pub enum OciDigestError {
     Invalid { value: String },
 }
 
+/// One deploy-scoped registry credential. It may cross the operator and
+/// machine RPC boundaries, but it is never part of deploy intent or evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RegistryCredential {
+    Basic {
+        username: RegistryCredentialUsername,
+        password: RegistryCredentialSecret,
+    },
+    IdentityToken {
+        token: RegistryCredentialSecret,
+    },
+}
+
+impl RegistryCredential {
+    pub fn try_basic(
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Result<Self, RegistryCredentialError> {
+        Ok(Self::Basic {
+            username: RegistryCredentialUsername::try_new(username)?,
+            password: RegistryCredentialSecret::try_new(password)?,
+        })
+    }
+
+    pub fn try_identity_token(token: impl Into<String>) -> Result<Self, RegistryCredentialError> {
+        Ok(Self::IdentityToken {
+            token: RegistryCredentialSecret::try_new(token)?,
+        })
+    }
+
+    #[must_use]
+    pub fn redact_secret_in(&self, message: impl Into<String>) -> String {
+        let secret = match self {
+            Self::Basic {
+                username: _,
+                password,
+            } => password,
+            Self::IdentityToken { token } => token,
+        };
+        message.into().replace(secret.secret(), "[redacted]")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct RegistryCredentialUsername(String);
+
+impl RegistryCredentialUsername {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, RegistryCredentialError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(RegistryCredentialError::EmptyUsername);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RegistryCredentialUsername {
+    type Error = RegistryCredentialError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<RegistryCredentialUsername> for String {
+    fn from(value: RegistryCredentialUsername) -> Self {
+        let RegistryCredentialUsername(value) = value;
+        value
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct RegistryCredentialSecret(String);
+
+impl RegistryCredentialSecret {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, RegistryCredentialError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(RegistryCredentialError::EmptySecret);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RegistryCredentialSecret {
+    type Error = RegistryCredentialError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<RegistryCredentialSecret> for String {
+    fn from(value: RegistryCredentialSecret) -> Self {
+        let RegistryCredentialSecret(value) = value;
+        value
+    }
+}
+
+impl fmt::Debug for RegistryCredentialSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(_secret) = self;
+        formatter.write_str("RegistryCredentialSecret([redacted])")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RegistryCredentialError {
+    #[error("registry credential username is empty")]
+    EmptyUsername,
+    #[error("registry credential secret is empty")]
+    EmptySecret,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ImageRepository(String);

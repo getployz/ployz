@@ -575,6 +575,7 @@ impl DeployEventRenderContext {
                 self.service_id = Some(target.status_service_id());
             }
             OperationEvent::DeployPlanningStarted { .. }
+            | OperationEvent::DeployImageResolved { .. }
             | OperationEvent::DeployPlanCreated { .. }
             | OperationEvent::DeployRunning { .. }
             | OperationEvent::DeployContainerStarted { .. }
@@ -652,6 +653,27 @@ fn render_replayed_event_text(
             label,
             render_network_repair_failure(failure)
         ),
+        OperationEvent::DeployImageResolved {
+            service_id,
+            machine_id,
+            requested,
+            resolved,
+            credential_supplied,
+            ..
+        } => format!(
+            "{} {} service {} machine {} {} -> {} credential {}",
+            event.sequence.get(),
+            label,
+            service_id.as_str(),
+            machine_id.as_str(),
+            requested.as_str(),
+            resolved.as_str(),
+            if *credential_supplied {
+                "supplied"
+            } else {
+                "absent"
+            }
+        ),
         OperationEvent::DeploySubmitted { .. }
         | OperationEvent::DeployPlanningStarted { .. }
         | OperationEvent::DeployPlanCreated { .. }
@@ -720,6 +742,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
     match event {
         OperationEvent::DeploySubmitted { .. } => "deploy.submitted",
         OperationEvent::DeployPlanningStarted { .. } => "deploy.planning",
+        OperationEvent::DeployImageResolved { .. } => "deploy.image_resolved",
         OperationEvent::DeployPlanCreated { .. } => "deploy.plan_created",
         OperationEvent::DeployRunning { .. } => "deploy.running",
         OperationEvent::DeployContainerStarted { .. } => "deploy.container_started",

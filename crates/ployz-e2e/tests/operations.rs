@@ -8,8 +8,8 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceRequest,
-    DeployServiceSpec, ImageReference, ReplicaCount, plan_namespace_deploy,
+    DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ReplicaCount, plan_namespace_deploy,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
@@ -145,6 +145,7 @@ async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: idempotency_key("idem_newer"),
             reservation_id: newer.reservation_id,
             target: deploy_target("svc_api"),
@@ -154,6 +155,7 @@ async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
 
     let error = api
         .deploy_submit(&DeploySubmitRequest {
+            registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: idempotency_key("idem_older"),
             reservation_id: older.reservation_id,
             target: deploy_target("svc_api"),
@@ -220,6 +222,22 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         ),
         "expected deploy to complete, got {status:?}"
     );
+    let requested_image = image("ghcr.io/acme/api:rev-2");
+    let resolved_image = requested_image
+        .with_digest(&ployz_core::image::OciDigest::sha256(
+            requested_image.as_str().as_bytes(),
+        ))
+        .expect("resolved image reference is valid");
+    let mut resolved_target = deploy_target("svc_api");
+    let [resolved_service] = resolved_target.services.as_mut_slice() else {
+        panic!("deploy target has one service");
+    };
+    resolved_service.image = resolved_image.clone();
+    let resolved_service_target = resolved_target
+        .service_requests()
+        .into_iter()
+        .next()
+        .expect("resolved deploy target has one service");
     assert_eq!(
         api.service_inspect(&ServiceInspectRequest {
             namespace_id: namespace_id("default"),
@@ -228,7 +246,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .await?
         .active
         .namespace_revision_entry_id,
-        deploy_service_target("svc_api").namespace_revision_entry_id
+        resolved_service_target.namespace_revision_entry_id.clone()
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
@@ -241,13 +259,21 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             OperationEvent::DeployPlanningStarted {
                 operation_id: deploy_operation.clone(),
             },
+            OperationEvent::DeployImageResolved {
+                operation_id: deploy_operation.clone(),
+                service_id: service_id("svc_api"),
+                machine_id: machine_id("machine_a"),
+                requested: requested_image,
+                resolved: resolved_image,
+                credential_supplied: false,
+            },
             OperationEvent::DeployPlanCreated {
                 operation_id: deploy_operation.clone(),
                 plan: plan_namespace_deploy(
                     namespace_id("default"),
-                    deploy_target("svc_api").namespace_revision_id(),
+                    resolved_target.namespace_revision_id(),
                     vec![DeployPlanningInput {
-                        request: deploy_service_target("svc_api"),
+                        request: resolved_service_target,
                         eligible_machines: vec![machine_id("machine_a")],
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),
@@ -806,6 +832,7 @@ async fn reserved_deploy_request(
         })
         .await?;
     Ok(DeploySubmitRequest {
+        registry_credentials: std::collections::BTreeMap::new(),
         idempotency_key: idempotency_key(idempotency),
         reservation_id: reservation.reservation_id,
         target,
@@ -826,14 +853,6 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             routes: Vec::new(),
         }],
     }
-}
-
-fn deploy_service_target(service_id: &str) -> DeployServiceRequest {
-    deploy_target(service_id)
-        .service_requests()
-        .into_iter()
-        .next()
-        .expect("deploy target has one service")
 }
 
 fn deploy_target_with_route(
@@ -859,6 +878,7 @@ fn deploy_target_with_route(
 fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
         pull: ployzd::roles::machine::protocol::MachineImagePull::Registry {
+            credential: None,
             reference: image("ghcr.io/acme/api:probe"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),

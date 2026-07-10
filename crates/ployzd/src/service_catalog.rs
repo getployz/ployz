@@ -158,6 +158,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
                 MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
             ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerInspect),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerResolveImage),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRunHook),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRestart),
@@ -222,6 +223,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
             "machine.container.ensure_endpoint_network"
         }
         MachineServiceEndpoint::ContainerInspect => "machine.container.inspect",
+        MachineServiceEndpoint::ContainerResolveImage => "machine.container.resolve_image",
         MachineServiceEndpoint::ContainerRun => "machine.container.run",
         MachineServiceEndpoint::ContainerRunHook => "machine.container.run_hook",
         MachineServiceEndpoint::ContainerRestart => "machine.container.restart",
