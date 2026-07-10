@@ -108,6 +108,8 @@ pub fn deploy_target(service: &str) -> DeployRequest {
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

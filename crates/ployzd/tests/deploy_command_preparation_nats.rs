@@ -435,6 +435,13 @@ impl MachineContainerRunner for StaticRunner {
         })
     }
 
+    async fn wait_managed_container(
+        &self,
+        _container_id: &ployz_core::ids::ContainerId,
+    ) -> Result<i64, MachineContainerRunnerError> {
+        Ok(0)
+    }
+
     async fn stop_managed_container(
         &self,
         container_id: &ployz_core::ids::ContainerId,
@@ -628,6 +635,8 @@ fn deploy_request() -> DeployRequest {
                 .expect("valid image reference"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }

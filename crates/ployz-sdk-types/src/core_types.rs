@@ -19,9 +19,9 @@ pub use ployz_core::deploy::{
     DeployPlanStep, DeployRequest, DeployRoute, DeployRouteTarget, DeployServicePlan,
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError,
-    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ReplicaCount, ReplicaCountError,
-    ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
-    VolumeNameError,
+    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
+    ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount,
+    StopGracePeriod, VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -66,7 +66,7 @@ pub use ployz_core::ops::{
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,
     CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
-    DeployOperationFailure, DeployOperationState, DeployRunningStage,
+    DeployOperationFailure, DeployOperationState, DeployRunningStage, PreStartHookFailure,
 };
 pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;

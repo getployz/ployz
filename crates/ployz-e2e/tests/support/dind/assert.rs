@@ -519,6 +519,7 @@ pub struct ManagedWorkloadContainer {
     pub nano_cpus: i64,
     pub memory: i64,
     pub pids_limit: i64,
+    pub started_at: String,
 }
 
 #[derive(Clone, Copy)]
@@ -582,7 +583,7 @@ async fn managed_workload_containers_with_scope(
         // Docker omits the Healthcheck key for containers created without
         // one, and the CLI templates over the decoded map, so direct field
         // access fails with "map has no entry" while `index` yields null.
-        "{{.Id}}\t{{json .Config.Labels}}\t{{with index .NetworkSettings.Networks \"ployz\"}}{{.IPAddress}}{{end}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}\t{{json (index .Config \"Healthcheck\")}}\t{{json .HostConfig.RestartPolicy}}\t{{json .HostConfig.CapAdd}}\t{{json .HostConfig.CapDrop}}\t{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.Memory}}\t{{json .HostConfig.PidsLimit}}",
+        "{{.Id}}\t{{json .Config.Labels}}\t{{with index .NetworkSettings.Networks \"ployz\"}}{{.IPAddress}}{{end}}\t{{json .Config.Env}}\t{{json .Config.Cmd}}\t{{json (index .Config \"Healthcheck\")}}\t{{json .HostConfig.RestartPolicy}}\t{{json .HostConfig.CapAdd}}\t{{json .HostConfig.CapDrop}}\t{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.Memory}}\t{{json .HostConfig.PidsLimit}}\t{{.State.StartedAt}}",
     ];
     command.extend(ids);
     let inspected = core.exec_on(machine, &command).await;
@@ -610,6 +611,7 @@ async fn managed_workload_containers_with_scope(
                 nano_cpus_json,
                 memory_json,
                 pids_limit_json,
+                started_at,
             ] = parts.as_slice()
             else {
                 panic!(
@@ -716,6 +718,7 @@ async fn managed_workload_containers_with_scope(
                 nano_cpus,
                 memory,
                 pids_limit,
+                started_at: started_at.to_string(),
             }
         })
         .collect()

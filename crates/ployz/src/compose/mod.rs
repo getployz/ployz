@@ -5,7 +5,7 @@ mod model;
 mod translate;
 mod volumes;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use ployz_core::deploy::DeployServiceSpec;
@@ -133,6 +133,27 @@ pub fn parse_deploy_file(
             ComposePath::root().field("services"),
             "compose file must define services",
         )),
+    }
+
+    let service_ids = deploy_services
+        .iter()
+        .map(|service| service.service_id.clone())
+        .collect::<BTreeSet<_>>();
+    for service in &deploy_services {
+        for dependency in &service.depends_on {
+            if !service_ids.contains(dependency) {
+                findings.push(ComposeFinding::invalid(
+                    ComposePath::root()
+                        .field("services")
+                        .field(service.service_id.as_str())
+                        .field("depends_on"),
+                    format!(
+                        "dependency {:?} does not name a service in this file",
+                        dependency.as_str()
+                    ),
+                ));
+            }
+        }
     }
 
     let diagnostics = ComposeDiagnostics::new(findings);

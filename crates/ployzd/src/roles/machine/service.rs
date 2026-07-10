@@ -2,8 +2,8 @@
 
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
-    handle_container_restart, handle_container_run, handle_container_stop,
-    handle_ensure_endpoint_network, handle_volume_remove,
+    handle_container_restart, handle_container_run, handle_container_run_hook,
+    handle_container_stop, handle_ensure_endpoint_network, handle_volume_remove,
 };
 use super::dataplane::{handle_dataplane_mtu_probe, handle_dataplane_prepare};
 use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
@@ -23,7 +23,12 @@ use ployz_nats::service_runtime::{
 };
 use std::future::Future;
 use std::net::Ipv4Addr;
+use std::num::NonZeroUsize;
 use std::time::Duration;
+
+// The request carries the operation-owned execution timeout. This outer bound
+// limits malformed or future callers that fail to supply a useful inner bound.
+const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub use super::facts::MachineFactsReadError;
 
@@ -110,6 +115,19 @@ where
         handle_container_run,
     )
     .await?;
+    let hook_spec = machine_endpoint_spec(&machine_id, MachineServiceEndpoint::ContainerRunHook);
+    let hook_machine_id = machine_id.clone();
+    let hook_state = mutation_state.clone();
+    runtime
+        .bind_endpoint_with_policy(
+            &hook_spec,
+            EndpointExecutionPolicy::new(NonZeroUsize::MIN, PRE_START_HOOK_ENDPOINT_TIMEOUT),
+            move |request| {
+                handle_container_run_hook(hook_machine_id.clone(), hook_state.clone(), request)
+            },
+        )
+        .await
+        .map_err(MachineServiceError::Nats)?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,

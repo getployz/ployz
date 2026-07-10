@@ -17,7 +17,7 @@ mod logs;
 mod ployz_native_mesh;
 pub mod process;
 pub mod protocol;
-mod response;
+pub(crate) mod response;
 pub mod runner;
 pub mod service;
 mod substrate;

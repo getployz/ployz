@@ -2,7 +2,7 @@ use ployz_core::dataplane::{DataplaneProviderFailure, PloyzNativeMeshComponent};
 use ployz_core::ids::{ContainerId, MachineId, ServiceId};
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployOperationFailure, HealthCheckFailure,
-    RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
 
@@ -47,7 +47,8 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
             | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
-            | DeployOperationFailure::ContainerStartFailed { machine_id, .. } => {
+            | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
+            | DeployOperationFailure::PreStartHookFailed { machine_id, .. } => {
                 push_unique(&mut machines, machine_id);
             }
             DeployOperationFailure::DataplanePrepareTimedOut {
@@ -186,6 +187,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
+            | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. } => FailureSafety::ServingUnchanged,
             DeployOperationFailure::ControlPlaneCommitFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => FailureSafety::NoClaim,
@@ -203,6 +205,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
+            | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => None,
@@ -221,6 +224,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
+            | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. } => None,
         }
@@ -237,6 +241,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
+            | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => None,
@@ -259,6 +264,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
+            | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => None,
         }
@@ -346,6 +352,9 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
         DeployOperationFailure::ContainerStartFailed { message, .. } => {
             format!("container failed to start: {}", message.as_str())
         }
+        DeployOperationFailure::PreStartHookFailed { failure, .. } => {
+            pre_start_hook_failure_cause(failure)
+        }
         DeployOperationFailure::HealthCheckFailed { health_check, .. } => match health_check {
             HealthCheckFailure::ProbeFailed { message, .. } => {
                 format!("health check failed: {}", message.as_str())
@@ -390,6 +399,57 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
                     format!("route {target} cutover timed out after {timeout_seconds}s")
                 }
             }
+        }
+    }
+}
+
+fn pre_start_hook_failure_cause(failure: &PreStartHookFailure) -> String {
+    match failure {
+        PreStartHookFailure::RuntimeUnavailable { message } => {
+            format!("pre-start hook runtime unavailable: {}", message.as_str())
+        }
+        PreStartHookFailure::OperationStepAmbiguous {
+            operation_id,
+            step_id,
+            container_ids,
+        } => format!(
+            "pre-start hook step {} for operation {} matched containers {}",
+            step_id.as_str(),
+            operation_id.as_str(),
+            container_ids
+                .iter()
+                .map(|container_id| container_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        PreStartHookFailure::CreateFailed { message } => {
+            format!(
+                "pre-start hook container creation failed: {}",
+                message.as_str()
+            )
+        }
+        PreStartHookFailure::StartFailed { message, .. } => {
+            format!("pre-start hook failed to start: {}", message.as_str())
+        }
+        PreStartHookFailure::WaitFailed { message, .. } => {
+            format!("pre-start hook wait failed: {}", message.as_str())
+        }
+        PreStartHookFailure::TimedOut {
+            timeout_millis,
+            message,
+            ..
+        } => format!(
+            "pre-start hook timed out after {timeout_millis}ms: {}",
+            message.as_str()
+        ),
+        PreStartHookFailure::Exited {
+            exit_code, message, ..
+        } => format!(
+            "pre-start hook exited with code {exit_code}: {}",
+            message.as_str()
+        ),
+        PreStartHookFailure::CleanupFailed { message, .. } => {
+            format!("pre-start hook cleanup failed: {}", message.as_str())
         }
     }
 }
