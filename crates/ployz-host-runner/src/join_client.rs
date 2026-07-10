@@ -28,7 +28,8 @@ use ployz_nats::connect::{
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportedOutcome,
+    MachineJoinToken,
 };
 
 use crate::runtime::{
@@ -235,12 +236,11 @@ impl JoinReporter {
                     failure_message(&format!("failed to report join result: {error}"))
                 })?;
             match reported.outcome {
-                MachineJoinReportOutcome::Failed { failure } if reported_completion => Err(
+                MachineJoinReportedOutcome::Failed { failure } if reported_completion => Err(
                     failure_message(&format!("machine join rejected by core: {failure:?}")),
                 ),
-                MachineJoinReportOutcome::Completed | MachineJoinReportOutcome::Failed { .. } => {
-                    Ok(())
-                }
+                MachineJoinReportedOutcome::Completed
+                | MachineJoinReportedOutcome::Failed { .. } => Ok(()),
             }
         })
     }

@@ -729,11 +729,29 @@ mod tests {
             })
         }
 
+        async fn prepare_wireguard(
+            &self,
+            endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+            peers: &[ployz_core::dataplane::WireGuardPeer],
+        ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
+            self.prepare_ployz_native_mesh(endpoint_routes, peers)
+                .await
+                .map(|ready| ready.wireguard)
+        }
+
         async fn probe_overlay(
             &self,
             _peers: &[ployz_core::dataplane::WireGuardPublicKey],
-        ) -> Vec<ployz_core::dataplane::WireGuardPublicKey> {
-            Vec::new()
+        ) -> Result<Vec<ployz_core::dataplane::WireGuardPublicKey>, WireGuardEbpfPrepareError>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn probe_link_mtu(
+            &self,
+            _peer_gateway: std::net::Ipv4Addr,
+        ) -> Result<u32, WireGuardEbpfPrepareError> {
+            Ok(1380)
         }
     }
 

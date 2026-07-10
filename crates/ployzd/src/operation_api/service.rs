@@ -219,14 +219,9 @@ async fn bind_operation_endpoint(
             .await
         }
         OperationApiEndpoint::MachineJoinReport => {
-            let policy = EndpointExecutionPolicy {
-                request_timeout: MACHINE_JOIN_REPORT_HANDLER_TIMEOUT,
-                ..EndpointExecutionPolicy::default()
-            };
-            bind_operation_contract_with_policy::<MachineJoinReportApi, _, _>(
+            bind_operation_contract::<MachineJoinReportApi, _, _>(
                 runtime,
                 handlers,
-                policy,
                 |handlers, request| async move { machine_join_report(&handlers, request).await },
             )
             .await
@@ -273,29 +268,10 @@ where
     H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
     F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
 {
-    bind_operation_contract_with_policy::<C, _, _>(
-        runtime,
-        handlers,
-        EndpointExecutionPolicy::default(),
-        handler,
-    )
-    .await
-}
-
-async fn bind_operation_contract_with_policy<C, H, F>(
-    runtime: &mut RunningNatsService,
-    handlers: Arc<OperationApiHandlers>,
-    policy: EndpointExecutionPolicy,
-    handler: H,
-) -> Result<(), ApiServiceError>
-where
-    C: OperationApiContract + 'static,
-    C::Request: DeserializeOwned + 'static,
-    C::Success: Serialize + 'static,
-    C::Error: Serialize + 'static,
-    H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
-    F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
-{
+    let mut policy = EndpointExecutionPolicy::default();
+    if C::ENDPOINT == OperationApiEndpoint::MachineJoinReport {
+        policy.request_timeout = MACHINE_JOIN_REPORT_HANDLER_TIMEOUT;
+    }
     let spec = api_endpoint_spec(C::ENDPOINT);
     let handler = Arc::new(handler);
     runtime

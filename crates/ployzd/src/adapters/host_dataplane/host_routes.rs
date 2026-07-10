@@ -15,7 +15,7 @@ pub(super) struct HostDataplaneRouteProgramming {
 }
 
 impl HostDataplaneRouteProgramming {
-    pub(super) fn plans_for(
+    pub(super) fn wireguard_plans_for(
         &self,
         machine_id: &MachineId,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
@@ -109,27 +109,33 @@ impl HostDataplaneRouteProgramming {
                 ],
             )
         }));
-        requirements.extend(
-            endpoint_routes
-                .iter()
-                .filter(|route| route.machine_id != *machine_id)
-                .map(|route| {
-                    HostCommandPlan::provisioning_command(
-                        PloyzNativeMeshComponent::EbpfForwarding,
-                        self.ebpf_ctl_program.clone(),
-                        ebpf_ctl_args(
-                            &self.ebpf_pin_path,
-                            [
-                                "route".to_owned(),
-                                "add-ifname".to_owned(),
-                                route.endpoint_subnet.clone(),
-                                self.wg_ifname.clone(),
-                            ],
-                        ),
-                    )
-                }),
-        );
         Ok(requirements)
+    }
+
+    pub(super) fn ebpf_plans_for(
+        &self,
+        machine_id: &MachineId,
+        endpoint_routes: &[WireGuardEbpfEndpointRoute],
+    ) -> Vec<HostCommandPlan> {
+        endpoint_routes
+            .iter()
+            .filter(|route| route.machine_id != *machine_id)
+            .map(|route| {
+                HostCommandPlan::provisioning_command(
+                    PloyzNativeMeshComponent::EbpfForwarding,
+                    self.ebpf_ctl_program.clone(),
+                    ebpf_ctl_args(
+                        &self.ebpf_pin_path,
+                        [
+                            "route".to_owned(),
+                            "add-ifname".to_owned(),
+                            route.endpoint_subnet.clone(),
+                            self.wg_ifname.clone(),
+                        ],
+                    ),
+                )
+            })
+            .collect()
     }
 }
 
@@ -146,21 +152,20 @@ mod tests {
             wg_ifname: "ployz-wg0".to_owned(),
             ebpf_pin_path: None,
         };
-        let requirements = route_programming
-            .plans_for(
-                &machine_id("machine_a"),
-                &[
-                    WireGuardEbpfEndpointRoute {
-                        machine_id: machine_id("machine_a"),
-                        endpoint_subnet: "10.42.1.0/24".to_owned(),
-                    },
-                    WireGuardEbpfEndpointRoute {
-                        machine_id: machine_id("machine_b"),
-                        endpoint_subnet: "10.42.2.0/24".to_owned(),
-                    },
-                ],
-            )
+        let routes = [
+            WireGuardEbpfEndpointRoute {
+                machine_id: machine_id("machine_a"),
+                endpoint_subnet: "10.42.1.0/24".to_owned(),
+            },
+            WireGuardEbpfEndpointRoute {
+                machine_id: machine_id("machine_b"),
+                endpoint_subnet: "10.42.2.0/24".to_owned(),
+            },
+        ];
+        let mut requirements = route_programming
+            .wireguard_plans_for(&machine_id("machine_a"), &routes)
             .expect("route requirements are generated");
+        requirements.extend(route_programming.ebpf_plans_for(&machine_id("machine_a"), &routes));
 
         assert!(requirements.contains(&HostCommandPlan::provisioning_sysctl(
             PloyzNativeMeshComponent::WireGuard,
@@ -243,7 +248,7 @@ mod tests {
         };
 
         let error = route_programming
-            .plans_for(
+            .wireguard_plans_for(
                 &machine_id("machine_a"),
                 &[WireGuardEbpfEndpointRoute {
                     machine_id: machine_id("machine_b"),

@@ -492,6 +492,16 @@ fn wireguard_ebpf_prepare_ok_response(
                 },
             )),
         ),
+        MachinePloyzNativeMeshPrepareRpcRequest::PrepareWireGuard { .. } => {
+            NatsServiceResponse::ok(encode_wireguard_ebpf_response(
+                MachineDataplanePrepareRpcResponse::Ok(
+                    MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady {
+                        machine_id: machine_id.clone(),
+                        readiness: ready_machine_for_id(machine_id).ready.wireguard,
+                    },
+                ),
+            ))
+        }
         MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane { .. } => {
             NatsServiceResponse::ok(encode_wireguard_ebpf_response(
                 MachineDataplanePrepareRpcResponse::Ok(MachinePloyzNativeMeshPrepareRpcOk::Ready {

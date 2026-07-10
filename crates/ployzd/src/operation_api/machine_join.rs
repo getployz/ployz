@@ -17,7 +17,8 @@ use ployz_core::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,
-    MachineJoinReportRequest, MachineJoinReported,
+    MachineJoinReportRequest, MachineJoinReported, MachineJoinReportedFailure,
+    MachineJoinReportedOutcome,
 };
 
 use super::OperationApiHandlers;
@@ -80,48 +81,83 @@ pub async fn machine_join_report(
 ) -> Result<MachineJoinReported, MachineJoinReportError> {
     let raw_token = RawJoinToken::try_new(request.join_token.as_str())
         .map_err(|_| MachineJoinReportError::InvalidJoinToken)?;
-    let mut outcome = request.outcome;
-    let result = match outcome.clone() {
+    let (result, outcome) = match request.outcome {
         MachineJoinReportOutcome::Completed => {
-            match connectivity_proof::prove_completed_join(handlers, &raw_token).await? {
-                Some(evidence) => {
-                    outcome = MachineJoinReportOutcome::Failed {
-                        failure: MachineJoinReportFailure::ConnectivityProofFailed {
-                            evidence: evidence.clone(),
-                        },
-                    };
-                    handlers
+            match connectivity_proof::prove_completed_join(handlers, &raw_token).await {
+                Ok(Some(evidence)) => {
+                    let result = handlers
                         .controllers
                         .repository()
                         .record_machine_join_failed(
                             &raw_token,
-                            MachineAddFailure::ConnectivityProofFailed { evidence },
+                            MachineAddFailure::ConnectivityProofFailed {
+                                evidence: evidence.clone(),
+                            },
                         )
-                        .await
+                        .await;
+                    (
+                        result,
+                        MachineJoinReportedOutcome::Failed {
+                            failure: MachineJoinReportedFailure::ConnectivityProofFailed {
+                                evidence,
+                            },
+                        },
+                    )
                 }
-                None => {
-                    handlers
+                Ok(None) => {
+                    let result = handlers
                         .controllers
                         .repository()
                         .record_machine_join_completed(&raw_token)
-                        .await
+                        .await;
+                    (result, MachineJoinReportedOutcome::Completed)
                 }
+                Err(MachineJoinReportError::Unavailable { message }) => {
+                    let message = connectivity_proof_unavailable_message(message);
+                    let result = handlers
+                        .controllers
+                        .repository()
+                        .record_machine_join_failed(
+                            &raw_token,
+                            MachineAddFailure::BootstrapFailed {
+                                message: message.clone(),
+                            },
+                        )
+                        .await;
+                    (
+                        result,
+                        MachineJoinReportedOutcome::Failed {
+                            failure: MachineJoinReportedFailure::BootstrapFailed { message },
+                        },
+                    )
+                }
+                Err(error) => return Err(error),
             }
         }
-        MachineJoinReportOutcome::Failed { failure } => {
-            handlers
+        MachineJoinReportOutcome::Failed {
+            failure: MachineJoinReportFailure::BootstrapFailed { message },
+        } => {
+            let result = handlers
                 .controllers
                 .repository()
                 .record_machine_join_failed(
                     &raw_token,
-                    machine_add_failure_from_join_report_failure(failure),
+                    MachineAddFailure::BootstrapFailed {
+                        message: message.clone(),
+                    },
                 )
-                .await
+                .await;
+            (
+                result,
+                MachineJoinReportedOutcome::Failed {
+                    failure: MachineJoinReportedFailure::BootstrapFailed { message },
+                },
+            )
         }
     };
     let reported = match result {
         Ok(reported) => reported,
-        Err(error) if matches!(outcome, MachineJoinReportOutcome::Completed) => {
+        Err(error) if matches!(outcome, MachineJoinReportedOutcome::Completed) => {
             if let Some(reported) = repair_completed_machine_join_report(handlers, &error).await? {
                 return Ok(reported);
             }
@@ -153,7 +189,7 @@ pub async fn machine_join_report(
             message: corrupt("joined operation is not machine-add"),
         });
     };
-    if let MachineJoinReportOutcome::Completed = outcome {
+    if let MachineJoinReportedOutcome::Completed = outcome {
         activate_reported_machine(handlers, &reported.operation_id, &machine_id, &name).await?;
         scrub_completed_machine_add_secrets(handlers, &reported.operation_id).await?;
     }
@@ -163,6 +199,16 @@ pub async fn machine_join_report(
         machine_id: reported.machine_id,
         last_event_sequence,
         outcome,
+    })
+}
+
+fn connectivity_proof_unavailable_message(message: String) -> ployz_core::ops::FailureMessage {
+    ployz_core::ops::FailureMessage::try_new(format!(
+        "overlay connectivity proof unavailable: {message}"
+    ))
+    .unwrap_or_else(|_| {
+        ployz_core::ops::FailureMessage::try_new("overlay connectivity proof unavailable")
+            .expect("static failure message is valid")
     })
 }
 
@@ -204,7 +250,7 @@ async fn repair_completed_machine_join_report(
         operation_id: id,
         machine_id,
         last_event_sequence,
-        outcome: MachineJoinReportOutcome::Completed,
+        outcome: MachineJoinReportedOutcome::Completed,
     }))
 }
 
@@ -312,19 +358,6 @@ pub(super) fn endpoint_subnet_for_roster(
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
         })
-}
-
-fn machine_add_failure_from_join_report_failure(
-    failure: MachineJoinReportFailure,
-) -> ployz_core::machine::MachineAddFailure {
-    match failure {
-        MachineJoinReportFailure::BootstrapFailed { message } => {
-            ployz_core::machine::MachineAddFailure::BootstrapFailed { message }
-        }
-        MachineJoinReportFailure::ConnectivityProofFailed { evidence } => {
-            ployz_core::machine::MachineAddFailure::ConnectivityProofFailed { evidence }
-        }
-    }
 }
 
 fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeemed {

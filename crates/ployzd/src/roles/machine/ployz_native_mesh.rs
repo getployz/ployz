@@ -5,29 +5,43 @@ use crate::roles::machine::client::{
     MachineCallError, MachineFactsReadError, NatsMachineDataplanePreparer, call_machine,
 };
 use crate::roles::machine::protocol::{
-    MachineDataplanePrepareRpcRequest, MachinePloyzNativeMeshPrepareDomainError,
-    MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
+    MachineDataplaneMtuProbeDomainError, MachineDataplaneMtuProbeRpcOk,
+    MachineDataplaneMtuProbeRpcRequest, MachineDataplanePrepareRpcRequest,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
+    MachinePloyzNativeMeshPrepareRpcRequest,
 };
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
-    DataplaneMember, DataplanePrepareError, DataplanePrepareRequest,
-    OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshPrepareRequest, WireGuardEbpfPrepareError,
-    WireGuardEbpfPrepareReportError, WireGuardPeer, WireGuardPeerEndpoint, WireGuardPublicKey,
+    DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, MAX_WIREGUARD_MTU,
+    MIN_WIREGUARD_MTU, OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshComponent,
+    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshPrepareRequest,
+    WireGuardEbpfPrepareError, WireGuardEbpfPrepareReportError, WireGuardPeer,
+    WireGuardPeerEndpoint, WireGuardPublicKey, WireGuardReady,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use std::collections::BTreeSet;
+use std::net::Ipv4Addr;
 use std::time::Duration;
 
 const OVERLAY_CONNECTIVITY_PROBE_RPC_TIMEOUT: Duration =
     OVERLAY_CONNECTIVITY_PROOF_BUDGET.saturating_add(Duration::from_secs(15));
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MachineWireGuardReady {
+    pub machine_id: MachineId,
+    pub readiness: WireGuardReady,
+}
 
 impl DataplanePreparer for NatsMachineDataplanePreparer {
     async fn prepare_dataplane(
         &mut self,
         request: DataplanePrepareRequest,
     ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
+        let _mesh_guard = match &self.mesh_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
         let request = self
             .ployz_native_mesh_prepare_request(request)
             .await
@@ -41,6 +55,66 @@ impl DataplanePreparer for NatsMachineDataplanePreparer {
 }
 
 impl NatsMachineDataplanePreparer {
+    pub async fn probe_link_mtu(
+        &self,
+        machine_id: &MachineId,
+        peer_machine_id: MachineId,
+        peer_gateway: Ipv4Addr,
+    ) -> Result<MachineDataplaneMtuProbeRpcOk, WireGuardEbpfPrepareError> {
+        let response =
+            call_machine::<MachineDataplaneMtuProbeRpcOk, MachineDataplaneMtuProbeDomainError>(
+                &self.client,
+                self.request_timeout,
+                machine_id,
+                MachineServiceEndpoint::DataplaneProbeMtu,
+                &MachineDataplaneMtuProbeRpcRequest {
+                    peer_machine_id: peer_machine_id.clone(),
+                    peer_gateway,
+                },
+            )
+            .await
+            .map_err(|error| match error {
+                MachineCallError::Unavailable(reason) => ployz_native_mesh_unavailable(
+                    machine_id,
+                    PloyzNativeMeshComponent::WireGuard,
+                    reason.failure_message(),
+                ),
+                MachineCallError::Domain(MachineDataplaneMtuProbeDomainError::Unavailable {
+                    message,
+                }) => WireGuardEbpfPrepareError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    component: PloyzNativeMeshComponent::WireGuard,
+                    message,
+                },
+            })?;
+        if response.peer_machine_id != peer_machine_id
+            || !(MIN_WIREGUARD_MTU..=MAX_WIREGUARD_MTU).contains(&response.path_mtu)
+        {
+            return Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned invalid path MTU testimony for peer {}",
+                machine_id.as_str(),
+                peer_machine_id.as_str()
+            )));
+        }
+        Ok(response)
+    }
+
+    pub(crate) async fn prepare_wireguard(
+        &self,
+        request: DataplanePrepareRequest,
+    ) -> Result<Vec<MachineWireGuardReady>, WireGuardEbpfPrepareError> {
+        let request = self.ployz_native_mesh_prepare_request(request).await?;
+        let request = self.with_wireguard_peers(request).await?;
+        let rpc_request = wireguard_prepare_request(&request);
+        try_join_all(
+            request
+                .machines
+                .iter()
+                .map(|machine_id| prepare_machine_wireguard(self, machine_id, &rpc_request)),
+        )
+        .await
+    }
+
     pub async fn probe_overlay(
         &self,
         operation_id: ployz_core::ids::OperationId,
@@ -76,6 +150,12 @@ impl NatsMachineDataplanePreparer {
             MachinePloyzNativeMeshPrepareRpcOk::PublicKey { .. } => {
                 Err(invalid_ployz_native_mesh_report(format!(
                     "machine {} returned public key for overlay probe request",
+                    machine_id.as_str()
+                )))
+            }
+            MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady { .. } => {
+                Err(invalid_ployz_native_mesh_report(format!(
+                    "machine {} returned wireguard readiness for overlay probe request",
                     machine_id.as_str()
                 )))
             }
@@ -124,6 +204,22 @@ impl NatsMachineDataplanePreparer {
         &self,
         request: PloyzNativeMeshPrepareRequest,
     ) -> Result<PloyzNativeMeshPrepareReport, WireGuardEbpfPrepareError> {
+        let final_request = self.with_wireguard_peers(request).await?;
+        let rpc_request = MachineDataplanePrepareRpcRequest::from(final_request.clone());
+        let machines =
+            try_join_all(final_request.machines.iter().map(|machine_id| {
+                prepare_machine_ployz_native_mesh(self, machine_id, &rpc_request)
+            }))
+            .await?;
+
+        PloyzNativeMeshPrepareReport::for_request(&final_request, machines)
+            .map_err(ployz_native_mesh_report_error)
+    }
+
+    async fn with_wireguard_peers(
+        &self,
+        request: PloyzNativeMeshPrepareRequest,
+    ) -> Result<PloyzNativeMeshPrepareRequest, WireGuardEbpfPrepareError> {
         let peers = if request.peers.is_empty() && request.machines.len() > 1 {
             let rpc_request = read_public_key_request(&request);
             let public_keys = try_join_all(request.machines.iter().map(|machine_id| {
@@ -134,17 +230,7 @@ impl NatsMachineDataplanePreparer {
         } else {
             request.peers.clone()
         };
-
-        let final_request = request.with_peers(peers);
-        let rpc_request = MachineDataplanePrepareRpcRequest::from(final_request.clone());
-        let machines =
-            try_join_all(final_request.machines.iter().map(|machine_id| {
-                prepare_machine_ployz_native_mesh(self, machine_id, &rpc_request)
-            }))
-            .await?;
-
-        PloyzNativeMeshPrepareReport::for_request(&final_request, machines)
-            .map_err(ployz_native_mesh_report_error)
+        Ok(request.with_peers(peers))
     }
 }
 
@@ -243,6 +329,19 @@ fn read_public_key_request(
     )
 }
 
+fn wireguard_prepare_request(
+    request: &PloyzNativeMeshPrepareRequest,
+) -> MachineDataplanePrepareRpcRequest {
+    MachineDataplanePrepareRpcRequest::ployz_native_mesh(
+        request.operation_id.clone(),
+        request.machines.clone(),
+        MachinePloyzNativeMeshPrepareRpcRequest::PrepareWireGuard {
+            endpoint_routes: request.endpoint_routes.clone(),
+            peers: request.peers.clone(),
+        },
+    )
+}
+
 fn wireguard_peers_from_public_keys(
     request: &PloyzNativeMeshPrepareRequest,
     public_keys: &[(MachineId, WireGuardPublicKey)],
@@ -296,9 +395,50 @@ async fn read_machine_wireguard_public_key(
                 machine_id.as_str()
             )))
         }
+        MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned wireguard readiness for public key request",
+                machine_id.as_str()
+            )))
+        }
         MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { .. } => {
             Err(invalid_ployz_native_mesh_report(format!(
                 "machine {} returned overlay probe for public key request",
+                machine_id.as_str()
+            )))
+        }
+    }
+}
+
+async fn prepare_machine_wireguard(
+    preparer: &NatsMachineDataplanePreparer,
+    machine_id: &MachineId,
+    request: &MachineDataplanePrepareRpcRequest,
+) -> Result<MachineWireGuardReady, WireGuardEbpfPrepareError> {
+    let response = request_machine_dataplane(preparer, machine_id, request).await?;
+    match response {
+        MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady {
+            machine_id,
+            readiness,
+        } => Ok(MachineWireGuardReady {
+            machine_id,
+            readiness,
+        }),
+        MachinePloyzNativeMeshPrepareRpcOk::PublicKey { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned public key for wireguard prepare request",
+                machine_id.as_str()
+            )))
+        }
+        MachinePloyzNativeMeshPrepareRpcOk::Ready { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned dataplane readiness for wireguard prepare request",
+                machine_id.as_str()
+            )))
+        }
+        MachinePloyzNativeMeshPrepareRpcOk::OverlayProbe { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned overlay probe for wireguard prepare request",
                 machine_id.as_str()
             )))
         }
@@ -313,6 +453,12 @@ async fn prepare_machine_ployz_native_mesh(
     let response = request_machine_dataplane(preparer, machine_id, request).await?;
     match response {
         MachinePloyzNativeMeshPrepareRpcOk::Ready { readiness } => Ok(readiness),
+        MachinePloyzNativeMeshPrepareRpcOk::WireGuardReady { .. } => {
+            Err(invalid_ployz_native_mesh_report(format!(
+                "machine {} returned wireguard readiness for dataplane prepare request",
+                machine_id.as_str()
+            )))
+        }
         MachinePloyzNativeMeshPrepareRpcOk::PublicKey { .. } => {
             Err(invalid_ployz_native_mesh_report(format!(
                 "machine {} returned public key for dataplane prepare request",

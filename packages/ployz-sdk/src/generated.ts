@@ -574,9 +574,13 @@ export type MachineJoinReportRequest = { join_token: MachineJoinToken, outcome: 
 
 export type MachineJoinReportOutcome = { "outcome": "completed" } | { "outcome": "failed", failure: MachineJoinReportFailure, };
 
-export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "connectivity_proof_failed", evidence: ConnectivityProofEvidence, };
+export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, };
 
-export type MachineJoinReported = { operation_id: OperationId, machine_id: MachineId, last_event_sequence: EventSequence, outcome: MachineJoinReportOutcome, };
+export type MachineJoinReportedOutcome = { "outcome": "completed" } | { "outcome": "failed", failure: MachineJoinReportedFailure, };
+
+export type MachineJoinReportedFailure = { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "connectivity_proof_failed", evidence: ConnectivityProofEvidence, };
+
+export type MachineJoinReported = { operation_id: OperationId, machine_id: MachineId, last_event_sequence: EventSequence, outcome: MachineJoinReportedOutcome, };
 
 export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", message: string, };
 

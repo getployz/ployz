@@ -6,13 +6,11 @@ use std::time::Duration;
 use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest, WireGuardPublicKey};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofEvidenceError, ConnectivityProofUnreachablePeer,
-    RawJoinToken,
+    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, RawJoinToken,
 };
 use ployz_core::ops::{MachineAddOperationState, OperationStatus};
 use ployz_sdk_types::MachineJoinReportError;
 
-use crate::operations::deploy::DataplanePreparer;
 use crate::roles::machine::client::NatsMachineDataplanePreparer;
 
 use super::OperationApiHandlers;
@@ -70,6 +68,8 @@ async fn prove_overlay_connectivity(
     operation_id: OperationId,
     joining_machine_id: MachineId,
 ) -> Result<Option<ConnectivityProofEvidence>, MachineJoinReportError> {
+    let mesh_lock = handlers.controllers.mesh_lock();
+    let _mesh_guard = mesh_lock.lock().await;
     let existing_machines = handlers
         .machine_roster
         .active_machines()
@@ -86,13 +86,14 @@ async fn prove_overlay_connectivity(
         &existing_machines,
         &joining_machine_id,
     )?;
-    let mut members = existing_machines
+    let active_members = existing_machines
         .iter()
         .map(|machine| DataplaneMember {
             machine_id: machine.machine_id.clone(),
             endpoint_subnet: machine.endpoint_subnet.clone(),
         })
         .collect::<Vec<_>>();
+    let mut members = active_members.clone();
     members.push(DataplaneMember {
         machine_id: joining_machine_id.clone(),
         endpoint_subnet: joining_subnet,
@@ -101,44 +102,79 @@ async fn prove_overlay_connectivity(
         .iter()
         .map(|member| member.machine_id.clone())
         .collect::<Vec<_>>();
-    let prepare_request = DataplanePrepareRequest::for_members(operation_id.clone(), members);
-    let mut preparer = NatsMachineDataplanePreparer::new(handlers.intent_change_client.clone())
+    let preparer = NatsMachineDataplanePreparer::new(handlers.intent_change_client.clone())
         .with_request_timeout(CONNECTIVITY_PROOF_PREPARE_REQUEST_TIMEOUT);
-    let report = preparer
-        .prepare_dataplane(prepare_request)
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: format!("dataplane prepare failed: {error:?}"),
-        })?;
+    let proof = async {
+        let ready_machines = preparer
+            .prepare_wireguard(DataplanePrepareRequest {
+                operation_id: operation_id.clone(),
+                membership: members,
+            })
+            .await
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: format!("wireguard prepare failed: {error:?}"),
+            })?;
 
-    // Each existing peer's WireGuard public key (reported by the prepare) is the
-    // probe subject; its bridge gateway is retained only for operator-facing
-    // evidence, not for reachability, which is decided by the handshake.
-    let mut peers = Vec::with_capacity(existing_machines.len());
-    for machine in &existing_machines {
-        let Some(ready) = report
-            .machines
-            .iter()
-            .find(|ready| ready.machine_id == machine.machine_id)
-        else {
-            return Err(MachineJoinReportError::Unavailable {
-                message: corrupt("dataplane prepare report is missing an active machine"),
-            });
-        };
-        peers.push((
-            machine.machine_id.clone(),
-            ready.ready.wireguard.public_key.clone(),
-            machine.endpoint_subnet.bridge_gateway_ipv4(),
-        ));
+        // Each existing peer's WireGuard public key (reported by the prepare) is the
+        // probe subject; its bridge gateway is retained only for operator-facing
+        // evidence, not for reachability, which is decided by the handshake.
+        let mut peers = Vec::with_capacity(existing_machines.len());
+        for machine in &existing_machines {
+            let Some(ready) = ready_machines
+                .iter()
+                .find(|ready| ready.machine_id == machine.machine_id)
+            else {
+                return Err(MachineJoinReportError::Unavailable {
+                    message: corrupt("dataplane prepare report is missing an active machine"),
+                });
+            };
+            peers.push((
+                machine.machine_id.clone(),
+                ready.readiness.public_key.clone(),
+                machine.endpoint_subnet.bridge_gateway_ipv4(),
+            ));
+        }
+        let public_keys = peers.iter().map(|(_, key, _)| key.clone()).collect();
+        let unreachable = preparer
+            .probe_overlay(
+                operation_id.clone(),
+                &joining_machine_id,
+                machine_ids,
+                public_keys,
+            )
+            .await
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: format!("overlay connectivity probe failed: {error:?}"),
+            })?;
+        Ok(connectivity_proof_evidence(&peers, &unreachable))
     }
-    let public_keys = peers.iter().map(|(_, key, _)| key.clone()).collect();
-    let unreachable = preparer
-        .probe_overlay(operation_id, &joining_machine_id, machine_ids, public_keys)
+    .await;
+
+    match proof {
+        Ok(None) => Ok(None),
+        result => {
+            restore_active_mesh(&preparer, operation_id, active_members)
+                .await
+                .map_err(|cleanup| MachineJoinReportError::Unavailable {
+                    message: format!("connectivity proof cleanup failed: {cleanup:?}"),
+                })?;
+            result
+        }
+    }
+}
+
+async fn restore_active_mesh(
+    preparer: &NatsMachineDataplanePreparer,
+    operation_id: OperationId,
+    membership: Vec<DataplaneMember>,
+) -> Result<(), ployz_core::dataplane::WireGuardEbpfPrepareError> {
+    preparer
+        .prepare_wireguard(DataplanePrepareRequest {
+            operation_id,
+            membership,
+        })
         .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: format!("overlay connectivity probe failed: {error:?}"),
-        })?;
-    Ok(connectivity_proof_evidence(&peers, &unreachable))
+        .map(|_| ())
 }
 
 fn connectivity_proof_evidence(
@@ -155,16 +191,7 @@ fn connectivity_proof_evidence(
             },
         )
         .collect::<Vec<_>>();
-    if unreachable_peers.is_empty() {
-        return None;
-    }
-    let evidence = match ConnectivityProofEvidence::try_new(unreachable_peers) {
-        Ok(evidence) => evidence,
-        Err(ConnectivityProofEvidenceError::Empty) => {
-            unreachable!("non-empty connectivity evidence passed validation")
-        }
-    };
-    Some(evidence)
+    ConnectivityProofEvidence::try_new(unreachable_peers).ok()
 }
 
 #[cfg(test)]

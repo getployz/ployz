@@ -315,6 +315,7 @@ pub enum MachineServiceEndpoint {
     ContainerRemove,
     VolumeRemove,
     DataplanePrepare,
+    DataplaneProbeMtu,
     SubstrateUpdate,
     SubstrateReport,
     LogsTail,
@@ -340,6 +341,7 @@ impl MachineServiceEndpoint {
             Self::ContainerRemove => "container.remove",
             Self::VolumeRemove => "volume.remove",
             Self::DataplanePrepare => "dataplane.prepare",
+            Self::DataplaneProbeMtu => "dataplane.probe_mtu",
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
@@ -352,6 +354,7 @@ impl MachineServiceEndpoint {
             Self::Inspect
             | Self::FactsGet
             | Self::ContainerInspect
+            | Self::DataplaneProbeMtu
             | Self::SubstrateReport
             | Self::LogsTail => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
