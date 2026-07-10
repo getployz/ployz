@@ -56,8 +56,8 @@ use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
     MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, NetworkDataplaneTestimony,
     NetworkInternalDnsTestimony, NetworkRepairRequest, NetworkResolveMachineTestimony,
-    NetworkResolveRequest, NetworkStatusRequest, OpsListRequest, VolumeListRequest,
-    VolumeRemoveRequest, VolumeStatus,
+    NetworkResolveRequest, NetworkStatusMachine, NetworkStatusRequest, OpsListRequest,
+    VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
@@ -1279,27 +1279,30 @@ async fn scenario_network_status_resolve_and_repair() {
             assert_unit_active(&core, machine, "ployzd-dns").await;
         }
 
-        let status = core
-            .api
-            .network_status(&NetworkStatusRequest {
-                mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
-            })
-            .await
-            .expect("network status succeeds");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            let status = core
+                .api
+                .network_status(&NetworkStatusRequest {
+                    mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                })
+                .await
+                .expect("network status succeeds");
+            if status.machines.len() == 2 && network_queries_ready(&status.machines) {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "network testimony did not become ready: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
         assert_eq!(
             status.machines.len(),
             2,
             "status follows intended membership"
         );
-        assert!(status.machines.iter().all(|machine| {
-            matches!(
-                machine.dataplane,
-                NetworkDataplaneTestimony::Answered { .. }
-            ) && matches!(
-                machine.internal_dns,
-                NetworkInternalDnsTestimony::Answered { .. }
-            )
-        }));
+        assert!(network_queries_ready(&status.machines));
 
         let resolved = core
             .api
@@ -1309,10 +1312,13 @@ async fn scenario_network_status_resolve_and_repair() {
             .await
             .expect("network resolve succeeds");
         assert_eq!(resolved.machines.len(), 2);
-        assert!(resolved.machines.iter().all(|testimony| matches!(
-            testimony,
-            NetworkResolveMachineTestimony::Answered { addresses, .. } if addresses.is_empty()
-        )));
+        assert!(
+            resolved.machines.iter().all(|testimony| matches!(
+                testimony,
+                NetworkResolveMachineTestimony::Answered { addresses, .. } if addresses.is_empty()
+            )),
+            "unexpected resolver testimony: {resolved:?}"
+        );
 
         let stopped = exec_in_container(
             &docker,
@@ -1369,15 +1375,7 @@ async fn scenario_network_status_resolve_and_repair() {
                 })
                 .await
                 .expect("network status after restart");
-            if status.machines.iter().all(|machine| {
-                matches!(
-                    machine.dataplane,
-                    NetworkDataplaneTestimony::Answered { .. }
-                ) && matches!(
-                    machine.internal_dns,
-                    NetworkInternalDnsTestimony::Answered { .. }
-                )
-            }) {
+            if network_queries_ready(&status.machines) {
                 break;
             }
             assert!(
@@ -1411,6 +1409,46 @@ async fn scenario_network_status_resolve_and_repair() {
     .await;
 
     finish(core).await;
+}
+
+fn network_queries_ready(machines: &[NetworkStatusMachine]) -> bool {
+    machines.iter().all(|machine| {
+        matches!(
+            machine.dataplane,
+            NetworkDataplaneTestimony::Answered { .. }
+        ) && dns_resolver_is_serving(&machine.internal_dns)
+    })
+}
+
+fn dns_resolver_is_serving(testimony: &NetworkInternalDnsTestimony) -> bool {
+    matches!(
+        testimony,
+        NetworkInternalDnsTestimony::Answered {
+            value: ployz_sdk_types::InternalDnsStatus {
+                resolver: ployz_sdk_types::InternalDnsResolverStatus::Serving { .. },
+                ..
+            }
+        }
+    )
+}
+
+#[test]
+fn network_query_readiness_requires_bound_dns_resolver() {
+    let testimony = |resolver| NetworkInternalDnsTestimony::Answered {
+        value: ployz_sdk_types::InternalDnsStatus {
+            resolver,
+            fact_watermarks: Vec::new(),
+        },
+    };
+
+    assert!(!dns_resolver_is_serving(&testimony(
+        ployz_sdk_types::InternalDnsResolverStatus::AwaitingBind { attempts: 1 }
+    )));
+    assert!(dns_resolver_is_serving(&testimony(
+        ployz_sdk_types::InternalDnsResolverStatus::Serving {
+            bound: "10.198.1.1:53".parse().expect("resolver address")
+        }
+    )));
 }
 
 // ---------------------------------------------------------------------------
