@@ -153,11 +153,12 @@ async fn prove_overlay_connectivity(
     match proof {
         Ok(None) => Ok(None),
         result => {
-            restore_active_mesh(&preparer, operation_id, active_members)
-                .await
-                .map_err(|cleanup| MachineJoinReportError::Unavailable {
-                    message: format!("connectivity proof cleanup failed: {cleanup:?}"),
-                })?;
+            // Rolling the rejected joiner back out of the active mesh is
+            // best-effort: a cleanup failure must not erase the proof verdict
+            // (the typed unreachable evidence or the proof-infrastructure
+            // error) that this operation exists to record. A lingering peer
+            // entry converges out on the next successful mesh prepare.
+            let _ = restore_active_mesh(&preparer, operation_id, active_members).await;
             result
         }
     }
