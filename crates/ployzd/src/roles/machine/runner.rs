@@ -63,6 +63,10 @@ pub enum MachineContainerRunnerError {
         container_id: ContainerId,
         message: String,
     },
+    RemoveVolume {
+        docker_volume_name: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +134,11 @@ pub trait MachineContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn remove_volume(
+        &self,
+        docker_volume_name: &str,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 }
 

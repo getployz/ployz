@@ -22,6 +22,8 @@ pub struct ServingTargetEntry {
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub image: ImageReference,
     pub desired_replicas: ReplicaCount,
+    #[serde(default)]
+    pub volume_names: Vec<VolumeName>,
 }
 
 /// Core-owned route-binding intent value.
@@ -139,6 +141,25 @@ pub struct IntentSnapshot {
 }
 
 impl IntentSnapshot {
+    #[must_use]
+    pub fn services_referencing_volume(
+        &self,
+        namespace_id: &NamespaceId,
+        volume_name: &VolumeName,
+    ) -> Vec<ServiceId> {
+        let mut services = self
+            .serving_target_entries
+            .iter()
+            .filter(|entry| {
+                &entry.namespace_id == namespace_id && entry.volume_names.contains(volume_name)
+            })
+            .map(|entry| entry.service_id.clone())
+            .collect::<Vec<_>>();
+        services.sort();
+        services.dedup();
+        services
+    }
+
     /// A specific machine's advertised control endpoints, if the core recorded any.
     #[must_use]
     pub fn control_endpoints_of(&self, machine_id: &MachineId) -> Option<&[IpAddr]> {
