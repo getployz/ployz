@@ -1492,10 +1492,11 @@ fn stderr(output: &Output) -> String {
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock is after unix epoch")
-        .as_nanos();
+    // A per-process atomic counter, not a clock reading: parallel test threads
+    // can observe the same nanosecond and would otherwise share a directory,
+    // racing on the fixture file they each write and read back.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("{}-{}-{unique}", name, std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("temp dir can be created");
