@@ -123,6 +123,7 @@ fn existing_container(
         ExistingManagedContainerState::Running {
             ip: None,
             health: ployz_core::machine_runtime::ContainerHealth::None,
+            started_at_unix_ms: None,
         },
     )
 }

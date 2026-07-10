@@ -10,8 +10,9 @@ use crate::adapters::host_dataplane::{
 };
 use crate::config::MachineProcessConfig;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::roles::machine::current_unix_ms;
 use crate::roles::machine::facts::{
-    MachineEndpointCache, current_unix_ms, read_machine_facts_snapshot, refresh_machine_endpoints,
+    MachineEndpointCache, read_machine_facts_snapshot, refresh_machine_endpoints,
 };
 use crate::roles::machine::images::AvailableImageService;
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
@@ -710,6 +711,7 @@ mod tests {
             state: ExistingManagedContainerState::Running {
                 ip: None,
                 health: ployz_core::machine_runtime::ContainerHealth::None,
+                started_at_unix_ms: None,
             },
             health_status: None,
             resolved_image_identity: None,

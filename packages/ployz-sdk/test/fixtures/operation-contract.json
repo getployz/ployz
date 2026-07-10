@@ -115,7 +115,6 @@
     "machine_id": "core_1",
     "public_url_mode": "auto",
     "roles": {
-      "dns": "install",
       "gateway": "skip"
     }
   },
@@ -132,7 +131,6 @@
     "name": "edge_2",
     "operation_id": "op_machine",
     "roles": {
-      "dns": "install",
       "gateway": "skip"
     }
   },
@@ -241,7 +239,6 @@
       "operation_id": "op_machine",
       "result": "joined",
       "roles": {
-        "dns": "install",
         "gateway": "skip"
       },
       "secret_delivery": {

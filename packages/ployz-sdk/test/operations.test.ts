@@ -438,6 +438,17 @@ test("sdk maps raw machine add input to the wire request", () => {
   );
 });
 
+test("sdk emits the exact required role wire shape", () => {
+  const roles = { gateway: "skip" as const, dns: "skip" as const };
+
+  assert.deepEqual(machineAddRequest({ ...machineAddInput(), roles }).roles, {
+    gateway: "skip",
+  });
+  assert.deepEqual(initFirstMachineActivateRequest({ machineId: "core_1", roles }).roles, {
+    gateway: "skip",
+  });
+});
+
 test("sdk maps raw machine update input to the wire request", () => {
   assert.deepEqual(machineUpdateRequest(machineUpdateInput()), {
     operation_id: "op_update_machine_2_123",
@@ -1136,11 +1147,11 @@ function machineUpdateInput() {
 }
 
 function installAllRoles() {
-  return { gateway: "install" as const, dns: "install" as const };
+  return { gateway: "install" as const };
 }
 
 function gatewaySkippedRoles() {
-  return { gateway: "skip" as const, dns: "install" as const };
+  return { gateway: "skip" as const };
 }
 
 function machineJoinBundle(): MachineJoinBundle {

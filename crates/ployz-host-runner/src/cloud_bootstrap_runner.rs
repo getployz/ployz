@@ -24,7 +24,7 @@ use ployz_core::install::{
     MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
 };
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::roles::{DnsRole, GatewayRole};
+use ployz_core::roles::GatewayRole;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
@@ -425,7 +425,6 @@ fn build_cloud_founder_install_spec(
             .map_err(|error| error.to_string())?,
         dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway: GatewayRole::Install,
-        dns: DnsRole::Install,
         machine_public_ip: Some(public_ip_from_runtime_nats_url(&founder.runtime_nats_url)?),
         machine_bootstrap_url: Some(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)

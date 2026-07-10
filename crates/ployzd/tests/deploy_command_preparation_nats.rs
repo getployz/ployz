@@ -488,9 +488,14 @@ impl MachineContainerRunner for StaticRunner {
 
 fn existing_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
-        ContainerRuntimeState::Running { ip, health } => ExistingManagedContainerState::Running {
+        ContainerRuntimeState::Running {
+            ip,
+            health,
+            started_at_unix_ms,
+        } => ExistingManagedContainerState::Running {
             ip: *ip,
             health: *health,
+            started_at_unix_ms: *started_at_unix_ms,
         },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
