@@ -273,6 +273,9 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             .api
             .deploy_submit(&DeploySubmitRequest {
                 idempotency_key: idempotency_key("idem_dind_convergence_failed"),
+                // The 0.4s outlives at least one 100ms health poll (so the
+                // container is sampled running) yet exits inside the 1.5s
+                // running-confirmation window, exercising the fast-exit race.
                 target: convergence_deploy_target("sleep 0.4; exit 42"),
             })
             .await

@@ -435,26 +435,22 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
                     )
                     .await
                     .map_err(|error| unhealthy_container(container, health_read_error(error)))?;
-                match observation {
-                    Some(observation) => {
-                        match update_container_confirmation(
-                            observed_container_readiness(
-                                &observation,
-                                container.requires_docker_healthcheck,
-                            ),
-                            running_since,
-                            tokio::time::Instant::now(),
-                        ) {
-                            ContainerConfirmation::Confirmed => {}
-                            ContainerConfirmation::Pending => all_confirmed = false,
-                            ContainerConfirmation::Failed(message) => {
-                                return Err(unhealthy_container(container, message));
-                            }
-                        }
-                    }
-                    None => {
-                        *running_since = None;
-                        all_confirmed = false;
+                let readiness = match &observation {
+                    Some(observation) => observed_container_readiness(
+                        observation,
+                        container.requires_docker_healthcheck,
+                    ),
+                    None => ObservedContainerReadiness::Pending,
+                };
+                match update_container_confirmation(
+                    readiness,
+                    running_since,
+                    tokio::time::Instant::now(),
+                ) {
+                    ContainerConfirmation::Confirmed => {}
+                    ContainerConfirmation::Pending => all_confirmed = false,
+                    ContainerConfirmation::Failed(message) => {
+                        return Err(unhealthy_container(container, message));
                     }
                 }
             }
@@ -498,10 +494,7 @@ fn observed_container_readiness(
     match &observation.state {
         ContainerRuntimeState::Running { health, .. } => match health {
             ContainerHealth::Starting => ObservedContainerReadiness::Pending,
-            ContainerHealth::Healthy if requires_docker_healthcheck => {
-                ObservedContainerReadiness::Confirmed
-            }
-            ContainerHealth::Healthy => ObservedContainerReadiness::RunningUnconfirmed,
+            ContainerHealth::Healthy => ObservedContainerReadiness::Confirmed,
             ContainerHealth::Unhealthy => ObservedContainerReadiness::Failed("unhealthy"),
             ContainerHealth::None if requires_docker_healthcheck => {
                 ObservedContainerReadiness::Pending
@@ -652,21 +645,23 @@ mod tests {
     }
 
     #[test]
-    fn health_classifies_unrequired_docker_health_as_running_unconfirmed() {
-        assert_eq!(
-            observed_container_readiness(
-                &observation(
-                    "machine_a",
-                    "ctr_1",
-                    ContainerRuntimeState::Running {
-                        ip: None,
-                        health: ContainerHealth::Healthy,
-                    },
+    fn health_confirms_docker_healthy_regardless_of_requirement() {
+        for requires_docker_healthcheck in [false, true] {
+            assert_eq!(
+                observed_container_readiness(
+                    &observation(
+                        "machine_a",
+                        "ctr_1",
+                        ContainerRuntimeState::Running {
+                            ip: None,
+                            health: ContainerHealth::Healthy,
+                        },
+                    ),
+                    requires_docker_healthcheck,
                 ),
-                false,
-            ),
-            ObservedContainerReadiness::RunningUnconfirmed
-        );
+                ObservedContainerReadiness::Confirmed
+            );
+        }
     }
 
     #[test]
