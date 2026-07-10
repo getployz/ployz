@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ManagedLeaseRecord;
+use crate::cert::{ManagedCertBundle, ManagedLeaseRecord};
 use crate::dataplane::MachineEndpointSubnet;
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
@@ -138,6 +138,8 @@ pub struct IntentSnapshot {
     pub authorized_users: Vec<NatsAuthorizedUser>,
     #[serde(default)]
     pub managed_lease: Option<ManagedLeaseRecord>,
+    #[serde(default)]
+    pub managed_cert_bundle: Option<ManagedCertBundle>,
 }
 
 impl IntentSnapshot {

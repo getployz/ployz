@@ -225,18 +225,20 @@ async fn load_intent(
         .list()
         .await
         .map_err(|error| error.to_string())?;
-    let managed_lease = match lease_intent
+    let (managed_lease, managed_cert_bundle) = match lease_intent
         .load()
         .await
         .map_err(|error| error.to_string())?
     {
         ployz_core::cert::ManagedLeaseIntent::Auto { state } => match *state {
-            ployz_core::cert::AutoLeaseState::RecordOnly { lease }
-            | ployz_core::cert::AutoLeaseState::Ready { lease, .. } => Some(lease),
-            ployz_core::cert::AutoLeaseState::Unacquired => None,
+            ployz_core::cert::AutoLeaseState::RecordOnly { lease } => (Some(lease), None),
+            ployz_core::cert::AutoLeaseState::Ready { lease, bundle } => {
+                (Some(lease), Some(bundle))
+            }
+            ployz_core::cert::AutoLeaseState::Unacquired => (None, None),
         },
         ployz_core::cert::ManagedLeaseIntent::BringYourOwn
-        | ployz_core::cert::ManagedLeaseIntent::None => None,
+        | ployz_core::cert::ManagedLeaseIntent::None => (None, None),
     };
 
     Ok(IntentSnapshot {
@@ -248,6 +250,7 @@ async fn load_intent(
         volume_pins: namespace_intent.volume_pins,
         authorized_users,
         managed_lease,
+        managed_cert_bundle,
     })
 }
 

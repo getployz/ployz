@@ -25,8 +25,8 @@ pub use exec::{
     ExecOutcome, exec_in_container, read_file_from_container, shell_quote, write_file_in_container,
 };
 pub use machine::{
-    DindMachine, DindMachineRole, MACHINE_GATEWAY_PORT, MACHINE_NATS_PORT, MachineSpec,
-    PublishedPorts,
+    DindMachine, DindMachineRole, MACHINE_GATEWAY_PORT, MACHINE_GATEWAY_TLS_PORT,
+    MACHINE_NATS_PORT, MachineSpec, PublishedPorts,
 };
 
 use bollard::Docker;

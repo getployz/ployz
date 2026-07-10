@@ -492,6 +492,7 @@ mod tests {
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
             managed_lease: None,
+            managed_cert_bundle: None,
         }
     }
 

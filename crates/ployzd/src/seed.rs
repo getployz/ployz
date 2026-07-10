@@ -72,10 +72,15 @@ pub async fn seed_core_from_snapshot(
     for pin in &snapshot.volume_pins {
         namespace.replace_volume_pin(pin.clone()).await?;
     }
-    if let Some(record) = &snapshot.managed_lease {
-        LeaseIntentStore::new(core_store.clone())
-            .restore_lease_record(record.clone())
-            .await?;
+    let lease_store = LeaseIntentStore::new(core_store.clone());
+    match (&snapshot.managed_lease, &snapshot.managed_cert_bundle) {
+        (Some(record), Some(bundle)) => {
+            lease_store
+                .store_lease(record.clone(), bundle.clone())
+                .await?;
+        }
+        (Some(record), None) => lease_store.restore_lease_record(record.clone()).await?,
+        (None, Some(_)) | (None, None) => {}
     }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
@@ -97,7 +102,9 @@ pub async fn seed_core_from_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::cert::{AutoLeaseState, ManagedLeaseAcquireRequest, ManagedLeaseIntent};
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
+    use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn snapshot_at_epoch(epoch: ControlPlaneEpoch) -> IntentSnapshot {
@@ -126,6 +133,7 @@ mod tests {
                 nkey_public: MintedNatsUser::generate().expect("mint").public,
             }],
             managed_lease: None,
+            managed_cert_bundle: None,
         }
     }
 
@@ -147,6 +155,40 @@ mod tests {
         assert_eq!(grants.list().await.expect("grants").len(), 1);
         // max(mirror=3, existing=1) + 1 = 4 — strictly above the succeeded core.
         assert_eq!(store.control_plane_epoch().await.expect("epoch").get(), 4);
+    }
+
+    #[tokio::test]
+    async fn seeding_restores_ready_managed_lease_bundle() {
+        let store = CoreStore::open_in_memory().await.expect("store");
+        let mut worker = StubLeaseWorker::new();
+        let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
+            .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
+                cluster_id: "seed-recovery".to_owned(),
+            }))
+            .expect("acquire fixture lease")
+        else {
+            panic!("acquire returns lease");
+        };
+        let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
+        snapshot.managed_lease = Some(acquired.lease.clone());
+        snapshot.managed_cert_bundle = Some(acquired.bundle.clone());
+
+        seed_core_from_snapshot(&store, &snapshot)
+            .await
+            .expect("seed ready lease");
+
+        assert_eq!(
+            LeaseIntentStore::new(store)
+                .load()
+                .await
+                .expect("load lease"),
+            ManagedLeaseIntent::Auto {
+                state: Box::new(AutoLeaseState::Ready {
+                    lease: acquired.lease,
+                    bundle: acquired.bundle,
+                }),
+            }
+        );
     }
 
     #[tokio::test]

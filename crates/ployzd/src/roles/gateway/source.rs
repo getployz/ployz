@@ -41,6 +41,7 @@ pub async fn load_gateway_projection_input_from_nats(
     let observed_machines = facts.machine_container_snapshots();
 
     Ok(gateway_projection_input_from_state(
+        intent.managed_cert_bundle,
         intent.route_bindings,
         intent.serving_target_entries,
         observed_machines,
@@ -64,11 +65,13 @@ impl From<IntentReadError> for GatewaySourceError {
 }
 
 fn gateway_projection_input_from_state(
+    managed_cert_bundle: Option<ployz_core::cert::ManagedCertBundle>,
     routes: Vec<RouteBindingState>,
     serving: Vec<ServingTargetEntry>,
     observed_machines: Vec<MachineContainerObservationSnapshot>,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
+        managed_cert_bundle,
         routes: routes.into_iter().map(gateway_route_from_state).collect(),
         serving: serving
             .into_iter()

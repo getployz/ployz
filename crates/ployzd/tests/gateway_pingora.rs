@@ -1,9 +1,12 @@
 use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
+use ployz_core::cert::ManagedLeaseAcquireRequest;
+use ployz_core::cert::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
 use ployz_core::ops::{RouteHostnameError, RouteTarget};
+use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 use ployz_test_support::ids::{container_id, machine_id, route_hostname, route_port};
 use ployzd::roles::gateway::pingora::{
     HttpRouteTargetError, PingoraRouteRegistry, PingoraRouteSelectionError,
-    route_target_from_authority,
+    managed_bundle_serves_hostname, route_target_from_authority,
 };
 use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjection, GatewayUpstream,
@@ -11,6 +14,105 @@ use ployzd::roles::gateway::projection::{
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+
+#[test]
+fn managed_bundle_serves_only_apex_and_single_label_sni() {
+    let lease = ManagedLeaseName::try_new("demo").expect("valid lease");
+    let bundle = ManagedCertBundle::try_new(
+        lease.clone(),
+        lease.wildcard_and_apex(),
+        "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
+        "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
+        LeaseIssuedAt::try_new(1).expect("valid issue time"),
+        LeaseExpiresAt::try_new(2).expect("valid expiry time"),
+    )
+    .expect("valid bundle");
+
+    assert!(managed_bundle_serves_hostname(
+        &bundle,
+        "api.demo.up.ployz.app"
+    ));
+    assert!(managed_bundle_serves_hostname(&bundle, "demo.up.ployz.app"));
+    assert!(!managed_bundle_serves_hostname(
+        &bundle,
+        "nested.api.demo.up.ployz.app"
+    ));
+    assert!(!managed_bundle_serves_hostname(&bundle, "unknown.example"));
+}
+
+#[test]
+fn registry_prepares_tls_for_routed_managed_hostnames_only() {
+    let bundle = valid_bundle();
+    let hostname = format!("api.{}", bundle.lease.hostname_suffix());
+    let registry = PingoraRouteRegistry::new();
+    registry
+        .replace_projection(&GatewayProjection {
+            managed_cert_bundle: Some(bundle.clone()),
+            routes: vec![projected_route_to_endpoint(
+                &hostname,
+                443,
+                "127.0.0.1",
+                8080,
+            )],
+        })
+        .expect("valid TLS projection");
+
+    assert!(registry.is_managed_hostname(&hostname));
+    assert!(!registry.is_managed_hostname(&format!("unrouted.{}", bundle.lease.hostname_suffix())));
+}
+
+#[test]
+fn invalid_tls_projection_retains_previous_routes_and_tls() {
+    let bundle = valid_bundle();
+    let hostname = format!("api.{}", bundle.lease.hostname_suffix());
+    let registry = PingoraRouteRegistry::new();
+    registry
+        .replace_projection(&GatewayProjection {
+            managed_cert_bundle: Some(bundle),
+            routes: vec![projected_route_to_endpoint(
+                &hostname,
+                443,
+                "127.0.0.1",
+                8080,
+            )],
+        })
+        .expect("valid initial TLS projection");
+
+    let invalid = ManagedCertBundle::try_new(
+        ManagedLeaseName::try_new("invalid").expect("valid lease"),
+        ManagedLeaseName::try_new("invalid")
+            .expect("valid lease")
+            .wildcard_and_apex(),
+        "not a certificate".to_owned(),
+        "not a private key".to_owned(),
+        LeaseIssuedAt::try_new(1).expect("valid issue time"),
+        LeaseExpiresAt::try_new(2).expect("valid expiry time"),
+    )
+    .expect("bundle shape is valid");
+    assert!(
+        registry
+            .replace_projection(&GatewayProjection {
+                managed_cert_bundle: Some(invalid),
+                routes: Vec::new(),
+            })
+            .is_err()
+    );
+    assert!(registry.is_managed_hostname(&hostname));
+    assert_eq!(registry.backend_count(&route_target(&hostname, 443)), 1);
+}
+
+fn valid_bundle() -> ManagedCertBundle {
+    let mut worker = StubLeaseWorker::new();
+    let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
+        .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
+            cluster_id: "gateway-test".to_owned(),
+        }))
+        .expect("acquire fixture lease")
+    else {
+        panic!("acquire returns lease");
+    };
+    acquired.bundle
+}
 
 #[test]
 fn pingora_registry_replaces_routes_from_projection() {
@@ -198,6 +300,7 @@ fn selected_addr(registry: &PingoraRouteRegistry, target: &RouteTarget) -> Socke
 
 fn projection(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> GatewayProjection {
     GatewayProjection {
+        managed_cert_bundle: None,
         routes: routes.into_iter().collect(),
     }
 }
