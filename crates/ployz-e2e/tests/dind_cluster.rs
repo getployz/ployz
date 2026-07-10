@@ -15,6 +15,8 @@
 //! failed assertion captures whole-cluster evidence before the panic
 //! propagates.
 
+#[path = "dind_cluster/network.rs"]
+mod network;
 mod support;
 
 use futures_util::StreamExt;

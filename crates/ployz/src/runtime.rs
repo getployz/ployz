@@ -33,6 +33,7 @@ use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 mod deploy_follow;
+mod network;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
@@ -318,6 +319,9 @@ pub async fn execute_command(
             )
             .await
         }
+        PloyzctlCommand::NetworkStatus(command) => network::status(command, config).await,
+        PloyzctlCommand::NetworkResolve(command) => network::resolve(command, config).await,
+        PloyzctlCommand::NetworkRepair(command) => network::repair(command, config).await,
         PloyzctlCommand::ServiceList(command) => {
             render_api_call(
                 config,

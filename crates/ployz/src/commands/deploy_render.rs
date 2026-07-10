@@ -308,6 +308,7 @@ impl DeployTree {
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
+                | OperationKind::NetworkRepair
                 | OperationKind::ServiceRestart
                 | OperationKind::NamespaceRemove
                 | OperationKind::VolumeRemove => {}
@@ -335,6 +336,13 @@ impl DeployTree {
             | OperationEvent::CoreReplaceSubmitted { .. }
             | OperationEvent::CoreReplaceCompleted { .. }
             | OperationEvent::CoreReplaceFailed { .. }
+            | OperationEvent::NetworkRepairSubmitted { .. }
+            | OperationEvent::NetworkRepairRunning { .. }
+            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
+            | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
+            | OperationEvent::NetworkRepairCompleted { .. }
+            | OperationEvent::NetworkRepairFailed { .. }
             | OperationEvent::ServiceRestartSubmitted { .. }
             | OperationEvent::ServiceRestartRunning { .. }
             | OperationEvent::ServiceRestartContainerRestarted { .. }

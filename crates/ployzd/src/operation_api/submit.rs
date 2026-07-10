@@ -5,11 +5,12 @@ use crate::adapters::nats_authorization::MintRequest;
 use crate::operation_api::admission::{
     CoreReplaceSubmitCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
-    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, OperationControllers,
-    ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
+    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::ops::EventSequence;
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
@@ -18,8 +19,8 @@ use ployz_sdk_types::{
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
     MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
-    NamespaceRemoveError, NamespaceRemoveRequest, ServiceRestartError, ServiceRestartRequest,
-    VolumeRemoveError, VolumeRemoveRequest,
+    NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest,
+    ServiceRestartError, ServiceRestartRequest, VolumeRemoveError, VolumeRemoveRequest,
 };
 
 use super::OperationApiHandlers;
@@ -96,6 +97,14 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
+    for service in &command.target.services {
+        validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
+            |message| DeploySubmitError::InvalidTarget {
+                operation_id: operation_id.clone(),
+                message,
+            },
+        )?;
+    }
     validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
     let accepted_execution = handlers
@@ -115,6 +124,22 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted_execution);
 
     Ok(operation)
+}
+
+fn validate_internal_dns_name(
+    namespace_id: &NamespaceId,
+    service_id: &ServiceId,
+) -> Result<(), ployz_core::ops::FailureMessage> {
+    InternalServiceName::try_from_ids(service_id, namespace_id)
+        .map(|_| ())
+        .map_err(|_| {
+            ployz_core::ops::FailureMessage::try_new(format!(
+                "service {} in namespace {} cannot form internal DNS name because each label is limited to 63 bytes",
+                service_id.as_str(),
+                namespace_id.as_str()
+            ))
+            .expect("generated internal DNS validation message is non-empty")
+        })
 }
 
 fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
@@ -296,6 +321,92 @@ pub async fn service_restart(
     );
     handlers.service_restart().start(accepted);
     Ok(operation)
+}
+
+pub async fn network_repair(
+    handlers: &OperationApiHandlers,
+    request: NetworkRepairRequest,
+) -> Result<AcceptedOperation, NetworkRepairError> {
+    let existing = handlers
+        .controllers()
+        .repository()
+        .get(&request.operation_id)
+        .await
+        .map_err(|error| NetworkRepairError::Unavailable {
+            operation_id: request.operation_id.clone(),
+            message: error.to_string(),
+        })?;
+    if existing.is_none() {
+        let active_machine_ids = handlers
+            .intent_reader()
+            .intent()
+            .await
+            .map_err(|error| NetworkRepairError::Unavailable {
+                operation_id: request.operation_id.clone(),
+                message: error.to_string(),
+            })?
+            .active_machines
+            .into_iter()
+            .map(|machine| machine.machine_id)
+            .collect::<Vec<_>>();
+        validate_network_repair_preconditions(
+            &request.operation_id,
+            request.machine_id.as_ref(),
+            &active_machine_ids,
+        )?;
+    }
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_network_repair(NetworkRepairSubmitCommand {
+            operation_id: request.operation_id,
+            target_machine_id: request.machine_id,
+        })
+        .await
+        .map_err(|error| {
+            match super::error_map::unfenced_submit_failure("network-repair", error) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
+                    NetworkRepairError::Unavailable {
+                        operation_id: operation_id.clone(),
+                        message,
+                    }
+                }
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    NetworkRepairError::DuplicateSequenceMismatch {
+                        operation_id: operation_id.clone(),
+                        sequence,
+                    }
+                }
+            }
+        })?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.start_sequence,
+    );
+    handlers.network_repair().start(accepted);
+    Ok(operation)
+}
+
+fn validate_network_repair_preconditions(
+    operation_id: &OperationId,
+    target_machine_id: Option<&MachineId>,
+    active_machine_ids: &[MachineId],
+) -> Result<(), NetworkRepairError> {
+    if active_machine_ids.is_empty() {
+        return Err(NetworkRepairError::NoActiveMachines {
+            operation_id: operation_id.clone(),
+        });
+    }
+    if let Some(machine_id) = target_machine_id
+        && !active_machine_ids.contains(machine_id)
+    {
+        return Err(NetworkRepairError::TargetMachineNotFound {
+            operation_id: operation_id.clone(),
+            machine_id: machine_id.clone(),
+        });
+    }
+    Ok(())
 }
 
 pub async fn namespace_remove(
@@ -492,14 +603,14 @@ pub async fn machine_update(
         .submit_machine_update(request.into())
         .await
         .map_err(|error| {
-            match super::error_map::machine_submit_failure("machine-update", error) {
-                super::error_map::MachineSubmitFailure::Unavailable { message } => {
+            match super::error_map::unfenced_submit_failure("machine-update", error) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
                     MachineUpdateError::Unavailable {
                         operation_id: operation_id.clone(),
                         message,
                     }
                 }
-                super::error_map::MachineSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
                     MachineUpdateError::DuplicateSequenceMismatch {
                         operation_id: operation_id.clone(),
                         sequence,
@@ -572,14 +683,14 @@ async fn machine_lifecycle(
         })
         .await
         .map_err(|error| {
-            match super::error_map::machine_submit_failure("machine-lifecycle", error) {
-                super::error_map::MachineSubmitFailure::Unavailable { message } => {
+            match super::error_map::unfenced_submit_failure("machine-lifecycle", error) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
                     MachineLifecycleError::Unavailable {
                         operation_id: operation_id.clone(),
                         message,
                     }
                 }
-                super::error_map::MachineSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
                     MachineLifecycleError::DuplicateSequenceMismatch {
                         operation_id: operation_id.clone(),
                         sequence,
@@ -685,11 +796,56 @@ mod tests {
     use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
     use ployz_core::image::OciDigest;
     use ployz_core::ops::OperationIdempotencyKey;
-    use ployz_sdk_types::DeploySubmitError;
+    use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
 
     use crate::operation_api::admission::DeploySubmitCommand;
 
-    use super::validate_registry_credentials;
+    use super::{
+        validate_internal_dns_name, validate_network_repair_preconditions,
+        validate_registry_credentials,
+    };
+
+    fn operation_id() -> OperationId {
+        OperationId::try_new("op_network_repair").expect("operation id")
+    }
+
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("machine id")
+    }
+
+    #[test]
+    fn network_repair_requires_an_active_machine_before_admission() {
+        let error = validate_network_repair_preconditions(&operation_id(), None, &[])
+            .expect_err("empty roster must be rejected");
+
+        assert!(matches!(error, NetworkRepairError::NoActiveMachines { .. }));
+    }
+
+    #[test]
+    fn targeted_network_repair_requires_the_target_before_admission() {
+        let error = validate_network_repair_preconditions(
+            &operation_id(),
+            Some(&machine_id("machine_b")),
+            &[machine_id("machine_a")],
+        )
+        .expect_err("unknown target must be rejected");
+
+        assert!(matches!(
+            error,
+            NetworkRepairError::TargetMachineNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
+        let namespace_id = NamespaceId::try_new("default").expect("namespace id");
+        let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
+
+        let failure = validate_internal_dns_name(&namespace_id, &service_id)
+            .expect_err("oversized DNS label must be rejected");
+
+        assert!(failure.as_str().contains("limited to 63 bytes"));
+    }
 
     #[test]
     fn pushed_image_digest_must_match_the_manifest_digest() {

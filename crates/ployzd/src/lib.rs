@@ -23,6 +23,8 @@ pub mod roles {
         pub use internal::InternalResolverHealth;
         pub mod process;
         pub mod projection;
+        pub(crate) mod protocol;
+        pub(crate) mod service;
         pub mod source;
     }
     pub mod gateway {
@@ -41,6 +43,7 @@ pub mod operations {
     pub mod machine_lifecycle;
     pub mod machine_update;
     pub mod namespace_remove;
+    pub mod network_repair;
     pub mod service_restart;
     pub mod volume_remove;
 }
@@ -49,6 +52,7 @@ pub mod dispatch;
 pub mod fact_cache;
 pub mod intent;
 pub mod lease;
+pub(crate) mod machine_runtime;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;

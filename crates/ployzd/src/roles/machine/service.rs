@@ -6,14 +6,19 @@ use super::containers::{
     handle_container_run_hook, handle_container_stop, handle_ensure_endpoint_network,
     handle_volume_remove,
 };
-use super::dataplane::{handle_dataplane_mtu_probe, handle_dataplane_prepare};
-use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
+use super::dataplane::{
+    handle_dataplane_mtu_probe, handle_dataplane_prepare, handle_dataplane_status,
+};
+use super::facts::{
+    MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
+};
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
     handle_image_manifest_push,
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
+use crate::adapters::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::dataplane::{
@@ -39,6 +44,9 @@ pub use super::facts::MachineFactsReadError;
 
 const DATAPLANE_REQUEST_TIMEOUT: Duration =
     OVERLAY_CONNECTIVITY_PROOF_BUDGET.saturating_add(Duration::from_secs(15));
+const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
+    dataplane_status_budget(ployz_core::dataplane::NetworkStatusMode::ProbePathMtu)
+        .saturating_add(Duration::from_secs(10));
 
 pub async fn start_machine_role_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
@@ -107,7 +115,7 @@ where
         runner: runner.clone(),
         client: client.clone(),
     };
-    let mut runtime = start_nats_service(client, &spec)
+    let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .map_err(MachineServiceError::Nats)?;
 
@@ -117,9 +125,22 @@ where
         MachineServiceEndpoint::FactsGet,
         MachineFactsState {
             runner: runner.clone(),
-            endpoint_cache,
+            endpoint_cache: endpoint_cache.clone(),
+            client: client.clone(),
         },
         handle_facts_get,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::FactsRefresh,
+        MachineFactsState {
+            runner: runner.clone(),
+            endpoint_cache,
+            client: client.clone(),
+        },
+        handle_facts_refresh,
     )
     .await?;
     bind_machine_endpoint(
@@ -211,8 +232,16 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::DataplanePrepare,
-        preparer,
+        preparer.clone(),
         handle_dataplane_prepare,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::DataplaneStatus,
+        preparer,
+        handle_dataplane_status,
     )
     .await?;
     bind_machine_endpoint(
@@ -304,6 +333,8 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
     let mut policy = EndpointExecutionPolicy::default();
     if endpoint == MachineServiceEndpoint::DataplanePrepare {
         policy.request_timeout = DATAPLANE_REQUEST_TIMEOUT;
+    } else if endpoint == MachineServiceEndpoint::DataplaneStatus {
+        policy.request_timeout = DATAPLANE_STATUS_ENDPOINT_TIMEOUT;
     }
     policy
 }
@@ -318,6 +349,11 @@ pub trait MachinePloyzNativeMeshPreparer {
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
     ) -> impl Future<Output = Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError>> + Send;
+
+    fn read_ployz_native_mesh_status(
+        &self,
+        mode: ployz_core::dataplane::NetworkStatusMode,
+    ) -> impl Future<Output = Result<ployz_core::dataplane::MachineDataplaneStatus, String>> + Send;
 
     fn prepare_wireguard(
         &self,
@@ -351,5 +387,19 @@ mod tests {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::DataplanePrepare);
 
         assert!(policy.request_timeout > OVERLAY_CONNECTIVITY_PROOF_BUDGET);
+    }
+
+    #[test]
+    fn dataplane_status_endpoint_timeout_covers_snapshot_and_probe_budgets() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::DataplaneStatus);
+
+        assert!(
+            policy.request_timeout
+                > dataplane_status_budget(ployz_core::dataplane::NetworkStatusMode::Snapshot)
+                && policy.request_timeout
+                    > dataplane_status_budget(
+                        ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
+                    )
+        );
     }
 }

@@ -47,24 +47,27 @@ fn dataplane_running_stage_has_stable_wire_name() {
 fn dataplane_prepared_event_has_stable_wire_shape() {
     let event = OperationEvent::DeployDataplanePrepared {
         operation_id: operation_id("op_123"),
-        report: PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
-            machine_id: machine_id("machine_7"),
-            ready: PloyzNativeMeshReady {
-                wireguard: WireGuardReady {
-                    public_key: wireguard_public_key("test-public-key"),
-                    evidence: vec![WireGuardReadyEvidence::Command {
-                        program: "wg".to_owned(),
-                        args: vec!["--version".to_owned()],
-                    }],
+        report: PloyzNativeMeshPrepareReport::for_targets(
+            &[machine_id("machine_7")],
+            [PloyzNativeMeshMachineReady {
+                machine_id: machine_id("machine_7"),
+                ready: PloyzNativeMeshReady {
+                    wireguard: WireGuardReady {
+                        public_key: wireguard_public_key("test-public-key"),
+                        evidence: vec![WireGuardReadyEvidence::Command {
+                            program: "wg".to_owned(),
+                            args: vec!["--version".to_owned()],
+                        }],
+                    },
+                    ebpf_forwarding: EbpfForwardingReady {
+                        evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                            path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                            symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                        }],
+                    },
                 },
-                ebpf_forwarding: EbpfForwardingReady {
-                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                        symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                    }],
-                },
-            },
-        }])
+            }],
+        )
         .expect("valid report"),
     };
 

@@ -1096,25 +1096,31 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
         3,
         ployz_core::ops::OperationEvent::DeployDataplanePrepared {
             operation_id: operation_id("op_123"),
-            report: PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
-                machine_id: machine_id("machine_1"),
-                ready: PloyzNativeMeshReady {
-                    wireguard: WireGuardReady {
-                        public_key: WireGuardPublicKey::try_new("public-key-1")
-                            .expect("valid wireguard public key"),
-                        evidence: vec![WireGuardReadyEvidence::Command {
-                            program: "wg".to_owned(),
-                            args: vec!["--version".to_owned()],
-                        }],
+            report: PloyzNativeMeshPrepareReport::for_targets(
+                &[machine_id("machine_1")],
+                [PloyzNativeMeshMachineReady {
+                    machine_id: machine_id("machine_1"),
+                    ready: PloyzNativeMeshReady {
+                        wireguard: WireGuardReady {
+                            public_key: WireGuardPublicKey::try_new("public-key-1")
+                                .expect("valid wireguard public key"),
+                            evidence: vec![WireGuardReadyEvidence::Command {
+                                program: "wg".to_owned(),
+                                args: vec!["--version".to_owned()],
+                            }],
+                        },
+                        ebpf_forwarding: EbpfForwardingReady {
+                            evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                                path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                                symbols: vec![
+                                    "ployz_egress".to_owned(),
+                                    "ployz_ingress".to_owned(),
+                                ],
+                            }],
+                        },
                     },
-                    ebpf_forwarding: EbpfForwardingReady {
-                        evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                            path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                            symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                        }],
-                    },
-                },
-            }])
+                }],
+            )
             .expect("dataplane report is valid"),
         },
     );

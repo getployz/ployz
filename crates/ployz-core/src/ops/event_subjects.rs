@@ -62,6 +62,21 @@ impl OperationEvent {
             Self::CoreReplaceSubmitted { .. } => "core.replace.submitted".to_owned(),
             Self::CoreReplaceCompleted { .. } => "core.replace.completed".to_owned(),
             Self::CoreReplaceFailed { .. } => "core.replace.failed".to_owned(),
+            Self::NetworkRepairSubmitted { .. } => "network.repair.submitted".to_owned(),
+            Self::NetworkRepairRunning { stage, .. } => {
+                format!("network.repair.running.{}", stage.as_subject())
+            }
+            Self::NetworkRepairDataplanePrepared { .. } => {
+                "network.repair.dataplane.prepared".to_owned()
+            }
+            Self::NetworkRepairMachineFactsRefreshed { .. } => {
+                "network.repair.machine_facts.refreshed".to_owned()
+            }
+            Self::NetworkRepairDnsRefreshConfirmed { .. } => {
+                "network.repair.dns_refresh.confirmed".to_owned()
+            }
+            Self::NetworkRepairCompleted { .. } => "network.repair.completed".to_owned(),
+            Self::NetworkRepairFailed { .. } => "network.repair.failed".to_owned(),
             Self::ServiceRestartSubmitted { .. } => "service.restart.submitted".to_owned(),
             Self::ServiceRestartRunning { stage, .. } => {
                 format!("service.restart.running.{}", stage.as_subject())

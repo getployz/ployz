@@ -14,6 +14,10 @@ use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 use crate::commands::PloyzctlCliError;
 use crate::commands::deploy_failure::DeployFailureView;
 
+mod network_repair;
+
+use network_repair::{network_repair_state, render_network_repair_failure};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsStatusCommand {
     pub operation_id: OperationId,
@@ -237,6 +241,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedLease => "managed-lease",
         OperationKind::NamespaceRemove => "namespace-remove",
@@ -287,6 +292,12 @@ fn operation_subject(status: &OperationStatus) -> String {
             "machine {} successor {}",
             machine_id.as_str(),
             successor_nats_url.as_str()
+        ),
+        OperationStatus::NetworkRepair {
+            target_machine_id, ..
+        } => target_machine_id.as_ref().map_or_else(
+            || "cluster".to_owned(),
+            |machine_id| format!("machine {}", machine_id.as_str()),
         ),
         OperationStatus::ServiceRestart { service_id, .. } => {
             format!("service {}", service_id.as_str())
@@ -339,6 +350,7 @@ fn operation_state(status: &OperationStatus) -> String {
             machine_lifecycle_state(state).to_owned()
         }
         OperationStatus::CoreReplace { state, .. } => core_replace_state(state).to_owned(),
+        OperationStatus::NetworkRepair { state, .. } => network_repair_state(state).to_owned(),
         OperationStatus::ServiceRestart { state, .. } => service_restart_state(state).to_owned(),
         OperationStatus::ManagedLease { state, .. } => managed_lease_state(state).to_owned(),
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
@@ -434,6 +446,13 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             render_deploy_failure_detail(failure, Some(service_id))
         )),
+        OperationStatus::NetworkRepair {
+            state: ployz_sdk_types::NetworkRepairOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            render_network_repair_failure(failure)
+        )),
         OperationStatus::ManagedLease {
             state: ployz_sdk_types::ManagedLeaseOperationState::Failed { failure },
             ..
@@ -444,6 +463,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::MachineUpdate { .. }
         | OperationStatus::MachineLifecycle { .. }
         | OperationStatus::CoreReplace { .. }
+        | OperationStatus::NetworkRepair { .. }
         | OperationStatus::ServiceRestart { .. }
         | OperationStatus::ManagedLease { .. }
         | OperationStatus::NamespaceRemove { .. }
@@ -585,6 +605,13 @@ impl DeployEventRenderContext {
             | OperationEvent::CoreReplaceSubmitted { .. }
             | OperationEvent::CoreReplaceCompleted { .. }
             | OperationEvent::CoreReplaceFailed { .. }
+            | OperationEvent::NetworkRepairSubmitted { .. }
+            | OperationEvent::NetworkRepairRunning { .. }
+            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
+            | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
+            | OperationEvent::NetworkRepairCompleted { .. }
+            | OperationEvent::NetworkRepairFailed { .. }
             | OperationEvent::ServiceRestartSubmitted { .. }
             | OperationEvent::ServiceRestartRunning { .. }
             | OperationEvent::ServiceRestartContainerRestarted { .. }
@@ -619,6 +646,12 @@ fn render_replayed_event_text(
             event.sequence.get(),
             label,
             render_deploy_failure_detail(failure, context.service_id.as_ref())
+        ),
+        OperationEvent::NetworkRepairFailed { failure, .. } => format!(
+            "{} {} {}",
+            event.sequence.get(),
+            label,
+            render_network_repair_failure(failure)
         ),
         OperationEvent::DeployImageResolved {
             service_id,
@@ -671,6 +704,12 @@ fn render_replayed_event_text(
         | OperationEvent::CoreReplaceSubmitted { .. }
         | OperationEvent::CoreReplaceCompleted { .. }
         | OperationEvent::CoreReplaceFailed { .. }
+        | OperationEvent::NetworkRepairSubmitted { .. }
+        | OperationEvent::NetworkRepairRunning { .. }
+        | OperationEvent::NetworkRepairDataplanePrepared { .. }
+        | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
+        | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
+        | OperationEvent::NetworkRepairCompleted { .. }
         | OperationEvent::ServiceRestartSubmitted { .. }
         | OperationEvent::ServiceRestartRunning { .. }
         | OperationEvent::ServiceRestartContainerRestarted { .. }
@@ -751,6 +790,19 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CoreReplaceSubmitted { .. } => "core.replace.submitted",
         OperationEvent::CoreReplaceCompleted { .. } => "core.replace.completed",
         OperationEvent::CoreReplaceFailed { .. } => "core.replace.failed",
+        OperationEvent::NetworkRepairSubmitted { .. } => "network.repair.submitted",
+        OperationEvent::NetworkRepairRunning { .. } => "network.repair.running",
+        OperationEvent::NetworkRepairDataplanePrepared { .. } => {
+            "network.repair.dataplane_prepared"
+        }
+        OperationEvent::NetworkRepairMachineFactsRefreshed { .. } => {
+            "network.repair.machine_facts_refreshed"
+        }
+        OperationEvent::NetworkRepairDnsRefreshConfirmed { .. } => {
+            "network.repair.dns_refresh_confirmed"
+        }
+        OperationEvent::NetworkRepairCompleted { .. } => "network.repair.completed",
+        OperationEvent::NetworkRepairFailed { .. } => "network.repair.failed",
         OperationEvent::ServiceRestartSubmitted { .. } => "service.restart.submitted",
         OperationEvent::ServiceRestartRunning { .. } => "service.restart.running",
         OperationEvent::ServiceRestartContainerRestarted { .. } => {

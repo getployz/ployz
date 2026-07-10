@@ -160,6 +160,17 @@ pub struct NamespaceRemoveOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkRepairOperationSubmission {
+    pub operation_id: OperationId,
+    pub target_machine_id: Option<MachineId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NetworkRepairPayload {
+    pub(super) target_machine_id: Option<MachineId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedLeaseOperationSubmission {
     pub operation_id: OperationId,
     pub subject: ManagedLeaseSubject,
@@ -244,6 +255,14 @@ pub struct AcceptedNamespaceRemoveSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
     pub namespace_id: NamespaceId,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedNetworkRepairSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub target_machine_id: Option<MachineId>,
     pub should_start_execution: bool,
 }
 
@@ -346,6 +365,8 @@ pub type RecordDeployTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;
 pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
+pub type RecordNetworkRepairTransitionError = RecordOperationEventError;
+pub type RecordNetworkRepairEvidenceError = RecordOperationEventError;
 pub type RecordVolumeRemoveTransitionError = RecordOperationEventError;
 pub type RecordManagedLeaseTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
