@@ -142,17 +142,6 @@ pub struct IntentSnapshot {
 
 impl IntentSnapshot {
     #[must_use]
-    pub fn volume_is_referenced(
-        &self,
-        namespace_id: &NamespaceId,
-        volume_name: &VolumeName,
-    ) -> bool {
-        self.serving_target_entries.iter().any(|entry| {
-            &entry.namespace_id == namespace_id && entry.volume_names.contains(volume_name)
-        })
-    }
-
-    #[must_use]
     pub fn services_referencing_volume(
         &self,
         namespace_id: &NamespaceId,

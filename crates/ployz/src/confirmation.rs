@@ -7,6 +7,32 @@ use ployz_core::ids::NamespaceId;
 
 use crate::runtime::PloyzctlExecutionError;
 
+/// Prompt on stderr, read one line from stdin, and require it to equal
+/// `expected`. `read_error` classifies an stderr/stdin I/O failure;
+/// `not_confirmed` classifies a mismatched answer. Both destructive gates
+/// share this skeleton so only the prompt, the expected phrase, and the two
+/// error shapes vary.
+fn read_typed_confirmation(
+    prompt: &str,
+    expected: &str,
+    read_error: impl Fn(String) -> PloyzctlExecutionError,
+    not_confirmed: impl FnOnce() -> PloyzctlExecutionError,
+) -> Result<(), PloyzctlExecutionError> {
+    eprint!("{prompt}");
+    io::stderr()
+        .flush()
+        .map_err(|error| read_error(error.to_string()))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| read_error(error.to_string()))?;
+    if answer.trim() == expected {
+        Ok(())
+    } else {
+        Err(not_confirmed())
+    }
+}
+
 pub(crate) fn confirm_namespace_remove(
     namespace_id: &NamespaceId,
 ) -> Result<(), PloyzctlExecutionError> {
@@ -15,25 +41,14 @@ pub(crate) fn confirm_namespace_remove(
         volume_backed_services: Vec::new(),
     }
     .prompt();
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(|error| {
-        PloyzctlExecutionError::ReadNamespaceRemoveConfirmation {
-            message: error.to_string(),
-        }
-    })?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer).map_err(|error| {
-        PloyzctlExecutionError::ReadNamespaceRemoveConfirmation {
-            message: error.to_string(),
-        }
-    })?;
-    if answer.trim() == namespace_id.as_str() {
-        Ok(())
-    } else {
-        Err(PloyzctlExecutionError::NamespaceRemoveNotConfirmed {
+    read_typed_confirmation(
+        &prompt,
+        namespace_id.as_str(),
+        |message| PloyzctlExecutionError::ReadNamespaceRemoveConfirmation { message },
+        || PloyzctlExecutionError::NamespaceRemoveNotConfirmed {
             namespace_id: namespace_id.clone(),
-        })
-    }
+        },
+    )
 }
 
 pub(crate) fn confirm_volume_remove(
@@ -44,24 +59,13 @@ pub(crate) fn confirm_volume_remove(
         namespace_id: namespace_id.clone(),
         volume_name: volume_name.clone(),
     };
-    eprint!("{}", confirmation.prompt());
-    io::stderr().flush().map_err(
-        |error| PloyzctlExecutionError::ReadVolumeRemoveConfirmation {
-            message: error.to_string(),
-        },
-    )?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer).map_err(|error| {
-        PloyzctlExecutionError::ReadVolumeRemoveConfirmation {
-            message: error.to_string(),
-        }
-    })?;
-    if answer.trim() == confirmation.confirmation() {
-        Ok(())
-    } else {
-        Err(PloyzctlExecutionError::VolumeRemoveNotConfirmed {
+    read_typed_confirmation(
+        &confirmation.prompt(),
+        &confirmation.confirmation(),
+        |message| PloyzctlExecutionError::ReadVolumeRemoveConfirmation { message },
+        || PloyzctlExecutionError::VolumeRemoveNotConfirmed {
             namespace_id: namespace_id.clone(),
             volume_name: volume_name.clone(),
-        })
-    }
+        },
+    )
 }

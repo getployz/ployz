@@ -35,10 +35,13 @@ fn volume_snapshots(intent: &IntentSnapshot) -> Vec<VolumeSnapshot> {
             namespace_id: pin.namespace_id.clone(),
             volume_name: pin.volume_name.clone(),
             machine_id: pin.machine_id.clone(),
-            status: if intent.volume_is_referenced(&pin.namespace_id, &pin.volume_name) {
-                VolumeStatus::InUse
-            } else {
+            status: if intent
+                .services_referencing_volume(&pin.namespace_id, &pin.volume_name)
+                .is_empty()
+            {
                 VolumeStatus::Orphaned
+            } else {
+                VolumeStatus::InUse
             },
         })
         .collect::<Vec<_>>();
