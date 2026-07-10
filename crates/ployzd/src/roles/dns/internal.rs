@@ -101,12 +101,13 @@ pub(super) async fn query_bound_resolver(
         socket.send(&a_query_packet(name)?).await?;
         let mut response = [0_u8; 4096];
         let length = socket.recv(&mut response).await?;
-        parse_a_response(response.get(..length).ok_or_else(|| {
-            io::Error::new(
+        let Some(response) = response.get(..length) else {
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "DNS response length exceeded buffer",
-            )
-        })?)
+            ));
+        };
+        parse_a_response(response)
     })
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local DNS resolver timed out"))?

@@ -19,53 +19,40 @@ pub(super) struct HostDataplaneRouteProgramming {
 
 impl HostDataplaneRouteProgramming {
     pub(super) async fn attachment_status(&self, timeout: Duration) -> EbpfAttachmentStatus {
-        let pin_path = self
-            .ebpf_pin_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(ployz_ebpf_common::DEFAULT_PIN_PATH));
-        let missing = ["routes", "egress", "ingress"]
-            .into_iter()
-            .map(|name| pin_path.join(name))
-            .find(|path| !path.exists());
-        if let Some(path) = missing {
-            return EbpfAttachmentStatus::Detached {
-                message: format!("required eBPF pin is missing: {}", path.display()),
-            };
-        }
-        for direction in ["ingress", "egress"] {
-            let mut command = Command::new("tc");
-            command
-                .args(["filter", "show", "dev", &self.bridge_ifname, direction])
-                .kill_on_drop(true);
-            let output = match tokio::time::timeout(timeout, command.output()).await {
-                Err(_) => {
-                    return EbpfAttachmentStatus::Unknown {
-                        message: format!("tc {direction} inspection timed out"),
-                    };
+        let args = ebpf_ctl_args(
+            &self.ebpf_pin_path,
+            ["status".to_owned(), self.bridge_ifname.clone()],
+        );
+        let mut command = Command::new(&self.ebpf_ctl_program);
+        command.args(args).kill_on_drop(true);
+        match tokio::time::timeout(timeout, command.output()).await {
+            Err(_) => EbpfAttachmentStatus::Unknown {
+                message: "eBPF attachment inspection timed out".to_owned(),
+            },
+            Ok(Err(error)) => EbpfAttachmentStatus::Unknown {
+                message: format!("eBPF attachment inspection failed: {error}"),
+            },
+            Ok(Ok(output)) if output.status.success() => EbpfAttachmentStatus::Attached,
+            Ok(Ok(output))
+                if output.status.code()
+                    == Some(i32::from(ployz_ebpf_common::EBPF_STATUS_DETACHED_EXIT_CODE)) =>
+            {
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                EbpfAttachmentStatus::Detached {
+                    message: if message.is_empty() {
+                        "Ployz eBPF programs are detached".to_owned()
+                    } else {
+                        message
+                    },
                 }
-                Ok(Err(error)) => {
-                    return EbpfAttachmentStatus::Unknown {
-                        message: format!("tc {direction} inspection failed: {error}"),
-                    };
-                }
-                Ok(Ok(output)) if output.status.success() => output,
-                Ok(Ok(output)) => {
-                    return EbpfAttachmentStatus::Unknown {
-                        message: format!(
-                            "tc {direction} inspection failed: {}",
-                            String::from_utf8_lossy(&output.stderr).trim()
-                        ),
-                    };
-                }
-            };
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if !stdout.contains("bpf") || !stdout.contains(&format!("ployz_{direction}")) {
-                return EbpfAttachmentStatus::Detached {
-                    message: format!("ployz {direction} filter is not attached"),
-                };
             }
+            Ok(Ok(output)) => EbpfAttachmentStatus::Unknown {
+                message: format!(
+                    "eBPF attachment inspection failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            },
         }
-        EbpfAttachmentStatus::Attached
     }
 
     pub(super) fn wireguard_plans_for(

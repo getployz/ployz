@@ -40,6 +40,7 @@ pub mod operations {
     pub mod deploy;
     pub mod log;
     pub mod machine_lifecycle;
+    pub(crate) mod machine_runtime;
     pub mod machine_update;
     pub mod namespace_remove;
     pub mod network_repair;

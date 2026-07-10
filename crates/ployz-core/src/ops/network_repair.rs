@@ -1,5 +1,5 @@
-//! Network repair operation: re-apply the cluster dataplane projection to
-//! every active machine through one bounded operation.
+//! Network repair operation: re-apply the cluster dataplane projection to all
+//! active machines or one selected active machine through a bounded operation.
 
 use serde::{Deserialize, Serialize};
 

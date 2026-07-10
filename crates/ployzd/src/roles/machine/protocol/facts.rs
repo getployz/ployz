@@ -17,7 +17,8 @@ pub struct MachineFactsGetRpcOk {
 
 impl MachineRpcResponder for MachineFactsGetRpcOk {
     fn responder_machine_id(&self) -> &MachineId {
-        self.facts.machine_id()
+        let Self { facts } = self;
+        facts.machine_id()
     }
 }
 
@@ -43,7 +44,10 @@ pub struct MachineFactsRefreshRpcOk {
 
 impl MachineRpcResponder for MachineFactsRefreshRpcOk {
     fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id, .. } = self;
+        let Self {
+            machine_id,
+            observed_at_unix_ms: _,
+        } = self;
         machine_id
     }
 }

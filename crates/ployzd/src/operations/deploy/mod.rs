@@ -19,13 +19,13 @@ use ployz_core::ops::{
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
+pub use crate::operations::machine_runtime::MachineRuntimeUnavailableReason;
 pub use facts::{
     DeployFactLoadError, DeployMachineCandidates, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
-    DeployOperationRecordError, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    PreStartHookRuntimeError,
+    DeployOperationRecordError, MachineContainerRuntimeError, PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 use images::{dataplane_prepare_request, ensure_images, machine_image_pull};

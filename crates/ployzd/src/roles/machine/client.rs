@@ -1,9 +1,9 @@
 //! Request-side NATS adapters for machine-local services.
 
 use crate::operations::deploy::{
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    PreStartHookRuntimeError,
+    MachineContainerRuntime, MachineContainerRuntimeError, PreStartHookRuntimeError,
 };
+use crate::operations::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
@@ -1042,7 +1042,7 @@ pub(super) fn wrong_response_machine(
     Some(MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id })
 }
 
-pub(super) fn unavailable_reason(
+pub(crate) fn unavailable_reason(
     error: NatsJsonServiceRequestError,
 ) -> MachineRuntimeUnavailableReason {
     match error {

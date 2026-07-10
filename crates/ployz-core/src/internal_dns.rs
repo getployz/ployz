@@ -10,7 +10,6 @@ use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
-const MAX_DNS_NAME_LEN: usize = 253;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -73,10 +72,9 @@ impl InternalServiceName {
         if !suffix.eq_ignore_ascii_case(INTERNAL_DNS_SUFFIX) {
             return Err(InternalServiceNameError { name });
         }
-        if name.len() > MAX_DNS_NAME_LEN
-            || [service, namespace, suffix]
-                .iter()
-                .any(|label| label.len() > MAX_DNS_LABEL_LEN)
+        if [service, namespace, suffix]
+            .iter()
+            .any(|label| label.len() > MAX_DNS_LABEL_LEN)
         {
             return Err(InternalServiceNameError { name });
         }

@@ -20,7 +20,11 @@ pub struct MachineDataplaneStatusRpcOk {
 
 impl MachineRpcResponder for MachineDataplaneStatusRpcOk {
     fn responder_machine_id(&self) -> &MachineId {
-        &self.machine_id
+        let Self {
+            machine_id,
+            value: _,
+        } = self;
+        machine_id
     }
 }
 

@@ -8,10 +8,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::state::ActiveMachineState;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::service_protocol::NatsServiceErrorCode;
-use ployz_nats::service_runtime::{
-    NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
-};
+use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveError,
     NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkResolveResult,
@@ -19,10 +16,13 @@ use ployz_sdk_types::{
 };
 
 use crate::intent::service::NatsIntentReader;
+use crate::operations::machine_runtime::MachineRequestFailure;
 use crate::roles::dns::service::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
 };
-use crate::roles::machine::client::{DEFAULT_MACHINE_RPC_TIMEOUT, MAX_CONCURRENT_MACHINE_READS};
+use crate::roles::machine::client::{
+    DEFAULT_MACHINE_RPC_TIMEOUT, MAX_CONCURRENT_MACHINE_READS, unavailable_reason,
+};
 use crate::roles::machine::protocol::{
     MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
@@ -39,47 +39,27 @@ enum NetworkRequestFailure {
 }
 
 fn network_request_failure(error: NatsJsonServiceRequestError) -> NetworkRequestFailure {
-    match error {
-        NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::NoResponders,
-        } => NetworkRequestFailure::NoAnswer,
-        NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::TimedOut,
-        }
-        | NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code: NatsServiceErrorCode::Timeout,
-                    ..
-                },
-        } => NetworkRequestFailure::TimedOut,
-        NatsJsonServiceRequestError::ServiceProtocol { error } => {
-            NetworkRequestFailure::ProtocolFailed {
-                message: error.to_string(),
+    match unavailable_reason(error).into_request_failure() {
+        MachineRequestFailure::NoAnswer => NetworkRequestFailure::NoAnswer,
+        MachineRequestFailure::TimedOut => NetworkRequestFailure::TimedOut,
+        MachineRequestFailure::RequestFailed { message } => NetworkRequestFailure::RequestFailed {
+            message: message.to_string(),
+        },
+        MachineRequestFailure::WrongResponder { actual_machine_id } => {
+            NetworkRequestFailure::RequestFailed {
+                message: format!(
+                    "machine runtime replied for a different machine: {}",
+                    actual_machine_id.as_str()
+                ),
             }
         }
-        NatsJsonServiceRequestError::DecodeResponse { message } => {
-            NetworkRequestFailure::DecodeFailed { message }
+        MachineRequestFailure::ProtocolFailed { message } => {
+            NetworkRequestFailure::ProtocolFailed {
+                message: message.to_string(),
+            }
         }
-        error @ NatsJsonServiceRequestError::EncodeRequest { .. }
-        | error @ NatsJsonServiceRequestError::Request {
-            failure:
-                NatsServiceRequestFailure::InvalidSubject
-                | NatsServiceRequestFailure::MaxPayloadExceeded
-                | NatsServiceRequestFailure::Other { .. },
-        }
-        | error @ NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code:
-                        NatsServiceErrorCode::BadRequest
-                        | NatsServiceErrorCode::Conflict
-                        | NatsServiceErrorCode::Unavailable
-                        | NatsServiceErrorCode::Internal,
-                    ..
-                },
-        } => NetworkRequestFailure::RequestFailed {
-            message: error.to_string(),
+        MachineRequestFailure::DecodeFailed { message } => NetworkRequestFailure::DecodeFailed {
+            message: message.to_string(),
         },
     }
 }

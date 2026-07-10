@@ -42,14 +42,13 @@ where
     if let Err(response) = decode_json_request::<MachineFactsRefreshRpcRequest>(&request) {
         return response;
     }
+    let endpoints = match state.endpoint_cache.latest() {
+        Some(observation) => Some(observation),
+        None => observe_interface_endpoints(&machine_id, state.endpoint_cache.wg_ifname()).await,
+    };
     let refreshed = tokio::time::timeout(
         MACHINE_FACTS_REFRESH_TIMEOUT,
-        publish_machine_facts(
-            &state.client,
-            &machine_id,
-            &state.runner,
-            &state.endpoint_cache,
-        ),
+        publish_machine_facts_snapshot(&state.client, &machine_id, &state.runner, endpoints),
     )
     .await;
     match refreshed {
@@ -87,6 +86,18 @@ where
     R: MachineContainerRunner,
 {
     let endpoints = refresh_machine_endpoints(machine_id, endpoint_cache).await;
+    publish_machine_facts_snapshot(client, machine_id, runner, endpoints).await
+}
+
+async fn publish_machine_facts_snapshot<R>(
+    client: &async_nats::Client,
+    machine_id: &MachineId,
+    runner: &R,
+    endpoints: Option<MachineEndpointObservation>,
+) -> Result<MachineFactsSnapshot, MachineFactsPublishError>
+where
+    R: MachineContainerRunner,
+{
     let facts = read_machine_facts_snapshot(machine_id, runner, endpoints, current_unix_ms())
         .await
         .map_err(MachineFactsPublishError::Read)?;

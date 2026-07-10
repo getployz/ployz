@@ -2,12 +2,14 @@
 
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
-use crate::operations::deploy::MachineRuntimeUnavailableReason;
-use crate::operations::log::{AcceptedNetworkRepairSubmission, RecordOperationEventError};
+use crate::operations::log::{
+    AcceptedNetworkRepairSubmission, OperationStatusStoreError, RecordOperationEventError,
+};
+use crate::operations::machine_runtime::{MachineRequestFailure, MachineRuntimeUnavailableReason};
 use crate::roles::dns::service::{DnsStatusRpcOk, DnsStatusRpcRequest};
 use crate::roles::machine::client::{
     MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader,
+    NatsMachineFactsReader, unavailable_reason,
 };
 use crate::tasks::TaskRegistry;
 use futures_util::{StreamExt, stream};
@@ -22,10 +24,7 @@ use ployz_core::ops::{
     NetworkRepairRequestFailure, NetworkRepairRunningStage, NetworkRepairTransition,
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::service_protocol::NatsServiceErrorCode;
-use ployz_nats::service_runtime::{
-    NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
-};
+use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
 use std::time::Duration;
 
 const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -442,7 +441,7 @@ impl NetworkRepairOperation {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(_) if attempts < RECORD_ATTEMPTS => {
+                Err(error) if attempts < RECORD_ATTEMPTS && retryable_record_failure(&error) => {
                     tokio::time::sleep(RECORD_RETRY_DELAY).await;
                 }
                 Err(error) => return Err(error),
@@ -465,13 +464,20 @@ impl NetworkRepairOperation {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(_) if attempts < RECORD_ATTEMPTS => {
+                Err(error) if attempts < RECORD_ATTEMPTS && retryable_record_failure(&error) => {
                     tokio::time::sleep(RECORD_RETRY_DELAY).await;
                 }
                 Err(error) => return Err(error),
             }
         }
     }
+}
+
+fn retryable_record_failure(error: &RecordOperationEventError) -> bool {
+    matches!(
+        error,
+        RecordOperationEventError::StoreStatus(OperationStatusStoreError::Index { .. })
+    )
 }
 
 fn network_repair_failure(error: DataplanePrepareError) -> NetworkRepairFailure {
@@ -514,81 +520,26 @@ fn machine_facts_refresh_outcome(
 fn machine_runtime_request_failure(
     reason: MachineRuntimeUnavailableReason,
 ) -> NetworkRepairRequestFailure {
-    let message = reason.failure_message();
-    match reason {
-        MachineRuntimeUnavailableReason::NoResponders => NetworkRepairRequestFailure::NoAnswer,
-        MachineRuntimeUnavailableReason::RequestTimedOut
-        | MachineRuntimeUnavailableReason::ServiceTimedOut { .. } => {
-            NetworkRepairRequestFailure::TimedOut
+    match reason.into_request_failure() {
+        MachineRequestFailure::NoAnswer => NetworkRepairRequestFailure::NoAnswer,
+        MachineRequestFailure::TimedOut => NetworkRepairRequestFailure::TimedOut,
+        MachineRequestFailure::RequestFailed { message } => {
+            NetworkRepairRequestFailure::RequestFailed { message }
         }
-        MachineRuntimeUnavailableReason::MalformedServiceError { .. } => {
+        MachineRequestFailure::ProtocolFailed { message } => {
             NetworkRepairRequestFailure::ProtocolFailed { message }
         }
-        MachineRuntimeUnavailableReason::DecodeResponse { .. } => {
+        MachineRequestFailure::DecodeFailed { message } => {
             NetworkRepairRequestFailure::DecodeFailed { message }
         }
-        MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id } => {
+        MachineRequestFailure::WrongResponder { actual_machine_id } => {
             NetworkRepairRequestFailure::WrongResponder { actual_machine_id }
-        }
-        MachineRuntimeUnavailableReason::EncodeRequest { .. }
-        | MachineRuntimeUnavailableReason::InvalidSubject
-        | MachineRuntimeUnavailableReason::MaxPayloadExceeded
-        | MachineRuntimeUnavailableReason::RequestFailed { .. }
-        | MachineRuntimeUnavailableReason::ServiceBadRequest { .. }
-        | MachineRuntimeUnavailableReason::ServiceConflict { .. }
-        | MachineRuntimeUnavailableReason::ServiceUnavailable { .. }
-        | MachineRuntimeUnavailableReason::ServiceInternal { .. } => {
-            NetworkRepairRequestFailure::RequestFailed { message }
         }
     }
 }
 
 fn dns_request_failure(error: NatsJsonServiceRequestError) -> NetworkRepairRequestFailure {
-    match error {
-        NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::NoResponders,
-        } => NetworkRepairRequestFailure::NoAnswer,
-        NatsJsonServiceRequestError::Request {
-            failure: NatsServiceRequestFailure::TimedOut,
-        }
-        | NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code: NatsServiceErrorCode::Timeout,
-                    ..
-                },
-        } => NetworkRepairRequestFailure::TimedOut,
-        NatsJsonServiceRequestError::ServiceProtocol { error } => {
-            NetworkRepairRequestFailure::ProtocolFailed {
-                message: failure_message(error.to_string()),
-            }
-        }
-        NatsJsonServiceRequestError::DecodeResponse { message } => {
-            NetworkRepairRequestFailure::DecodeFailed {
-                message: failure_message(message),
-            }
-        }
-        error @ NatsJsonServiceRequestError::EncodeRequest { .. }
-        | error @ NatsJsonServiceRequestError::Request {
-            failure:
-                NatsServiceRequestFailure::InvalidSubject
-                | NatsServiceRequestFailure::MaxPayloadExceeded
-                | NatsServiceRequestFailure::Other { .. },
-        }
-        | error @ NatsJsonServiceRequestError::Service {
-            failure:
-                ployz_nats::service_protocol::NatsServiceError {
-                    code:
-                        NatsServiceErrorCode::BadRequest
-                        | NatsServiceErrorCode::Conflict
-                        | NatsServiceErrorCode::Unavailable
-                        | NatsServiceErrorCode::Internal,
-                    ..
-                },
-        } => NetworkRepairRequestFailure::RequestFailed {
-            message: failure_message(error.to_string()),
-        },
-    }
+    machine_runtime_request_failure(unavailable_reason(error))
 }
 
 fn stale_machine_ids(
@@ -660,9 +611,23 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 mod tests {
     use super::*;
     use ployz_core::internal_dns::InternalDnsStatus;
+    use ployz_nats::service_runtime::NatsServiceRequestFailure;
 
     fn machine_id(value: &str) -> MachineId {
         MachineId::try_new(value).expect("valid machine id")
+    }
+
+    #[test]
+    fn record_retries_only_storage_failures() {
+        let storage = RecordOperationEventError::StoreStatus(OperationStatusStoreError::Index {
+            message: "database unavailable".to_owned(),
+        });
+        let invariant = RecordOperationEventError::MissingOperation {
+            operation_id: OperationId::try_new("op_network_repair").expect("operation id"),
+        };
+
+        assert!(retryable_record_failure(&storage));
+        assert!(!retryable_record_failure(&invariant));
     }
 
     #[test]
