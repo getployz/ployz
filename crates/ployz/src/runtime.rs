@@ -424,12 +424,19 @@ pub async fn execute_command(
             }
         }
         PloyzctlCommand::OpsStatus(command) => {
-            render_api_call(
-                config,
-                async |api| api.ops_status(&command.into_request()).await,
-                |snapshot| crate::commands::ops::StatusOutput::new(snapshot).render(),
-            )
-            .await
+            let api = operation_api_client(config).await?;
+            let operation_id = command.operation_id;
+            let snapshot = api
+                .ops_status(&OpsStatusRequest {
+                    operation_id: operation_id.clone(),
+                })
+                .await
+                .map_err(api_error)?;
+            let events =
+                replay_operation_events(&api, operation_replay_request(operation_id)).await?;
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::ops::StatusOutput::new(snapshot, events).render(),
+            ))
         }
         PloyzctlCommand::OpsList(command) => {
             render_api_call(
@@ -532,6 +539,25 @@ pub(crate) async fn watch_operation_until_terminal(
     poll_interval: Duration,
 ) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
     watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
+}
+
+async fn replay_operation_events(
+    api: &OperationApiClient,
+    mut request: OperationEventReplayRequest,
+) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+    let mut events = Vec::new();
+    loop {
+        let page = api.ops_watch(&request).await.map_err(api_error)?;
+        events.extend(page.events);
+        match page.cursor {
+            OperationEventReplayCursor::More {
+                next_start_sequence,
+            } => request.start_sequence = next_start_sequence,
+            OperationEventReplayCursor::CaughtUp | OperationEventReplayCursor::Terminal => {
+                return Ok(events);
+            }
+        }
+    }
 }
 
 async fn watch_operation_until_terminal_with(

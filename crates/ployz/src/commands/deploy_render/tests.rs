@@ -11,7 +11,7 @@ use ployz_core::ids::{
 use ployz_core::ops::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage,
     EventSequence, FailureMessage, HealthCheckFailure, OperationEvent, OperatorHint,
-    RetainedArtifact, RouteHostname, RoutePort,
+    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
 };
 
 fn operation_id() -> OperationId {
@@ -225,7 +225,7 @@ fn happy_events() -> Vec<ReplayedOperationEvent> {
 
 fn happy_tree() -> DeployTree {
     let mut tree = DeployTree::new();
-    tree.ingest_page(&happy_events(), Duration::from_secs(4));
+    tree.ingest_page(&happy_events());
     tree
 }
 
@@ -237,8 +237,8 @@ fn happy_path_renders_plain_milestones_and_final_tree() {
         render_plain_lines(&tree),
         concat!(
             "deploy op_317: planning — 2 services\n",
-            "deploy op_317: images — ghcr.io/acme/web:1 resolved\n",
-            "deploy op_317: images — ghcr.io/acme/worker:1 resolved\n",
+            "deploy op_317: images — ghcr.io/acme/web:1 planned\n",
+            "deploy op_317: images — ghcr.io/acme/worker:1 planned\n",
             "deploy op_317: worker — worker.1 already at target on hetzner-2\n",
             "deploy op_317: web — web.1 running on hetzner-1\n",
             "deploy op_317: web — web.2 running on hetzner-2\n",
@@ -246,7 +246,7 @@ fn happy_path_renders_plain_milestones_and_final_tree() {
             "deploy op_317: web — web.2 healthy on hetzner-2\n",
             "deploy op_317: routes — app.example.com → web:8080\n",
             "deploy op_317: routes — worker → public URL (auto)\n",
-            "deploy op_317: succeeded in 4s\n",
+            "deploy op_317: succeeded\n",
         )
     );
 
@@ -268,7 +268,7 @@ fn happy_path_renders_plain_milestones_and_final_tree() {
             "    ✓ worker → public URL (auto)\n",
         )
     );
-    assert_eq!(render_success(&tree), "Deploy succeeded in 4s.\n");
+    assert_eq!(render_success(&tree), "Deploy succeeded.\n");
 }
 
 #[test]
@@ -280,7 +280,7 @@ fn final_render_has_the_grounded_three_level_tree_and_success_line() {
     assert!(output.contains("  images\n"));
     assert!(output.contains("  web\n    ✓ web.1 on hetzner-1 — healthy\n"));
     assert!(output.contains("  routes\n"));
-    assert!(output.ends_with("Deploy succeeded in 4s.\n"));
+    assert!(output.ends_with("Deploy succeeded.\n"));
     assert!(!output.contains("http"));
 }
 
@@ -290,7 +290,7 @@ fn starting_container_count_advances_plan_lines_without_attribution() {
     let first_started = events.get(..6).expect("happy path has a first start");
     let second_started = events.get(6..7).expect("happy path has a second start");
     let mut tree = DeployTree::new();
-    tree.ingest_page(first_started, Duration::from_secs(1));
+    tree.ingest_page(first_started);
 
     let first_frame = render_frame(&tree);
     assert!(first_frame.contains("✓ web.1 on hetzner-1 — created"));
@@ -307,7 +307,7 @@ fn starting_container_count_advances_plan_lines_without_attribution() {
         1
     );
 
-    tree.ingest_page(second_started, Duration::from_secs(1));
+    tree.ingest_page(second_started);
     let second_frame = render_frame(&tree);
     assert!(second_frame.contains("✓ web.1 on hetzner-1 — created"));
     assert!(second_frame.contains("✓ web.2 on hetzner-2 — created"));
@@ -318,33 +318,29 @@ fn starting_container_count_advances_plan_lines_without_attribution() {
 fn partial_completion_stays_distinct_from_success() {
     let operation_id = operation_id();
     let mut tree = DeployTree::new();
-    tree.ingest_page(
-        &[
-            replay(
-                1,
-                OperationEvent::DeploySubmitted {
-                    operation_id: operation_id.clone(),
-                    target: single_service_target(),
-                },
-            ),
-            replay(
-                2,
-                OperationEvent::DeployCompleted {
-                    operation_id,
-                    outcome: DeployCompletionOutcome::PartiallyCompletedWithWarnings,
-                },
-            ),
-        ],
-        Duration::from_secs(3),
-    );
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: single_service_target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployCompleted {
+                operation_id,
+                outcome: DeployCompletionOutcome::PartiallyCompletedWithWarnings,
+            },
+        ),
+    ]);
 
     assert!(
-        render_plain_lines(&tree)
-            .ends_with("deploy op_317: partially completed with warnings in 3s\n")
+        render_plain_lines(&tree).ends_with("deploy op_317: partially completed with warnings\n")
     );
     assert_eq!(
         render_success(&tree),
-        "Deploy partially completed with warnings in 3s.\n"
+        "Deploy partially completed with warnings.\n"
     );
 }
 
@@ -352,40 +348,33 @@ fn partial_completion_stays_distinct_from_success() {
 fn early_artifact_failure_is_minimal() {
     let operation_id = operation_id();
     let mut tree = DeployTree::new();
-    tree.ingest_page(
-        &[
-            replay(
-                1,
-                OperationEvent::DeploySubmitted {
-                    operation_id: operation_id.clone(),
-                    target: target(),
-                },
-            ),
-            replay(
-                2,
-                OperationEvent::DeployFailed {
-                    operation_id,
-                    failure: DeployOperationFailure::ArtifactUnavailable {
-                        service_id: service_id("worker"),
-                        namespace_revision_entry_id: NamespaceRevisionEntryId::try_new(
-                            "entry_worker",
-                        )
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure: DeployOperationFailure::ArtifactUnavailable {
+                    service_id: service_id("worker"),
+                    namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("entry_worker")
                         .expect("valid namespace revision entry id"),
-                        reason: ArtifactUnavailableReason::BundleUnreadable {
-                            message: FailureMessage::try_new("registry denied the pull")
-                                .expect("valid failure message"),
-                        },
+                    reason: ArtifactUnavailableReason::BundleUnreadable {
+                        message: FailureMessage::try_new("registry denied the pull")
+                            .expect("valid failure message"),
                     },
                 },
-            ),
-        ],
-        Duration::from_secs(2),
-    );
+            },
+        ),
+    ]);
 
     let output = render_failure_block(&tree);
-    assert!(
-        output.starts_with("Deploy failed in 2s — image-resolve-pull-failed, service worker.\n")
-    );
+    assert!(output.starts_with("Deploy failed — image-resolve-pull-failed, service worker.\n"));
     assert!(output.contains(
         "  ✗ image ghcr.io/acme/worker:1 could not be resolved: registry denied the pull\n"
     ));
@@ -403,39 +392,36 @@ fn early_artifact_failure_is_minimal() {
 fn route_cutover_failure_makes_no_safety_claim() {
     let operation_id = operation_id();
     let mut tree = DeployTree::new();
-    tree.ingest_page(
-        &[
-            replay(
-                1,
-                OperationEvent::DeploySubmitted {
-                    operation_id: operation_id.clone(),
-                    target: single_service_target(),
-                },
-            ),
-            replay(
-                2,
-                OperationEvent::DeployFailed {
-                    operation_id,
-                    failure: DeployOperationFailure::RouteCutoverFailed {
-                        route: ployz_core::ops::RouteTarget {
-                            hostname: RouteHostname::try_new("app.example.com")
-                                .expect("valid hostname"),
-                            port: route_port(443),
-                        },
-                        reason: RouteCutoverFailureReason::RouteRejected {
-                            message: FailureMessage::try_new("hostname already bound")
-                                .expect("valid failure message"),
-                        },
-                        retained_artifacts: Vec::new(),
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: single_service_target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure: DeployOperationFailure::RouteCutoverFailed {
+                    route: ployz_core::ops::RouteTarget {
+                        hostname: RouteHostname::try_new("app.example.com")
+                            .expect("valid hostname"),
+                        port: route_port(443),
                     },
+                    reason: RouteCutoverFailureReason::RouteRejected {
+                        message: FailureMessage::try_new("hostname already bound")
+                            .expect("valid failure message"),
+                    },
+                    retained_artifacts: Vec::new(),
                 },
-            ),
-        ],
-        Duration::from_secs(12),
-    );
+            },
+        ),
+    ]);
 
     let output = render_failure_block(&tree);
-    assert!(output.starts_with("Deploy failed in 12s — route-cutover-failed, service web.\n"));
+    assert!(output.starts_with("Deploy failed — route-cutover-failed, service web.\n"));
     assert!(output.contains("  ✗ route app.example.com:443 rejected: hostname already bound\n"));
     assert!(!output.contains("Nothing changed"));
     assert!(!output.contains("Serving is unchanged."));
@@ -448,47 +434,42 @@ fn route_cutover_failure_makes_no_safety_claim() {
 fn deep_health_failure_keeps_container_evidence_and_hints() {
     let operation_id = operation_id();
     let mut tree = DeployTree::new();
-    tree.ingest_page(
-        &[
-            replay(
-                1,
-                OperationEvent::DeploySubmitted {
-                    operation_id: operation_id.clone(),
-                    target: single_service_target(),
-                },
-            ),
-            replay(
-                2,
-                OperationEvent::DeployFailed {
-                    operation_id,
-                    failure: DeployOperationFailure::HealthCheckFailed {
-                        health_check: HealthCheckFailure::ProbeFailed {
-                            machine_id: machine_id("hetzner-1"),
-                            container_id: container_id("web-1"),
-                            message: FailureMessage::try_new("HTTP probe returned status 503")
-                                .expect("valid failure message"),
-                            log_hint: OperatorHint::try_new("inspect the service logs")
-                                .expect("valid operator hint"),
-                        },
-                        retained_artifacts: vec![RetainedArtifact::StartedContainer {
-                            machine_id: machine_id("hetzner-1"),
-                            container_id: container_id("web-1"),
-                            log_hint: OperatorHint::try_new("ployz logs web --failed")
-                                .expect("valid operator hint"),
-                        }],
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: single_service_target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure: DeployOperationFailure::HealthCheckFailed {
+                    health_check: HealthCheckFailure::ProbeFailed {
+                        machine_id: machine_id("hetzner-1"),
+                        container_id: container_id("web-1"),
+                        message: FailureMessage::try_new("HTTP probe returned status 503")
+                            .expect("valid failure message"),
+                        log_hint: OperatorHint::try_new("inspect the service logs")
+                            .expect("valid operator hint"),
                     },
+                    retained_artifacts: vec![RetainedArtifact::StartedContainer {
+                        machine_id: machine_id("hetzner-1"),
+                        container_id: container_id("web-1"),
+                        log_hint: OperatorHint::try_new("ployz logs web --failed")
+                            .expect("valid operator hint"),
+                    }],
                 },
-            ),
-        ],
-        Duration::from_secs(9),
-    );
+            },
+        ),
+    ]);
 
     let output = render_failure_block(&tree);
-    assert!(
-        output.starts_with("Deploy failed in 9s — health-gate-failed, service web on hetzner-1.\n")
-    );
+    assert!(output.starts_with("Deploy failed — health-gate-failed, service web on hetzner-1.\n"));
     assert!(output.contains("  ✗ health check failed: HTTP probe returned status 503\n"));
-    assert!(output.contains("    failed container retained on hetzner-1\n"));
+    assert!(output.contains("    failed container web-1 retained on hetzner-1\n"));
     assert!(output.contains("Serving is unchanged."));
     assert!(output.contains("logs:      ployz logs web -n prod --failed"));
     assert!(output.contains("timeline:  ployz ops status op_317"));

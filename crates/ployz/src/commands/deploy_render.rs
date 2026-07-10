@@ -1,25 +1,16 @@
-use std::time::Duration;
-
-use ployz_core::dataplane::{DataplaneProviderFailure, PloyzNativeMeshComponent};
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
-    ArtifactUnavailableReason, CancellationReason, ControlPlaneCommitScope, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, HealthCheckFailure,
-    OperationEvent, OperationKind, ReplayedOperationEvent, RouteCutoverFailureReason,
-};
-use ployz_core::state::MachineUsabilityReason;
-
-use crate::commands::ops::{
-    deploy_failure_containers, deploy_failure_machines, deploy_failure_service,
+    CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
+    DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
 };
 
-use self::failure::{artifact_unavailable_reason, failure_cause};
-
-mod failure;
+use super::deploy_failure::{
+    DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
+};
 
 const SPINNER_FRAMES: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -53,18 +44,9 @@ enum PlannedStage {
 
 enum DeployResult {
     Active,
-    Completed {
-        outcome: DeployCompletionOutcome,
-        elapsed: Duration,
-    },
-    Failed {
-        failure: DeployOperationFailure,
-        elapsed: Duration,
-    },
-    Cancelled {
-        reason: CancellationReason,
-        elapsed: Duration,
-    },
+    Completed { outcome: DeployCompletionOutcome },
+    Failed { failure: DeployOperationFailure },
+    Cancelled { reason: CancellationReason },
 }
 
 impl DeployTree {
@@ -76,9 +58,9 @@ impl DeployTree {
         }
     }
 
-    pub(crate) fn ingest_page(&mut self, events: &[ReplayedOperationEvent], elapsed: Duration) {
+    pub(crate) fn ingest_page(&mut self, events: &[ReplayedOperationEvent]) {
         for replayed in events {
-            self.ingest(&replayed.event, elapsed);
+            self.ingest(&replayed.event);
         }
     }
 
@@ -86,7 +68,7 @@ impl DeployTree {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
-    fn ingest(&mut self, event: &OperationEvent, elapsed: Duration) {
+    fn ingest(&mut self, event: &OperationEvent) {
         match event {
             OperationEvent::DeploySubmitted {
                 operation_id,
@@ -110,7 +92,7 @@ impl DeployTree {
                     let target = &deploy.target;
                     for image in distinct_images(target) {
                         self.plain_lines.push(format!(
-                            "deploy {}: images — {} resolved",
+                            "deploy {}: images — {} planned",
                             operation_id.as_str(),
                             image
                         ));
@@ -237,16 +219,12 @@ impl DeployTree {
                     | DeployCompletionOutcome::PartiallyCompletedWithWarnings => {}
                 }
                 self.plain_lines.push(format!(
-                    "deploy {}: {} in {}s",
+                    "deploy {}: {}",
                     operation_id.as_str(),
-                    completion_text(*outcome),
-                    elapsed.as_secs()
+                    completion_text(*outcome)
                 ));
                 if let Some(deploy) = &mut self.deploy {
-                    deploy.result = DeployResult::Completed {
-                        outcome: *outcome,
-                        elapsed,
-                    };
+                    deploy.result = DeployResult::Completed { outcome: *outcome };
                 }
             }
             OperationEvent::DeployFailed {
@@ -256,7 +234,6 @@ impl DeployTree {
                 if let Some(deploy) = &mut self.deploy {
                     deploy.result = DeployResult::Failed {
                         failure: failure.clone(),
-                        elapsed,
                     };
                 }
             }
@@ -274,7 +251,6 @@ impl DeployTree {
                     if let Some(deploy) = &mut self.deploy {
                         deploy.result = DeployResult::Cancelled {
                             reason: reason.clone(),
-                            elapsed,
                         };
                     }
                 }
@@ -442,6 +418,16 @@ impl DeployTree {
             .as_ref()
             .is_some_and(|deploy| matches!(deploy.result, DeployResult::Active))
     }
+
+    pub(super) fn requested_image(&self, service_id: &ployz_core::ids::ServiceId) -> Option<&str> {
+        self.deploy
+            .as_ref()?
+            .target
+            .services
+            .iter()
+            .find(|service| &service.service_id == service_id)
+            .map(|service| service.image.as_str())
+    }
 }
 
 /// One child line of a stage group.
@@ -450,10 +436,10 @@ impl DeployTree {
 /// spinner. `Pending` lines are spinner candidates: while the deploy is
 /// active, exactly one pending line per frame — the first in display order —
 /// renders as the spinner plus its `active` text; every other pending line
-/// renders as `·` plus its `idle` text. `queued` marks work that has not
-/// begun; a group whose every child is queued and that does not hold the
-/// spinner collapses to its named title line, per the pinned rule that
-/// pending stages sit collapsed and named.
+/// renders as `·` plus its `idle` text. [`PendingPhase::Queued`] marks work
+/// that has not begun; a group whose every child is queued and that does not
+/// hold the spinner collapses to its named title line, per the pinned rule
+/// that pending stages sit collapsed and named.
 enum TreeLine {
     Settled {
         text: String,
@@ -461,8 +447,13 @@ enum TreeLine {
     Pending {
         active: String,
         idle: String,
-        queued: bool,
+        phase: PendingPhase,
     },
+}
+
+enum PendingPhase {
+    Engaged,
+    Queued,
 }
 
 pub(crate) fn render_frame(tree: &DeployTree) -> String {
@@ -532,7 +523,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
             && !children.is_empty()
             && children.iter().all(|child| match child {
                 TreeLine::Settled { .. } => false,
-                TreeLine::Pending { queued, .. } => *queued,
+                TreeLine::Pending { phase, .. } => matches!(phase, PendingPhase::Queued),
             });
         if collapsed {
             lines.push(format!("  {title}    queued"));
@@ -567,11 +558,9 @@ fn render_success(tree: &DeployTree) -> String {
         return String::new();
     };
     match &deploy.result {
-        DeployResult::Completed { outcome, elapsed } => format!(
-            "Deploy {} in {}s.\n",
-            completion_text(*outcome),
-            elapsed.as_secs()
-        ),
+        DeployResult::Completed { outcome } => {
+            format!("Deploy {}.\n", completion_text(*outcome))
+        }
         DeployResult::Active | DeployResult::Failed { .. } | DeployResult::Cancelled { .. } => {
             String::new()
         }
@@ -586,41 +575,9 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
         DeployResult::Active => String::new(),
         DeployResult::Completed { .. } => render_success(tree),
         DeployResult::Failed { .. } => render_failure_block(tree),
-        DeployResult::Cancelled { reason, elapsed } => format!(
-            "Deploy cancelled in {}s — {}.\n",
-            elapsed.as_secs(),
-            reason.as_str()
-        ),
-    }
-}
-
-/// What the failure permits the block to claim about cluster safety.
-///
-/// The variants that reject before any container work carry no
-/// retained-artifact field at all, so "nothing changed" is a typed fact.
-/// Failures at or after route cutover may already have moved routes or
-/// serving intent, so the block makes no safety claim rather than assert
-/// one it cannot know.
-enum FailureSafety {
-    NothingChanged,
-    ServingUnchanged,
-    NoClaim,
-}
-
-const fn failure_safety(failure: &DeployOperationFailure) -> FailureSafety {
-    match failure {
-        DeployOperationFailure::NoUsableMachines { .. }
-        | DeployOperationFailure::PlanningFailed { .. }
-        | DeployOperationFailure::AutoDnsWithoutLease { .. }
-        | DeployOperationFailure::ArtifactUnavailable { .. } => FailureSafety::NothingChanged,
-        DeployOperationFailure::DataplaneUnavailable { .. }
-        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-        | DeployOperationFailure::RuntimeUnavailable { .. }
-        | DeployOperationFailure::ContainerStartFailed { .. }
-        | DeployOperationFailure::HealthCheckFailed { .. } => FailureSafety::ServingUnchanged,
-        DeployOperationFailure::ControlPlaneCommitFailed { .. }
-        | DeployOperationFailure::RouteCutoverFailed { .. } => FailureSafety::NoClaim,
+        DeployResult::Cancelled { reason } => {
+            format!("Deploy cancelled — {}.\n", reason.as_str())
+        }
     }
 }
 
@@ -628,7 +585,7 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
     let Some(deploy) = &tree.deploy else {
         return String::new();
     };
-    let DeployResult::Failed { failure, elapsed } = &deploy.result else {
+    let DeployResult::Failed { failure } = &deploy.result else {
         return String::new();
     };
     let operation_id = deploy.operation_id.as_str();
@@ -637,15 +594,15 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
         [service] => Some(&service.service_id),
         [] | [_, _, ..] => None,
     };
-    let service = deploy_failure_service(failure, target_service);
+    let failure_view = DeployFailureView::new(failure, target_service);
+    let service = failure_view.service();
     let cause = failure_cause(tree, failure);
-    let safety = failure_safety(failure);
-    let machines = deploy_failure_machines(failure);
-    let retained_containers = deploy_failure_containers(failure);
+    let safety = failure_view.safety();
+    let machines = failure_view.machines();
+    let retained_containers = failure_view.containers();
 
     let mut block = format!(
-        "Deploy failed in {}s — {}, service {}{}.\n",
-        elapsed.as_secs(),
+        "Deploy failed — {}, service {}{}.\n",
         failure.failure_class().as_str(),
         service,
         machines
@@ -658,7 +615,8 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
     // this attempt created.
     if let Some(container) = retained_containers.last() {
         block.push_str(&format!(
-            "    failed container retained on {}\n",
+            "    failed container {} retained on {}\n",
+            container.container_id.as_str(),
             container.machine_id.as_str()
         ));
     }
@@ -720,20 +678,9 @@ fn route_text(service_id: &str, route: &DeployRoute) -> String {
 }
 
 fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine> {
-    let failed_service = tree.failure().and_then(|failure| match failure {
-        DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
-        DeployOperationFailure::NoUsableMachines { .. }
-        | DeployOperationFailure::PlanningFailed { .. }
-        | DeployOperationFailure::AutoDnsWithoutLease { .. }
-        | DeployOperationFailure::DataplaneUnavailable { .. }
-        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-        | DeployOperationFailure::RuntimeUnavailable { .. }
-        | DeployOperationFailure::ContainerStartFailed { .. }
-        | DeployOperationFailure::HealthCheckFailed { .. }
-        | DeployOperationFailure::ControlPlaneCommitFailed { .. }
-        | DeployOperationFailure::RouteCutoverFailed { .. } => None,
-    });
+    let failed_service = tree
+        .failure()
+        .and_then(|failure| DeployFailureView::new(failure, None).artifact_service());
     distinct_images(target)
         .into_iter()
         .map(|image| {
@@ -760,7 +707,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                 TreeLine::Pending {
                     active: image.to_owned(),
                     idle: format!("{image} — waiting on images"),
-                    queued: false,
+                    phase: PendingPhase::Engaged,
                 }
             }
         })
@@ -804,7 +751,7 @@ fn render_service_step(
                 return TreeLine::Pending {
                     active: text.clone(),
                     idle: text,
-                    queued: false,
+                    phase: PendingPhase::Engaged,
                 };
             }
             if matches!(tree.stage(), Some(DeployRunningStage::StartingContainers)) {
@@ -816,7 +763,7 @@ fn render_service_step(
                 return TreeLine::Pending {
                     active: format!("{name} — creating"),
                     idle: format!("{name} — queued"),
-                    queued: true,
+                    phase: PendingPhase::Queued,
                 };
             }
             let step_text = if matches!(tree.stage(), Some(DeployRunningStage::PreparingDataplane))
@@ -828,7 +775,7 @@ fn render_service_step(
             TreeLine::Pending {
                 active: format!("{name} — {step_text}"),
                 idle: format!("{name} — queued"),
-                queued: true,
+                phase: PendingPhase::Queued,
             }
         }
     }
@@ -862,7 +809,7 @@ fn render_route_line(tree: &DeployTree, service_id: &str, route: &DeployRoute) -
     TreeLine::Pending {
         active: format!("{text} — {step_text}"),
         idle: format!("{text} — queued"),
-        queued: true,
+        phase: PendingPhase::Queued,
     }
 }
 
@@ -922,8 +869,10 @@ impl DeployTree {
     }
 
     fn route_failed(&self, route: &DeployRoute) -> bool {
-        let Some(DeployOperationFailure::RouteCutoverFailed { route: failed, .. }) = self.failure()
-        else {
+        let Some(failure) = self.failure() else {
+            return false;
+        };
+        let Some(failed) = DeployFailureView::new(failure, None).failed_route() else {
             return false;
         };
         route.target.concrete_target().as_ref() == Some(failed)

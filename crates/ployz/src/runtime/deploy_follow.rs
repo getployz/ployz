@@ -1,5 +1,4 @@
 use std::io::{self, IsTerminal, Write};
-use std::time::Instant;
 
 use ployz_core::ids::OperationId;
 
@@ -18,14 +17,15 @@ pub(super) async fn watch_deploy_operation(
     operation_id: OperationId,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let started_at = Instant::now();
     let mut tree = DeployTree::new();
     let stdout = io::stdout();
-    let stdout_is_terminal = stdout.is_terminal();
+    let mode = if stdout.is_terminal() {
+        DeployOutputMode::Terminal
+    } else {
+        DeployOutputMode::Plain
+    };
     let mut stdout = stdout.lock();
-    let mut previous_frame_lines = 0;
-    let mut plain_output = String::new();
-    let mut rendered_plain_bytes = 0;
+    let mut output = DeployProgressOutput::new(&mut stdout, mode);
 
     watch_operation_until_terminal_with(
         api,
@@ -33,40 +33,81 @@ pub(super) async fn watch_deploy_operation(
         config.ops_watch_timeout(),
         config.ops_watch_poll_interval(),
         |events| {
-            tree.ingest_page(events, started_at.elapsed());
-            if stdout_is_terminal {
+            tree.ingest_page(events);
+            if matches!(mode, DeployOutputMode::Terminal) {
                 tree.tick_spinner();
-                let terminal = render_terminal(&tree);
-                let frame = if terminal.is_empty() {
-                    render_frame(&tree)
-                } else {
-                    render_frame(&tree) + "\n" + &terminal
-                };
-                redraw_frame(&mut stdout, &frame, &mut previous_frame_lines)
-            } else {
-                // The streamed body must stay prefix-stable, so only the
-                // append-only plain lines are diffed here; the failure
-                // block is emitted exactly once after the watch ends.
-                let rendered = render_plain_lines(&tree);
-                if let Some(new_output) = rendered.get(rendered_plain_bytes..) {
-                    plain_output.push_str(new_output);
-                    rendered_plain_bytes = rendered.len();
-                }
-                Ok(())
             }
+            output.render_page(&tree)
         },
     )
     .await?;
+    output.finish(&tree)?;
 
-    if stdout_is_terminal {
-        Ok(PloyzctlExecutionOutput::stdout(String::new()))
-    } else {
-        let failure = render_failure_block(&tree);
-        if !failure.is_empty() {
-            plain_output.push('\n');
-            plain_output.push_str(&failure);
+    Ok(PloyzctlExecutionOutput::stdout(String::new()))
+}
+
+#[derive(Clone, Copy)]
+enum DeployOutputMode {
+    Terminal,
+    Plain,
+}
+
+struct DeployProgressOutput<'a, W> {
+    stdout: &'a mut W,
+    mode: DeployOutputMode,
+    previous_frame_lines: usize,
+    rendered_plain_bytes: usize,
+}
+
+impl<'a, W: Write> DeployProgressOutput<'a, W> {
+    fn new(stdout: &'a mut W, mode: DeployOutputMode) -> Self {
+        Self {
+            stdout,
+            mode,
+            previous_frame_lines: 0,
+            rendered_plain_bytes: 0,
         }
-        Ok(PloyzctlExecutionOutput::stdout(plain_output))
+    }
+
+    fn render_page(&mut self, tree: &DeployTree) -> Result<(), PloyzctlExecutionError> {
+        match self.mode {
+            DeployOutputMode::Terminal => {
+                let terminal = render_terminal(tree);
+                let frame = if terminal.is_empty() {
+                    render_frame(tree)
+                } else {
+                    render_frame(tree) + "\n" + &terminal
+                };
+                redraw_frame(self.stdout, &frame, &mut self.previous_frame_lines)
+            }
+            DeployOutputMode::Plain => self.write_plain(&render_plain_lines(tree)),
+        }
+    }
+
+    fn finish(&mut self, tree: &DeployTree) -> Result<(), PloyzctlExecutionError> {
+        if matches!(self.mode, DeployOutputMode::Plain) {
+            let failure = render_failure_block(tree);
+            if !failure.is_empty() {
+                self.stdout.write_all(b"\n").map_err(write_error)?;
+                self.stdout
+                    .write_all(failure.as_bytes())
+                    .map_err(write_error)?;
+                self.stdout.flush().map_err(write_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_plain(&mut self, rendered: &str) -> Result<(), PloyzctlExecutionError> {
+        let Some(new_output) = rendered.get(self.rendered_plain_bytes..) else {
+            return Ok(());
+        };
+        self.stdout
+            .write_all(new_output.as_bytes())
+            .map_err(write_error)?;
+        self.stdout.flush().map_err(write_error)?;
+        self.rendered_plain_bytes = rendered.len();
+        Ok(())
     }
 }
 
@@ -87,5 +128,23 @@ fn redraw_frame(
 fn write_error(error: io::Error) -> PloyzctlExecutionError {
     PloyzctlExecutionError::WriteDeployProgress {
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_progress_writes_each_append_only_suffix_immediately() {
+        let mut bytes = Vec::new();
+        let mut output = DeployProgressOutput::new(&mut bytes, DeployOutputMode::Plain);
+
+        output.write_plain("planning\n").expect("first page writes");
+        output
+            .write_plain("planning\ncontainer running\n")
+            .expect("second page writes only its suffix");
+
+        assert_eq!(bytes, b"planning\ncontainer running\n");
     }
 }

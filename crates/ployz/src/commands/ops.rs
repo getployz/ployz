@@ -1,17 +1,18 @@
 use clap::Args;
-use ployz_core::ids::{ContainerId, MachineId, OperationId, ServiceId};
+use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
-    CertOperationState, CertRunningStage, ControlPlaneCommitScope, DeployOperationFailure,
-    DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineUpdateOperationState, OperationEvent,
-    OperationEventReplayLimit, OperationEventReplayRequest, OperationKind, OperationStatus,
-    OperationStatusSnapshot, ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason,
+    CertOperationState, CertRunningStage, DeployOperationFailure, DeployOperationState,
+    DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    MachineUpdateOperationState, OperationEvent, OperationEventReplayLimit,
+    OperationEventReplayRequest, OperationKind, OperationStatus, OperationStatusSnapshot,
+    ReplayedOperationEvent,
 };
 use ployz_core::roles::{DnsRole, GatewayRole};
 use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 
 use crate::commands::PloyzctlCliError;
+use crate::commands::deploy_failure::DeployFailureView;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsStatusCommand {
@@ -120,6 +121,7 @@ fn parse_operation_id(operation_id: &str) -> Result<OperationId, PloyzctlCliErro
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusOutput {
     pub snapshot: OperationStatusSnapshot,
+    pub events: Vec<ReplayedOperationEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,8 +162,8 @@ impl ListOutput {
 
 impl StatusOutput {
     #[must_use]
-    pub fn new(snapshot: OperationStatusSnapshot) -> Self {
-        Self { snapshot }
+    pub fn new(snapshot: OperationStatusSnapshot, events: Vec<ReplayedOperationEvent>) -> Self {
+        Self { snapshot, events }
     }
 
     #[must_use]
@@ -170,7 +172,7 @@ impl StatusOutput {
             .map(|detail| format!("{detail}\n"))
             .unwrap_or_default();
 
-        format!(
+        let status = format!(
             "operation {}\nkind {}\n{}\nstate {}\n{}last-event {}\n",
             self.snapshot.status.id().as_str(),
             operation_kind_name(self.snapshot.status.kind()),
@@ -178,7 +180,9 @@ impl StatusOutput {
             operation_state(&self.snapshot.status),
             failure_detail,
             self.snapshot.status.last_event_sequence().get(),
-        )
+        );
+        let timeline = render_watch_events(&self.events, OpsWatchOutput::Text);
+        format!("{status}timeline\n{timeline}")
     }
 }
 
@@ -191,33 +195,35 @@ pub struct WatchOutput {
 impl WatchOutput {
     #[must_use]
     pub fn render(&self) -> String {
-        let rendered = match self.output {
-            OpsWatchOutput::Text => self
-                .events
-                .iter()
-                .scan(
-                    DeployEventRenderContext { service_id: None },
-                    |context, event| {
-                        let rendered = render_replayed_event_text(event, context);
-                        context.observe(&event.event);
-                        Some(rendered)
-                    },
-                )
-                .collect::<Vec<_>>()
-                .join("\n"),
-            OpsWatchOutput::Json => self
-                .events
-                .iter()
-                .map(render_replayed_event_json)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
+        render_watch_events(&self.events, self.output)
+    }
+}
 
-        if rendered.is_empty() {
-            rendered
-        } else {
-            rendered + "\n"
-        }
+fn render_watch_events(events: &[ReplayedOperationEvent], output: OpsWatchOutput) -> String {
+    let rendered = match output {
+        OpsWatchOutput::Text => events
+            .iter()
+            .scan(
+                DeployEventRenderContext { service_id: None },
+                |context, event| {
+                    let rendered = render_replayed_event_text(event, context);
+                    context.observe(&event.event);
+                    Some(rendered)
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("\n"),
+        OpsWatchOutput::Json => events
+            .iter()
+            .map(render_replayed_event_json)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+
+    if rendered.is_empty() {
+        rendered
+    } else {
+        rendered + "\n"
     }
 }
 
@@ -756,221 +762,16 @@ fn render_deploy_failure_detail(
     failure: &DeployOperationFailure,
     service_id: Option<&ServiceId>,
 ) -> String {
+    let failure_view = DeployFailureView::new(failure, service_id);
     let detail = format!(
         "class {} service {} {} {}",
         failure.failure_class().as_str(),
-        deploy_failure_service(failure, service_id),
-        render_deploy_failure_machines(&deploy_failure_machines(failure)),
-        deploy_failure_evidence(failure),
+        failure_view.service(),
+        failure_view.render_machines(),
+        failure_view.evidence(),
     );
-    match failure {
-        DeployOperationFailure::AutoDnsWithoutLease { message, .. } => {
-            format!("{detail} guidance {}", message.as_str())
-        }
-        DeployOperationFailure::NoUsableMachines { .. }
-        | DeployOperationFailure::PlanningFailed { .. }
-        | DeployOperationFailure::ArtifactUnavailable { .. }
-        | DeployOperationFailure::DataplaneUnavailable { .. }
-        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-        | DeployOperationFailure::RuntimeUnavailable { .. }
-        | DeployOperationFailure::ContainerStartFailed { .. }
-        | DeployOperationFailure::HealthCheckFailed { .. }
-        | DeployOperationFailure::ControlPlaneCommitFailed { .. }
-        | DeployOperationFailure::RouteCutoverFailed { .. } => detail,
-    }
-}
-
-/// The service a deploy failure is about. The failure's own typed evidence
-/// wins over the caller's operation-subject fallback: for a multi-service
-/// deploy the subject names only the primary service, while the failure
-/// names the service that actually failed.
-pub(crate) fn deploy_failure_service(
-    failure: &DeployOperationFailure,
-    fallback: Option<&ServiceId>,
-) -> String {
-    deploy_failure_service_id(failure)
-        .or(fallback)
-        .map(|service_id| service_id.as_str().to_owned())
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
-fn deploy_failure_service_id(failure: &DeployOperationFailure) -> Option<&ServiceId> {
-    match failure {
-        DeployOperationFailure::PlanningFailed { service_id, .. }
-        | DeployOperationFailure::AutoDnsWithoutLease { service_id, .. }
-        | DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
-        DeployOperationFailure::ControlPlaneCommitFailed { scope, .. } => match scope {
-            ControlPlaneCommitScope::ServiceEntry { service_id, .. } => Some(service_id),
-            ControlPlaneCommitScope::Namespace { .. }
-            | ControlPlaneCommitScope::VolumePin { .. } => None,
-        },
-        DeployOperationFailure::NoUsableMachines { .. }
-        | DeployOperationFailure::DataplaneUnavailable { .. }
-        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-        | DeployOperationFailure::RuntimeUnavailable { .. }
-        | DeployOperationFailure::ContainerStartFailed { .. }
-        | DeployOperationFailure::HealthCheckFailed { .. }
-        | DeployOperationFailure::RouteCutoverFailed { .. } => None,
-    }
-}
-
-pub(crate) fn deploy_failure_machines(failure: &DeployOperationFailure) -> Vec<&MachineId> {
-    let mut machines = Vec::new();
-    match failure {
-        DeployOperationFailure::NoUsableMachines { reasons } => {
-            for reason in reasons {
-                if !machines.contains(&&reason.machine_id) {
-                    machines.push(&reason.machine_id);
-                }
-            }
-        }
-        DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
-        | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
-        | DeployOperationFailure::ContainerStartFailed { machine_id, .. } => {
-            if !machines.contains(&machine_id) {
-                machines.push(machine_id);
-            }
-        }
-        DeployOperationFailure::DataplanePrepareTimedOut {
-            machines: timed_out,
-            ..
-        } => {
-            for machine_id in timed_out {
-                if !machines.contains(&machine_id) {
-                    machines.push(machine_id);
-                }
-            }
-        }
-        DeployOperationFailure::HealthCheckFailed { health_check, .. } => match health_check {
-            HealthCheckFailure::ProbeFailed { machine_id, .. } => {
-                if !machines.contains(&machine_id) {
-                    machines.push(machine_id);
-                }
-            }
-            HealthCheckFailure::TimedOut { .. } => {}
-        },
-        DeployOperationFailure::RouteCutoverFailed { reason, .. } => match reason {
-            RouteCutoverFailureReason::GatewayUnavailable { machine_id } => {
-                if !machines.contains(&machine_id) {
-                    machines.push(machine_id);
-                }
-            }
-            RouteCutoverFailureReason::RouteRejected { .. }
-            | RouteCutoverFailureReason::StateStoreFailed { .. }
-            | RouteCutoverFailureReason::TimedOut { .. } => {}
-        },
-        DeployOperationFailure::PlanningFailed { .. }
-        | DeployOperationFailure::AutoDnsWithoutLease { .. }
-        | DeployOperationFailure::ArtifactUnavailable { .. }
-        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-        | DeployOperationFailure::ControlPlaneCommitFailed { .. } => {}
-    }
-
-    for artifact in failure.retained_artifacts() {
-        match artifact {
-            RetainedArtifact::CreatedContainer { machine_id, .. }
-            | RetainedArtifact::StartedContainer { machine_id, .. }
-            | RetainedArtifact::ContainerStopFailed { machine_id, .. } => {
-                if !machines.contains(&machine_id) {
-                    machines.push(machine_id);
-                }
-            }
-        }
-    }
-
-    machines
-}
-
-fn render_deploy_failure_machines(machines: &[&MachineId]) -> String {
-    match machines {
-        [] => "machine unknown".to_owned(),
-        [machine_id] => format!("machine {}", machine_id.as_str()),
-        many => format!(
-            "machines {}",
-            many.iter()
-                .map(|machine_id| machine_id.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    }
-}
-
-pub(crate) struct DeployFailureContainerEvidence<'a> {
-    pub machine_id: &'a MachineId,
-    pub container_id: &'a ContainerId,
-    pub log_command: String,
-}
-
-pub(crate) fn deploy_failure_containers(
-    failure: &DeployOperationFailure,
-) -> Vec<DeployFailureContainerEvidence<'_>> {
-    let mut containers = Vec::new();
-    if let DeployOperationFailure::ContainerStartFailed {
-        machine_id,
-        container_id,
-        ..
-    } = failure
-    {
-        containers.push(DeployFailureContainerEvidence {
-            machine_id,
-            container_id,
-            log_command: format!("ployzctl logs {}", container_id.as_str()),
-        });
-    }
-
-    for artifact in failure.retained_artifacts() {
-        match artifact {
-            RetainedArtifact::CreatedContainer {
-                machine_id,
-                container_id,
-                ..
-            }
-            | RetainedArtifact::ContainerStopFailed {
-                machine_id,
-                container_id,
-                ..
-            } => containers.push(DeployFailureContainerEvidence {
-                machine_id,
-                container_id,
-                log_command: format!("ployzctl logs {}", container_id.as_str()),
-            }),
-            RetainedArtifact::StartedContainer {
-                machine_id,
-                container_id,
-                log_hint,
-            } => containers.push(DeployFailureContainerEvidence {
-                machine_id,
-                container_id,
-                log_command: log_hint.as_str().to_owned(),
-            }),
-        }
-    }
-    containers
-}
-
-fn deploy_failure_evidence(failure: &DeployOperationFailure) -> String {
-    let mut container_ids = Vec::new();
-    let mut log_commands = Vec::new();
-    for container in deploy_failure_containers(failure) {
-        if !container_ids.contains(&container.container_id) {
-            container_ids.push(container.container_id);
-        }
-        if !log_commands.contains(&container.log_command) {
-            log_commands.push(container.log_command);
-        }
-    }
-
-    match container_ids.as_slice() {
-        [] => "evidence none".to_owned(),
-        ids => format!(
-            "evidence {} logs {}",
-            ids.iter()
-                .map(|container_id| container_id.as_str())
-                .collect::<Vec<_>>()
-                .join(","),
-            log_commands.join("; ")
-        ),
-    }
+    let Some(guidance) = failure_view.guidance() else {
+        return detail;
+    };
+    format!("{detail} guidance {guidance}")
 }
