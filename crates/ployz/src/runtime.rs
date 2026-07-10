@@ -32,6 +32,8 @@ use ployz_nats::connect::{
 use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
+mod deploy_follow;
+
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
@@ -246,7 +248,8 @@ pub async fn execute_command(
                     stderr: String::new(),
                 });
             }
-            let mut output = watch_accepted_operation(&api, accepted.operation_id, config).await?;
+            let mut output =
+                deploy_follow::watch_deploy_operation(&api, accepted.operation_id, config).await?;
             output.stdout.insert_str(0, &receipt_output);
             Ok(output)
         }
@@ -439,12 +442,19 @@ pub async fn execute_command(
             }
         }
         PloyzctlCommand::OpsStatus(command) => {
-            render_api_call(
-                config,
-                async |api| api.ops_status(&command.into_request()).await,
-                |snapshot| crate::commands::ops::StatusOutput::new(snapshot).render(),
-            )
-            .await
+            let api = operation_api_client(config).await?;
+            let operation_id = command.operation_id;
+            let snapshot = api
+                .ops_status(&OpsStatusRequest {
+                    operation_id: operation_id.clone(),
+                })
+                .await
+                .map_err(api_error)?;
+            let events =
+                replay_operation_events(&api, operation_replay_request(operation_id)).await?;
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::ops::StatusOutput::new(snapshot, events).render(),
+            ))
         }
         PloyzctlCommand::OpsList(command) => {
             render_api_call(
@@ -500,14 +510,7 @@ async fn watch_accepted_operation(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let events = watch_operation_until_terminal(
         api,
-        OperationEventReplayRequest {
-            operation_id,
-            start_sequence: EventSequence::first(),
-            limit: ployz_core::ops::OperationEventReplayLimit::try_new(
-                ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
-            )
-            .expect("max replay limit is valid"),
-        },
+        operation_replay_request(operation_id),
         config.ops_watch_timeout(),
         config.ops_watch_poll_interval(),
     )
@@ -549,9 +552,38 @@ where
 
 pub(crate) async fn watch_operation_until_terminal(
     api: &OperationApiClient,
+    request: OperationEventReplayRequest,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+    watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
+}
+
+async fn replay_operation_events(
+    api: &OperationApiClient,
+    mut request: OperationEventReplayRequest,
+) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+    let mut events = Vec::new();
+    loop {
+        let page = api.ops_watch(&request).await.map_err(api_error)?;
+        events.extend(page.events);
+        match page.cursor {
+            OperationEventReplayCursor::More {
+                next_start_sequence,
+            } => request.start_sequence = next_start_sequence,
+            OperationEventReplayCursor::CaughtUp | OperationEventReplayCursor::Terminal => {
+                return Ok(events);
+            }
+        }
+    }
+}
+
+async fn watch_operation_until_terminal_with(
+    api: &OperationApiClient,
     mut request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
+    mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), PloyzctlExecutionError>,
 ) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
     let operation_id = request.operation_id.clone();
     let started_at = Instant::now();
@@ -561,6 +593,7 @@ pub(crate) async fn watch_operation_until_terminal(
         let page = api.ops_watch(&request).await.map_err(api_error)?;
 
         let cursor = page.cursor;
+        observe_page(&page.events)?;
         if let Some(last_event) = page.events.last()
             && let Some(next_sequence) = next_event_sequence(last_event.sequence)
         {
@@ -598,6 +631,17 @@ pub(crate) async fn watch_operation_until_terminal(
         }
 
         async_sleep(poll_interval).await;
+    }
+}
+
+fn operation_replay_request(operation_id: OperationId) -> OperationEventReplayRequest {
+    OperationEventReplayRequest {
+        operation_id,
+        start_sequence: EventSequence::first(),
+        limit: ployz_core::ops::OperationEventReplayLimit::try_new(
+            ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
+        )
+        .expect("max replay limit is valid"),
     }
 }
 
@@ -816,6 +860,8 @@ pub enum PloyzctlExecutionError {
         operation_id: OperationId,
         timeout: Duration,
     },
+    #[error("failed to write deploy progress: {message}")]
+    WriteDeployProgress { message: String },
 }
 
 impl PloyzctlExecutionError {
