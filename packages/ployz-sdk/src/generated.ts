@@ -224,9 +224,7 @@ export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missi
 
 export type GatewayRole = "install" | "skip";
 
-export type DnsRole = "install" | "skip";
-
-export type InstallRolePolicy = { gateway: GatewayRole, dns: DnsRole, };
+export type InstallRolePolicy = { gateway: GatewayRole, };
 
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed", outcome: DeployCompletionOutcome, } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -537,7 +535,7 @@ export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
-export type FirstMachineInstallSpec = { machine_id: MachineId, dataplane_endpoint_supernet: MachineEndpointSupernet, gateway: GatewayRole, dns: DnsRole, machine_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstMachineInstallArtifacts, };
+export type FirstMachineInstallSpec = { machine_id: MachineId, dataplane_endpoint_supernet: MachineEndpointSupernet, gateway: GatewayRole, machine_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstMachineInstallArtifacts, };
 
 export type FirstMachineInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec,
 /**

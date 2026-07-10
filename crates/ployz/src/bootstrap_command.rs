@@ -7,7 +7,7 @@
 use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
+use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 use ployz_sdk_types::MachineJoinToken;
 use std::net::IpAddr;
 
@@ -147,10 +147,9 @@ impl FounderBootstrapCommand {
             env.push_str(&format!(" PLOYZ_RELEASE_MANIFEST_URL={}", shell_quote(url)));
         }
         env.push_str(&format!(
-            " PLOYZ_MACHINE_ID={} PLOYZ_GATEWAY={} PLOYZ_DNS={} PLOYZ_MACHINE_BOOTSTRAP_URL={} PLOYZ_MACHINE_JOIN_CLUSTER_NAME={} PLOYZ_MACHINE_JOIN_NATS_URL={}",
+            " PLOYZ_MACHINE_ID={} PLOYZ_GATEWAY={} PLOYZ_MACHINE_BOOTSTRAP_URL={} PLOYZ_MACHINE_JOIN_CLUSTER_NAME={} PLOYZ_MACHINE_JOIN_NATS_URL={}",
             shell_quote(self.machine_id.as_str()),
             shell_quote(gateway_role_value(self.roles.gateway)),
-            shell_quote(dns_role_value(self.roles.dns)),
             shell_quote(self.bootstrap_url.as_str()),
             shell_quote(self.cluster_name.as_str()),
             shell_quote(self.runtime_nats_url.as_str()),
@@ -181,12 +180,5 @@ const fn gateway_role_value(role: GatewayRole) -> &'static str {
     match role {
         GatewayRole::Install => "install",
         GatewayRole::Skip => "skip",
-    }
-}
-
-const fn dns_role_value(role: DnsRole) -> &'static str {
-    match role {
-        DnsRole::Install => "install",
-        DnsRole::Skip => "skip",
     }
 }

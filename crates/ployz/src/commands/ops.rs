@@ -8,7 +8,7 @@ use ployz_core::ops::{
     OperationEventReplayRequest, OperationKind, OperationStatus, OperationStatusSnapshot,
     ReplayedOperationEvent,
 };
-use ployz_core::roles::{DnsRole, GatewayRole};
+use ployz_core::roles::GatewayRole;
 use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 
 use crate::commands::PloyzctlCliError;
@@ -258,11 +258,10 @@ fn operation_subject(status: &OperationStatus) -> String {
             roles,
             ..
         } => format!(
-            "machine {} name {} gateway {} dns {}",
+            "machine {} name {} gateway {}",
             machine_id.as_str(),
             name.as_str(),
-            gateway_role(roles.gateway),
-            dns_role(roles.dns)
+            gateway_role(roles.gateway)
         ),
         OperationStatus::MachineUpdate {
             machine_id,
@@ -465,13 +464,6 @@ const fn gateway_role(gateway: GatewayRole) -> &'static str {
     match gateway {
         GatewayRole::Install => "install",
         GatewayRole::Skip => "skip",
-    }
-}
-
-const fn dns_role(dns: DnsRole) -> &'static str {
-    match dns {
-        DnsRole::Install => "install",
-        DnsRole::Skip => "skip",
     }
 }
 

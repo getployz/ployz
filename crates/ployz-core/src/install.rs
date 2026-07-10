@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::dataplane::MachineEndpointSupernet;
 use crate::ids::MachineId;
 use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
-use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
+use crate::roles::{DaemonProcessRole, GatewayRole, InstallRolePolicy};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use url::{Host, Url};
@@ -25,7 +25,6 @@ pub struct FirstMachineInstallSpec {
     #[serde(default = "MachineEndpointSupernet::default_v1")]
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub gateway: GatewayRole,
-    pub dns: DnsRole,
     pub machine_public_ip: Option<IpAddr>,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub machine_join_template_file: Option<AbsoluteInstallPath>,
@@ -40,7 +39,6 @@ impl FirstMachineInstallSpec {
     pub const fn role_policy(&self) -> InstallRolePolicy {
         InstallRolePolicy {
             gateway: self.gateway,
-            dns: self.dns,
         }
     }
 }
