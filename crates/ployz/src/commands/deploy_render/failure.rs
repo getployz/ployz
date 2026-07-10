@@ -24,6 +24,7 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
         DeployOperationFailure::PlanningFailed { message, .. } => {
             format!("deploy planning failed: {}", message.as_str())
         }
+        DeployOperationFailure::AutoDnsWithoutLease { message, .. } => message.as_str().to_owned(),
         DeployOperationFailure::ArtifactUnavailable {
             service_id, reason, ..
         } => {

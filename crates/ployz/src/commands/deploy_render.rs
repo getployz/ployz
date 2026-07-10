@@ -275,6 +275,7 @@ impl DeployTree {
                     }
                 }
                 OperationKind::Cert
+                | OperationKind::ManagedLease
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineLifecycle
@@ -282,7 +283,10 @@ impl DeployTree {
                 | OperationKind::ServiceRestart
                 | OperationKind::NamespaceRemove => {}
             },
-            OperationEvent::CertRenewalSubmitted { .. }
+            OperationEvent::ManagedLeaseSubmitted { .. }
+            | OperationEvent::ManagedLeaseCompleted { .. }
+            | OperationEvent::ManagedLeaseFailed { .. }
+            | OperationEvent::CertRenewalSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
             | OperationEvent::CertCompleted { .. }
@@ -659,6 +663,7 @@ fn render_image_lines(
         DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
         DeployOperationFailure::NoUsableMachines { .. }
         | DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::AutoDnsWithoutLease { .. }
         | DeployOperationFailure::DataplaneUnavailable { .. }
         | DeployOperationFailure::DataplanePrepareTimedOut { .. }
         | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
